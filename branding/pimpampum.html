@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f3ed" />
+    <title>pimpampum — brand sketch 01</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --paper: #f5f3ed;
+        --ink: #161614;
+        --muted: #77746d;
+        --line: rgb(22 22 20 / 12%);
+        --signal: #ee3f32;
+        --metro-blue: #1c57a5;
+        --ease: cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        background: var(--paper);
+      }
+
+      body {
+        min-width: 320px;
+        min-height: 100svh;
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 78% 32%, rgb(255 255 255 / 58%), transparent 27rem),
+          var(--paper);
+        font-family: 'Helvetica Neue', Helvetica, Arial, ui-sans-serif, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button,
+      a {
+        color: inherit;
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+      }
+
+      a {
+        text-decoration: none;
+      }
+
+      .page {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        width: min(100%, 1600px);
+        min-height: 100svh;
+        margin: 0 auto;
+        padding: clamp(20px, 3vw, 48px);
+      }
+
+      .topbar,
+      .footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 11px;
+        line-height: 1;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .topbar {
+        padding-bottom: 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .brand {
+        font-weight: 700;
+        letter-spacing: -0.035em;
+        text-transform: lowercase;
+      }
+
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+      }
+
+      .status::before {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--signal);
+        content: '';
+        box-shadow: 0 0 0 3px rgb(255 84 54 / 12%);
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(240px, 0.38fr);
+        gap: clamp(40px, 8vw, 140px);
+        align-items: end;
+        padding: clamp(72px, 13vh, 160px) 0 clamp(64px, 10vh, 120px);
+      }
+
+      .intro {
+        min-width: 0;
+      }
+
+      .eyebrow {
+        margin: 0 0 clamp(24px, 4vh, 48px);
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .beats {
+        display: grid;
+        gap: clamp(10px, 1.4vw, 20px);
+        width: min(100%, 980px);
+        margin: 0;
+        font-size: clamp(64px, 11vw, 174px);
+        font-weight: 700;
+        line-height: 0.78;
+        letter-spacing: -0.075em;
+        text-wrap: balance;
+      }
+
+      .beat {
+        position: relative;
+        display: grid;
+        grid-template-columns: 0.62em 1fr;
+        gap: 0.16em;
+        align-items: center;
+        width: 100%;
+        cursor: pointer;
+        user-select: none;
+        isolation: isolate;
+        transition:
+          transform 420ms var(--ease),
+          color 180ms ease;
+      }
+
+      .route {
+        display: grid;
+        place-items: center;
+        width: 0.62em;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background: var(--signal);
+        color: white;
+        font-size: 0.4em;
+        font-weight: 700;
+        letter-spacing: -0.04em;
+        line-height: 1;
+        box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+        transition:
+          transform 480ms var(--ease),
+          box-shadow 180ms ease;
+      }
+
+      .beat[data-active='true'] {
+        transform: translateX(0.06em);
+      }
+
+      .beat[data-active='true'] .route {
+        transform: scale(1.12) rotate(-7deg);
+        box-shadow:
+          inset 0 0 0 1px rgb(0 0 0 / 8%),
+          0 0 0 0.075em var(--paper),
+          0 0 0 0.09em currentColor;
+      }
+
+      .beat:nth-child(2) .route {
+        background: var(--metro-blue);
+      }
+
+      .beat:nth-child(3) .route {
+        background: var(--ink);
+      }
+
+      .beat:nth-child(3)::after {
+        position: absolute;
+        right: 0;
+        bottom: -0.12em;
+        color: var(--signal);
+        content: '→';
+        font-size: 0.42em;
+        font-weight: 500;
+        letter-spacing: 0;
+      }
+
+      .aside {
+        align-self: center;
+        max-width: 360px;
+        padding-top: clamp(32px, 10vh, 120px);
+      }
+
+      .statement {
+        margin: 0;
+        font-size: clamp(24px, 2.7vw, 44px);
+        font-weight: 600;
+        line-height: 1.05;
+        letter-spacing: -0.045em;
+        text-wrap: balance;
+      }
+
+      .statement em {
+        padding: 0 0.08em;
+        color: white;
+        background: var(--metro-blue);
+        font-style: normal;
+      }
+
+      .note {
+        max-width: 31ch;
+        margin: 28px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.55;
+        text-wrap: pretty;
+      }
+
+      .replay {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 42px;
+        margin-top: 32px;
+        padding: 0 16px;
+        border-radius: 999px;
+        color: var(--ink);
+        background: transparent;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 700;
+        box-shadow: inset 0 0 0 1px var(--ink);
+        transition:
+          transform 180ms var(--ease),
+          background-color 180ms ease;
+      }
+
+      .replay:hover {
+        color: var(--paper);
+        background: var(--ink);
+        transform: translateY(-1px);
+      }
+
+      .replay:active {
+        transform: translateY(0) scale(0.98);
+      }
+
+      .replay:focus-visible,
+      .beat:focus-visible,
+      .footer a:focus-visible {
+        outline: 2px solid var(--signal);
+        outline-offset: 4px;
+      }
+
+      .footer {
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+      }
+
+      .palette {
+        display: flex;
+        gap: 6px;
+      }
+
+      .swatch {
+        width: 9px;
+        height: 9px;
+        border: 1px solid rgb(22 22 20 / 12%);
+        border-radius: 50%;
+        background: var(--swatch);
+      }
+
+      .footer a {
+        text-decoration: underline;
+        text-decoration-color: rgb(22 22 20 / 24%);
+        text-underline-offset: 4px;
+      }
+
+      @media (max-width: 760px) {
+        body {
+          min-width: 0;
+        }
+
+        .hero {
+          grid-template-columns: 1fr;
+          align-items: start;
+          gap: 72px;
+          padding-top: 76px;
+        }
+
+        .aside {
+          max-width: 430px;
+          padding-top: 0;
+        }
+
+        .beats {
+          font-size: clamp(42px, 20vw, 128px);
+        }
+
+        .footer > :nth-child(2) {
+          display: none;
+        }
+      }
+
+      @media (max-width: 360px) {
+        .page {
+          padding: 12px;
+        }
+
+        .topbar {
+          justify-content: flex-start;
+        }
+
+        .status {
+          display: none;
+        }
+
+        .hero {
+          gap: 48px;
+          padding: 48px 0;
+        }
+
+        .eyebrow {
+          margin-bottom: 28px;
+          font-size: 9px;
+          line-height: 1.35;
+        }
+
+        .beats {
+          gap: 8px;
+          font-size: clamp(32px, 19vw, 72px);
+        }
+
+        .beat {
+          grid-template-columns: 0.58em minmax(0, 1fr);
+          gap: 0.12em;
+        }
+
+        .route {
+          width: 0.58em;
+        }
+
+        .beat:nth-child(3)::after {
+          display: none;
+        }
+
+        .statement {
+          font-size: clamp(22px, 8vw, 32px);
+        }
+
+        .note {
+          font-size: 12px;
+        }
+
+        .footer {
+          font-size: 9px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="topbar">
+        <span class="brand">pimpampum / local</span>
+        <span class="status">line 03 · brand sketch</span>
+      </header>
+
+      <section class="hero" aria-labelledby="brand-title">
+        <div class="intro">
+          <p class="eyebrow">Uptown &amp; downtown / all stops</p>
+          <h1 class="beats" id="brand-title" aria-label="pim pam pum">
+            <span class="beat" tabindex="0"><span class="route">1</span><span>pim</span></span>
+            <span class="beat" tabindex="0"><span class="route">2</span><span>pam</span></span>
+            <span class="beat" tabindex="0"><span class="route">3</span><span>pum</span></span>
+          </h1>
+        </div>
+
+        <div class="aside">
+          <p class="statement">
+            Next stop: <em>something small</em>, made with extraordinary care.
+          </p>
+          <p class="note">
+            A wayfinding identity: direct typography, precise information, and three glyphs that
+            turn the name into a journey.
+          </p>
+          <button class="replay" type="button">
+            <span aria-hidden="true">↻</span>
+            Play again
+          </button>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <div class="palette" aria-label="Color palette">
+          <span class="swatch" style="--swatch: #f5f3ed" title="Paper"></span>
+          <span class="swatch" style="--swatch: #161614" title="Ink"></span>
+          <span class="swatch" style="--swatch: #ee3f32" title="Red line"></span>
+          <span class="swatch" style="--swatch: #1c57a5" title="Blue line"></span>
+        </div>
+        <span>Local / express / open source</span>
+        <a href="https://github.com/" rel="noreferrer">GitHub ↗</a>
+      </footer>
+    </main>
+
+    <script>
+      const beats = [...document.querySelectorAll('.beat')];
+      const replay = document.querySelector('.replay');
+      let timer;
+
+      function play(start = 0) {
+        window.clearTimeout(timer);
+        beats.forEach((beat) => (beat.dataset.active = 'false'));
+
+        beats.forEach((beat, index) => {
+          window.setTimeout(
+            () => {
+              beats.forEach((item) => (item.dataset.active = 'false'));
+              beat.dataset.active = 'true';
+            },
+            start + index * 260,
+          );
+        });
+
+        timer = window.setTimeout(
+          () => {
+            beats.forEach((beat) => (beat.dataset.active = 'false'));
+          },
+          start + beats.length * 260 + 560,
+        );
+      }
+
+      beats.forEach((beat, index) => {
+        beat.addEventListener('pointerenter', () => {
+          beats.forEach((item) => (item.dataset.active = 'false'));
+          beat.dataset.active = 'true';
+        });
+
+        beat.addEventListener('pointerleave', () => {
+          beat.dataset.active = 'false';
+        });
+
+        beat.addEventListener('click', () => play(index * 90));
+        beat.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            play(index * 90);
+          }
+        });
+      });
+
+      replay.addEventListener('click', () => play());
+      window.addEventListener('load', () => play(240));
+    </script>
+  </body>
+</html>

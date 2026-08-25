@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# loop.manifest.yaml — the policy contract for the autonomous convergence loop.
+#
+# This file is the SKELETON (which gate runs, when, and who owns each phase).
+# The CONTENT of your standards lives in .claude/rules/*, eslint, tsconfig, etc.
+# Learn the schema from these comments; preview behavior with `devtronic loop --dry-run`.
+#
+# The barbell: humans sign the two ends (DoD up front, ship at the back); the
+# machine converges everything in between under gates that never tire.
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: 1 # schema version — must be 1.
+
+# phases: ordered stages of the loop. Each phase declares an `owner`:
+#   - human   → the loop STOPS here for your signature (a barbell end).
+#   - machine → the loop drives it autonomously until its gates go green.
+# `entry`/`exit` are human-readable pre/post conditions (documentation + trace).
+# `gates` lists the tier names (see `gates` below) enforced in this phase.
+phases:
+  - id: implement # unique phase id
+    entry: spec-signed # precondition: the DoD (tests) exists and is approved
+    exit: gates-green # postcondition: all referenced gates pass
+    owner: machine # ← machine-owned: autonomous, hooks subordinate to the loop
+    gates: [objective, subjective] # Tier ① every iteration, Tier ② at the barrier
+  - id: live-quattro
+    entry: candidate-gates-green
+    exit: live-evidence-verified
+    owner: human
+    gates: [quattro-live]
+  - id: ship # final phase
+    entry: live-evidence-verified # precondition: the middle loop and Quattro smoke converged
+    exit: shipped # postcondition: change is shipped per `ship.strategy`
+    owner: human # ← human-owned: STOP for QA + ship sign-off (Tier ③)
+    gates: [] # no automated gates — this is a human judgment gate
+
+# gates: the reusable gate definitions phases reference by tier name.
+gates:
+  # Tier ① — objective: deterministic commands. Run EVERY iteration, fail-fast.
+  objective:
+    - cmd: npm run check:desktop-contract # immutable generated DoD and fixtures
+    - cmd: npm run typecheck # type safety
+    - cmd: npm run lint # style + rules
+    - cmd: npm test # the DoD tests must stay green
+  # Tier ② — subjective: judgment delegated to reviewing agents. Run per phase,
+  # adversarially (multiple refuters; majority confirms). `strict` fails the phase
+  # on an unresolved finding.
+  subjective:
+    - agent: code-reviewer # correctness, security, maintainability
+      strict: true
+      adversarial: true
+    - agent: architecture-checker # layer boundaries, import direction
+      strict: true
+  quattro-live:
+    - cmd: npm run check:quattro-evidence
+
+# dod: the Definition of Done for THIS feature (the front barbell end).
+# `as_tests` points at the test manifest produced by /generate-tests — done = green.
+dod:
+  as_tests: thoughts/tests/2026-08-26_desktop-status-integrations.md # signed feature contract
+  # extra: []                       # optional extra human-checkable criteria
+
+# ship: how the converged change leaves the loop (the back barbell end).
+# `approval` MUST be human — the machine never signs the ship.
+ship:
+  strategy: pull-request # adapter-interpreted: e.g. pull-request | tag | merge
+  approval: human # Tier ③ — a person signs off; not automatable
+  guards: [quattro-live-evidence]
+
+# budget: bounds the machine middle loop so it cannot spin forever.
+budget:
+  max_iterations: 4 # per machine phase, before escalating
+  on_exhausted: replan-then-human # re-plan once, then hand control back to you
+  # context_reset_at: [phase-exit] # optional: reset context at these points

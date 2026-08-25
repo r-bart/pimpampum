@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "devtronic": {
+      "source": {
+        "source": "github",
+        "repo": "r-bart/devtronic-plugin"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "devtronic@devtronic": true
+  }
+}

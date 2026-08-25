@@ -1,0 +1,45 @@
+{
+  "meta": { "schemaVersion": 1 },
+  "data": {
+    "daemon": {
+      "version": "0.1.0",
+      "startedAt": "2026-08-26T20:00:00.000Z",
+      "uptimeSeconds": 120
+    },
+    "generatedAt": "2026-08-26T20:02:00.000Z",
+    "status": "complete",
+    "counts": {
+      "workspaces": 1,
+      "projects": 1,
+      "draftProjects": 0,
+      "readyProjects": 0,
+      "completedProjects": 1,
+      "openTasks": 0,
+      "completedTasks": 1,
+      "activeClaims": 0,
+      "availableWork": 0
+    },
+    "projects": [
+      {
+        "id": "complete-project",
+        "workspace": {
+          "id": "finished",
+          "name": "Finished",
+          "rootPath": "/Users/example/Finished"
+        },
+        "slug": "complete",
+        "title": "Completed project",
+        "lifecycleState": "done",
+        "status": "complete",
+        "openTaskCount": 0,
+        "completedTaskCount": 1,
+        "activeClaimCount": 0,
+        "availableWorkCount": 0,
+        "updatedAt": "2026-08-26T20:01:00.000Z"
+      }
+    ],
+    "projectsTruncated": false,
+    "activeWork": [],
+    "activeWorkTruncated": false
+  }
+}

@@ -1,0 +1,16 @@
+
+# devtronic loop — transient per-run files
+.loop-worktrees/
+.claude/.loop-owner
+
+node_modules/
+dist/
+coverage/
+.project-master/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.DS_Store
+CLAUDE.local.md
+.claude/settings.local.json
+thoughts/checkpoints/

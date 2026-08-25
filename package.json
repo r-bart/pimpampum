@@ -1,0 +1,71 @@
+{
+  "name": "pimpampum",
+  "version": "0.1.0",
+  "description": "Local, agent-first project coordination through PRDs, HTTP and MCP.",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "pimpampum": "dist/cli.js",
+    "pimpampum-mcp": "dist/mcpStdio.js"
+  },
+  "scripts": {
+    "clean": "node --eval \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/daemon.ts",
+    "start": "node dist/daemon.js",
+    "cli": "tsx src/cli.ts",
+    "mcp:stdio": "tsx src/mcpStdio.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "oxlint src test --deny-warnings",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check:desktop-contract": "node scripts/check-desktop-status-contract.mjs",
+    "check:quattro-evidence": "node scripts/check-quattro-evidence.mjs",
+    "test": "npm run build && npm run test:coverage && vitest run test/e2e.test.ts",
+    "test:coverage": "vitest run --coverage --exclude test/e2e.test.ts",
+    "test:unit": "vitest run --exclude test/e2e.test.ts",
+    "test:e2e": "npm run build && vitest run test/e2e.test.ts"
+  },
+  "keywords": [
+    "agents",
+    "mcp",
+    "project-management",
+    "prd"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/express": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "better-sqlite3": "^13.0.3",
+    "express": "^5.2.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.2.0",
+    "@types/supertest": "^7.2.1",
+    "@vitest/coverage-v8": "^4.1.11",
+    "oxlint": "^1.79.0",
+    "prettier": "^3.6.2",
+    "supertest": "^7.2.2",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "esbuild@0.28.2": true
+  }
+}

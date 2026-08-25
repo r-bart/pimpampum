@@ -1,0 +1,108 @@
+{
+  "meta": { "schemaVersion": 1 },
+  "data": {
+    "daemon": {
+      "version": "0.1.0",
+      "startedAt": "2026-08-26T20:00:00.000Z",
+      "uptimeSeconds": 90
+    },
+    "generatedAt": "2026-08-26T20:01:30.000Z",
+    "status": "active",
+    "counts": {
+      "workspaces": 1,
+      "projects": 4,
+      "draftProjects": 1,
+      "readyProjects": 2,
+      "completedProjects": 1,
+      "openTasks": 2,
+      "completedTasks": 1,
+      "activeClaims": 1,
+      "availableWork": 2
+    },
+    "projects": [
+      {
+        "id": "project-active",
+        "workspace": {
+          "id": "projects",
+          "name": "100 Projects",
+          "rootPath": "/Users/example/100 Projects"
+        },
+        "slug": "active",
+        "title": "Active project",
+        "lifecycleState": "ready",
+        "status": "active",
+        "openTaskCount": 1,
+        "completedTaskCount": 0,
+        "activeClaimCount": 1,
+        "availableWorkCount": 1,
+        "updatedAt": "2026-08-26T20:01:00.000Z"
+      },
+      {
+        "id": "project-available",
+        "workspace": {
+          "id": "projects",
+          "name": "100 Projects",
+          "rootPath": "/Users/example/100 Projects"
+        },
+        "slug": "available",
+        "title": "Available project",
+        "lifecycleState": "ready",
+        "status": "available",
+        "openTaskCount": 1,
+        "completedTaskCount": 0,
+        "activeClaimCount": 0,
+        "availableWorkCount": 1,
+        "updatedAt": "2026-08-26T20:00:50.000Z"
+      },
+      {
+        "id": "project-draft",
+        "workspace": {
+          "id": "projects",
+          "name": "100 Projects",
+          "rootPath": "/Users/example/100 Projects"
+        },
+        "slug": "draft",
+        "title": "Draft project",
+        "lifecycleState": "draft",
+        "status": "draft",
+        "openTaskCount": 0,
+        "completedTaskCount": 0,
+        "activeClaimCount": 0,
+        "availableWorkCount": 0,
+        "updatedAt": "2026-08-26T20:00:40.000Z"
+      },
+      {
+        "id": "project-complete",
+        "workspace": {
+          "id": "projects",
+          "name": "100 Projects",
+          "rootPath": "/Users/example/100 Projects"
+        },
+        "slug": "complete",
+        "title": "Completed project",
+        "lifecycleState": "done",
+        "status": "complete",
+        "openTaskCount": 0,
+        "completedTaskCount": 1,
+        "activeClaimCount": 0,
+        "availableWorkCount": 0,
+        "updatedAt": "2026-08-26T20:00:30.000Z"
+      }
+    ],
+    "projectsTruncated": false,
+    "activeWork": [
+      {
+        "targetType": "task",
+        "targetId": "task-active",
+        "workspaceId": "projects",
+        "projectId": "project-active",
+        "projectTitle": "Active project",
+        "taskId": "task-active",
+        "taskTitle": "Current work",
+        "agentId": "codex",
+        "expiresAt": "2026-08-26T20:31:00.000Z"
+      }
+    ],
+    "activeWorkTruncated": false
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "version": "1.4.4",
+  "implantedAt": "2026-08-25",
+  "selectedIDEs": [
+    "claude-code"
+  ],
+  "projectConfig": {
+    "architecture": "flat",
+    "layers": [],
+    "stateManagement": [],
+    "dataFetching": [],
+    "orm": [],
+    "testing": [
+      "Vitest"
+    ],
+    "ui": [],
+    "validation": [
+      "Zod"
+    ],
+    "framework": "express",
+    "qualityCommand": "npm run test"
+  },
+  "files": {
+    ".claude/rules/quality.md": {
+      "checksum": "83fa7f67a85f6eac8e072ac7597b952d",
+      "modified": false,
+      "originalChecksum": "83fa7f67a85f6eac8e072ac7597b952d"
+    },
+    ".claude/rules/architecture.md": {
+      "checksum": "76c9f343cc60630cdc4d9068e9340b37",
+      "modified": false,
+      "originalChecksum": "76c9f343cc60630cdc4d9068e9340b37"
+    },
+    "CLAUDE.md": {
+      "checksum": "c061cac343dbb10bea032d842e5f42b9",
+      "modified": false,
+      "originalChecksum": "c061cac343dbb10bea032d842e5f42b9"
+    },
+    "AGENTS.md": {
+      "checksum": "8ca7de7edb40572e494a615829319069",
+      "modified": false,
+      "originalChecksum": "8ca7de7edb40572e494a615829319069"
+    },
+    "loop.manifest.yaml": {
+      "checksum": "9259ee70f679976f9ef32398c330a2ac",
+      "modified": false,
+      "originalChecksum": "9259ee70f679976f9ef32398c330a2ac"
+    }
+  },
+  "installMode": "marketplace"
+}

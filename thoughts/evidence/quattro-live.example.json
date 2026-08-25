@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "status": "pending",
+  "omarchyVersion": "",
+  "validatedAt": "",
+  "candidateHash": "",
+  "validateCommand": "omarchy plugin validate /absolute/path/to/dev.pimpampum.status",
+  "smoke": {
+    "pluginValidation": false,
+    "hotReload": false,
+    "themeInheritance": false,
+    "horizontalTopLayout": false,
+    "popoutCoordination": false,
+    "activeCount": false,
+    "completedCollapse": false,
+    "offlineRecovery": false,
+    "workspaceOpen": false
+  },
+  "notes": "Copy to quattro-live.json on the target Quattro machine and record observed results."
+}
