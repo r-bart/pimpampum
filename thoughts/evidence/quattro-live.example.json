@@ -4,7 +4,23 @@
   "omarchyVersion": "",
   "validatedAt": "",
   "candidateHash": "",
-  "validateCommand": "omarchy plugin validate /absolute/path/to/dev.pimpampum.status",
+  "validatedCandidatePath": "/absolute/path/to/dev.pimpampum.status",
+  "commands": {
+    "version": {
+      "executable": "omarchy",
+      "arguments": ["--version"],
+      "exitCode": null,
+      "stdout": ""
+    },
+    "validation": {
+      "executable": "omarchy",
+      "arguments": ["plugin", "validate", "/absolute/path/to/dev.pimpampum.status"],
+      "exitCode": null,
+      "passed": false,
+      "stdout": "",
+      "stderr": ""
+    }
+  },
   "smoke": {
     "pluginValidation": false,
     "hotReload": false,
@@ -16,5 +32,5 @@
     "offlineRecovery": false,
     "workspaceOpen": false
   },
-  "notes": "Copy to quattro-live.json on the target Quattro machine and record observed results."
+  "notes": "Copy to quattro-live.json on the target Quattro machine. candidateHash uses sorted relative paths, byte lengths, and bytes as implemented by scripts/check-quattro-evidence.mjs."
 }

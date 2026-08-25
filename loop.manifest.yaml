@@ -26,7 +26,7 @@ phases:
     entry: candidate-gates-green
     exit: live-evidence-verified
     owner: human
-    gates: [quattro-live]
+    gates: [objective]
   - id: ship # final phase
     entry: live-evidence-verified # precondition: the middle loop and Quattro smoke converged
     exit: shipped # postcondition: change is shipped per `ship.strategy`
@@ -41,6 +41,8 @@ gates:
     - cmd: npm run typecheck # type safety
     - cmd: npm run lint # style + rules
     - cmd: npm test # the DoD tests must stay green
+    - cmd: npm run check:quattro-evidence
+      when: phase:live-quattro
   # Tier ② — subjective: judgment delegated to reviewing agents. Run per phase,
   # adversarially (multiple refuters; majority confirms). `strict` fails the phase
   # on an unresolved finding.
@@ -50,8 +52,6 @@ gates:
       adversarial: true
     - agent: architecture-checker # layer boundaries, import direction
       strict: true
-  quattro-live:
-    - cmd: npm run check:quattro-evidence
 
 # dod: the Definition of Done for THIS feature (the front barbell end).
 # `as_tests` points at the test manifest produced by /generate-tests — done = green.
@@ -64,7 +64,6 @@ dod:
 ship:
   strategy: pull-request # adapter-interpreted: e.g. pull-request | tag | merge
   approval: human # Tier ③ — a person signs off; not automatable
-  guards: [quattro-live-evidence]
 
 # budget: bounds the machine middle loop so it cannot spin forever.
 budget:
