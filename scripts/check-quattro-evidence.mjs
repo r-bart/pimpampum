@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readdirSync } from 'node:fs';
-import { relative, resolve, sep } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 const evidencePath = process.argv[2] ?? 'thoughts/evidence/quattro-live.json';
 const candidateDirectory = resolve(process.argv[3] ?? 'integrations/omarchy/pimpampum-status');
@@ -25,6 +25,10 @@ const requiredSmokeChecks = [
 ];
 
 function candidateFiles(directory) {
+  const rootMetadata = lstatSync(directory);
+  if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
+    throw new Error(`Candidate root must be a real directory: ${directory}`);
+  }
   const files = [];
   const visit = (current) => {
     for (const entry of readdirSync(current, { withFileTypes: true })) {
@@ -62,6 +66,8 @@ const currentTime = Date.now();
 const maximumClockSkewMilliseconds = 5 * 60 * 1_000;
 const maximumEvidenceAgeMilliseconds = 30 * 24 * 60 * 60 * 1_000;
 const version = typeof evidence.omarchyVersion === 'string' ? evidence.omarchyVersion.trim() : '';
+const validatedCandidatePath =
+  typeof evidence.validatedCandidatePath === 'string' ? evidence.validatedCandidatePath.trim() : '';
 const versionCheck = evidence.commands?.version;
 const validationCheck = evidence.commands?.validation;
 
@@ -73,6 +79,8 @@ if (
   validatedAt > currentTime + maximumClockSkewMilliseconds ||
   currentTime - validatedAt > maximumEvidenceAgeMilliseconds ||
   evidence.candidateHash !== actualCandidateHash ||
+  validatedCandidatePath.length === 0 ||
+  !isAbsolute(validatedCandidatePath) ||
   versionCheck?.executable !== 'omarchy' ||
   JSON.stringify(versionCheck?.arguments) !== JSON.stringify(['--version']) ||
   versionCheck?.exitCode !== 0 ||
@@ -80,9 +88,11 @@ if (
   !versionCheck.stdout.includes(version) ||
   validationCheck?.executable !== 'omarchy' ||
   JSON.stringify(validationCheck?.arguments) !==
-    JSON.stringify(['plugin', 'validate', evidence.validatedCandidatePath]) ||
+    JSON.stringify(['plugin', 'validate', validatedCandidatePath]) ||
   validationCheck?.exitCode !== 0 ||
   validationCheck?.passed !== true ||
+  typeof validationCheck?.stdout !== 'string' ||
+  typeof validationCheck?.stderr !== 'string' ||
   requiredSmokeChecks.some((name) => evidence.smoke?.[name] !== true)
 ) {
   throw new Error(`Quattro live evidence at ${evidencePath} is incomplete or did not pass`);
