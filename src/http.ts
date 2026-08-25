@@ -21,6 +21,8 @@ import {
 } from './schemas.js';
 import type { PimpampumHttpGateway } from './types.js';
 
+const DAEMON_VERSION = '0.1.0';
+
 function parse<T>(schema: ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -96,6 +98,7 @@ export function createHttpApp(
   store: PimpampumHttpGateway,
   config: RuntimeConfig,
   logger: Pick<Console, 'error'> = console,
+  clock: () => number = Date.now,
 ) {
   if (config.host !== '127.0.0.1' && config.host !== 'localhost' && config.host !== '::1') {
     throw new AppError('bad_request', 'Pimpampum HTTP must bind to a loopback host', 400);
@@ -104,9 +107,11 @@ export function createHttpApp(
   const requireAuth = bearerAuth(config.token);
   const mcpHandler = createPimpampumMcpHandler(store);
   const nodeMcpHandler = toNodeHandler(mcpHandler);
+  const startedAtMilliseconds = clock();
+  const startedAt = new Date(startedAtMilliseconds).toISOString();
 
   app.get('/health', (_request, response) => {
-    response.json({ status: 'ok', version: '0.1.0' });
+    response.json({ status: 'ok', version: DAEMON_VERSION });
   });
 
   app.get('/openapi.json', (_request, response) => {
@@ -114,6 +119,22 @@ export function createHttpApp(
   });
 
   app.use('/api/v1', requireAuth);
+
+  app.get('/api/v1/overview', (_request, response) => {
+    const generatedAtMilliseconds = clock();
+    responseData(response, {
+      ...store.getOverview(),
+      daemon: {
+        version: DAEMON_VERSION,
+        startedAt,
+        uptimeSeconds: Math.max(
+          0,
+          Math.floor((generatedAtMilliseconds - startedAtMilliseconds) / 1_000),
+        ),
+      },
+      generatedAt: new Date(generatedAtMilliseconds).toISOString(),
+    });
+  });
 
   app.get('/api/v1/workspaces', (_request, response) => {
     responseData(response, store.listWorkspaces());

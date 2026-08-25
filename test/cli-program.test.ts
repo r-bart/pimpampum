@@ -5,6 +5,7 @@ import { CLI_USAGE, runCli, type CliRuntime } from '../src/cliProgram.js';
 function fixture() {
   const client = {
     health: vi.fn(async () => ({ status: 'ok', version: '0.1.0' })),
+    getOverview: vi.fn(async () => ({ status: 'empty' })),
     listWorkspaces: vi.fn(async () => []),
     registerWorkspace: vi.fn(async (input: unknown) => input),
     listWork: vi.fn(async () => []),
@@ -40,6 +41,7 @@ describe('CLI program', () => {
     const state = fixture();
     const commands: string[][] = [
       ['health'],
+      ['overview'],
       ['workspace:list'],
       ['workspace:add', 'ws', 'Workspace', 'root'],
       ['work:list'],

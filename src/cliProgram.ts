@@ -18,6 +18,7 @@ export const CLI_USAGE = `Pimpampum 0.1.0
 Usage:
   pimpampum serve
   pimpampum health
+  pimpampum overview
   pimpampum workspace:list
   pimpampum workspace:add <id> <name> <root-path>
   pimpampum work:list [workspace-id]
@@ -80,6 +81,9 @@ export async function runCli(arguments_: string[], runtime: CliRuntime): Promise
   switch (command) {
     case 'health':
       print(runtime, await client.health());
+      return;
+    case 'overview':
+      print(runtime, await client.getOverview());
       return;
     case 'workspace:list':
       print(runtime, await client.listWorkspaces());

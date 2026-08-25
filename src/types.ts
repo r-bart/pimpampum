@@ -129,6 +129,65 @@ export interface WorkBundle {
   contextHasMore: boolean;
 }
 
+export type OverviewStatus = 'active' | 'available' | 'complete' | 'draft' | 'empty';
+export type OverviewProjectStatus = Exclude<OverviewStatus, 'empty'>;
+
+export interface OverviewCounts {
+  workspaces: number;
+  projects: number;
+  draftProjects: number;
+  readyProjects: number;
+  completedProjects: number;
+  openTasks: number;
+  completedTasks: number;
+  activeClaims: number;
+  availableWork: number;
+}
+
+export interface OverviewProject {
+  id: string;
+  workspace: Pick<Workspace, 'id' | 'name' | 'rootPath'>;
+  slug: string;
+  title: string;
+  lifecycleState: ProjectState;
+  status: OverviewProjectStatus;
+  openTaskCount: number;
+  completedTaskCount: number;
+  activeClaimCount: number;
+  availableWorkCount: number;
+  updatedAt: string;
+}
+
+export interface OverviewActiveWork {
+  targetType: TargetType;
+  targetId: string;
+  workspaceId: string;
+  projectId: string;
+  projectTitle: string;
+  taskId: string | null;
+  taskTitle: string | null;
+  agentId: string;
+  expiresAt: string;
+}
+
+export interface OverviewSnapshot {
+  status: OverviewStatus;
+  counts: OverviewCounts;
+  projects: OverviewProject[];
+  projectsTruncated: boolean;
+  activeWork: OverviewActiveWork[];
+  activeWorkTruncated: boolean;
+}
+
+export interface Overview extends OverviewSnapshot {
+  daemon: {
+    version: string;
+    startedAt: string;
+    uptimeSeconds: number;
+  };
+  generatedAt: string;
+}
+
 export interface CreateProjectInput {
   workspaceId: string;
   slug: string;
@@ -256,6 +315,7 @@ type SynchronousGateway<T> = {
 };
 
 export type PimpampumHttpGateway = SynchronousGateway<PimpampumGateway> & {
+  getOverview(): OverviewSnapshot;
   registerWorkspace(input: {
     id: string;
     name: string;

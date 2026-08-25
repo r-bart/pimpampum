@@ -57,6 +57,57 @@ describe('HTTP API', () => {
       .expect(401);
   });
 
+  it('adds stable daemon runtime metadata to the bounded overview envelope', async () => {
+    await closeMcp();
+    let clock = Date.parse('2026-08-26T20:00:00.000Z');
+    const config: RuntimeConfig = {
+      host: '127.0.0.1',
+      port: 7337,
+      dataDirectory: temporaryDirectory,
+      databasePath: ':memory:',
+      token,
+      baseUrl: 'http://127.0.0.1:7337',
+    };
+    const created = createHttpApp(store, config, console, () => clock);
+    app = created.app;
+    closeMcp = created.close;
+    clock += 2_500;
+
+    await request(app)
+      .get('/api/v1/overview')
+      .set('authorization', `Bearer ${token}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toEqual({
+          data: {
+            daemon: {
+              version: '0.1.0',
+              startedAt: '2026-08-26T20:00:00.000Z',
+              uptimeSeconds: 2,
+            },
+            generatedAt: '2026-08-26T20:00:02.500Z',
+            status: 'empty',
+            counts: {
+              workspaces: 0,
+              projects: 0,
+              draftProjects: 0,
+              readyProjects: 0,
+              completedProjects: 0,
+              openTasks: 0,
+              completedTasks: 0,
+              activeClaims: 0,
+              availableWork: 0,
+            },
+            projects: [],
+            projectsTruncated: false,
+            activeWork: [],
+            activeWorkTruncated: false,
+          },
+          meta: { schemaVersion: 1 },
+        });
+      });
+  });
+
   it('registers a workspace, creates a PRD and lists it as available work', async () => {
     const authorization = { authorization: `Bearer ${token}` };
     await request(app)

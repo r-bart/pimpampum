@@ -29,6 +29,7 @@
     "format:check": "prettier --check .",
     "check:desktop-contract": "node scripts/check-desktop-status-contract.mjs",
     "check:quattro-evidence": "node scripts/check-quattro-evidence.mjs",
+    "benchmark:overview": "tsx scripts/benchmark-overview.ts",
     "test": "npm run build && npm run test:coverage && vitest run test/e2e.test.ts",
     "test:coverage": "vitest run --coverage --exclude test/e2e.test.ts",
     "test:unit": "vitest run --exclude test/e2e.test.ts",

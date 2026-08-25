@@ -4,6 +4,12 @@ import { isAbsolute, relative } from 'node:path';
 import type Database from 'better-sqlite3';
 import { backupDatabase, exportPortable } from './backup.js';
 import { AppError } from './errors.js';
+import {
+  boundOverview,
+  sortOverviewProjects,
+  statusForOverview,
+  statusForProject,
+} from './overview.js';
 import type {
   ActivityEvent,
   ArtifactReference,
@@ -15,6 +21,10 @@ import type {
   CreateProjectInput,
   CreateTaskInput,
   MarkdownPage,
+  OverviewActiveWork,
+  OverviewCounts,
+  OverviewProject,
+  OverviewSnapshot,
   Project,
   ProjectManifest,
   ProjectState,
@@ -121,6 +131,45 @@ interface WorkTaskRow {
   created_at: string;
   workspace_id: string;
   project_title: string;
+}
+
+interface OverviewCountsRow {
+  workspaces: number;
+  projects: number;
+  draft_projects: number;
+  ready_projects: number;
+  completed_projects: number;
+  open_tasks: number;
+  completed_tasks: number;
+  active_claims: number;
+  available_work: number;
+}
+
+interface OverviewProjectRow {
+  id: string;
+  workspace_id: string;
+  workspace_name: string;
+  workspace_root_path: string;
+  slug: string;
+  title: string;
+  lifecycle_state: ProjectState;
+  open_task_count: number;
+  completed_task_count: number;
+  active_claim_count: number;
+  available_work_count: number;
+  updated_at: string;
+}
+
+interface OverviewActiveWorkRow {
+  target_type: TargetType;
+  target_id: string;
+  workspace_id: string;
+  project_id: string;
+  project_title: string;
+  task_id: string | null;
+  task_title: string | null;
+  agent_id: string;
+  expires_at: string;
 }
 
 function now(): string {
@@ -750,6 +799,227 @@ export class PimpampumStore {
       )
       .slice(0, input.limit)
       .map(({ sortAt: _sortAt, ...item }) => item);
+  }
+
+  getOverview(): OverviewSnapshot {
+    return this.database.transaction(() => {
+      const timestamp = now();
+      const countsRow = requireRow(
+        this.database
+          .prepare<[string], OverviewCountsRow>(
+            `WITH active_claims AS (
+               SELECT target_type, target_id
+               FROM claims
+               WHERE expires_at > ?
+             ),
+             available_projects AS (
+               SELECT p.id
+               FROM projects p
+               WHERE p.state = 'ready'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM tasks t
+                   WHERE t.project_id = p.id AND t.state = 'open'
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM active_claims ac
+                   WHERE ac.target_type = 'project' AND ac.target_id = p.id
+                 )
+             ),
+             available_tasks AS (
+               SELECT t.id
+               FROM tasks t
+               JOIN projects p ON p.id = t.project_id
+               WHERE t.state = 'open' AND p.state = 'ready'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM tasks child
+                   WHERE child.parent_id = t.id AND child.state = 'open'
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM active_claims ac
+                   WHERE ac.target_type = 'task' AND ac.target_id = t.id
+                 )
+             )
+             SELECT
+               (SELECT COUNT(w.id) FROM workspaces w) AS workspaces,
+               (SELECT COUNT(p.id) FROM projects p) AS projects,
+               (SELECT COUNT(p.id) FROM projects p WHERE p.state = 'draft') AS draft_projects,
+               (SELECT COUNT(p.id) FROM projects p WHERE p.state = 'ready') AS ready_projects,
+               (SELECT COUNT(p.id) FROM projects p WHERE p.state = 'done') AS completed_projects,
+               (SELECT COUNT(t.id) FROM tasks t WHERE t.state = 'open') AS open_tasks,
+               (SELECT COUNT(t.id) FROM tasks t WHERE t.state = 'done') AS completed_tasks,
+               (SELECT COUNT(ac.target_id) FROM active_claims ac) AS active_claims,
+               (SELECT COUNT(ap.id) FROM available_projects ap) +
+                 (SELECT COUNT(at.id) FROM available_tasks at) AS available_work`,
+          )
+          .get(timestamp),
+        'Overview counts were not returned',
+      );
+
+      const counts: OverviewCounts = {
+        workspaces: countsRow.workspaces,
+        projects: countsRow.projects,
+        draftProjects: countsRow.draft_projects,
+        readyProjects: countsRow.ready_projects,
+        completedProjects: countsRow.completed_projects,
+        openTasks: countsRow.open_tasks,
+        completedTasks: countsRow.completed_tasks,
+        activeClaims: countsRow.active_claims,
+        availableWork: countsRow.available_work,
+      };
+
+      const projectRows = this.database
+        .prepare<[string, number], OverviewProjectRow>(
+          `WITH active_claims AS (
+             SELECT target_type, target_id
+             FROM claims
+             WHERE expires_at > ?
+           ),
+           task_counts AS (
+             SELECT t.project_id,
+                    SUM(CASE WHEN t.state = 'open' THEN 1 ELSE 0 END) AS open_task_count,
+                    SUM(CASE WHEN t.state = 'done' THEN 1 ELSE 0 END) AS completed_task_count
+             FROM tasks t
+             GROUP BY t.project_id
+           ),
+           active_claim_parts AS (
+             SELECT ac.target_id AS project_id, COUNT(ac.target_id) AS claim_count
+             FROM active_claims ac
+             WHERE ac.target_type = 'project'
+             GROUP BY ac.target_id
+             UNION ALL
+             SELECT t.project_id, COUNT(ac.target_id) AS claim_count
+             FROM active_claims ac
+             JOIN tasks t ON ac.target_type = 'task' AND t.id = ac.target_id
+             GROUP BY t.project_id
+           ),
+           active_claim_counts AS (
+             SELECT acp.project_id, SUM(acp.claim_count) AS active_claim_count
+             FROM active_claim_parts acp
+             GROUP BY acp.project_id
+           ),
+           available_task_counts AS (
+             SELECT t.project_id, COUNT(t.id) AS available_task_count
+             FROM tasks t
+             JOIN projects p ON p.id = t.project_id
+             WHERE t.state = 'open' AND p.state = 'ready'
+               AND NOT EXISTS (
+                 SELECT 1 FROM tasks child
+                 WHERE child.parent_id = t.id AND child.state = 'open'
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM active_claims ac
+                 WHERE ac.target_type = 'task' AND ac.target_id = t.id
+               )
+             GROUP BY t.project_id
+           ),
+           project_overview AS (
+             SELECT p.id,
+                    w.id AS workspace_id,
+                    w.name AS workspace_name,
+                    w.root_path AS workspace_root_path,
+                    p.slug,
+                    p.title,
+                    p.state AS lifecycle_state,
+                    COALESCE(tc.open_task_count, 0) AS open_task_count,
+                    COALESCE(tc.completed_task_count, 0) AS completed_task_count,
+                    COALESCE(acc.active_claim_count, 0) AS active_claim_count,
+                    COALESCE(atc.available_task_count, 0) +
+                      CASE WHEN p.state = 'ready'
+                                  AND COALESCE(tc.open_task_count, 0) = 0
+                                  AND NOT EXISTS (
+                                    SELECT 1 FROM active_claims ac
+                                    WHERE ac.target_type = 'project' AND ac.target_id = p.id
+                                  )
+                           THEN 1 ELSE 0 END AS available_work_count,
+                    p.updated_at
+             FROM projects p
+             JOIN workspaces w ON w.id = p.workspace_id
+             LEFT JOIN task_counts tc ON tc.project_id = p.id
+             LEFT JOIN active_claim_counts acc ON acc.project_id = p.id
+             LEFT JOIN available_task_counts atc ON atc.project_id = p.id
+           )
+           SELECT id, workspace_id, workspace_name, workspace_root_path, slug, title,
+                  lifecycle_state, open_task_count, completed_task_count, active_claim_count,
+                  available_work_count, updated_at
+           FROM project_overview
+           ORDER BY CASE
+                      WHEN active_claim_count > 0 THEN 0
+                      WHEN available_work_count > 0 THEN 1
+                      WHEN lifecycle_state = 'done' THEN 3
+                      ELSE 2
+                    END,
+                    updated_at DESC,
+                    id ASC
+           LIMIT ?`,
+        )
+        .all(timestamp, 501);
+      const projects = projectRows
+        .map<OverviewProject>((row) => ({
+          id: row.id,
+          workspace: {
+            id: row.workspace_id,
+            name: row.workspace_name,
+            rootPath: row.workspace_root_path,
+          },
+          slug: row.slug,
+          title: row.title,
+          lifecycleState: row.lifecycle_state,
+          status: statusForProject({
+            lifecycleState: row.lifecycle_state,
+            activeClaimCount: row.active_claim_count,
+            availableWorkCount: row.available_work_count,
+          }),
+          openTaskCount: row.open_task_count,
+          completedTaskCount: row.completed_task_count,
+          activeClaimCount: row.active_claim_count,
+          availableWorkCount: row.available_work_count,
+          updatedAt: row.updated_at,
+        }))
+        .sort(sortOverviewProjects);
+      const boundedProjects = boundOverview(projects, 500);
+
+      const activeWorkRows = this.database
+        .prepare<[string, number], OverviewActiveWorkRow>(
+          `SELECT c.target_type,
+                  c.target_id,
+                  p.workspace_id,
+                  p.id AS project_id,
+                  p.title AS project_title,
+                  t.id AS task_id,
+                  t.title AS task_title,
+                  c.agent_id,
+                  c.expires_at
+           FROM claims c
+           LEFT JOIN tasks t ON c.target_type = 'task' AND t.id = c.target_id
+           JOIN projects p ON (c.target_type = 'project' AND p.id = c.target_id)
+                           OR (c.target_type = 'task' AND p.id = t.project_id)
+           WHERE c.expires_at > ?
+           ORDER BY c.updated_at DESC, c.target_id ASC
+           LIMIT ?`,
+        )
+        .all(timestamp, 501);
+      const activeWork = activeWorkRows.map<OverviewActiveWork>((row) => ({
+        targetType: row.target_type,
+        targetId: row.target_id,
+        workspaceId: row.workspace_id,
+        projectId: row.project_id,
+        projectTitle: row.project_title,
+        taskId: row.task_id,
+        taskTitle: row.task_title,
+        agentId: row.agent_id,
+        expiresAt: row.expires_at,
+      }));
+      const boundedActiveWork = boundOverview(activeWork, 500);
+
+      return {
+        status: statusForOverview(counts),
+        counts,
+        projects: boundedProjects.items,
+        projectsTruncated: boundedProjects.truncated,
+        activeWork: boundedActiveWork.items,
+        activeWorkTruncated: boundedActiveWork.truncated,
+      };
+    })();
   }
 
   startWork(input: {

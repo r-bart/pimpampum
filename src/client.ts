@@ -1,5 +1,6 @@
 import type { RuntimeConfig } from './config.js';
 import { AppError, type ErrorCode } from './errors.js';
+import { parseOverview } from './overviewContract.js';
 import type {
   ActivityEvent,
   Claim,
@@ -10,6 +11,7 @@ import type {
   CreateProjectInput,
   CreateTaskInput,
   MarkdownPage,
+  Overview,
   Project,
   ProjectManifest,
   PimpampumGateway,
@@ -65,6 +67,10 @@ export class PimpampumHttpClient implements PimpampumGateway {
 
   health(): Promise<{ status: string; version: string }> {
     return this.request('/health', { authenticated: false });
+  }
+
+  async getOverview(): Promise<Overview> {
+    return parseOverview(await this.request<unknown>('/api/v1/overview'));
   }
 
   listWorkspaces(): Promise<Workspace[]> {

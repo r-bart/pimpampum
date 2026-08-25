@@ -29,9 +29,9 @@ Add a bounded project overview contract, safe per-user service installation, a n
 
 ## Requirements
 
-- [ ] Add an authenticated `GET /api/v1/overview` endpoint and `pimpampum overview`.
-- [ ] Derive active work exclusively from unexpired claims.
-- [ ] Return bounded project, count, and active-work summaries without Markdown bodies.
+- [x] Add an authenticated `GET /api/v1/overview` endpoint and `pimpampum overview`.
+- [x] Derive active work exclusively from unexpired claims.
+- [x] Return bounded project, count, and active-work summaries without Markdown bodies.
 - [ ] Add idempotent `install`, `status`, and `uninstall` commands.
 - [ ] Install a per-user LaunchAgent on macOS and a per-user systemd service on Linux.
 - [ ] Install an unsigned SwiftUI menu bar app into `~/Applications`.
@@ -599,12 +599,12 @@ The matching manifest is `thoughts/tests/2026-08-26_desktop-status-integrations.
 
 ### Phase 1
 
-- [ ] `GET /api/v1/overview` requires bearer auth and returns schema version 1.
-- [ ] `pimpampum overview` returns the same data contract.
-- [ ] Active claims, available work, drafts, complete projects, empty state, and truncation have deterministic tests.
-- [ ] Overview and `work_list` agree on claimable work across fixtures.
-- [ ] No overview query selects Markdown or completion/artifact bodies.
-- [ ] OpenAPI documents the full overview contract.
+- [x] `GET /api/v1/overview` requires bearer auth and returns schema version 1.
+- [x] `pimpampum overview` returns the same data contract.
+- [x] Active claims, available work, drafts, complete projects, empty state, and truncation have deterministic tests.
+- [x] Overview and `work_list` agree on claimable work across fixtures.
+- [x] No overview query selects Markdown or completion/artifact bodies.
+- [x] OpenAPI documents the full overview contract.
 
 ### Phase 2
 

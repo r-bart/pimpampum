@@ -320,6 +320,34 @@ describe('HTTP client adapter', () => {
       if (url.endsWith('/health')) {
         return Response.json({ status: 'ok', version: '0.1.0' });
       }
+      if (url.endsWith('/api/v1/overview')) {
+        return Response.json({
+          data: {
+            daemon: {
+              version: '0.1.0',
+              startedAt: '2026-08-26T20:00:00.000Z',
+              uptimeSeconds: 1,
+            },
+            generatedAt: '2026-08-26T20:00:01.000Z',
+            status: 'empty',
+            counts: {
+              workspaces: 0,
+              projects: 0,
+              draftProjects: 0,
+              readyProjects: 0,
+              completedProjects: 0,
+              openTasks: 0,
+              completedTasks: 0,
+              activeClaims: 0,
+              availableWork: 0,
+            },
+            projects: [],
+            projectsTruncated: false,
+            activeWork: [],
+            activeWorkTruncated: false,
+          },
+        });
+      }
       if (url.endsWith('/api/v1/projects/project-1') && init.method === 'GET') {
         return Response.json({ data: { id: 'project-1' } });
       }
@@ -335,6 +363,7 @@ describe('HTTP client adapter', () => {
     });
 
     await client.health();
+    await client.getOverview();
     await client.listWorkspaces();
     await client.registerWorkspace({ id: 'ws', name: 'WS', rootPath: '/tmp/ws' });
     await client.resolveWorkspace('/tmp/ws/project');
@@ -426,9 +455,10 @@ describe('HTTP client adapter', () => {
     await client.backup('/tmp/backups');
     await client.exportPortable('/tmp/exports');
 
-    expect(calls).toHaveLength(33);
+    expect(calls).toHaveLength(34);
     expect(new Headers(calls[0]?.init.headers).has('authorization')).toBe(false);
     expect(new Headers(calls[1]?.init.headers).get('authorization')).toBe('Bearer secret');
+    expect(calls[1]?.url).toBe('http://127.0.0.1:7337/api/v1/overview');
     expect(calls.some(({ url }) => url.endsWith('/work?limit=4'))).toBe(true);
     expect(
       calls.some(({ url }) =>

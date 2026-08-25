@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { Project, Task, WorkBundle, WorkItem, Workspace } from '../src/types.js';
+import type { Overview, Project, Task, WorkBundle, WorkItem, Workspace } from '../src/types.js';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const compiledCli = join(repositoryRoot, 'dist', 'cli.js');
@@ -328,6 +328,11 @@ describe.sequential('compiled product end to end', () => {
       claim: { agentId: 'e2e-agent', targetType: 'task', targetId: task.id },
       task: { id: task.id, revision: task.revision },
     });
+    const activeOverview = await executeCli<Overview>(environment, 'overview');
+    expect(activeOverview.counts.activeClaims).toBeGreaterThan(0);
+    expect(activeOverview.activeWork).toContainEqual(
+      expect.objectContaining({ targetId: task.id, agentId: 'e2e-agent' }),
+    );
 
     const completedTask = await executeCli<Task>(
       environment,
@@ -342,6 +347,10 @@ describe.sequential('compiled product end to end', () => {
       state: 'done',
       completionSummary: 'Compiled task workflow verified',
     });
+    const completedTaskOverview = await executeCli<Overview>(environment, 'overview');
+    expect(completedTaskOverview.activeWork).not.toContainEqual(
+      expect.objectContaining({ targetId: task.id }),
+    );
 
     const projectWork = await executeCli<WorkItem[]>(environment, 'work:list', workspace.id);
     expect(projectWork).toMatchObject([{ targetType: 'project', targetId: draftProject.id }]);
