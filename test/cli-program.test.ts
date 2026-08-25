@@ -25,6 +25,20 @@ function fixture() {
   const close = vi.fn(async () => undefined);
   const runtime: CliRuntime = {
     createClient: () => client,
+    serviceManager: {
+      install: vi.fn(async () => ({
+        installed: true as const,
+        reconciled: false,
+        receiptPath: '/receipt',
+      })),
+      status: vi.fn(async () => ({
+        installed: true,
+        running: true,
+        adapter: 'test',
+        version: '0.1.0',
+      })),
+      uninstall: vi.fn(async () => ({ uninstalled: true, dataPreserved: true as const })),
+    },
     startServer: vi.fn(async () => ({ config: { baseUrl: 'http://127.0.0.1:7337' }, close })),
     readFile: vi.fn(() => '# PRD'),
     resolvePath: (path) => `/resolved/${path}`,
@@ -42,6 +56,9 @@ describe('CLI program', () => {
     const commands: string[][] = [
       ['health'],
       ['overview'],
+      ['install'],
+      ['status'],
+      ['uninstall'],
       ['workspace:list'],
       ['workspace:add', 'ws', 'Workspace', 'root'],
       ['work:list'],

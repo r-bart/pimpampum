@@ -1,0 +1,400 @@
+import { randomUUID } from 'node:crypto';
+import { chmodSync, existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, normalize, relative } from 'node:path';
+import { createLaunchdAdapter } from './launchd.js';
+import { restoreServiceLogs, rotateServiceLogs, snapshotServiceLogs } from './logs.js';
+import {
+  installReceiptPath,
+  installationKey,
+  assertNoSymlinkTraversal,
+  readInstallReceipt,
+  receiptArtifacts,
+  sha256,
+  writeInstallReceipt,
+  writePrivateFileAtomic,
+} from './receipt.js';
+import { createSystemdAdapter } from './systemd.js';
+import type {
+  InstallReceipt,
+  InstallResult,
+  PlatformServiceAdapter,
+  PlatformServiceManagerInput,
+  ServiceAdapterContext,
+  ServiceArtifact,
+  ServiceManager,
+  ServiceStatus,
+  SupportedServicePlatform,
+  UninstallResult,
+} from './types.js';
+
+type ArtifactSnapshot =
+  | { path: string; trustedRoot: string; existed: false }
+  | { path: string; trustedRoot: string; existed: true; content: Buffer; mode: number };
+
+const SERVICE_LIFECYCLE_LOCK_NAME = '.service-lifecycle.lock';
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+function acquireLifecycleLock(dataDirectory: string): () => void {
+  const lockPath = join(dataDirectory, SERVICE_LIFECYCLE_LOCK_NAME);
+  const lock = `${JSON.stringify({ pid: process.pid, nonce: randomUUID() })}\n`;
+  while (true) {
+    assertNoSymlinkTraversal(dataDirectory, 'Data directory', dataDirectory);
+    try {
+      writeFileSync(lockPath, lock, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      return () => {
+        if (existsSync(lockPath)) {
+          assertNoSymlinkTraversal(lockPath, 'Service lifecycle lock', dataDirectory);
+          if (readFileSync(lockPath, 'utf8') === lock) rmSync(lockPath);
+        }
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      assertNoSymlinkTraversal(lockPath, 'Service lifecycle lock', dataDirectory);
+      let owner: unknown;
+      try {
+        owner = JSON.parse(readFileSync(lockPath, 'utf8')) as unknown;
+      } catch (parseError) {
+        throw new Error('Invalid Pimpampum service lifecycle lock', { cause: parseError });
+      }
+      const pid = (owner as { pid?: unknown }).pid;
+      if (!Number.isInteger(pid) || (pid as number) < 1 || processIsAlive(pid as number)) {
+        throw new Error('Another Pimpampum service lifecycle operation is in progress');
+      }
+      rmSync(lockPath);
+    }
+  }
+}
+
+async function withLifecycleLock<T>(
+  context: ServiceAdapterContext,
+  action: () => Promise<T>,
+): Promise<T> {
+  const release = acquireLifecycleLock(context.dataDirectory);
+  try {
+    return await action();
+  } finally {
+    release();
+  }
+}
+
+async function repairRegistration(
+  adapter: PlatformServiceAdapter,
+  context: ServiceAdapterContext,
+  artifacts: ServiceArtifact[],
+): Promise<void> {
+  try {
+    await adapter.activate(context, artifacts);
+  } catch (activationError) {
+    if (!adapter.afterRollback) throw activationError;
+    try {
+      await adapter.afterRollback(context, artifacts);
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [activationError, rollbackError],
+        'Service registration repair and rollback failed',
+      );
+    }
+    throw activationError;
+  }
+}
+
+function absolutePath(value: string, label: string): string {
+  if (!isAbsolute(value) || value.includes('\0'))
+    throw new Error(`${label} must be an absolute path`);
+  return normalize(value);
+}
+
+function safeExistingDirectory(path: string, label: string): string {
+  const resolved = absolutePath(path, label);
+  assertNoSymlinkTraversal(resolved, label, resolved);
+  if (!existsSync(resolved) || !lstatSync(resolved).isDirectory()) {
+    throw new Error(`${label} must be an existing directory`);
+  }
+  return resolved;
+}
+
+function isPathInside(rootPath: string, candidatePath: string): boolean {
+  const child = relative(rootPath, candidatePath);
+  return child !== '' && !child.startsWith('..') && !isAbsolute(child);
+}
+
+function supportedPlatform(value: NodeJS.Platform): SupportedServicePlatform | null {
+  return value === 'darwin' || value === 'linux' ? value : null;
+}
+
+function requireAdapter(input: PlatformServiceManagerInput): PlatformServiceAdapter {
+  const platform = supportedPlatform(input.platform);
+  if (!platform) throw new Error(`Unsupported service platform: ${input.platform}`);
+  const configured = input.adapters?.[platform];
+  if (configured) {
+    if (configured.platform !== platform) throw new Error('Service adapter platform mismatch');
+    return configured;
+  }
+  if (platform === 'darwin') return createLaunchdAdapter();
+  return createSystemdAdapter();
+}
+
+function adapterContext(input: PlatformServiceManagerInput): ServiceAdapterContext {
+  const dataDirectory = safeExistingDirectory(input.dataDirectory, 'Data directory');
+  const host = input.host ?? '127.0.0.1';
+  const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
+  if (!loopbackHosts.has(host)) throw new Error('Service host must be loopback-only');
+  const port = input.port ?? 7337;
+  if (!Number.isInteger(port)) throw new Error('Service port must be an integer');
+  if (port < 1 || port > 65_535) throw new Error('Service port must be between 1 and 65535');
+  const logDirectory = absolutePath(
+    input.logDirectory ?? join(dataDirectory, 'logs'),
+    'Log directory',
+  );
+  if (!isPathInside(dataDirectory, logDirectory)) {
+    throw new Error('Log directory must be inside the data directory');
+  }
+  return {
+    homeDirectory: safeExistingDirectory(input.homeDirectory, 'Home directory'),
+    dataDirectory,
+    nodePath: absolutePath(input.nodePath, 'Node executable'),
+    cliPath: absolutePath(input.cliPath, 'CLI path'),
+    version: input.version,
+    host,
+    port,
+    logDirectory,
+    runCommand: input.runCommand,
+  };
+}
+
+function validateArtifacts(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): void {
+  const seen = new Set<string>();
+  for (const artifact of artifacts) {
+    artifact.path = absolutePath(artifact.path, 'Service artifact');
+    if (!isPathInside(context.homeDirectory, artifact.path)) {
+      throw new Error('Service artifact must be inside the home directory');
+    }
+    assertNoSymlinkTraversal(artifact.path, 'Service artifact', context.homeDirectory);
+    if (seen.has(artifact.path)) throw new Error('Service adapter returned a duplicate artifact');
+    if (!Number.isInteger(artifact.mode) || artifact.mode < 0 || artifact.mode > 0o777) {
+      throw new Error('Service artifact mode is invalid');
+    }
+    seen.add(artifact.path);
+  }
+  if (artifacts.length === 0) throw new Error('Service adapter returned no artifacts');
+}
+
+function snapshotArtifact(path: string, trustedRoot: string): ArtifactSnapshot {
+  assertNoSymlinkTraversal(path, 'Service artifact snapshot', trustedRoot);
+  if (!existsSync(path)) return { path, trustedRoot, existed: false };
+  const metadata = lstatSync(path);
+  if (metadata.isSymbolicLink() || !metadata.isFile()) {
+    throw new Error(`Service artifact target is not a regular file: ${path}`);
+  }
+  return {
+    path,
+    trustedRoot,
+    existed: true,
+    content: readFileSync(path),
+    mode: metadata.mode & 0o777,
+  };
+}
+
+function restoreArtifacts(snapshots: ArtifactSnapshot[]): void {
+  for (const snapshot of [...snapshots].reverse()) {
+    if (snapshot.existed) {
+      writePrivateFileAtomic(snapshot.path, snapshot.content, snapshot.mode, snapshot.trustedRoot);
+    } else {
+      rmSync(snapshot.path, { force: true });
+    }
+  }
+}
+
+function artifactSetIsCurrent(receipt: InstallReceipt, artifacts: ServiceArtifact[]): boolean {
+  if (receipt.artifacts.length !== artifacts.length) return false;
+  return artifacts.every((artifact, index) => {
+    const expected = receipt.artifacts[index]!;
+    if (expected.path !== artifact.path || !existsSync(artifact.path)) return false;
+    const metadata = lstatSync(artifact.path);
+    return (
+      metadata.isFile() &&
+      !metadata.isSymbolicLink() &&
+      (metadata.mode & 0o777) === expected.mode &&
+      sha256(readFileSync(artifact.path)) === expected.sha256
+    );
+  });
+}
+
+function validateOwnedArtifacts(
+  context: ServiceAdapterContext,
+  receipt: InstallReceipt,
+  plannedArtifacts: ServiceArtifact[],
+): ServiceArtifact[] {
+  const allowedPaths = new Set(plannedArtifacts.map((artifact) => artifact.path));
+  const receiptPaths = new Set(receipt.artifacts.map((artifact) => normalize(artifact.path)));
+  if (receipt.artifacts.length !== allowedPaths.size || receiptPaths.size !== allowedPaths.size) {
+    throw new Error('Receipt artifact set does not match the platform adapter');
+  }
+  return receipt.artifacts.map((artifact) => {
+    const path = absolutePath(artifact.path, 'Receipt artifact');
+    if (!isPathInside(context.homeDirectory, path)) {
+      throw new Error('Receipt contains an artifact outside the home directory');
+    }
+    assertNoSymlinkTraversal(path, 'Receipt artifact', context.homeDirectory);
+    if (!allowedPaths.has(path)) {
+      throw new Error('Receipt artifact is not owned by the platform adapter');
+    }
+    return { path, content: Buffer.alloc(0), mode: artifact.mode };
+  });
+}
+
+function assertOwnedBytes(receipt: InstallReceipt, artifacts: ServiceArtifact[]): void {
+  for (const [index, artifact] of artifacts.entries()) {
+    if (!existsSync(artifact.path)) continue;
+    const metadata = lstatSync(artifact.path);
+    const expected = receipt.artifacts[index]!;
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      sha256(readFileSync(artifact.path)) !== expected.sha256
+    ) {
+      throw new Error(`Refusing to remove modified service artifact: ${artifact.path}`);
+    }
+  }
+}
+
+export function createPlatformServiceManager(input: PlatformServiceManagerInput): ServiceManager {
+  const receiptPath = installReceiptPath(absolutePath(input.dataDirectory, 'Data directory'));
+
+  return {
+    async install(): Promise<InstallResult> {
+      const adapter = requireAdapter(input);
+      const context = adapterContext(input);
+      return withLifecycleLock(context, async () => {
+        const artifacts = adapter.artifacts(context);
+        validateArtifacts(context, artifacts);
+        const ownedArtifacts = receiptArtifacts(artifacts);
+        const key = installationKey({
+          adapter: adapter.id,
+          platform: adapter.platform,
+          version: context.version,
+          nodePath: context.nodePath,
+          cliPath: context.cliPath,
+          dataDirectory: context.dataDirectory,
+          artifacts: ownedArtifacts,
+        });
+        const existing = readInstallReceipt(receiptPath, context.dataDirectory);
+        if (existing?.installationKey === key && artifactSetIsCurrent(existing, artifacts)) {
+          chmodSync(receiptPath, 0o600);
+          if (!(await adapter.isRunning(context, artifacts))) {
+            await repairRegistration(adapter, context, artifacts);
+          }
+          return { installed: true, reconciled: true, receiptPath };
+        }
+
+        const snapshots = artifacts.map((artifact) =>
+          snapshotArtifact(artifact.path, context.homeDirectory),
+        );
+        const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
+        const logsSnapshot = snapshotServiceLogs(context.logDirectory, 5, context.dataDirectory);
+        const receipt: InstallReceipt = {
+          schemaVersion: 1,
+          adapter: adapter.id,
+          platform: adapter.platform,
+          version: context.version,
+          installationKey: key,
+          installedAt: new Date().toISOString(),
+          nodePath: context.nodePath,
+          cliPath: context.cliPath,
+          dataDirectory: context.dataDirectory,
+          baseUrl: `http://${context.host === '::1' ? '[::1]' : context.host}:${context.port}`,
+          logDirectory: context.logDirectory,
+          artifacts: ownedArtifacts,
+        };
+        try {
+          rotateServiceLogs(context.logDirectory, 5, context.dataDirectory);
+          for (const artifact of artifacts) {
+            writePrivateFileAtomic(
+              artifact.path,
+              artifact.content,
+              artifact.mode,
+              context.homeDirectory,
+            );
+          }
+          writeInstallReceipt(receiptPath, receipt, context.dataDirectory);
+          await adapter.activate(context, artifacts);
+          return { installed: true, reconciled: existing !== null, receiptPath };
+        } catch (error) {
+          const rollbackErrors: unknown[] = [error];
+          let serviceArtifactsRestored = false;
+          try {
+            restoreArtifacts([...snapshots, receiptSnapshot]);
+            serviceArtifactsRestored = true;
+          } catch (restoreError) {
+            rollbackErrors.push(restoreError);
+          }
+          try {
+            restoreServiceLogs(logsSnapshot);
+          } catch (logsRestoreError) {
+            rollbackErrors.push(logsRestoreError);
+          }
+          if (serviceArtifactsRestored && adapter.afterRollback) {
+            try {
+              await adapter.afterRollback(context, artifacts);
+            } catch (adapterRollbackError) {
+              rollbackErrors.push(adapterRollbackError);
+            }
+          }
+          if (rollbackErrors.length > 1) {
+            throw new AggregateError(rollbackErrors, 'Service installation and rollback failed');
+          }
+          throw error;
+        }
+      });
+    },
+
+    async status(): Promise<ServiceStatus> {
+      const adapter = requireAdapter(input);
+      const context = adapterContext(input);
+      return withLifecycleLock(context, async () => {
+        const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
+        if (!receipt) return { installed: false, running: false, adapter: null, version: null };
+        if (receipt.adapter !== adapter.id || receipt.platform !== adapter.platform) {
+          throw new Error('Installation receipt does not match the platform adapter');
+        }
+        const artifacts = adapter.artifacts(context);
+        validateArtifacts(context, artifacts);
+        const installed = artifactSetIsCurrent(receipt, artifacts);
+        return {
+          installed,
+          running: installed ? await adapter.isRunning(context, artifacts) : false,
+          adapter: receipt.adapter,
+          version: receipt.version,
+        };
+      });
+    },
+
+    async uninstall(): Promise<UninstallResult> {
+      const adapter = requireAdapter(input);
+      const context = adapterContext(input);
+      return withLifecycleLock(context, async () => {
+        const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
+        if (!receipt) return { uninstalled: false, dataPreserved: true };
+        if (receipt.adapter !== adapter.id || receipt.platform !== adapter.platform) {
+          throw new Error('Installation receipt does not match the platform adapter');
+        }
+        const plannedArtifacts = adapter.artifacts(context);
+        validateArtifacts(context, plannedArtifacts);
+        const artifacts = validateOwnedArtifacts(context, receipt, plannedArtifacts);
+        assertOwnedBytes(receipt, artifacts);
+        await adapter.deactivate(context, artifacts);
+        for (const artifact of artifacts) rmSync(artifact.path, { force: true });
+        rmSync(receiptPath, { force: true });
+        return { uninstalled: true, dataPreserved: true };
+      });
+    },
+  };
+}

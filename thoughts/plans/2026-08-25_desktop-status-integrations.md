@@ -32,15 +32,15 @@ Add a bounded project overview contract, safe per-user service installation, a n
 - [x] Add an authenticated `GET /api/v1/overview` endpoint and `pimpampum overview`.
 - [x] Derive active work exclusively from unexpired claims.
 - [x] Return bounded project, count, and active-work summaries without Markdown bodies.
-- [ ] Add idempotent `install`, `status`, and `uninstall` commands.
-- [ ] Install a per-user LaunchAgent on macOS and a per-user systemd service on Linux.
+- [x] Add idempotent `install`, `status`, and `uninstall` commands.
+- [x] Install a per-user LaunchAgent on macOS and a per-user systemd service on Linux.
 - [ ] Install an unsigned SwiftUI menu bar app into `~/Applications`.
 - [ ] Install a native Omarchy Quattro `bar-widget` without overwriting user shell configuration.
 - [ ] Show active-claim count in compact indicators.
 - [ ] Collapse completed projects by default in both detailed views.
 - [ ] Reveal the registered workspace root in Finder or the Linux file explorer.
 - [ ] Keep both status surfaces strictly read-only.
-- [ ] Preserve `~/.pimpampum` during uninstall.
+- [x] Preserve `~/.pimpampum` during uninstall.
 - [ ] Maintain the existing TypeScript coverage and compiled E2E gates.
 
 ---
@@ -608,12 +608,12 @@ The matching manifest is `thoughts/tests/2026-08-26_desktop-status-integrations.
 
 ### Phase 2
 
-- [ ] Repeating install produces one reconciled registration and no duplicate files.
-- [ ] Unsupported platforms fail before writes.
-- [ ] Injected LaunchAgent and systemd E2E tests pass with paths containing spaces and Unicode.
-- [ ] Partial failures restore the original state.
-- [ ] Uninstall removes only receipt-owned files and preserves the data directory/token.
-- [ ] Receipts and package contents contain no token.
+- [x] Repeating install produces one reconciled registration and no duplicate files.
+- [x] Unsupported platforms fail before writes.
+- [x] Injected LaunchAgent and systemd E2E tests pass with paths containing spaces and Unicode.
+- [x] Partial failures restore the original state.
+- [x] Uninstall removes only receipt-owned files and preserves the data directory/token.
+- [x] Receipts and package contents contain no token.
 
 ### Phase 3
 

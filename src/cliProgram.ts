@@ -1,9 +1,11 @@
 import { AppError } from './errors.js';
 import type { PimpampumHttpClient } from './client.js';
+import type { ServiceManager } from './service/types.js';
 import type { TargetType } from './types.js';
 
 export interface CliRuntime {
   createClient(): PimpampumHttpClient;
+  serviceManager: ServiceManager;
   startServer(): Promise<{ config: { baseUrl: string }; close(): Promise<void> }>;
   readFile(path: string): string;
   resolvePath(path: string): string;
@@ -19,6 +21,9 @@ Usage:
   pimpampum serve
   pimpampum health
   pimpampum overview
+  pimpampum install
+  pimpampum status
+  pimpampum uninstall
   pimpampum workspace:list
   pimpampum workspace:add <id> <name> <root-path>
   pimpampum work:list [workspace-id]
@@ -74,6 +79,19 @@ export async function runCli(arguments_: string[], runtime: CliRuntime): Promise
     };
     runtime.onSignal('SIGINT', () => void shutdown());
     runtime.onSignal('SIGTERM', () => void shutdown());
+    return;
+  }
+
+  if (command === 'install') {
+    print(runtime, await runtime.serviceManager.install());
+    return;
+  }
+  if (command === 'status') {
+    print(runtime, await runtime.serviceManager.status());
+    return;
+  }
+  if (command === 'uninstall') {
+    print(runtime, await runtime.serviceManager.uninstall());
     return;
   }
 

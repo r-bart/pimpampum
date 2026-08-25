@@ -13,7 +13,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -764,5 +764,65 @@ describe.sequential('compiled product end to end', () => {
     expect(
       existsSync(join(exported.path, 'projects', 'e2e-workspace', 'backup-survivor', 'prd.md')),
     ).toBe(true);
+  });
+
+  it('installs, reconciles, reports and removes compiled per-user services safely', async () => {
+    const compiledModuleUrl = pathToFileURL(
+      join(repositoryRoot, 'dist', 'service', 'manager.js'),
+    ).href;
+    const serviceModule = (await import(
+      compiledModuleUrl
+    )) as typeof import('../src/service/manager.js');
+
+    for (const platform of ['darwin', 'linux'] as const) {
+      const root = join(temporaryDirectory, `Service Home ${platform} ü`);
+      const serviceData = join(root, 'Pimpampum Data ñ');
+      mkdirSync(serviceData, { recursive: true });
+      writeFileSync(join(serviceData, 'token'), 'compiled-service-secret');
+      writeFileSync(join(serviceData, 'pimpampum.sqlite'), 'preserved-database');
+      const commands: Array<[string, string[]]> = [];
+      const manager = serviceModule.createPlatformServiceManager({
+        platform,
+        homeDirectory: root,
+        dataDirectory: serviceData,
+        nodePath: join(root, 'Runtime ü', 'node'),
+        cliPath: join(root, 'Package with spaces', 'dist', 'cli.js'),
+        version: '0.1.0',
+        runCommand: async (executable, arguments_) => {
+          commands.push([executable, arguments_]);
+          return {
+            exitCode: 0,
+            stdout:
+              platform === 'darwin' && arguments_[0] === 'print'
+                ? 'state = running\npid = 123\n'
+                : platform === 'linux' && arguments_.includes('show')
+                  ? 'LoadState=loaded\nUnitFileState=disabled\nActiveState=active\n'
+                  : '',
+            stderr: '',
+          };
+        },
+      });
+
+      const firstInstall = await manager.install();
+      expect(firstInstall).toMatchObject({ installed: true, reconciled: false });
+      expect(await manager.status()).toMatchObject({ installed: true, running: true });
+      const secondInstall = await manager.install();
+      expect(secondInstall).toMatchObject({ installed: true, reconciled: true });
+      expect(readFileSync(firstInstall.receiptPath, 'utf8')).not.toMatch(
+        /compiled-service-secret|bearer/i,
+      );
+
+      expect(await manager.uninstall()).toEqual({
+        uninstalled: true,
+        dataPreserved: true,
+      });
+      expect(existsSync(firstInstall.receiptPath)).toBe(false);
+      expect(readFileSync(join(serviceData, 'token'), 'utf8')).toBe('compiled-service-secret');
+      expect(readFileSync(join(serviceData, 'pimpampum.sqlite'), 'utf8')).toBe(
+        'preserved-database',
+      );
+      expect(commands.length).toBeGreaterThanOrEqual(4);
+      expect(commands.every(([, arguments_]) => Array.isArray(arguments_))).toBe(true);
+    }
   });
 });
