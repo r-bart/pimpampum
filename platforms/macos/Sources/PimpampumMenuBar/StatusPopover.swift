@@ -40,6 +40,7 @@ struct StatusPopover: View {
   let quitApplication: () -> Void
 
   @State private var isCompletedExpanded = false
+  @State private var isCancelledExpanded = false
   @State private var isHelpPresented = false
   @State private var revealError: String?
 
@@ -239,7 +240,9 @@ struct StatusPopover: View {
     VStack(alignment: .leading, spacing: 8) {
       sectionTitle("Projects")
 
-      if store.incompleteProjects.isEmpty, store.completedProjects.isEmpty {
+      if store.incompleteProjects.isEmpty, store.completedProjects.isEmpty,
+        store.cancelledProjects.isEmpty
+      {
         Text("No projects yet")
           .font(.subheadline)
           .foregroundStyle(.secondary)
@@ -262,6 +265,21 @@ struct StatusPopover: View {
           }
           .accessibilityHint("Collapsed by default. Expand to show completed projects.")
         }
+
+        if !store.cancelledProjects.isEmpty {
+          DisclosureGroup(isExpanded: $isCancelledExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+              ForEach(store.cancelledProjects) { project in
+                projectButton(project)
+              }
+            }
+            .padding(.top, 8)
+          } label: {
+            Text("Cancelled (\(store.cancelledProjects.count))")
+              .font(.subheadline.weight(.semibold))
+          }
+          .accessibilityHint("Collapsed by default. Expand to show cancelled projects.")
+        }
       }
 
       if overview.projectsTruncated {
@@ -276,13 +294,15 @@ struct StatusPopover: View {
         .font(.subheadline.weight(.medium))
         .lineLimit(Self.contentTitleLineLimit)
 
-      if work.taskTitle != nil {
-        Text(work.projectTitle)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .lineLimit(Self.metadataLineLimit)
-          .truncationMode(.tail)
-      }
+      Text(
+        work.taskTitle == nil
+          ? work.projectTitle
+          : "\(work.projectTitle) · \(work.specTitle)"
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+      .lineLimit(Self.metadataLineLimit)
+      .truncationMode(.tail)
 
       HStack(spacing: 10) {
         Label(work.agentId, systemImage: "person.crop.circle")
@@ -388,8 +408,8 @@ private struct ProjectRowButton: View {
   var body: some View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 10) {
-        Image(systemName: StatusPopover.projectSymbol(project.status))
-          .foregroundStyle(StatusPopover.projectColor(project.status))
+        Image(systemName: StatusPopover.projectSymbol(project))
+          .foregroundStyle(StatusPopover.projectColor(project))
           .frame(width: 16)
           .accessibilityHidden(true)
 

@@ -77,7 +77,7 @@ describe('automatic backup acceptance', () => {
     store.close();
   });
 
-  it('backs up committed workspace, PRD, task and subtask mutations', async () => {
+  it('backs up every committed Workspace, Project, Spec, Task and Subtask mutation', async () => {
     const root = temporaryDirectory('real-workflow');
     const dataDirectory = join(root, 'data');
     const workspaceDirectory = join(root, 'workspace');
@@ -104,25 +104,32 @@ describe('automatic backup acceptance', () => {
       workspaceId: 'vcomp',
       slug: 'agent-workflow',
       title: 'Agent workflow',
-      prd: '# Agent workflow',
-      state: 'draft',
       actor: 'acceptance',
     });
-    store.updatePrd({
+    const spec = store.createSpec({
       projectId: project.id,
-      prd: '# Agent workflow\n\nUpdated.',
-      expectedRevision: project.revision,
+      slug: 'primary',
+      title: 'Agent workflow',
+      body: '# Agent workflow',
+      actor: 'acceptance',
+    });
+    store.updateSpec({
+      specId: spec.id,
+      title: null,
+      body: '# Agent workflow\n\nUpdated.',
+      state: null,
+      expectedRevision: spec.revision,
       actor: 'acceptance',
     });
     const task = store.createTask({
-      projectId: project.id,
+      specId: spec.id,
       parentId: null,
       title: 'Parent task',
       body: null,
       actor: 'acceptance',
     });
     store.createTask({
-      projectId: project.id,
+      specId: spec.id,
       parentId: task.id,
       title: 'Subtask',
       body: 'Do the small thing.',
@@ -137,8 +144,8 @@ describe('automatic backup acceptance', () => {
     expect(snapshot.prepare('SELECT COUNT(*) AS count FROM workspaces').get()).toEqual({
       count: 1,
     });
-    expect(snapshot.prepare('SELECT prd FROM projects').get()).toEqual({
-      prd: '# Agent workflow\n\nUpdated.',
+    expect(snapshot.prepare('SELECT body FROM specs').get()).toEqual({
+      body: '# Agent workflow\n\nUpdated.',
     });
     expect(snapshot.prepare('SELECT COUNT(*) AS count FROM tasks').get()).toEqual({ count: 2 });
     snapshot.close();

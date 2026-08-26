@@ -15,7 +15,9 @@ struct StatusPopoverTests {
       .active,
       .available,
       .draft,
+      .paused,
       .complete,
+      .cancelled,
       .empty,
       .stale,
       .offline,
@@ -36,6 +38,7 @@ struct StatusPopoverTests {
       (.active, .active),
       (.available, .available),
       (.draft, .draft),
+      (.paused, .paused),
       (.complete, .complete),
       (.empty, .empty),
     ]
@@ -49,6 +52,12 @@ struct StatusPopoverTests {
       #expect(!visualState.label.isEmpty)
       #expect(!visualState.badgeKind.systemImageName.isEmpty)
     }
+
+    let cancelled = makeOverview(status: .complete, cancelledProjects: 1)
+    #expect(
+      StatusPopover.visualState(connectionState: .online, overview: cancelled)
+        == .cancelled
+    )
   }
 
   @Test
@@ -145,8 +154,16 @@ struct StatusPopoverTests {
     #expect(
       StatusPopover.workspaceRevealError(project, description: "Folder missing")
         == "Project: Folder missing")
-    #expect(StatusPopover.projectSymbol(.active) != StatusPopover.projectSymbol(.available))
-    #expect(StatusPopover.projectSymbol(.draft) != StatusPopover.projectSymbol(.complete))
+    let available = makeProject(status: .available, activeClaimCount: 0, availableWorkCount: 1)
+    let draft = makeProject(status: .draft, activeClaimCount: 0, availableWorkCount: 0)
+    let complete = makeProject(status: .complete, activeClaimCount: 0, availableWorkCount: 0)
+    #expect(StatusPopover.projectSymbol(project) != StatusPopover.projectSymbol(available))
+    #expect(StatusPopover.projectSymbol(draft) != StatusPopover.projectSymbol(complete))
+    #expect(StatusPopover.projectSymbol(makeProject(
+      status: .paused,
+      activeClaimCount: 0,
+      availableWorkCount: 0
+    )) == "pause.circle.fill")
   }
 
   @Test
@@ -155,6 +172,7 @@ struct StatusPopoverTests {
       (.active, 0, "2 active"),
       (.available, 3, "3 available"),
       (.draft, 0, "Draft"),
+      (.paused, 0, "Paused"),
       (.complete, 0, "Complete · 2 completed tasks"),
     ]
 
@@ -165,8 +183,22 @@ struct StatusPopoverTests {
         availableWorkCount: available
       )
       #expect(StatusPopover.projectCountsText(project) == expected)
-      _ = StatusPopover.projectColor(status)
+      _ = StatusPopover.projectColor(project)
     }
+
+    let complete = makeProject(status: .complete, activeClaimCount: 0, availableWorkCount: 0)
+    let cancelled = makeProject(
+      status: .complete,
+      activeClaimCount: 0,
+      availableWorkCount: 0,
+      lifecycleState: .cancelled
+    )
+    #expect(StatusPopover.projectCountsText(cancelled) == "Cancelled")
+    #expect(StatusPopover.projectAccessibilityValue(cancelled) == "cancelled, Cancelled")
+    #expect(StatusPopover.projectSymbol(cancelled) == "xmark.circle.fill")
+    #expect(StatusPopover.projectSymbol(cancelled) != StatusPopover.projectSymbol(complete))
+    #expect(StatusPopover.projectColor(cancelled) == .secondary)
+    #expect(StatusPopover.projectColor(complete) == .green)
   }
 
   @Test
@@ -214,7 +246,7 @@ private struct StaticOverviewReader: OverviewReading {
   func fetchOverview() async throws -> Overview { overview }
 }
 
-private func makeOverview(status: OverviewStatus) -> Overview {
+private func makeOverview(status: OverviewStatus, cancelledProjects: Int = 0) -> Overview {
   Overview(
     daemon: OverviewDaemon(
       version: "0.1.0",
@@ -226,11 +258,15 @@ private func makeOverview(status: OverviewStatus) -> Overview {
     counts: OverviewCounts(
       workspaces: 1,
       projects: 4,
+      specs: 5,
       draftProjects: 1,
-      readyProjects: 2,
+      openProjects: 2,
+      pausedProjects: 0,
       completedProjects: 1,
+      cancelledProjects: cancelledProjects,
       openTasks: 2,
       completedTasks: 1,
+      cancelledTasks: 0,
       activeClaims: 1,
       availableWork: 2
     ),
@@ -244,9 +280,16 @@ private func makeOverview(status: OverviewStatus) -> Overview {
 private func makeProject(
   status: OverviewProjectStatus,
   activeClaimCount: Int,
-  availableWorkCount: Int
+  availableWorkCount: Int,
+  lifecycleState: ProjectLifecycleState? = nil
 ) -> OverviewProject {
-  OverviewProject(
+  let defaultLifecycle: ProjectLifecycleState = switch status {
+  case .active, .available: .open
+  case .draft: .draft
+  case .paused: .paused
+  case .complete: .done
+  }
+  return OverviewProject(
     id: "project",
     workspace: OverviewWorkspace(
       id: "workspace",
@@ -255,8 +298,9 @@ private func makeProject(
     ),
     slug: "project-slug",
     title: "Project",
-    lifecycleState: status == .complete ? .done : .ready,
+    lifecycleState: lifecycleState ?? defaultLifecycle,
     status: status,
+    specCount: 1,
     openTaskCount: 1,
     completedTaskCount: 2,
     activeClaimCount: activeClaimCount,

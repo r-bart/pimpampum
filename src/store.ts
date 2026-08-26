@@ -3,6 +3,15 @@ import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative } from 'node:path';
 import type Database from 'better-sqlite3';
 import { backupDatabase, backupLatestDatabase, exportPortable } from './backup.js';
+import {
+  evaluateClaimEligibility,
+  evaluateProjectTransition,
+  evaluateSpecTransition,
+  evaluateTaskTransition,
+  isTerminalProjectState,
+  isTerminalSpecState,
+  isTerminalTaskState,
+} from './domainRules.js';
 import { AppError } from './errors.js';
 import {
   boundOverview,
@@ -18,7 +27,10 @@ import type {
   CompletionDetails,
   ContextDocument,
   ContextManifest,
+  ContextManifestPage,
+  ContextOwnerType,
   CreateProjectInput,
+  CreateSpecInput,
   CreateTaskInput,
   MarkdownPage,
   OverviewActiveWork,
@@ -28,6 +40,9 @@ import type {
   Project,
   ProjectManifest,
   ProjectState,
+  Spec,
+  SpecManifest,
+  SpecState,
   TargetType,
   Task,
   TaskManifest,
@@ -44,35 +59,63 @@ interface WorkspaceRow {
   created_at: string;
   updated_at: string;
 }
-
 interface ProjectRow {
   id: string;
   workspace_id: string;
   slug: string;
   title: string;
   state: ProjectState;
-  prd: string;
   revision: number;
   completion_summary: string | null;
   artifacts_json: string;
   completed_at: string | null;
+  cancelled_at: string | null;
   created_at: string;
   updated_at: string;
 }
-
-interface ContextRow {
+interface ProjectManifestRow extends ProjectRow {
+  spec_count: number;
+  draft_spec_count: number;
+  ready_spec_count: number;
+  terminal_spec_count: number;
+}
+interface SpecRow {
   id: string;
   project_id: string;
+  slug: string;
+  title: string;
+  body: string;
+  state: SpecState;
+  revision: number;
+  completion_summary: string | null;
+  artifacts_json: string;
+  completed_at: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+interface SpecManifestRow extends SpecRow {
+  body_size_bytes: number;
+  task_count: number;
+  open_task_count: number;
+  terminal_task_count: number;
+}
+interface ContextRow {
+  id: string;
+  workspace_id: string | null;
+  project_id: string | null;
   name: string;
   body: string;
   revision: number;
   created_at: string;
   updated_at: string;
 }
-
+interface ContextManifestRow extends ContextRow {
+  size_bytes: number;
+}
 interface TaskRow {
   id: string;
-  project_id: string;
+  spec_id: string;
   parent_id: string | null;
   title: string;
   body: string | null;
@@ -81,10 +124,15 @@ interface TaskRow {
   completion_summary: string | null;
   artifacts_json: string;
   completed_at: string | null;
+  cancelled_at: string | null;
   created_at: string;
   updated_at: string;
 }
-
+interface TaskManifestRow extends TaskRow {
+  body_size_bytes: number;
+  subtask_count: number;
+  open_subtask_count: number;
+}
 interface ClaimRow {
   target_type: TargetType;
   target_id: string;
@@ -93,11 +141,11 @@ interface ClaimRow {
   created_at: string;
   updated_at: string;
 }
-
 interface ActivityRow {
   id: number;
   workspace_id: string | null;
   project_id: string | null;
+  spec_id: string | null;
   target_type: string;
   target_id: string;
   event_type: string;
@@ -105,83 +153,54 @@ interface ActivityRow {
   data_json: string;
   created_at: string;
 }
-
 interface CountRow {
   count: number;
 }
-
-type ProjectManifestRow = Omit<ProjectRow, 'prd'> & { prd_size_bytes: number };
-type ContextManifestRow = Omit<ContextRow, 'body'> & { size_bytes: number };
-type TaskManifestRow = Omit<TaskRow, 'body'> & { body_size_bytes: number };
-
-interface WorkProjectRow {
-  id: string;
-  workspace_id: string;
-  title: string;
-  revision: number;
-  updated_at: string;
-}
-
-interface WorkTaskRow {
-  id: string;
-  project_id: string;
-  parent_id: string | null;
-  title: string;
-  revision: number;
-  created_at: string;
-  workspace_id: string;
-  project_title: string;
-}
-
-interface OverviewCountsRow {
-  workspaces: number;
-  projects: number;
-  draft_projects: number;
-  ready_projects: number;
-  completed_projects: number;
-  open_tasks: number;
-  completed_tasks: number;
-  active_claims: number;
-  available_work: number;
-}
-
-interface OverviewProjectRow {
-  id: string;
-  workspace_id: string;
-  workspace_name: string;
-  workspace_root_path: string;
-  slug: string;
-  title: string;
-  lifecycle_state: ProjectState;
-  open_task_count: number;
-  completed_task_count: number;
-  active_claim_count: number;
-  available_work_count: number;
-  updated_at: string;
-}
-
-interface OverviewActiveWorkRow {
+interface WorkRow {
   target_type: TargetType;
   target_id: string;
   workspace_id: string;
   project_id: string;
   project_title: string;
+  spec_id: string;
+  spec_title: string;
   task_id: string | null;
   task_title: string | null;
-  agent_id: string;
-  expires_at: string;
+  parent_task_id: string | null;
+  revision: number;
+  sort_at: string;
 }
 
-function now(): string {
-  return new Date().toISOString();
-}
+const AVAILABLE_WORK_CTE = `WITH available AS (
+  SELECT 'spec' target_type,s.id target_id,p.workspace_id,p.id project_id,p.title project_title,s.id spec_id,s.title spec_title,NULL task_id,NULL task_title,NULL parent_task_id,s.revision,s.updated_at sort_at
+  FROM specs s JOIN projects p ON p.id=s.project_id
+  WHERE p.state='open' AND s.state='ready'
+    AND NOT EXISTS(SELECT 1 FROM tasks WHERE spec_id=s.id AND state='open')
+    AND NOT EXISTS(SELECT 1 FROM claims WHERE target_type='spec' AND target_id=s.id AND expires_at>?)
+  UNION ALL
+  SELECT 'task',t.id,p.workspace_id,p.id,p.title,s.id,s.title,t.id,t.title,t.parent_id,t.revision,t.created_at
+  FROM tasks t JOIN specs s ON s.id=t.spec_id JOIN projects p ON p.id=s.project_id
+  WHERE p.state='open' AND s.state='ready' AND t.state='open'
+    AND NOT EXISTS(SELECT 1 FROM tasks c WHERE c.parent_id=t.id AND c.state='open')
+    AND NOT EXISTS(SELECT 1 FROM claims WHERE target_type='task' AND target_id=t.id AND expires_at>?)
+)`;
 
+const now = (): string => new Date().toISOString();
+function requireRow<T>(row: T | null | undefined, message: string): T {
+  if (row == null) throw new AppError('not_found', message, 404);
+  return row;
+}
 function parseArtifacts(value: string): ArtifactReference[] {
   const parsed: unknown = JSON.parse(value);
   return Array.isArray(parsed) ? (parsed as ArtifactReference[]) : [];
 }
-
-function markdownPage(body: string, offsetCodeUnits: number, limitCodeUnits: number): MarkdownPage {
+function parseObject(value: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(value);
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
+}
+function page(body: string, offsetCodeUnits: number, limitCodeUnits: number): MarkdownPage {
   return {
     body: body.slice(offsetCodeUnits, offsetCodeUnits + limitCodeUnits),
     offsetCodeUnits,
@@ -190,22 +209,8 @@ function markdownPage(body: string, offsetCodeUnits: number, limitCodeUnits: num
     hasMore: offsetCodeUnits + limitCodeUnits < body.length,
   };
 }
-
-function parseObject(value: string): Record<string, unknown> {
-  const parsed: unknown = JSON.parse(value);
-  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : {};
-}
-
-function requireRow<T>(row: T | null | undefined, message: string): T {
-  if (row === undefined || row === null) throw new AppError('not_found', message, 404);
-  return row;
-}
-
-function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const child = relative(rootPath, candidatePath);
-  return child === '' || (!child.startsWith('..') && !isAbsolute(child));
+function ownerColumn(type: ContextOwnerType): 'workspace_id' | 'project_id' {
+  return type === 'workspace' ? 'workspace_id' : 'project_id';
 }
 
 export class PimpampumStore {
@@ -213,7 +218,6 @@ export class PimpampumStore {
     private readonly database: Database.Database,
     private readonly onMutation: () => void = () => undefined,
   ) {}
-
   close(): void {
     this.database.close();
   }
@@ -224,476 +228,629 @@ export class PimpampumStore {
     rootPath: string;
     actor: string | null;
   }): Workspace {
-    if (!isAbsolute(input.rootPath)) {
+    if (!isAbsolute(input.rootPath))
       throw new AppError('bad_request', 'Workspace root must be an absolute path', 400);
-    }
     let rootPath: string;
     try {
       rootPath = realpathSync(input.rootPath);
     } catch {
       throw new AppError('bad_request', 'Workspace root does not exist', 400);
     }
-    if (!statSync(rootPath).isDirectory()) {
+    if (!statSync(rootPath).isDirectory())
       throw new AppError('bad_request', 'Workspace root must be a directory', 400);
-    }
-
     try {
       return this.runImmediate(() => {
-        const timestamp = now();
+        const at = now();
         this.database
-          .prepare<[string, string, string, string, string]>(
-            `INSERT INTO workspaces (id, name, root_path, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?)`,
+          .prepare(
+            'INSERT INTO workspaces (id,name,root_path,created_at,updated_at) VALUES (?,?,?,?,?)',
           )
-          .run(input.id, input.name, rootPath, timestamp, timestamp);
-
-        this.recordEvent({
-          workspaceId: input.id,
-          projectId: null,
-          targetType: 'workspace',
-          targetId: input.id,
-          eventType: 'workspace.created',
-          actor: input.actor,
-          data: { name: input.name, rootPath },
+          .run(input.id, input.name, rootPath, at, at);
+        this.event(input.id, null, null, 'workspace', input.id, 'workspace.created', input.actor, {
+          name: input.name,
+          rootPath,
         });
         return this.getWorkspace(input.id);
       });
     } catch (error) {
-      if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
+      if (error instanceof Error && error.message.includes('UNIQUE constraint failed'))
         throw new AppError('conflict', 'Workspace id or root path already exists', 409);
-      }
       throw error;
     }
   }
-
   listWorkspaces(): Workspace[] {
-    return this.database
-      .prepare<[], WorkspaceRow>('SELECT * FROM workspaces ORDER BY name, id')
-      .all()
-      .map((row) => this.mapWorkspace(row));
+    return (
+      this.database.prepare('SELECT * FROM workspaces ORDER BY name,id').all() as WorkspaceRow[]
+    ).map((r) => this.mapWorkspace(r));
   }
-
-  getWorkspace(workspaceId: string): Workspace {
-    const row = this.database
-      .prepare<[string], WorkspaceRow>('SELECT * FROM workspaces WHERE id = ?')
-      .get(workspaceId);
-    return this.mapWorkspace(requireRow(row, `Workspace ${workspaceId} was not found`));
+  getWorkspace(id: string): Workspace {
+    return this.mapWorkspace(
+      requireRow(
+        this.database.prepare('SELECT * FROM workspaces WHERE id=?').get(id) as
+          WorkspaceRow | undefined,
+        `Workspace ${id} was not found`,
+      ),
+    );
   }
-
   resolveWorkspace(inputPath: string): Workspace {
-    if (!isAbsolute(inputPath)) {
+    if (!isAbsolute(inputPath))
       throw new AppError('bad_request', 'Workspace path must be absolute', 400);
-    }
-    let resolvedPath: string;
+    let resolved: string;
     try {
-      resolvedPath = realpathSync(inputPath);
+      resolved = realpathSync(inputPath);
     } catch {
       throw new AppError('not_found', 'Workspace path does not exist', 404);
     }
     const match = this.listWorkspaces()
-      .filter((workspace) => isPathInside(workspace.rootPath, resolvedPath))
-      .sort((left, right) => right.rootPath.length - left.rootPath.length)[0];
-
-    if (!match) {
-      throw new AppError('not_found', `No registered workspace contains ${resolvedPath}`, 404);
-    }
+      .filter((w) => {
+        const child = relative(w.rootPath, resolved);
+        return child === '' || (!child.startsWith('..') && !isAbsolute(child));
+      })
+      .sort((a, b) => b.rootPath.length - a.rootPath.length)[0];
+    if (!match)
+      throw new AppError('not_found', `No registered workspace contains ${resolved}`, 404);
     return match;
   }
 
   createProject(input: CreateProjectInput): Project {
-    if (input.state !== 'draft' && input.state !== 'ready') {
-      throw new AppError(
-        'bad_request',
-        'Projects can only be created in draft or ready state; complete them through the work flow',
-        400,
-      );
-    }
     try {
       return this.runImmediate(() => {
         this.getWorkspace(input.workspaceId);
-        const id = randomUUID();
-        const timestamp = now();
+        const id = randomUUID(),
+          at = now();
         this.database
-          .prepare<[string, string, string, string, string, string, string, string]>(
-            `INSERT INTO projects
-               (id, workspace_id, slug, title, state, prd, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          .prepare(
+            "INSERT INTO projects (id,workspace_id,slug,title,state,created_at,updated_at) VALUES (?,?,?,?,'draft',?,?)",
           )
-          .run(
-            id,
-            input.workspaceId,
-            input.slug,
-            input.title,
-            input.state,
-            input.prd,
-            timestamp,
-            timestamp,
-          );
-
-        this.recordEvent({
-          workspaceId: input.workspaceId,
-          projectId: id,
-          targetType: 'project',
-          targetId: id,
-          eventType: 'project.created',
-          actor: input.actor,
-          data: { slug: input.slug, title: input.title, state: input.state },
+          .run(id, input.workspaceId, input.slug, input.title, at, at);
+        this.event(input.workspaceId, id, null, 'project', id, 'project.created', input.actor, {
+          slug: input.slug,
+          title: input.title,
+          state: 'draft',
         });
         return this.getProject(id);
       });
     } catch (error) {
-      if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
-        throw new AppError('conflict', 'Project slug already exists in this workspace', 409);
-      }
+      if (error instanceof Error && error.message.includes('UNIQUE constraint failed'))
+        throw new AppError('conflict', 'Project slug already exists in this Workspace', 409);
       throw error;
     }
   }
-
   listProjects(input: {
     workspaceId: string | null;
     state: ProjectState | null;
     limit: number;
     offset: number;
   }): Project[] {
-    const conditions: string[] = [];
-    const parameters: Array<string | number> = [];
-    if (input.workspaceId) {
-      conditions.push('workspace_id = ?');
-      parameters.push(input.workspaceId);
-    }
-    if (input.state) {
-      conditions.push('state = ?');
-      parameters.push(input.state);
-    }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    parameters.push(input.limit, input.offset);
-
-    return this.database
-      .prepare<Array<string | number>, ProjectRow>(
-        `SELECT * FROM projects ${where} ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?`,
-      )
-      .all(...parameters)
-      .map((row) => this.mapProject(row));
+    const f = this.projectFilter(input.workspaceId, input.state);
+    return (
+      this.database
+        .prepare(`SELECT * FROM projects ${f.sql} ORDER BY updated_at DESC,id LIMIT ? OFFSET ?`)
+        .all(...f.args, input.limit, input.offset) as ProjectRow[]
+    ).map((r) => this.mapProject(r));
   }
-
   listProjectManifests(input: {
     workspaceId: string | null;
     state: ProjectState | null;
     limit: number;
     offset: number;
   }): ProjectManifest[] {
-    const conditions: string[] = [];
-    const parameters: Array<string | number> = [];
-    if (input.workspaceId) {
-      conditions.push('workspace_id = ?');
-      parameters.push(input.workspaceId);
-    }
-    if (input.state) {
-      conditions.push('state = ?');
-      parameters.push(input.state);
-    }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    parameters.push(input.limit, input.offset);
-
-    return this.database
-      .prepare<Array<string | number>, ProjectManifestRow>(
-        `SELECT id, workspace_id, slug, title, state, revision, completion_summary,
-                artifacts_json, completed_at, created_at, updated_at,
-                length(CAST(prd AS BLOB)) AS prd_size_bytes
-         FROM projects ${where}
-         ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?`,
-      )
-      .all(...parameters)
-      .map((row) => this.mapProjectManifest(row));
+    const f = this.projectFilter(input.workspaceId, input.state, 'p.');
+    return (
+      this.database
+        .prepare(
+          `${this.projectManifestSql()} ${f.sql} ORDER BY p.updated_at DESC,p.id LIMIT ? OFFSET ?`,
+        )
+        .all(...f.args, input.limit, input.offset) as ProjectManifestRow[]
+    ).map((r) => this.mapProjectManifest(r));
   }
-
-  getProject(projectId: string): Project {
-    const row = this.database
-      .prepare<[string], ProjectRow>('SELECT * FROM projects WHERE id = ?')
-      .get(projectId);
-    return this.mapProject(requireRow(row, `Project ${projectId} was not found`));
+  getProject(id: string): Project {
+    return this.mapProject(
+      requireRow(
+        this.database.prepare('SELECT * FROM projects WHERE id=?').get(id) as
+          ProjectRow | undefined,
+        `Project ${id} was not found`,
+      ),
+    );
   }
-
-  getProjectManifest(projectId: string): ProjectManifest {
-    const row = this.database
-      .prepare<[string], ProjectManifestRow>(
-        `SELECT id, workspace_id, slug, title, state, revision, completion_summary,
-                artifacts_json, completed_at, created_at, updated_at,
-                length(CAST(prd AS BLOB)) AS prd_size_bytes
-         FROM projects WHERE id = ?`,
-      )
-      .get(projectId);
-    return this.mapProjectManifest(requireRow(row, `Project ${projectId} was not found`));
+  getProjectManifest(id: string): ProjectManifest {
+    return this.mapProjectManifest(
+      requireRow(
+        this.database.prepare(`${this.projectManifestSql()} WHERE p.id=?`).get(id) as
+          ProjectManifestRow | undefined,
+        `Project ${id} was not found`,
+      ),
+    );
   }
-
-  readProjectPrd(projectId: string, offsetCodeUnits: number, limitCodeUnits: number): MarkdownPage {
-    return markdownPage(this.getProject(projectId).prd, offsetCodeUnits, limitCodeUnits);
+  getProjectCompletion(id: string): CompletionDetails {
+    const p = this.getProject(id);
+    return {
+      completionSummary: p.completionSummary,
+      artifacts: p.artifacts,
+      completedAt: p.completedAt,
+    };
   }
-
-  getProjectCompletion(projectId: string): CompletionDetails {
-    const { completionSummary, artifacts, completedAt } = this.getProject(projectId);
-    return { completionSummary, artifacts, completedAt };
-  }
-
   updateProject(input: {
     projectId: string;
     title: string | null;
-    state: Exclude<ProjectState, 'done'> | null;
+    state: Exclude<ProjectState, 'done' | 'cancelled'> | null;
     expectedRevision: number;
     actor: string | null;
   }): Project {
     return this.runImmediate(() => {
       const current = this.getProject(input.projectId);
-      this.assertRevision(current.revision, input.expectedRevision);
-      if (current.state === 'done') {
-        throw new AppError('invalid_state', 'Completed projects cannot be edited', 409);
-      }
-
-      const title = input.title ?? current.title;
+      this.revision(current.revision, input.expectedRevision);
+      if (isTerminalProjectState(current.state))
+        throw new AppError('invalid_state', 'Terminal Projects cannot be edited', 409);
       const state = input.state ?? current.state;
+      this.allowed(
+        evaluateProjectTransition(current.state, state, this.projectFacts(current.id)).reason,
+      );
+      const title = input.title ?? current.title;
       const result = this.database
-        .prepare<[string, string, string, string, number]>(
-          `UPDATE projects
-           SET title = ?, state = ?, revision = revision + 1, updated_at = ?
-           WHERE id = ? AND revision = ?`,
+        .prepare(
+          'UPDATE projects SET title=?,state=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?',
         )
-        .run(title, state, now(), input.projectId, input.expectedRevision);
-      this.assertChanged(result.changes, current.revision);
-
-      this.recordProjectEvent(input.projectId, 'project.updated', input.actor, { title, state });
-      return this.getProject(input.projectId);
+        .run(title, state, now(), current.id, input.expectedRevision);
+      this.changed(result.changes, current.revision);
+      this.projectEvent(current.id, 'project.updated', input.actor, { title, state });
+      return this.getProject(current.id);
     });
   }
-
-  updatePrd(input: {
+  completeProject(input: {
     projectId: string;
-    prd: string;
     expectedRevision: number;
+    summary: string;
+    artifacts: ArtifactReference[];
     actor: string | null;
   }): Project {
     return this.runImmediate(() => {
       const current = this.getProject(input.projectId);
-      this.assertRevision(current.revision, input.expectedRevision);
-      if (current.state === 'done') {
-        throw new AppError('invalid_state', 'Completed projects cannot be edited', 409);
-      }
-
+      this.revision(current.revision, input.expectedRevision);
+      this.allowed(
+        evaluateProjectTransition(current.state, 'done', this.projectFacts(current.id)).reason,
+      );
+      const at = now();
       const result = this.database
-        .prepare<[string, string, string, number]>(
-          `UPDATE projects SET prd = ?, revision = revision + 1, updated_at = ?
-           WHERE id = ? AND revision = ?`,
+        .prepare(
+          "UPDATE projects SET state='done',completion_summary=?,artifacts_json=?,completed_at=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?",
         )
-        .run(input.prd, now(), input.projectId, input.expectedRevision);
-      this.assertChanged(result.changes, current.revision);
-      this.recordProjectEvent(input.projectId, 'project.prd_updated', input.actor, {});
-      return this.getProject(input.projectId);
+        .run(
+          input.summary,
+          JSON.stringify(input.artifacts),
+          at,
+          at,
+          current.id,
+          input.expectedRevision,
+        );
+      this.changed(result.changes, current.revision);
+      this.projectEvent(current.id, 'project.completed', input.actor, {
+        summaryPreview: input.summary.slice(0, 240),
+        artifactCount: input.artifacts.length,
+      });
+      return this.getProject(current.id);
+    });
+  }
+  cancelProject(input: {
+    projectId: string;
+    expectedRevision: number;
+    reason: string;
+    actor: string | null;
+  }): Project {
+    return this.runImmediate(() => {
+      const p = this.getProject(input.projectId);
+      this.revision(p.revision, input.expectedRevision);
+      this.allowed(evaluateProjectTransition(p.state, 'cancelled', this.projectFacts(p.id)).reason);
+      const at = now();
+      const tasks = this.database
+        .prepare(
+          "SELECT t.id,t.spec_id FROM tasks t JOIN specs s ON s.id=t.spec_id WHERE s.project_id=? AND t.state='open'",
+        )
+        .all(p.id) as Array<{ id: string; spec_id: string }>;
+      const specs = this.database
+        .prepare("SELECT id FROM specs WHERE project_id=? AND state IN ('draft','ready')")
+        .all(p.id) as Array<{ id: string }>;
+      this.database
+        .prepare(
+          "DELETE FROM claims WHERE (target_type='spec' AND target_id IN (SELECT id FROM specs WHERE project_id=?)) OR (target_type='task' AND target_id IN (SELECT t.id FROM tasks t JOIN specs s ON s.id=t.spec_id WHERE s.project_id=?))",
+        )
+        .run(p.id, p.id);
+      this.database
+        .prepare(
+          "UPDATE tasks SET state='cancelled',cancelled_at=?,revision=revision+1,updated_at=? WHERE state='open' AND spec_id IN (SELECT id FROM specs WHERE project_id=?)",
+        )
+        .run(at, at, p.id);
+      this.database
+        .prepare(
+          "UPDATE specs SET state='cancelled',cancelled_at=?,revision=revision+1,updated_at=? WHERE project_id=? AND state IN ('draft','ready')",
+        )
+        .run(at, at, p.id);
+      this.database
+        .prepare(
+          "UPDATE projects SET state='cancelled',cancelled_at=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?",
+        )
+        .run(at, at, p.id, input.expectedRevision);
+      for (const t of tasks)
+        this.taskEvent(t.id, t.spec_id, p.id, 'task.cancelled', input.actor, {
+          reason: input.reason,
+          cascaded: true,
+        });
+      for (const s of specs)
+        this.specEvent(s.id, p.id, 'spec.cancelled', input.actor, {
+          reason: input.reason,
+          cascaded: true,
+        });
+      this.projectEvent(p.id, 'project.cancelled', input.actor, {
+        reason: input.reason,
+        cancelledSpecCount: specs.length,
+        cancelledTaskCount: tasks.length,
+      });
+      return this.getProject(p.id);
     });
   }
 
-  listContext(projectId: string): ContextDocument[] {
+  createSpec(input: CreateSpecInput): Spec {
+    try {
+      return this.runImmediate(() => {
+        const p = this.getProject(input.projectId);
+        if (isTerminalProjectState(p.state))
+          throw new AppError('invalid_state', 'Specs cannot be added to a terminal Project', 409);
+        const id = randomUUID(),
+          at = now();
+        this.database
+          .prepare(
+            "INSERT INTO specs (id,project_id,slug,title,body,state,created_at,updated_at) VALUES (?,?,?,?,?,'draft',?,?)",
+          )
+          .run(id, p.id, input.slug, input.title, input.body, at, at);
+        this.specEvent(id, p.id, 'spec.created', input.actor, {
+          slug: input.slug,
+          title: input.title,
+          state: 'draft',
+        });
+        return this.getSpec(id);
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('UNIQUE constraint failed'))
+        throw new AppError('conflict', 'Spec slug already exists in this Project', 409);
+      throw error;
+    }
+  }
+  listSpecs(projectId: string): Spec[] {
     this.getProject(projectId);
-    return this.database
-      .prepare<[string], ContextRow>(
-        'SELECT * FROM context_documents WHERE project_id = ? ORDER BY name',
+    return (
+      this.database
+        .prepare('SELECT * FROM specs WHERE project_id=? ORDER BY updated_at DESC,rowid DESC')
+        .all(projectId) as SpecRow[]
+    ).map((r) => this.mapSpec(r));
+  }
+  listSpecManifests(input: {
+    projectId: string;
+    state: SpecState | null;
+    limit: number;
+    offset: number;
+  }): SpecManifest[] {
+    this.getProject(input.projectId);
+    const args: unknown[] = [input.projectId];
+    const state = input.state === null ? '' : (args.push(input.state), 'AND s.state=?');
+    return (
+      this.database
+        .prepare(
+          `${this.specManifestSql()} WHERE s.project_id=? ${state} ORDER BY s.updated_at DESC,s.rowid DESC LIMIT ? OFFSET ?`,
+        )
+        .all(...args, input.limit, input.offset) as SpecManifestRow[]
+    ).map((r) => this.mapSpecManifest(r));
+  }
+  getSpec(id: string): Spec {
+    return this.mapSpec(
+      requireRow(
+        this.database.prepare('SELECT * FROM specs WHERE id=?').get(id) as SpecRow | undefined,
+        `Spec ${id} was not found`,
+      ),
+    );
+  }
+  getSpecManifest(id: string): SpecManifest {
+    return this.mapSpecManifest(
+      requireRow(
+        this.database.prepare(`${this.specManifestSql()} WHERE s.id=?`).get(id) as
+          SpecManifestRow | undefined,
+        `Spec ${id} was not found`,
+      ),
+    );
+  }
+  readSpecBody(id: string, offset: number, limit: number): MarkdownPage {
+    return page(this.getSpec(id).body, offset, limit);
+  }
+  getSpecCompletion(id: string): CompletionDetails {
+    const s = this.getSpec(id);
+    return {
+      completionSummary: s.completionSummary,
+      artifacts: s.artifacts,
+      completedAt: s.completedAt,
+    };
+  }
+  updateSpec(input: {
+    specId: string;
+    title: string | null;
+    body: string | null;
+    state: Exclude<SpecState, 'done' | 'cancelled'> | null;
+    expectedRevision: number;
+    actor: string | null;
+  }): Spec {
+    return this.runImmediate(() => {
+      const s = this.getSpec(input.specId);
+      this.revision(s.revision, input.expectedRevision);
+      if (
+        isTerminalSpecState(s.state) ||
+        isTerminalProjectState(this.getProject(s.projectId).state)
       )
-      .all(projectId)
-      .map((row) => this.mapContext(row));
+        throw new AppError('invalid_state', 'Terminal Specs cannot be edited', 409);
+      const body = input.body ?? s.body,
+        state = input.state ?? s.state;
+      this.allowed(evaluateSpecTransition(s.state, state, this.specFacts(s.id, body)).reason);
+      const title = input.title ?? s.title;
+      const result = this.database
+        .prepare(
+          'UPDATE specs SET title=?,body=?,state=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?',
+        )
+        .run(title, body, state, now(), s.id, input.expectedRevision);
+      this.changed(result.changes, s.revision);
+      this.specEvent(s.id, s.projectId, 'spec.updated', input.actor, {
+        title,
+        state,
+        bodyChanged: input.body !== null,
+      });
+      return this.getSpec(s.id);
+    });
+  }
+  cancelSpec(input: {
+    specId: string;
+    expectedRevision: number;
+    reason: string;
+    actor: string | null;
+  }): Spec {
+    return this.runImmediate(() => {
+      const s = this.getSpec(input.specId);
+      this.revision(s.revision, input.expectedRevision);
+      this.allowed(
+        evaluateSpecTransition(s.state, 'cancelled', this.specFacts(s.id, s.body)).reason,
+      );
+      const at = now();
+      const tasks = this.database
+        .prepare("SELECT id FROM tasks WHERE spec_id=? AND state='open'")
+        .all(s.id) as Array<{ id: string }>;
+      this.database
+        .prepare(
+          "DELETE FROM claims WHERE (target_type='spec' AND target_id=?) OR (target_type='task' AND target_id IN (SELECT id FROM tasks WHERE spec_id=?))",
+        )
+        .run(s.id, s.id);
+      this.database
+        .prepare(
+          "UPDATE tasks SET state='cancelled',cancelled_at=?,revision=revision+1,updated_at=? WHERE spec_id=? AND state='open'",
+        )
+        .run(at, at, s.id);
+      const result = this.database
+        .prepare(
+          "UPDATE specs SET state='cancelled',cancelled_at=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?",
+        )
+        .run(at, at, s.id, input.expectedRevision);
+      this.changed(result.changes, s.revision);
+      for (const t of tasks)
+        this.taskEvent(t.id, s.id, s.projectId, 'task.cancelled', input.actor, {
+          reason: input.reason,
+          cascaded: true,
+        });
+      this.specEvent(s.id, s.projectId, 'spec.cancelled', input.actor, {
+        reason: input.reason,
+        cancelledTaskCount: tasks.length,
+      });
+      return this.getSpec(s.id);
+    });
   }
 
+  listContext(ownerType: ContextOwnerType, ownerId: string): ContextDocument[] {
+    this.assertOwner(ownerType, ownerId);
+    return (
+      this.database
+        .prepare(
+          `SELECT * FROM context_documents WHERE ${ownerColumn(ownerType)}=? ORDER BY name,id`,
+        )
+        .all(ownerId) as ContextRow[]
+    ).map((r) => this.mapContext(r));
+  }
   listContextManifests(input: {
-    projectId: string;
+    ownerType: ContextOwnerType;
+    ownerId: string;
     limit: number;
     offset: number;
   }): ContextManifest[] {
-    this.getProject(input.projectId);
-    return this.database
-      .prepare<[string, number, number], ContextManifestRow>(
-        `SELECT id, project_id, name, revision, created_at, updated_at,
-                length(CAST(body AS BLOB)) AS size_bytes
-         FROM context_documents WHERE project_id = ?
-         ORDER BY name, id LIMIT ? OFFSET ?`,
-      )
-      .all(input.projectId, input.limit, input.offset)
-      .map((row) => this.mapContextManifest(row));
+    this.assertOwner(input.ownerType, input.ownerId);
+    return (
+      this.database
+        .prepare(
+          `SELECT *,length(CAST(body AS BLOB)) AS size_bytes FROM context_documents WHERE ${ownerColumn(input.ownerType)}=? ORDER BY name,id LIMIT ? OFFSET ?`,
+        )
+        .all(input.ownerId, input.limit, input.offset) as ContextManifestRow[]
+    ).map((r) => this.mapContextManifest(r));
   }
-
-  readContext(projectId: string, name: string): ContextDocument {
-    const row = this.database
-      .prepare<[string, string], ContextRow>(
-        'SELECT * FROM context_documents WHERE project_id = ? AND name = ?',
-      )
-      .get(projectId, name);
-    return this.mapContext(requireRow(row, `Context document ${name} was not found`));
+  getContextManifest(ownerType: ContextOwnerType, ownerId: string, name: string): ContextManifest {
+    this.assertOwner(ownerType, ownerId);
+    const ownerColumn = ownerType === 'workspace' ? 'workspace_id' : 'project_id';
+    return this.mapContextManifest(
+      requireRow(
+        this.database
+          .prepare(
+            `SELECT *,length(CAST(body AS BLOB)) size_bytes FROM context_documents WHERE ${ownerColumn}=? AND name=?`,
+          )
+          .get(ownerId, name) as ContextManifestRow | undefined,
+        `Context document ${name} was not found`,
+      ),
+    );
   }
-
+  readContext(ownerType: ContextOwnerType, ownerId: string, name: string): ContextDocument {
+    this.assertOwner(ownerType, ownerId);
+    return this.mapContext(
+      requireRow(
+        this.database
+          .prepare(`SELECT * FROM context_documents WHERE ${ownerColumn(ownerType)}=? AND name=?`)
+          .get(ownerId, name) as ContextRow | undefined,
+        `Context document ${name} was not found`,
+      ),
+    );
+  }
   readContextPage(
-    projectId: string,
+    ownerType: ContextOwnerType,
+    ownerId: string,
     name: string,
-    offsetCodeUnits: number,
-    limitCodeUnits: number,
+    offset: number,
+    limit: number,
   ): MarkdownPage {
-    return markdownPage(this.readContext(projectId, name).body, offsetCodeUnits, limitCodeUnits);
+    return page(this.readContext(ownerType, ownerId, name).body, offset, limit);
   }
-
   putContext(input: {
-    projectId: string;
+    ownerType: ContextOwnerType;
+    ownerId: string;
     name: string;
     body: string;
     expectedRevision: number | null;
     actor: string | null;
   }): ContextDocument {
     return this.runImmediate(() => {
-      const project = this.getProject(input.projectId);
-      if (project.state === 'done') {
-        throw new AppError('invalid_state', 'Completed projects cannot be edited', 409);
-      }
-
+      this.assertOwnerMutable(input.ownerType, input.ownerId);
+      const col = ownerColumn(input.ownerType);
       const existing = this.database
-        .prepare<[string, string], ContextRow>(
-          'SELECT * FROM context_documents WHERE project_id = ? AND name = ?',
-        )
-        .get(input.projectId, input.name);
-      const timestamp = now();
-
+        .prepare(`SELECT * FROM context_documents WHERE ${col}=? AND name=?`)
+        .get(input.ownerId, input.name) as ContextRow | undefined;
+      const at = now();
       if (existing) {
-        if (input.expectedRevision === null) {
+        if (input.expectedRevision === null)
           throw new AppError('conflict', 'Context document already exists', 409);
-        }
-        this.assertRevision(existing.revision, input.expectedRevision);
+        this.revision(existing.revision, input.expectedRevision);
         const result = this.database
-          .prepare<[string, string, string, number]>(
-            `UPDATE context_documents
-             SET body = ?, revision = revision + 1, updated_at = ?
-             WHERE id = ? AND revision = ?`,
+          .prepare(
+            'UPDATE context_documents SET body=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?',
           )
-          .run(input.body, timestamp, existing.id, input.expectedRevision);
-        this.assertChanged(result.changes, existing.revision);
+          .run(input.body, at, existing.id, input.expectedRevision);
+        this.changed(result.changes, existing.revision);
       } else {
-        if (input.expectedRevision !== null) {
+        if (input.expectedRevision !== null)
           throw new AppError('not_found', `Context document ${input.name} was not found`, 404);
-        }
         this.database
-          .prepare<[string, string, string, string, string, string]>(
-            `INSERT INTO context_documents (id, project_id, name, body, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
+          .prepare(
+            'INSERT INTO context_documents (id,workspace_id,project_id,name,body,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',
           )
-          .run(randomUUID(), input.projectId, input.name, input.body, timestamp, timestamp);
+          .run(
+            randomUUID(),
+            input.ownerType === 'workspace' ? input.ownerId : null,
+            input.ownerType === 'project' ? input.ownerId : null,
+            input.name,
+            input.body,
+            at,
+            at,
+          );
       }
-
-      const document = this.readContext(input.projectId, input.name);
-      this.recordProjectEvent(input.projectId, 'context.put', input.actor, {
-        targetId: document.id,
-        name: input.name,
-      });
-      return document;
+      const d = this.readContext(input.ownerType, input.ownerId, input.name);
+      if (input.ownerType === 'workspace')
+        this.event(input.ownerId, null, null, 'context', d.id, 'context.put', input.actor, {
+          ownerType: input.ownerType,
+          ownerId: input.ownerId,
+          name: input.name,
+        });
+      else
+        this.projectEvent(input.ownerId, 'context.put', input.actor, {
+          targetId: d.id,
+          ownerType: input.ownerType,
+          ownerId: input.ownerId,
+          name: input.name,
+        });
+      return d;
     });
   }
 
   createTask(input: CreateTaskInput): Task {
     return this.runImmediate(() => {
-      const project = this.getProject(input.projectId);
-      if (project.state === 'done') {
-        throw new AppError('invalid_state', 'Tasks cannot be added to a completed project', 409);
-      }
-      if (this.getClaim('project', input.projectId)) {
-        throw new AppError('conflict', 'Release the project claim before creating tasks', 409);
-      }
-
+      const s = this.getSpec(input.specId),
+        p = this.getProject(s.projectId);
+      if (isTerminalSpecState(s.state) || isTerminalProjectState(p.state))
+        throw new AppError('invalid_state', 'Tasks cannot be added to terminal work', 409);
+      if (this.getClaim('spec', s.id))
+        throw new AppError('conflict', 'Release the Spec claim before creating Tasks', 409);
       if (input.parentId) {
         const parent = this.getTask(input.parentId);
-        if (parent.projectId !== input.projectId) {
-          throw new AppError('bad_request', 'Parent task belongs to another project', 400);
-        }
-        if (parent.parentId !== null) {
+        if (parent.specId !== s.id)
+          throw new AppError('bad_request', 'Parent Task belongs to another Spec', 400);
+        if (parent.parentId !== null)
           throw new AppError('bad_request', 'Subtasks cannot have children', 400);
-        }
-        if (parent.state === 'done') {
-          throw new AppError('invalid_state', 'Subtasks cannot be added to a completed task', 409);
-        }
-        if (this.getClaim('task', parent.id)) {
+        if (isTerminalTaskState(parent.state))
+          throw new AppError('invalid_state', 'Subtasks cannot be added to a terminal Task', 409);
+        if (this.getClaim('task', parent.id))
           throw new AppError(
             'conflict',
-            'Release the parent task claim before creating subtasks',
+            'Release the parent Task claim before adding Subtasks',
             409,
           );
-        }
       }
-
-      const id = randomUUID();
-      const timestamp = now();
+      const id = randomUUID(),
+        at = now();
       this.database
-        .prepare<[string, string, string | null, string, string | null, string, string]>(
-          `INSERT INTO tasks
-             (id, project_id, parent_id, title, body, state, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'open', ?, ?)`,
+        .prepare(
+          "INSERT INTO tasks (id,spec_id,parent_id,title,body,state,created_at,updated_at) VALUES (?,?,?,?,?,'open',?,?)",
         )
-        .run(id, input.projectId, input.parentId, input.title, input.body, timestamp, timestamp);
-
-      this.recordProjectEvent(input.projectId, 'task.created', input.actor, {
-        taskId: id,
+        .run(id, s.id, input.parentId, input.title, input.body, at, at);
+      this.taskEvent(id, s.id, p.id, 'task.created', input.actor, {
         parentId: input.parentId,
         title: input.title,
       });
       return this.getTask(id);
     });
   }
-
-  listTasks(projectId: string): Task[] {
-    this.getProject(projectId);
-    return this.database
-      .prepare<[string], TaskRow>(
-        `SELECT * FROM tasks WHERE project_id = ?
-         ORDER BY CASE WHEN parent_id IS NULL THEN id ELSE parent_id END,
-                  parent_id IS NOT NULL, created_at, id`,
-      )
-      .all(projectId)
-      .map((row) => this.mapTask(row));
+  listTasks(specId: string): Task[] {
+    this.getSpec(specId);
+    return (
+      this.database
+        .prepare(
+          'SELECT * FROM tasks WHERE spec_id=? ORDER BY CASE WHEN parent_id IS NULL THEN id ELSE parent_id END,parent_id IS NOT NULL,created_at,id',
+        )
+        .all(specId) as TaskRow[]
+    ).map((r) => this.mapTask(r));
   }
-
-  listTaskManifests(input: { projectId: string; limit: number; offset: number }): TaskManifest[] {
-    this.getProject(input.projectId);
-    return this.database
-      .prepare<[string, number, number], TaskManifestRow>(
-        `SELECT id, project_id, parent_id, title, state, revision, completion_summary,
-                artifacts_json, completed_at, created_at, updated_at,
-                length(CAST(COALESCE(body, '') AS BLOB)) AS body_size_bytes
-         FROM tasks WHERE project_id = ?
-         ORDER BY CASE WHEN parent_id IS NULL THEN id ELSE parent_id END,
-                  parent_id IS NOT NULL, created_at, id
-         LIMIT ? OFFSET ?`,
-      )
-      .all(input.projectId, input.limit, input.offset)
-      .map((row) => this.mapTaskManifest(row));
+  listTaskManifests(input: { specId: string; limit: number; offset: number }): TaskManifest[] {
+    this.getSpec(input.specId);
+    return (
+      this.database
+        .prepare(
+          `${this.taskManifestSql()} WHERE t.spec_id=? ORDER BY CASE WHEN t.parent_id IS NULL THEN t.id ELSE t.parent_id END,t.parent_id IS NOT NULL,t.created_at,t.id LIMIT ? OFFSET ?`,
+        )
+        .all(input.specId, input.limit, input.offset) as TaskManifestRow[]
+    ).map((r) => this.mapTaskManifest(r));
   }
-
-  getTask(taskId: string): Task {
-    const row = this.database
-      .prepare<[string], TaskRow>('SELECT * FROM tasks WHERE id = ?')
-      .get(taskId);
-    return this.mapTask(requireRow(row, `Task ${taskId} was not found`));
+  getTask(id: string): Task {
+    return this.mapTask(
+      requireRow(
+        this.database.prepare('SELECT * FROM tasks WHERE id=?').get(id) as TaskRow | undefined,
+        `Task ${id} was not found`,
+      ),
+    );
   }
-
-  getTaskManifest(taskId: string): TaskManifest {
-    const row = this.database
-      .prepare<[string], TaskManifestRow>(
-        `SELECT id, project_id, parent_id, title, state, revision, completion_summary,
-                artifacts_json, completed_at, created_at, updated_at,
-                length(CAST(COALESCE(body, '') AS BLOB)) AS body_size_bytes
-         FROM tasks WHERE id = ?`,
-      )
-      .get(taskId);
-    return this.mapTaskManifest(requireRow(row, `Task ${taskId} was not found`));
+  getTaskManifest(id: string): TaskManifest {
+    return this.mapTaskManifest(
+      requireRow(
+        this.database.prepare(`${this.taskManifestSql()} WHERE t.id=?`).get(id) as
+          TaskManifestRow | undefined,
+        `Task ${id} was not found`,
+      ),
+    );
   }
-
-  readTaskBody(taskId: string, offsetCodeUnits: number, limitCodeUnits: number): MarkdownPage {
-    return markdownPage(this.getTask(taskId).body ?? '', offsetCodeUnits, limitCodeUnits);
+  readTaskBody(id: string, offset: number, limit: number): MarkdownPage {
+    return page(this.getTask(id).body ?? '', offset, limit);
   }
-
-  getTaskCompletion(taskId: string): CompletionDetails {
-    const { completionSummary, artifacts, completedAt } = this.getTask(taskId);
-    return { completionSummary, artifacts, completedAt };
+  getTaskCompletion(id: string): CompletionDetails {
+    const t = this.getTask(id);
+    return {
+      completionSummary: t.completionSummary,
+      artifacts: t.artifacts,
+      completedAt: t.completedAt,
+    };
   }
-
   updateTask(input: {
     taskId: string;
     title: string | null;
@@ -702,318 +859,401 @@ export class PimpampumStore {
     actor: string | null;
   }): Task {
     return this.runImmediate(() => {
-      const current = this.getTask(input.taskId);
-      this.assertRevision(current.revision, input.expectedRevision);
-      if (current.state === 'done') {
-        throw new AppError('invalid_state', 'Completed tasks cannot be edited', 409);
-      }
-
-      const title = input.title ?? current.title;
-      const body = input.body === undefined ? current.body : input.body;
+      const t = this.getTask(input.taskId);
+      this.revision(t.revision, input.expectedRevision);
+      const s = this.getSpec(t.specId),
+        p = this.getProject(s.projectId);
+      if (
+        isTerminalTaskState(t.state) ||
+        isTerminalSpecState(s.state) ||
+        isTerminalProjectState(p.state)
+      )
+        throw new AppError('invalid_state', 'Terminal Tasks cannot be edited', 409);
+      const title = input.title ?? t.title,
+        body = input.body === undefined ? t.body : input.body;
       const result = this.database
-        .prepare<[string, string | null, string, string, number]>(
-          `UPDATE tasks
-           SET title = ?, body = ?, revision = revision + 1, updated_at = ?
-           WHERE id = ? AND revision = ?`,
+        .prepare(
+          'UPDATE tasks SET title=?,body=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?',
         )
-        .run(title, body, now(), input.taskId, input.expectedRevision);
-      this.assertChanged(result.changes, current.revision);
-      this.recordProjectEvent(current.projectId, 'task.updated', input.actor, {
-        taskId: input.taskId,
-        title,
+        .run(title, body, now(), t.id, input.expectedRevision);
+      this.changed(result.changes, t.revision);
+      this.taskEvent(t.id, s.id, p.id, 'task.updated', input.actor, { title });
+      return this.getTask(t.id);
+    });
+  }
+  cancelTask(input: {
+    taskId: string;
+    expectedRevision: number;
+    reason: string;
+    actor: string | null;
+  }): Task {
+    return this.runImmediate(() => {
+      const t = this.getTask(input.taskId);
+      this.revision(t.revision, input.expectedRevision);
+      this.allowed(
+        evaluateTaskTransition(t.state, 'cancelled', {
+          nonTerminalSubtaskCount: this.countOpenChildren(t.id),
+        }).reason,
+      );
+      const s = this.getSpec(t.specId),
+        p = this.getProject(s.projectId),
+        at = now();
+      const children = this.database
+        .prepare("SELECT id FROM tasks WHERE parent_id=? AND state='open'")
+        .all(t.id) as Array<{ id: string }>;
+      this.database
+        .prepare(
+          "DELETE FROM claims WHERE target_type='task' AND (target_id=? OR target_id IN (SELECT id FROM tasks WHERE parent_id=?))",
+        )
+        .run(t.id, t.id);
+      this.database
+        .prepare(
+          "UPDATE tasks SET state='cancelled',cancelled_at=?,revision=revision+1,updated_at=? WHERE parent_id=? AND state='open'",
+        )
+        .run(at, at, t.id);
+      const result = this.database
+        .prepare(
+          "UPDATE tasks SET state='cancelled',cancelled_at=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?",
+        )
+        .run(at, at, t.id, input.expectedRevision);
+      this.changed(result.changes, t.revision);
+      for (const child of children)
+        this.taskEvent(child.id, s.id, p.id, 'task.cancelled', input.actor, {
+          reason: input.reason,
+          cascaded: true,
+        });
+      this.taskEvent(t.id, s.id, p.id, 'task.cancelled', input.actor, {
+        reason: input.reason,
+        cancelledSubtaskCount: children.length,
       });
-      return this.getTask(input.taskId);
+      return this.getTask(t.id);
     });
   }
 
-  listWork(input: { workspaceId: string | null; limit: number }): WorkItem[] {
-    const timestamp = now();
-    const workspaceFilter = input.workspaceId ? 'AND p.workspace_id = ?' : '';
-    const projectParameters: Array<string | number> = [timestamp];
-    const taskParameters: Array<string | number> = [timestamp];
+  listWork(input: {
+    workspaceId: string | null;
+    projectId: string | null;
+    specId: string | null;
+    limit: number;
+  }): WorkItem[] {
+    this.assertWorkScope(input.workspaceId, input.projectId, input.specId);
+    const at = now(),
+      filters: string[] = [],
+      args: unknown[] = [at, at];
     if (input.workspaceId) {
-      projectParameters.push(input.workspaceId);
-      taskParameters.push(input.workspaceId);
+      filters.push('workspace_id=?');
+      args.push(input.workspaceId);
     }
-    projectParameters.push(input.limit);
-    taskParameters.push(input.limit);
-
-    const projects = this.database
-      .prepare<Array<string | number>, WorkProjectRow>(
-        `SELECT p.id, p.workspace_id, p.title, p.revision, p.updated_at FROM projects p
-         WHERE p.state = 'ready'
-           AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.project_id = p.id AND t.state = 'open')
-           AND NOT EXISTS (
-             SELECT 1 FROM claims c
-             WHERE c.target_type = 'project' AND c.target_id = p.id AND c.expires_at > ?
-           )
-           ${workspaceFilter}
-         ORDER BY p.updated_at ASC, p.id ASC
-         LIMIT ?`,
+    if (input.projectId) {
+      filters.push('project_id=?');
+      args.push(input.projectId);
+    }
+    if (input.specId) {
+      filters.push('spec_id=?');
+      args.push(input.specId);
+    }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const rows = this.database
+      .prepare(
+        `${AVAILABLE_WORK_CTE} SELECT target_type,target_id,workspace_id,project_id,project_title,spec_id,spec_title,
+             task_id,task_title,parent_task_id,revision,sort_at
+      FROM available ${where} ORDER BY sort_at,target_id LIMIT ?`,
       )
-      .all(...projectParameters)
-      .map<WorkItem & { sortAt: string }>((project) => ({
-        targetType: 'project',
-        targetId: project.id,
-        workspaceId: project.workspace_id,
-        projectId: project.id,
-        projectTitle: project.title,
-        taskId: null,
-        taskTitle: null,
-        parentTaskId: null,
-        revision: project.revision,
-        sortAt: project.updated_at,
-      }));
-
-    const tasks = this.database
-      .prepare<Array<string | number>, WorkTaskRow>(
-        `SELECT t.id, t.project_id, t.parent_id, t.title, t.revision, t.created_at,
-                p.workspace_id, p.title AS project_title
-         FROM tasks t
-         JOIN projects p ON p.id = t.project_id
-         WHERE t.state = 'open' AND p.state = 'ready'
-           AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.parent_id = t.id AND child.state = 'open')
-           AND NOT EXISTS (
-             SELECT 1 FROM claims c
-             WHERE c.target_type = 'task' AND c.target_id = t.id AND c.expires_at > ?
-           )
-           ${workspaceFilter}
-         ORDER BY t.created_at ASC, t.id ASC
-         LIMIT ?`,
-      )
-      .all(...taskParameters)
-      .map<WorkItem & { sortAt: string }>((task) => ({
-        targetType: 'task',
-        targetId: task.id,
-        workspaceId: task.workspace_id,
-        projectId: task.project_id,
-        projectTitle: task.project_title,
-        taskId: task.id,
-        taskTitle: task.title,
-        parentTaskId: task.parent_id,
-        revision: task.revision,
-        sortAt: task.created_at,
-      }));
-
-    return [...projects, ...tasks]
-      .sort(
-        (left, right) =>
-          left.sortAt.localeCompare(right.sortAt) || left.targetId.localeCompare(right.targetId),
-      )
-      .slice(0, input.limit)
-      .map(({ sortAt: _sortAt, ...item }) => item);
+      .all(...args, input.limit) as WorkRow[];
+    return rows.map((r) => ({
+      targetType: r.target_type,
+      targetId: r.target_id,
+      workspaceId: r.workspace_id,
+      projectId: r.project_id,
+      projectTitle: r.project_title,
+      specId: r.spec_id,
+      specTitle: r.spec_title,
+      taskId: r.task_id,
+      taskTitle: r.task_title,
+      parentTaskId: r.parent_task_id,
+      revision: r.revision,
+    }));
+  }
+  startWork(input: {
+    targetType: TargetType;
+    targetId: string;
+    agentId: string;
+    leaseSeconds: number;
+  }): WorkBundle {
+    const changed = this.database
+      .transaction(() => {
+        const at = now();
+        this.database
+          .prepare('DELETE FROM claims WHERE target_type=? AND target_id=? AND expires_at<=?')
+          .run(input.targetType, input.targetId, at);
+        const existing = this.getClaim(input.targetType, input.targetId, at);
+        if (existing?.agentId === input.agentId) return false;
+        if (existing) throw new AppError('conflict', 'Work is already claimed', 409, true);
+        this.assertTargetAvailable(input.targetType, input.targetId);
+        const expiresAt = new Date(Date.now() + input.leaseSeconds * 1000).toISOString();
+        this.database
+          .prepare(
+            'INSERT INTO claims (target_type,target_id,agent_id,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?)',
+          )
+          .run(input.targetType, input.targetId, input.agentId, expiresAt, at, at);
+        const specId = this.specIdForTarget(input.targetType, input.targetId),
+          s = this.getSpec(specId);
+        this.specEvent(specId, s.projectId, 'work.started', input.agentId, {
+          targetType: input.targetType,
+          targetId: input.targetId,
+          expiresAt,
+        });
+        return true;
+      })
+      .immediate();
+    if (changed) this.onMutation();
+    return this.workBundle(input.targetType, input.targetId);
+  }
+  renewWork(input: {
+    targetType: TargetType;
+    targetId: string;
+    agentId: string;
+    leaseSeconds: number;
+  }): Claim {
+    return this.runImmediate(() => {
+      const at = now(),
+        claim = this.ownedClaim(input.targetType, input.targetId, input.agentId, at),
+        expiresAt = new Date(Date.now() + input.leaseSeconds * 1000).toISOString();
+      this.assertTargetAvailable(input.targetType, input.targetId);
+      const result = this.database
+        .prepare(
+          'UPDATE claims SET expires_at=?,updated_at=? WHERE target_type=? AND target_id=? AND agent_id=? AND expires_at>?',
+        )
+        .run(expiresAt, at, input.targetType, input.targetId, input.agentId, at);
+      if (result.changes !== 1)
+        throw new AppError('conflict', 'Claim expired or changed before renewal', 409, true);
+      const specId = this.specIdForTarget(input.targetType, input.targetId),
+        s = this.getSpec(specId);
+      this.specEvent(specId, s.projectId, 'work.renewed', input.agentId, {
+        targetType: input.targetType,
+        targetId: input.targetId,
+        previousExpiry: claim.expiresAt,
+        expiresAt,
+      });
+      return requireRow(
+        this.getClaim(input.targetType, input.targetId, at),
+        'Claim could not be renewed',
+      );
+    });
+  }
+  releaseWork(input: {
+    targetType: TargetType;
+    targetId: string;
+    agentId: string;
+    note: string | null;
+  }): void {
+    this.runImmediate(() => {
+      const at = now();
+      this.ownedClaim(input.targetType, input.targetId, input.agentId, at);
+      const result = this.database
+        .prepare(
+          'DELETE FROM claims WHERE target_type=? AND target_id=? AND agent_id=? AND expires_at>?',
+        )
+        .run(input.targetType, input.targetId, input.agentId, at);
+      if (result.changes !== 1)
+        throw new AppError('conflict', 'Claim expired or changed before release', 409, true);
+      const specId = this.specIdForTarget(input.targetType, input.targetId),
+        s = this.getSpec(specId);
+      this.specEvent(specId, s.projectId, 'work.released', input.agentId, {
+        targetType: input.targetType,
+        targetId: input.targetId,
+        note: input.note,
+      });
+    });
+  }
+  completeWork(input: CompleteWorkInput): Spec | Task {
+    this.runImmediate(() => {
+      this.ownedClaim(input.targetType, input.targetId, input.agentId, now());
+      const at = now();
+      if (input.targetType === 'spec') {
+        const s = this.getSpec(input.targetId);
+        this.revision(s.revision, input.expectedRevision);
+        this.allowed(evaluateSpecTransition(s.state, 'done', this.specFacts(s.id, s.body)).reason);
+        const result = this.database
+          .prepare(
+            "UPDATE specs SET state='done',completion_summary=?,artifacts_json=?,completed_at=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?",
+          )
+          .run(
+            input.summary,
+            JSON.stringify(input.artifacts),
+            at,
+            at,
+            s.id,
+            input.expectedRevision,
+          );
+        this.changed(result.changes, s.revision);
+      } else {
+        const t = this.getTask(input.targetId);
+        this.revision(t.revision, input.expectedRevision);
+        this.allowed(
+          evaluateTaskTransition(t.state, 'done', {
+            nonTerminalSubtaskCount: this.countOpenChildren(t.id),
+          }).reason,
+        );
+        const result = this.database
+          .prepare(
+            "UPDATE tasks SET state='done',completion_summary=?,artifacts_json=?,completed_at=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?",
+          )
+          .run(
+            input.summary,
+            JSON.stringify(input.artifacts),
+            at,
+            at,
+            t.id,
+            input.expectedRevision,
+          );
+        this.changed(result.changes, t.revision);
+      }
+      this.database
+        .prepare('DELETE FROM claims WHERE target_type=? AND target_id=?')
+        .run(input.targetType, input.targetId);
+      const specId = this.specIdForTarget(input.targetType, input.targetId),
+        s = this.getSpec(specId);
+      this.specEvent(specId, s.projectId, 'work.completed', input.agentId, {
+        targetType: input.targetType,
+        targetId: input.targetId,
+        summaryPreview: input.summary.slice(0, 240),
+        artifactCount: input.artifacts.length,
+      });
+    });
+    return input.targetType === 'spec'
+      ? this.getSpec(input.targetId)
+      : this.getTask(input.targetId);
   }
 
   getOverview(): OverviewSnapshot {
     return this.database.transaction(() => {
-      const timestamp = now();
-      const countsRow = requireRow(
-        this.database
-          .prepare<[string], OverviewCountsRow>(
-            `WITH active_claims AS (
-               SELECT target_type, target_id
-               FROM claims
-               WHERE expires_at > ?
-             ),
-             available_projects AS (
-               SELECT p.id
-               FROM projects p
-               WHERE p.state = 'ready'
-                 AND NOT EXISTS (
-                   SELECT 1 FROM tasks t
-                   WHERE t.project_id = p.id AND t.state = 'open'
-                 )
-                 AND NOT EXISTS (
-                   SELECT 1 FROM active_claims ac
-                   WHERE ac.target_type = 'project' AND ac.target_id = p.id
-                 )
-             ),
-             available_tasks AS (
-               SELECT t.id
-               FROM tasks t
-               JOIN projects p ON p.id = t.project_id
-               WHERE t.state = 'open' AND p.state = 'ready'
-                 AND NOT EXISTS (
-                   SELECT 1 FROM tasks child
-                   WHERE child.parent_id = t.id AND child.state = 'open'
-                 )
-                 AND NOT EXISTS (
-                   SELECT 1 FROM active_claims ac
-                   WHERE ac.target_type = 'task' AND ac.target_id = t.id
-                 )
-             )
-             SELECT
-               (SELECT COUNT(w.id) FROM workspaces w) AS workspaces,
-               (SELECT COUNT(p.id) FROM projects p) AS projects,
-               (SELECT COUNT(p.id) FROM projects p WHERE p.state = 'draft') AS draft_projects,
-               (SELECT COUNT(p.id) FROM projects p WHERE p.state = 'ready') AS ready_projects,
-               (SELECT COUNT(p.id) FROM projects p WHERE p.state = 'done') AS completed_projects,
-               (SELECT COUNT(t.id) FROM tasks t WHERE t.state = 'open') AS open_tasks,
-               (SELECT COUNT(t.id) FROM tasks t WHERE t.state = 'done') AS completed_tasks,
-               (SELECT COUNT(ac.target_id) FROM active_claims ac) AS active_claims,
-               (SELECT COUNT(ap.id) FROM available_projects ap) +
-                 (SELECT COUNT(at.id) FROM available_tasks at) AS available_work`,
-          )
-          .get(timestamp),
-        'Overview counts were not returned',
-      );
-
-      const counts: OverviewCounts = {
-        workspaces: countsRow.workspaces,
-        projects: countsRow.projects,
-        draftProjects: countsRow.draft_projects,
-        readyProjects: countsRow.ready_projects,
-        completedProjects: countsRow.completed_projects,
-        openTasks: countsRow.open_tasks,
-        completedTasks: countsRow.completed_tasks,
-        activeClaims: countsRow.active_claims,
-        availableWork: countsRow.available_work,
-      };
-
-      const projectRows = this.database
-        .prepare<[string, number], OverviewProjectRow>(
-          `WITH active_claims AS (
-             SELECT target_type, target_id
-             FROM claims
-             WHERE expires_at > ?
+      const at = now();
+      const rows = this.database
+        .prepare(
+          `${AVAILABLE_WORK_CTE},
+           available_counts AS (
+             SELECT project_id,COUNT(*) available_work_count FROM available GROUP BY project_id
            ),
-           task_counts AS (
-             SELECT t.project_id,
-                    SUM(CASE WHEN t.state = 'open' THEN 1 ELSE 0 END) AS open_task_count,
-                    SUM(CASE WHEN t.state = 'done' THEN 1 ELSE 0 END) AS completed_task_count
-             FROM tasks t
-             GROUP BY t.project_id
-           ),
-           active_claim_parts AS (
-             SELECT ac.target_id AS project_id, COUNT(ac.target_id) AS claim_count
-             FROM active_claims ac
-             WHERE ac.target_type = 'project'
-             GROUP BY ac.target_id
-             UNION ALL
-             SELECT t.project_id, COUNT(ac.target_id) AS claim_count
-             FROM active_claims ac
-             JOIN tasks t ON ac.target_type = 'task' AND t.id = ac.target_id
-             GROUP BY t.project_id
-           ),
-           active_claim_counts AS (
-             SELECT acp.project_id, SUM(acp.claim_count) AS active_claim_count
-             FROM active_claim_parts acp
-             GROUP BY acp.project_id
-           ),
-           available_task_counts AS (
-             SELECT t.project_id, COUNT(t.id) AS available_task_count
-             FROM tasks t
-             JOIN projects p ON p.id = t.project_id
-             WHERE t.state = 'open' AND p.state = 'ready'
-               AND NOT EXISTS (
-                 SELECT 1 FROM tasks child
-                 WHERE child.parent_id = t.id AND child.state = 'open'
-               )
-               AND NOT EXISTS (
-                 SELECT 1 FROM active_claims ac
-                 WHERE ac.target_type = 'task' AND ac.target_id = t.id
-               )
-             GROUP BY t.project_id
-           ),
-           project_overview AS (
-             SELECT p.id,
-                    w.id AS workspace_id,
-                    w.name AS workspace_name,
-                    w.root_path AS workspace_root_path,
-                    p.slug,
-                    p.title,
-                    p.state AS lifecycle_state,
-                    COALESCE(tc.open_task_count, 0) AS open_task_count,
-                    COALESCE(tc.completed_task_count, 0) AS completed_task_count,
-                    COALESCE(acc.active_claim_count, 0) AS active_claim_count,
-                    COALESCE(atc.available_task_count, 0) +
-                      CASE WHEN p.state = 'ready'
-                                  AND COALESCE(tc.open_task_count, 0) = 0
-                                  AND NOT EXISTS (
-                                    SELECT 1 FROM active_claims ac
-                                    WHERE ac.target_type = 'project' AND ac.target_id = p.id
-                                  )
-                           THEN 1 ELSE 0 END AS available_work_count,
-                    p.updated_at
-             FROM projects p
-             JOIN workspaces w ON w.id = p.workspace_id
-             LEFT JOIN task_counts tc ON tc.project_id = p.id
-             LEFT JOIN active_claim_counts acc ON acc.project_id = p.id
-             LEFT JOIN available_task_counts atc ON atc.project_id = p.id
+           active_counts AS (
+             SELECT project_id,COUNT(*) active_claim_count FROM (
+               SELECT s.project_id FROM claims c JOIN specs s ON c.target_type='spec' AND s.id=c.target_id WHERE c.expires_at>?
+               UNION ALL
+               SELECT s.project_id FROM claims c JOIN tasks t ON c.target_type='task' AND t.id=c.target_id JOIN specs s ON s.id=t.spec_id WHERE c.expires_at>?
+             ) GROUP BY project_id
            )
-           SELECT id, workspace_id, workspace_name, workspace_root_path, slug, title,
-                  lifecycle_state, open_task_count, completed_task_count, active_claim_count,
-                  available_work_count, updated_at
-           FROM project_overview
+           SELECT p.id,p.workspace_id,p.slug,p.title,p.state,p.updated_at,
+                  w.name workspace_name,w.root_path workspace_root_path,
+                  (SELECT COUNT(*) FROM specs WHERE project_id=p.id) spec_count,
+                  (SELECT COUNT(*) FROM tasks t JOIN specs s ON s.id=t.spec_id
+                   WHERE s.project_id=p.id AND t.state='open') open_task_count,
+                  (SELECT COUNT(*) FROM tasks t JOIN specs s ON s.id=t.spec_id
+                   WHERE s.project_id=p.id AND t.state='done') completed_task_count,
+                  COALESCE(active_counts.active_claim_count,0) active_claim_count,
+                  COALESCE(available_counts.available_work_count,0) available_work_count,
+                  COALESCE(SUM(COALESCE(available_counts.available_work_count,0)) OVER (),0) total_available_work
+           FROM projects p
+           JOIN workspaces w ON w.id=p.workspace_id
+           LEFT JOIN available_counts ON available_counts.project_id=p.id
+           LEFT JOIN active_counts ON active_counts.project_id=p.id
            ORDER BY CASE
-                      WHEN active_claim_count > 0 THEN 0
-                      WHEN available_work_count > 0 THEN 1
-                      WHEN lifecycle_state = 'done' THEN 3
-                      ELSE 2
-                    END,
-                    updated_at DESC,
-                    id ASC
-           LIMIT ?`,
+             WHEN COALESCE(active_counts.active_claim_count,0)>0 THEN 0
+             WHEN COALESCE(available_counts.available_work_count,0)>0 THEN 1
+             WHEN p.state IN ('draft','open') THEN 2
+             WHEN p.state='paused' THEN 3
+             ELSE 4
+           END,p.updated_at DESC,p.id
+           LIMIT 501`,
         )
-        .all(timestamp, 501);
-      const projects = projectRows
-        .map<OverviewProject>((row) => ({
-          id: row.id,
-          workspace: {
-            id: row.workspace_id,
-            name: row.workspace_name,
-            rootPath: row.workspace_root_path,
-          },
-          slug: row.slug,
-          title: row.title,
-          lifecycleState: row.lifecycle_state,
-          status: statusForProject({
-            lifecycleState: row.lifecycle_state,
-            activeClaimCount: row.active_claim_count,
-            availableWorkCount: row.available_work_count,
-          }),
-          openTaskCount: row.open_task_count,
-          completedTaskCount: row.completed_task_count,
-          activeClaimCount: row.active_claim_count,
-          availableWorkCount: row.available_work_count,
-          updatedAt: row.updated_at,
-        }))
+        .all(at, at, at, at) as Array<
+        Pick<ProjectRow, 'id' | 'workspace_id' | 'slug' | 'title' | 'state' | 'updated_at'> & {
+          workspace_name: string;
+          workspace_root_path: string;
+          spec_count: number;
+          open_task_count: number;
+          completed_task_count: number;
+          active_claim_count: number;
+          available_work_count: number;
+          total_available_work: number;
+        }
+      >;
+      const counts: OverviewCounts = {
+        workspaces: this.count('SELECT COUNT(*) count FROM workspaces'),
+        projects: this.count('SELECT COUNT(*) count FROM projects'),
+        specs: this.count('SELECT COUNT(*) count FROM specs'),
+        draftProjects: this.count("SELECT COUNT(*) count FROM projects WHERE state='draft'"),
+        openProjects: this.count("SELECT COUNT(*) count FROM projects WHERE state='open'"),
+        pausedProjects: this.count("SELECT COUNT(*) count FROM projects WHERE state='paused'"),
+        completedProjects: this.count("SELECT COUNT(*) count FROM projects WHERE state='done'"),
+        cancelledProjects: this.count(
+          "SELECT COUNT(*) count FROM projects WHERE state='cancelled'",
+        ),
+        openTasks: this.count("SELECT COUNT(*) count FROM tasks WHERE state='open'"),
+        completedTasks: this.count("SELECT COUNT(*) count FROM tasks WHERE state='done'"),
+        cancelledTasks: this.count("SELECT COUNT(*) count FROM tasks WHERE state='cancelled'"),
+        activeClaims: this.count('SELECT COUNT(*) count FROM claims WHERE expires_at>?', at),
+        availableWork: rows[0]?.total_available_work ?? 0,
+      };
+      const projects = rows
+        .map<OverviewProject>((r) => {
+          const availableWorkCount = r.available_work_count,
+            status = statusForProject({
+              lifecycleState: r.state,
+              activeClaimCount: r.active_claim_count,
+              availableWorkCount,
+            });
+          return {
+            id: r.id,
+            workspace: {
+              id: r.workspace_id,
+              name: r.workspace_name,
+              rootPath: r.workspace_root_path,
+            },
+            slug: r.slug,
+            title: r.title,
+            lifecycleState: r.state,
+            status,
+            specCount: r.spec_count,
+            openTaskCount: r.open_task_count,
+            completedTaskCount: r.completed_task_count,
+            activeClaimCount: r.active_claim_count,
+            availableWorkCount,
+            updatedAt: r.updated_at,
+          };
+        })
         .sort(sortOverviewProjects);
-      const boundedProjects = boundOverview(projects, 500);
-
-      const activeWorkRows = this.database
-        .prepare<[string, number], OverviewActiveWorkRow>(
-          `SELECT c.target_type,
-                  c.target_id,
-                  p.workspace_id,
-                  p.id AS project_id,
-                  p.title AS project_title,
-                  t.id AS task_id,
-                  t.title AS task_title,
-                  c.agent_id,
-                  c.expires_at
-           FROM claims c
-           LEFT JOIN tasks t ON c.target_type = 'task' AND t.id = c.target_id
-           JOIN projects p ON (c.target_type = 'project' AND p.id = c.target_id)
-                           OR (c.target_type = 'task' AND p.id = t.project_id)
-           WHERE c.expires_at > ?
-           ORDER BY c.updated_at DESC, c.target_id ASC
-           LIMIT ?`,
+      const activeRows = this.database
+        .prepare(
+          `SELECT c.target_type,c.target_id,p.workspace_id,p.id project_id,p.title project_title,s.id spec_id,s.title spec_title,t.id task_id,t.title task_title,c.agent_id,c.expires_at FROM claims c LEFT JOIN tasks t ON c.target_type='task' AND t.id=c.target_id JOIN specs s ON (c.target_type='spec' AND s.id=c.target_id) OR (c.target_type='task' AND s.id=t.spec_id) JOIN projects p ON p.id=s.project_id WHERE c.expires_at>? ORDER BY c.updated_at DESC,c.target_id LIMIT 501`,
         )
-        .all(timestamp, 501);
-      const activeWork = activeWorkRows.map<OverviewActiveWork>((row) => ({
-        targetType: row.target_type,
-        targetId: row.target_id,
-        workspaceId: row.workspace_id,
-        projectId: row.project_id,
-        projectTitle: row.project_title,
-        taskId: row.task_id,
-        taskTitle: row.task_title,
-        agentId: row.agent_id,
-        expiresAt: row.expires_at,
+        .all(at) as Array<{
+        target_type: TargetType;
+        target_id: string;
+        workspace_id: string;
+        project_id: string;
+        project_title: string;
+        spec_id: string;
+        spec_title: string;
+        task_id: string | null;
+        task_title: string | null;
+        agent_id: string;
+        expires_at: string;
+      }>;
+      const activeWork = activeRows.map<OverviewActiveWork>((r) => ({
+        targetType: r.target_type,
+        targetId: r.target_id,
+        workspaceId: r.workspace_id,
+        projectId: r.project_id,
+        projectTitle: r.project_title,
+        specId: r.spec_id,
+        specTitle: r.spec_title,
+        taskId: r.task_id,
+        taskTitle: r.task_title,
+        agentId: r.agent_id,
+        expiresAt: r.expires_at,
       }));
+      const boundedProjects = boundOverview(projects, 500);
       const boundedActiveWork = boundOverview(activeWork, 500);
-
       return {
         status: statusForOverview(counts),
         counts,
@@ -1024,547 +1264,443 @@ export class PimpampumStore {
       };
     })();
   }
-
-  startWork(input: {
-    targetType: TargetType;
-    targetId: string;
-    agentId: string;
-    leaseSeconds: number;
-  }): WorkBundle {
-    this.runImmediate(() => {
-      const timestamp = now();
+  listActivity(projectId: string, limit: number): ActivityEvent[] {
+    this.getProject(projectId);
+    return (
       this.database
-        .prepare<[TargetType, string, string]>(
-          'DELETE FROM claims WHERE target_type = ? AND target_id = ? AND expires_at <= ?',
-        )
-        .run(input.targetType, input.targetId, timestamp);
+        .prepare('SELECT * FROM activity_events WHERE project_id=? ORDER BY id DESC LIMIT ?')
+        .all(projectId, limit) as ActivityRow[]
+    ).map((r) => ({
+      id: r.id,
+      workspaceId: r.workspace_id,
+      projectId: r.project_id,
+      specId: r.spec_id,
+      targetType: r.target_type,
+      targetId: r.target_id,
+      eventType: r.event_type,
+      actor: r.actor,
+      data: parseObject(r.data_json),
+      createdAt: r.created_at,
+    }));
+  }
+  async backup(directory: string): Promise<string> {
+    if (!isAbsolute(directory))
+      throw new AppError('bad_request', 'Backup destination must be an absolute path', 400);
+    return backupDatabase(this.database, directory);
+  }
+  async backupLatest(directory: string): Promise<string> {
+    if (!isAbsolute(directory))
+      throw new AppError('bad_request', 'Backup destination must be an absolute path', 400);
+    return backupLatestDatabase(this.database, directory);
+  }
+  exportPortable(directory: string): string {
+    if (!isAbsolute(directory))
+      throw new AppError('bad_request', 'Export destination must be an absolute path', 400);
+    if (this.count('SELECT COUNT(*) count FROM claims WHERE expires_at>?', now()) > 0)
+      throw new AppError(
+        'conflict',
+        'Portable export requires a maintenance window with no active Claims',
+        409,
+        true,
+      );
+    return exportPortable(this, directory);
+  }
 
-      const existingClaim = this.getClaim(input.targetType, input.targetId, timestamp);
-      if (existingClaim?.agentId === input.agentId) return;
-      if (existingClaim) {
-        throw new AppError('conflict', 'Work is already claimed', 409, true);
-      }
-      this.assertTargetAvailable(input.targetType, input.targetId);
-
-      const expiresAt = new Date(Date.now() + input.leaseSeconds * 1_000).toISOString();
-      this.database
-        .prepare<[TargetType, string, string, string, string, string]>(
-          `INSERT INTO claims
-             (target_type, target_id, agent_id, expires_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-        )
-        .run(input.targetType, input.targetId, input.agentId, expiresAt, timestamp, timestamp);
-
-      const projectId = this.projectIdForTarget(input.targetType, input.targetId);
-      this.recordProjectEvent(projectId, 'work.started', input.agentId, {
-        targetType: input.targetType,
-        targetId: input.targetId,
-        expiresAt,
-      });
-    });
-
-    const claim = requireRow(
-      this.getClaim(input.targetType, input.targetId),
-      'Claim could not be created',
+  private projectFilter(
+    workspaceId: string | null,
+    state: ProjectState | null,
+    prefix = '',
+  ): { sql: string; args: string[] } {
+    const conditions: string[] = [],
+      args: string[] = [];
+    if (workspaceId) {
+      conditions.push(`${prefix}workspace_id=?`);
+      args.push(workspaceId);
+    }
+    if (state) {
+      conditions.push(`${prefix}state=?`);
+      args.push(state);
+    }
+    return { sql: conditions.length ? `WHERE ${conditions.join(' AND ')}` : '', args };
+  }
+  private projectManifestSql(): string {
+    return `SELECT p.*,(SELECT COUNT(*) FROM specs WHERE project_id=p.id) spec_count,(SELECT COUNT(*) FROM specs WHERE project_id=p.id AND state='draft') draft_spec_count,(SELECT COUNT(*) FROM specs WHERE project_id=p.id AND state='ready') ready_spec_count,(SELECT COUNT(*) FROM specs WHERE project_id=p.id AND state IN ('done','cancelled')) terminal_spec_count FROM projects p`;
+  }
+  private specManifestSql(): string {
+    return `SELECT s.*,length(CAST(s.body AS BLOB)) body_size_bytes,(SELECT COUNT(*) FROM tasks WHERE spec_id=s.id) task_count,(SELECT COUNT(*) FROM tasks WHERE spec_id=s.id AND state='open') open_task_count,(SELECT COUNT(*) FROM tasks WHERE spec_id=s.id AND state IN ('done','cancelled')) terminal_task_count FROM specs s`;
+  }
+  private taskManifestSql(): string {
+    return `SELECT t.*,length(CAST(COALESCE(t.body,'') AS BLOB)) body_size_bytes,(SELECT COUNT(*) FROM tasks c WHERE c.parent_id=t.id) subtask_count,(SELECT COUNT(*) FROM tasks c WHERE c.parent_id=t.id AND c.state='open') open_subtask_count FROM tasks t`;
+  }
+  private count(sql: string, ...args: unknown[]): number {
+    return (this.database.prepare(sql).get(...args) as CountRow | undefined)?.count ?? 0;
+  }
+  private projectFacts(projectId: string): {
+    specCount: number;
+    nonTerminalSpecCount: number;
+    activeDescendantClaimCount: number;
+  } {
+    const at = now();
+    return {
+      specCount: this.count('SELECT COUNT(*) count FROM specs WHERE project_id=?', projectId),
+      nonTerminalSpecCount: this.count(
+        "SELECT COUNT(*) count FROM specs WHERE project_id=? AND state IN ('draft','ready')",
+        projectId,
+      ),
+      activeDescendantClaimCount: this.count(
+        `SELECT COUNT(*) count FROM claims c LEFT JOIN specs cs ON c.target_type='spec' AND cs.id=c.target_id LEFT JOIN tasks ct ON c.target_type='task' AND ct.id=c.target_id LEFT JOIN specs ts ON ts.id=ct.spec_id WHERE c.expires_at>? AND (cs.project_id=? OR ts.project_id=?)`,
+        at,
+        projectId,
+        projectId,
+      ),
+    };
+  }
+  private specFacts(
+    specId: string,
+    body: string,
+  ): {
+    body: string;
+    nonTerminalTaskCount: number;
+    activeClaimCount: number;
+    activeDescendantClaimCount: number;
+  } {
+    const at = now();
+    return {
+      body,
+      nonTerminalTaskCount: this.count(
+        "SELECT COUNT(*) count FROM tasks WHERE spec_id=? AND state='open'",
+        specId,
+      ),
+      activeClaimCount: this.count(
+        "SELECT COUNT(*) count FROM claims WHERE target_type='spec' AND target_id=? AND expires_at>?",
+        specId,
+        at,
+      ),
+      activeDescendantClaimCount: this.count(
+        "SELECT COUNT(*) count FROM claims c JOIN tasks t ON t.id=c.target_id WHERE c.target_type='task' AND t.spec_id=? AND c.expires_at>?",
+        specId,
+        at,
+      ),
+    };
+  }
+  private assertOwner(type: ContextOwnerType, id: string): void {
+    if (type === 'workspace') this.getWorkspace(id);
+    else this.getProject(id);
+  }
+  private assertOwnerMutable(type: ContextOwnerType, id: string): void {
+    this.assertOwner(type, id);
+    if (type === 'project' && isTerminalProjectState(this.getProject(id).state))
+      throw new AppError('invalid_state', 'Context in terminal Projects is immutable', 409);
+  }
+  private countOpenChildren(id: string): number {
+    return this.count("SELECT COUNT(*) count FROM tasks WHERE parent_id=? AND state='open'", id);
+  }
+  private assertTargetAvailable(type: TargetType, id: string): void {
+    if (type === 'spec') {
+      const s = this.getSpec(id),
+        p = this.getProject(s.projectId);
+      this.allowed(
+        evaluateClaimEligibility({
+          targetType: 'spec',
+          projectState: p.state,
+          specState: s.state,
+          openTaskCount: this.count(
+            "SELECT COUNT(*) count FROM tasks WHERE spec_id=? AND state='open'",
+            s.id,
+          ),
+        }).reason,
+      );
+      return;
+    }
+    const t = this.getTask(id),
+      s = this.getSpec(t.specId),
+      p = this.getProject(s.projectId);
+    this.allowed(
+      evaluateClaimEligibility({
+        targetType: 'task',
+        projectState: p.state,
+        specState: s.state,
+        taskState: t.state,
+        openSubtaskCount: this.countOpenChildren(t.id),
+      }).reason,
     );
-    const projectId = this.projectIdForTarget(input.targetType, input.targetId);
-    const project = this.getProjectManifest(projectId);
-    const task = input.targetType === 'task' ? this.getTaskManifest(input.targetId) : null;
-    const workspace = this.getWorkspace(project.workspaceId);
-    const contextPage = this.listContextManifests({ projectId, limit: 201, offset: 0 });
+  }
+  private assertWorkScope(
+    workspaceId: string | null,
+    projectId: string | null,
+    specId: string | null,
+  ): void {
+    const project = projectId ? this.getProject(projectId) : null;
+    if (workspaceId && project && project.workspaceId !== workspaceId)
+      throw new AppError('bad_request', 'Project does not belong to the requested Workspace', 400);
+    if (!specId) return;
+    const spec = this.getSpec(specId),
+      specProject = this.getProject(spec.projectId);
+    if (projectId && spec.projectId !== projectId)
+      throw new AppError('bad_request', 'Spec does not belong to the requested Project', 400);
+    if (workspaceId && specProject.workspaceId !== workspaceId)
+      throw new AppError('bad_request', 'Spec does not belong to the requested Workspace', 400);
+  }
+  private specIdForTarget(type: TargetType, id: string): string {
+    return type === 'spec' ? this.getSpec(id).id : this.getTask(id).specId;
+  }
+  private getClaim(type: TargetType, id: string, at = now()): Claim | null {
+    const row = this.database
+      .prepare('SELECT * FROM claims WHERE target_type=? AND target_id=? AND expires_at>?')
+      .get(type, id, at) as ClaimRow | undefined;
+    return row ? this.mapClaim(row) : null;
+  }
+  private ownedClaim(type: TargetType, id: string, agentId: string, at: string): Claim {
+    const claim = this.getClaim(type, id, at);
+    if (!claim) throw new AppError('conflict', 'Work is not currently claimed', 409, true);
+    if (claim.agentId !== agentId)
+      throw new AppError('conflict', `Work is claimed by ${claim.agentId}`, 409, true);
+    return claim;
+  }
+  private workBundle(type: TargetType, id: string): WorkBundle {
+    const claim = requireRow(this.getClaim(type, id), 'Claim could not be created'),
+      specId = this.specIdForTarget(type, id),
+      spec = this.getSpecManifest(specId),
+      project = this.getProjectManifest(spec.projectId),
+      workspace = this.getWorkspace(project.workspaceId);
     return {
       claim,
       workspace,
       project,
-      task,
-      context: contextPage.slice(0, 200),
-      contextHasMore: contextPage.length > 200,
+      spec,
+      task: type === 'task' ? this.getTaskManifest(id) : null,
+      workspaceContext: this.contextPage('workspace', workspace.id),
+      projectContext: this.contextPage('project', project.id),
     };
   }
-
-  renewWork(input: {
-    targetType: TargetType;
-    targetId: string;
-    agentId: string;
-    leaseSeconds: number;
-  }): Claim {
-    return this.runImmediate(() => {
-      const timestamp = now();
-      const claim = this.requireOwnedClaim(
-        input.targetType,
-        input.targetId,
-        input.agentId,
-        timestamp,
-      );
-      const expiresAt = new Date(Date.now() + input.leaseSeconds * 1_000).toISOString();
-      const result = this.database
-        .prepare<[string, string, TargetType, string, string, string]>(
-          `UPDATE claims SET expires_at = ?, updated_at = ?
-           WHERE target_type = ? AND target_id = ? AND agent_id = ? AND expires_at > ?`,
-        )
-        .run(expiresAt, timestamp, input.targetType, input.targetId, input.agentId, timestamp);
-      if (result.changes !== 1) {
-        throw new AppError('conflict', 'Claim expired or changed before renewal', 409, true);
-      }
-      this.recordProjectEvent(
-        this.projectIdForTarget(input.targetType, input.targetId),
-        'work.renewed',
-        input.agentId,
-        {
-          targetType: input.targetType,
-          targetId: input.targetId,
-          previousExpiry: claim.expiresAt,
-          expiresAt,
-        },
-      );
-      return requireRow(
-        this.getClaim(input.targetType, input.targetId, timestamp),
-        'Claim could not be renewed',
-      );
+  private contextPage(type: ContextOwnerType, id: string): ContextManifestPage {
+    const items = this.listContextManifests({
+      ownerType: type,
+      ownerId: id,
+      limit: 201,
+      offset: 0,
     });
+    return { items: items.slice(0, 200), hasMore: items.length > 200 };
   }
-
-  releaseWork(input: {
-    targetType: TargetType;
-    targetId: string;
-    agentId: string;
-    note: string | null;
-  }): void {
-    this.runImmediate(() => {
-      const timestamp = now();
-      this.requireOwnedClaim(input.targetType, input.targetId, input.agentId, timestamp);
-      const result = this.database
-        .prepare<[TargetType, string, string, string]>(
-          `DELETE FROM claims
-           WHERE target_type = ? AND target_id = ? AND agent_id = ? AND expires_at > ?`,
-        )
-        .run(input.targetType, input.targetId, input.agentId, timestamp);
-      if (result.changes !== 1) {
-        throw new AppError('conflict', 'Claim expired or changed before release', 409, true);
-      }
-      this.recordProjectEvent(
-        this.projectIdForTarget(input.targetType, input.targetId),
-        'work.released',
-        input.agentId,
-        { targetType: input.targetType, targetId: input.targetId, note: input.note },
-      );
-    });
-  }
-
-  completeWork(input: CompleteWorkInput): Project | Task {
-    this.runImmediate(() => {
-      this.requireOwnedClaim(input.targetType, input.targetId, input.agentId, now());
-      const timestamp = now();
-
-      if (input.targetType === 'project') {
-        const project = this.getProject(input.targetId);
-        this.assertRevision(project.revision, input.expectedRevision);
-        if (project.state !== 'ready') {
-          throw new AppError('invalid_state', 'Only ready projects can be completed', 409);
-        }
-        if (this.countOpenTasks(project.id) > 0) {
-          throw new AppError('invalid_state', 'Project has open tasks', 409);
-        }
-        const result = this.database
-          .prepare<[string, string, string, string, string, number]>(
-            `UPDATE projects
-             SET state = 'done', completion_summary = ?, artifacts_json = ?, completed_at = ?,
-                 updated_at = ?, revision = revision + 1
-             WHERE id = ? AND revision = ?`,
-          )
-          .run(
-            input.summary,
-            JSON.stringify(input.artifacts),
-            timestamp,
-            timestamp,
-            input.targetId,
-            input.expectedRevision,
-          );
-        this.assertChanged(result.changes, project.revision);
-      } else {
-        const task = this.getTask(input.targetId);
-        const project = this.getProject(task.projectId);
-        this.assertRevision(task.revision, input.expectedRevision);
-        if (project.state !== 'ready') {
-          throw new AppError('invalid_state', 'Tasks can only complete in ready projects', 409);
-        }
-        if (task.state !== 'open') {
-          throw new AppError('invalid_state', 'Only open tasks can be completed', 409);
-        }
-        if (this.countOpenChildren(task.id) > 0) {
-          throw new AppError('invalid_state', 'Task has open subtasks', 409);
-        }
-        const result = this.database
-          .prepare<[string, string, string, string, string, number]>(
-            `UPDATE tasks
-             SET state = 'done', completion_summary = ?, artifacts_json = ?, completed_at = ?,
-                 updated_at = ?, revision = revision + 1
-             WHERE id = ? AND revision = ?`,
-          )
-          .run(
-            input.summary,
-            JSON.stringify(input.artifacts),
-            timestamp,
-            timestamp,
-            input.targetId,
-            input.expectedRevision,
-          );
-        this.assertChanged(result.changes, task.revision);
-      }
-
-      this.database
-        .prepare<[TargetType, string]>('DELETE FROM claims WHERE target_type = ? AND target_id = ?')
-        .run(input.targetType, input.targetId);
-      this.recordProjectEvent(
-        this.projectIdForTarget(input.targetType, input.targetId),
-        'work.completed',
-        input.agentId,
-        {
-          targetType: input.targetType,
-          targetId: input.targetId,
-          summaryPreview: input.summary.slice(0, 240),
-          summaryTruncated: input.summary.length > 240,
-          artifactCount: input.artifacts.length,
-        },
-      );
-    });
-
-    return input.targetType === 'project'
-      ? this.getProject(input.targetId)
-      : this.getTask(input.targetId);
-  }
-
-  listActivity(projectId: string, limit: number): ActivityEvent[] {
-    this.getProject(projectId);
-    return this.database
-      .prepare<[string, number], ActivityRow>(
-        'SELECT * FROM activity_events WHERE project_id = ? ORDER BY id DESC LIMIT ?',
-      )
-      .all(projectId, limit)
-      .map((row) => ({
-        id: row.id,
-        workspaceId: row.workspace_id,
-        projectId: row.project_id,
-        targetType: row.target_type,
-        targetId: row.target_id,
-        eventType: row.event_type,
-        actor: row.actor,
-        data: parseObject(row.data_json),
-        createdAt: row.created_at,
-      }));
-  }
-
-  async backup(destinationDirectory: string): Promise<string> {
-    if (!isAbsolute(destinationDirectory)) {
-      throw new AppError('bad_request', 'Backup destination must be an absolute path', 400);
-    }
-    return backupDatabase(this.database, destinationDirectory);
-  }
-
-  async backupLatest(destinationDirectory: string): Promise<string> {
-    if (!isAbsolute(destinationDirectory)) {
-      throw new AppError('bad_request', 'Backup destination must be an absolute path', 400);
-    }
-    return backupLatestDatabase(this.database, destinationDirectory);
-  }
-
-  exportPortable(destinationDirectory: string): string {
-    if (!isAbsolute(destinationDirectory)) {
-      throw new AppError('bad_request', 'Export destination must be an absolute path', 400);
-    }
-    const activeClaims = requireRow(
-      this.database
-        .prepare<[string], CountRow>('SELECT COUNT(*) AS count FROM claims WHERE expires_at > ?')
-        .get(now()),
-      'Active claim count was not returned',
-    ).count;
-    if (activeClaims > 0) {
-      throw new AppError(
-        'conflict',
-        'Portable export requires a maintenance window with no active claims',
-        409,
-        true,
-      );
-    }
-    return exportPortable(this, destinationDirectory);
-  }
-
-  private assertTargetAvailable(targetType: TargetType, targetId: string): void {
-    if (targetType === 'project') {
-      const project = this.getProject(targetId);
-      if (project.state !== 'ready') {
-        throw new AppError('invalid_state', 'Only ready projects can be claimed', 409);
-      }
-      if (this.countOpenTasks(targetId) > 0) {
-        throw new AppError('invalid_state', 'Claim individual tasks while open tasks exist', 409);
-      }
-      return;
-    }
-
-    const task = this.getTask(targetId);
-    const project = this.getProject(task.projectId);
-    if (task.state !== 'open' || project.state !== 'ready') {
-      throw new AppError('invalid_state', 'Only open tasks in ready projects can be claimed', 409);
-    }
-    if (this.countOpenChildren(task.id) > 0) {
-      throw new AppError('invalid_state', 'Claim open subtasks before their parent task', 409);
-    }
-  }
-
   private runImmediate<T>(operation: () => T): T {
     const result = this.database.transaction(operation).immediate();
     this.onMutation();
     return result;
   }
-
-  private countOpenTasks(projectId: string): number {
-    return (
-      this.database
-        .prepare<[string], CountRow>(
-          "SELECT COUNT(*) AS count FROM tasks WHERE project_id = ? AND state = 'open'",
-        )
-        .get(projectId)?.count ?? 0
-    );
+  private allowed(reason: string | null): void {
+    if (reason !== null) throw new AppError('invalid_state', reason, 409);
   }
-
-  private countOpenChildren(taskId: string): number {
-    return (
-      this.database
-        .prepare<[string], CountRow>(
-          "SELECT COUNT(*) AS count FROM tasks WHERE parent_id = ? AND state = 'open'",
-        )
-        .get(taskId)?.count ?? 0
-    );
-  }
-
-  private projectIdForTarget(targetType: TargetType, targetId: string): string {
-    return targetType === 'project'
-      ? this.getProject(targetId).id
-      : this.getTask(targetId).projectId;
-  }
-
-  private getClaim(targetType: TargetType, targetId: string, at = now()): Claim | null {
-    const row = this.database
-      .prepare<[TargetType, string, string], ClaimRow>(
-        `SELECT * FROM claims
-         WHERE target_type = ? AND target_id = ? AND expires_at > ?`,
-      )
-      .get(targetType, targetId, at);
-    return row ? this.mapClaim(row) : null;
-  }
-
-  private requireOwnedClaim(
-    targetType: TargetType,
-    targetId: string,
-    agentId: string,
-    at: string,
-  ): Claim {
-    const claim = this.getClaim(targetType, targetId, at);
-    if (!claim) throw new AppError('conflict', 'Work is not currently claimed', 409, true);
-    if (claim.agentId !== agentId) {
-      throw new AppError('conflict', `Work is claimed by ${claim.agentId}`, 409, true);
-    }
-    return claim;
-  }
-
-  private assertRevision(actual: number, expected: number): void {
-    if (actual !== expected) {
+  private revision(actual: number, expected: number): void {
+    if (actual !== expected)
       throw new AppError(
         'revision_conflict',
         `Expected revision ${expected}, current revision is ${actual}`,
         409,
         true,
-        {
-          expectedRevision: expected,
-          currentRevision: actual,
-        },
+        { expectedRevision: expected, currentRevision: actual },
       );
-    }
   }
-
-  private assertChanged(changes: number, currentRevision: number): void {
-    if (changes === 0) {
+  private changed(changes: number, currentRevision: number): void {
+    if (changes === 0)
       throw new AppError('revision_conflict', 'The resource changed before this write', 409, true, {
         currentRevision,
       });
-    }
   }
 
-  private recordProjectEvent(
+  private event(
+    workspaceId: string | null,
+    projectId: string | null,
+    specId: string | null,
+    targetType: string,
+    targetId: string,
+    eventType: string,
+    actor: string | null,
+    data: Record<string, unknown>,
+  ): void {
+    this.database
+      .prepare(
+        'INSERT INTO activity_events (workspace_id,project_id,spec_id,target_type,target_id,event_type,actor,data_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+      )
+      .run(
+        workspaceId,
+        projectId,
+        specId,
+        targetType,
+        targetId,
+        eventType,
+        actor,
+        JSON.stringify(data),
+        now(),
+      );
+  }
+  private projectEvent(
     projectId: string,
     eventType: string,
     actor: string | null,
     data: Record<string, unknown>,
   ): void {
-    const project = this.getProject(projectId);
-    const eventTargetType =
-      typeof data.targetType === 'string'
-        ? data.targetType
-        : eventType.startsWith('task.')
-          ? 'task'
-          : eventType.startsWith('context.')
-            ? 'context'
-            : 'project';
-    const eventTargetId =
-      typeof data.targetId === 'string'
-        ? data.targetId
-        : typeof data.taskId === 'string'
-          ? data.taskId
-          : projectId;
-    this.recordEvent({
-      workspaceId: project.workspaceId,
-      projectId,
-      targetType: eventTargetType,
-      targetId: eventTargetId,
+    const p = this.getProject(projectId);
+    this.event(
+      p.workspaceId,
+      p.id,
+      null,
+      typeof data.targetId === 'string' ? 'context' : 'project',
+      typeof data.targetId === 'string' ? data.targetId : p.id,
       eventType,
       actor,
       data,
-    });
+    );
   }
-
-  private recordEvent(input: {
-    workspaceId: string | null;
-    projectId: string | null;
-    targetType: string;
-    targetId: string;
-    eventType: string;
-    actor: string | null;
-    data: Record<string, unknown>;
-  }): void {
-    this.database
-      .prepare<
-        [string | null, string | null, string, string, string, string | null, string, string]
-      >(
-        `INSERT INTO activity_events
-           (workspace_id, project_id, target_type, target_id, event_type, actor, data_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        input.workspaceId,
-        input.projectId,
-        input.targetType,
-        input.targetId,
-        input.eventType,
-        input.actor,
-        JSON.stringify(input.data),
-        now(),
-      );
+  private specEvent(
+    specId: string,
+    projectId: string,
+    eventType: string,
+    actor: string | null,
+    data: Record<string, unknown>,
+  ): void {
+    const p = this.getProject(projectId),
+      isTask = data.targetType === 'task' || eventType.startsWith('task.');
+    this.event(
+      p.workspaceId,
+      p.id,
+      specId,
+      isTask ? 'task' : 'spec',
+      typeof data.targetId === 'string' ? data.targetId : specId,
+      eventType,
+      actor,
+      data,
+    );
   }
-
-  private mapWorkspace(row: WorkspaceRow): Workspace {
+  private taskEvent(
+    taskId: string,
+    specId: string,
+    projectId: string,
+    eventType: string,
+    actor: string | null,
+    data: Record<string, unknown>,
+  ): void {
+    const p = this.getProject(projectId);
+    this.event(p.workspaceId, p.id, specId, 'task', taskId, eventType, actor, data);
+  }
+  private mapWorkspace(r: WorkspaceRow): Workspace {
     return {
-      id: row.id,
-      name: row.name,
-      rootPath: row.root_path,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      id: r.id,
+      name: r.name,
+      rootPath: r.root_path,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
     };
   }
-
-  private mapProject(row: ProjectRow): Project {
+  private mapProject(r: ProjectRow): Project {
     return {
-      id: row.id,
-      workspaceId: row.workspace_id,
-      slug: row.slug,
-      title: row.title,
-      state: row.state,
-      prd: row.prd,
-      revision: row.revision,
-      completionSummary: row.completion_summary,
-      artifacts: parseArtifacts(row.artifacts_json),
-      completedAt: row.completed_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      claim: this.getClaim('project', row.id),
+      id: r.id,
+      workspaceId: r.workspace_id,
+      slug: r.slug,
+      title: r.title,
+      state: r.state,
+      revision: r.revision,
+      completionSummary: r.completion_summary,
+      artifacts: parseArtifacts(r.artifacts_json),
+      completedAt: r.completed_at,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
     };
   }
-
-  private mapContext(row: ContextRow): ContextDocument {
+  private mapProjectManifest(r: ProjectManifestRow): ProjectManifest {
+    const { artifacts: _a, completionSummary: _c, ...base } = this.mapProject(r);
     return {
-      id: row.id,
-      projectId: row.project_id,
-      name: row.name,
-      body: row.body,
-      revision: row.revision,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      ...base,
+      artifactCount: parseArtifacts(r.artifacts_json).length,
+      hasCompletion: r.completion_summary !== null,
+      specCount: r.spec_count,
+      draftSpecCount: r.draft_spec_count,
+      readySpecCount: r.ready_spec_count,
+      terminalSpecCount: r.terminal_spec_count,
     };
   }
-
-  private mapProjectManifest(row: ProjectManifestRow): ProjectManifest {
+  private mapSpec(r: SpecRow): Spec {
     return {
-      id: row.id,
-      workspaceId: row.workspace_id,
-      slug: row.slug,
-      title: row.title,
-      state: row.state,
-      revision: row.revision,
-      artifactCount: parseArtifacts(row.artifacts_json).length,
-      hasCompletion: row.completion_summary !== null,
-      completedAt: row.completed_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      claim: this.getClaim('project', row.id),
-      prdSizeBytes: row.prd_size_bytes,
+      id: r.id,
+      projectId: r.project_id,
+      slug: r.slug,
+      title: r.title,
+      body: r.body,
+      state: r.state,
+      revision: r.revision,
+      completionSummary: r.completion_summary,
+      artifacts: parseArtifacts(r.artifacts_json),
+      completedAt: r.completed_at,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      claim: this.getClaim('spec', r.id),
     };
   }
-
-  private mapContextManifest(row: ContextManifestRow): ContextManifest {
+  private mapSpecManifest(r: SpecManifestRow): SpecManifest {
+    const { body: _b, artifacts: _a, completionSummary: _c, ...base } = this.mapSpec(r);
     return {
-      id: row.id,
-      projectId: row.project_id,
-      name: row.name,
-      revision: row.revision,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      sizeBytes: row.size_bytes,
+      ...base,
+      bodySizeBytes: r.body_size_bytes,
+      artifactCount: parseArtifacts(r.artifacts_json).length,
+      hasCompletion: r.completion_summary !== null,
+      taskCount: r.task_count,
+      openTaskCount: r.open_task_count,
+      terminalTaskCount: r.terminal_task_count,
     };
   }
-
-  private mapTask(row: TaskRow): Task {
+  private mapContext(r: ContextRow): ContextDocument {
+    const ownerType: ContextOwnerType = r.workspace_id === null ? 'project' : 'workspace',
+      ownerId = r.workspace_id ?? requireRow(r.project_id, 'Context owner was not found');
     return {
-      id: row.id,
-      projectId: row.project_id,
-      parentId: row.parent_id,
-      title: row.title,
-      body: row.body,
-      state: row.state,
-      revision: row.revision,
-      completionSummary: row.completion_summary,
-      artifacts: parseArtifacts(row.artifacts_json),
-      completedAt: row.completed_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      claim: this.getClaim('task', row.id),
+      id: r.id,
+      ownerType,
+      ownerId,
+      name: r.name,
+      body: r.body,
+      revision: r.revision,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
     };
   }
-
-  private mapTaskManifest(row: TaskManifestRow): TaskManifest {
+  private mapContextManifest(r: ContextManifestRow): ContextManifest {
+    const { body: _b, ...base } = this.mapContext(r);
+    return { ...base, sizeBytes: r.size_bytes };
+  }
+  private mapTask(r: TaskRow): Task {
     return {
-      id: row.id,
-      projectId: row.project_id,
-      parentId: row.parent_id,
-      title: row.title,
-      state: row.state,
-      revision: row.revision,
-      artifactCount: parseArtifacts(row.artifacts_json).length,
-      hasCompletion: row.completion_summary !== null,
-      completedAt: row.completed_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      claim: this.getClaim('task', row.id),
-      bodySizeBytes: row.body_size_bytes,
+      id: r.id,
+      specId: r.spec_id,
+      parentId: r.parent_id,
+      title: r.title,
+      body: r.body,
+      state: r.state,
+      revision: r.revision,
+      completionSummary: r.completion_summary,
+      artifacts: parseArtifacts(r.artifacts_json),
+      completedAt: r.completed_at,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      claim: this.getClaim('task', r.id),
     };
   }
-
-  private mapClaim(row: ClaimRow): Claim {
+  private mapTaskManifest(r: TaskManifestRow): TaskManifest {
+    const { body: _b, artifacts: _a, completionSummary: _c, ...base } = this.mapTask(r);
     return {
-      targetType: row.target_type,
-      targetId: row.target_id,
-      agentId: row.agent_id,
-      expiresAt: row.expires_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      ...base,
+      bodySizeBytes: r.body_size_bytes,
+      artifactCount: parseArtifacts(r.artifacts_json).length,
+      hasCompletion: r.completion_summary !== null,
+      subtaskCount: r.subtask_count,
+      openSubtaskCount: r.open_subtask_count,
+    };
+  }
+  private mapClaim(r: ClaimRow): Claim {
+    return {
+      targetType: r.target_type,
+      targetId: r.target_id,
+      agentId: r.agent_id,
+      expiresAt: r.expires_at,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
     };
   }
 }

@@ -134,7 +134,22 @@ func testOverview(
   activeWork: [OverviewActiveWork] = [],
   generatedAt: Date = isoDate("2026-08-26T20:01:30.000Z")
 ) -> Overview {
-  Overview(
+  let counts = OverviewCounts(
+    workspaces: projects.isEmpty ? 0 : 1,
+    projects: projects.count,
+    specs: projects.reduce(0) { $0 + $1.specCount },
+    draftProjects: projects.filter { $0.lifecycleState == .draft }.count,
+    openProjects: projects.filter { $0.lifecycleState == .open }.count,
+    pausedProjects: projects.filter { $0.lifecycleState == .paused }.count,
+    completedProjects: projects.filter { $0.lifecycleState == .done }.count,
+    cancelledProjects: projects.filter { $0.lifecycleState == .cancelled }.count,
+    openTasks: projects.reduce(0) { $0 + $1.openTaskCount },
+    completedTasks: projects.reduce(0) { $0 + $1.completedTaskCount },
+    cancelledTasks: 0,
+    activeClaims: activeWork.count,
+    availableWork: projects.reduce(0) { $0 + $1.availableWorkCount }
+  )
+  return Overview(
     daemon: OverviewDaemon(
       version: "0.1.0",
       startedAt: generatedAt.addingTimeInterval(-90),
@@ -142,17 +157,7 @@ func testOverview(
     ),
     generatedAt: generatedAt,
     status: status,
-    counts: OverviewCounts(
-      workspaces: projects.isEmpty ? 0 : 1,
-      projects: projects.count,
-      draftProjects: projects.filter { $0.status == .draft }.count,
-      readyProjects: projects.filter { $0.lifecycleState == .ready }.count,
-      completedProjects: projects.filter { $0.status == .complete }.count,
-      openTasks: projects.reduce(0) { $0 + $1.openTaskCount },
-      completedTasks: projects.reduce(0) { $0 + $1.completedTaskCount },
-      activeClaims: activeWork.count,
-      availableWork: projects.reduce(0) { $0 + $1.availableWorkCount }
-    ),
+    counts: counts,
     projects: projects,
     projectsTruncated: false,
     activeWork: activeWork,
@@ -166,13 +171,20 @@ func testProject(
   updatedAt: Date,
   lifecycleState: ProjectLifecycleState? = nil
 ) -> OverviewProject {
-  OverviewProject(
+  let defaultLifecycle: ProjectLifecycleState = switch status {
+  case .active, .available: .open
+  case .draft: .draft
+  case .paused: .paused
+  case .complete: .done
+  }
+  return OverviewProject(
     id: id,
     workspace: OverviewWorkspace(id: "workspace", name: "Workspace", rootPath: "/tmp/workspace"),
     slug: id,
     title: id,
-    lifecycleState: lifecycleState ?? (status == .complete ? .done : .ready),
+    lifecycleState: lifecycleState ?? defaultLifecycle,
     status: status,
+    specCount: 1,
     openTaskCount: status == .available || status == .active ? 1 : 0,
     completedTaskCount: status == .complete ? 1 : 0,
     activeClaimCount: status == .active ? 1 : 0,

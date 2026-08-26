@@ -110,6 +110,11 @@ describe('Omarchy Quattro plugin', () => {
     expect(mark).toContain('status === "active" ? activeColor');
     expect(mark).toContain('status === "available" ? availableColor');
     expect(mark).toContain('"complete": "square"');
+    expect(mark).toContain('"cancelled": "ring"');
+    expect(widget).toContain('"cancelled": "Finished with cancellations"');
+    expect(widget).toContain(
+      'displayStatus: service.effectiveStatus === "complete" && hasCancellations',
+    );
     expect(mark).toContain('columns: root.vertical ? 1 : 2');
     expect(mark).toContain('rows: root.vertical ? 2 : 1');
     expect(widget).toContain('Accessible.onPressAction: root.togglePanel()');
@@ -137,6 +142,7 @@ describe('Omarchy Quattro plugin', () => {
       'text: "Active work ("',
       'text: "Projects ("',
       '+ "Completed ("',
+      '+ "Cancelled ("',
       '+ "Backup"',
     ].map((fragment) => popout.indexOf(fragment));
     expect(ordered.every((index) => index >= 0)).toBe(true);
@@ -145,16 +151,21 @@ describe('Omarchy Quattro plugin', () => {
     expect(popout).toContain('elide: Text.ElideRight');
     expect(popout).toContain('elide: Text.ElideMiddle');
     expect(popout).toContain('modelData.workspace.name + " / " + modelData.slug');
+    expect(popout).toContain('modelData.taskTitle ? modelData.taskTitle : modelData.specTitle');
+    expect(popout).toContain('if (seconds < 60) return "<1m"');
+    expect(popout).not.toContain('return seconds + "s"');
     for (const control of [
       'projectAction',
       'completedAction',
       'completedRowAction',
+      'cancelledAction',
+      'cancelledRowAction',
       'backupAction',
       'actionArea',
     ]) {
       expect(popout).toContain(`id: ${control}`);
     }
-    expect(popout.match(/PimpampumActionArea\s*\{/gu)?.length).toBeGreaterThanOrEqual(5);
+    expect(popout.match(/PimpampumActionArea\s*\{/gu)?.length).toBeGreaterThanOrEqual(7);
     expect(actionArea).toContain('hoverEnabled: true');
     expect(actionArea).toContain('activeFocusOnTab: focusOnTab');
     expect(actionArea).toContain('cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor');
@@ -168,10 +179,26 @@ describe('Omarchy Quattro plugin', () => {
     expect(popout).toContain('onClicked: openWorkspace(modelData.workspace.rootPath)');
     expect(popout).toContain('Accessible.name:');
     expect(popout).toContain('property bool completedExpanded: false');
+    expect(popout).toContain('property bool cancelledExpanded: false');
+    expect(popout).toContain('return project.lifecycleState === "done"');
+    expect(popout).toContain('return project.lifecycleState === "cancelled"');
+    expect(popout).toContain('modelData.title + " · Cancelled · "');
     expect(popout).toContain('property bool backupExpanded: false');
     expect(popout).toContain('enabled: modelData.enabled && !root.backupService.busy');
     expect(popout).toContain('var arguments = ["xdg-open", path]');
     expect(popout).not.toMatch(/sh\s+-c|bash\s+-c|xdg-open.*\+/u);
+  });
+
+  it('accepts only overview v2 with Spec or Task active work', () => {
+    const service = readFileSync(join(pluginSource, 'OverviewService.qml'), 'utf8');
+
+    expect(service).toContain('envelope.meta.schemaVersion !== 2');
+    expect(service).toContain('["spec", "task"].indexOf(work.targetType)');
+    expect(service).toContain('isString(work.specId)');
+    expect(service).toContain('isString(work.specTitle)');
+    expect(service).toContain(
+      'work.targetType === "spec" && (work.taskId !== null || work.taskTitle !== null)',
+    );
   });
 
   it('keeps backup configuration bounded and passes paths as process arguments', () => {

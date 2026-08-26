@@ -6,9 +6,43 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../src/db.js';
 import { createPimpampumMcpHandler } from '../src/mcp.js';
 import { PimpampumStore } from '../src/store.js';
-import type { PimpampumGateway, ProjectManifest } from '../src/types.js';
 
-describe('MCP endpoint', () => {
+const canonicalTools = [
+  'workspace_list',
+  'workspace_resolve',
+  'project_list',
+  'project_get',
+  'project_create',
+  'project_update',
+  'project_complete',
+  'project_cancel',
+  'project_completion_get',
+  'spec_list',
+  'spec_get',
+  'spec_read',
+  'spec_create',
+  'spec_update',
+  'spec_completion_get',
+  'spec_cancel',
+  'task_list',
+  'task_get',
+  'task_read',
+  'task_create',
+  'task_update',
+  'task_completion_get',
+  'task_cancel',
+  'context_list',
+  'context_read',
+  'context_put',
+  'activity_list',
+  'work_list',
+  'work_start',
+  'work_renew',
+  'work_release',
+  'work_complete',
+] as const;
+
+describe('MCP endpoint v2', () => {
   let store: PimpampumStore;
   let temporaryDirectory: string;
 
@@ -28,10 +62,10 @@ describe('MCP endpoint', () => {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   });
 
-  it('negotiates MCP and exposes functional agent tools', async () => {
+  it('publishes only the canonical Workspace/Project/Spec/Task agent vocabulary', async () => {
     const handler = createPimpampumMcpHandler(store);
     const client = new Client(
-      { name: 'pimpampum-test', version: '0.1.0' },
+      { name: 'pimpampum-test', version: '0.2.0' },
       { versionNegotiation: { mode: 'auto' } },
     );
     const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {
@@ -39,45 +73,39 @@ describe('MCP endpoint', () => {
     });
 
     await client.connect(transport);
-    const tools = await client.listTools();
-    expect(tools.tools.map((tool) => tool.name)).toEqual([
-      'workspace_list',
-      'workspace_resolve',
-      'work_list',
-      'work_start',
-      'work_renew',
-      'work_release',
-      'work_complete',
-      'project_list',
-      'project_get',
-      'project_read_prd',
-      'project_completion_get',
-      'project_create',
-      'project_update',
-      'project_update_prd',
-      'task_get',
-      'task_read',
-      'task_completion_get',
-      'task_list',
-      'task_create',
-      'task_update',
-      'context_list',
-      'context_read',
-      'context_put',
-      'activity_list',
-    ]);
-    for (const tool of tools.tools) {
-      expect(tool.title).toBeTruthy();
-      expect(tool.description?.length).toBeGreaterThan(60);
-      expect(tool.annotations).toMatchObject({ openWorldHint: false });
-      const properties = (tool.inputSchema.properties ?? {}) as Record<
-        string,
-        { description?: string }
-      >;
-      for (const schema of Object.values(properties)) expect(schema.description).toBeTruthy();
-    }
+    try {
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toEqual(canonicalTools);
+      expect(tools.tools.map((tool) => tool.name)).not.toContain('project_read_prd');
+      expect(tools.tools.map((tool) => tool.name)).not.toContain('project_update_prd');
 
-    const call = async (name: string, args: Record<string, unknown>) =>
+      for (const tool of tools.tools) {
+        expect(tool.title).toBeTruthy();
+        expect(tool.description?.length).toBeGreaterThan(60);
+        expect(tool.annotations).toMatchObject({ openWorldHint: false });
+        const properties = (tool.inputSchema.properties ?? {}) as Record<
+          string,
+          { description?: string }
+        >;
+        for (const schema of Object.values(properties)) expect(schema.description).toBeTruthy();
+      }
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('round-trips a complete Project, Spec, Task, Context, Claim, and completion workflow', async () => {
+    const handler = createPimpampumMcpHandler(store);
+    const client = new Client(
+      { name: 'pimpampum-workflow', version: '0.2.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+    const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {
+      fetch: (url, init) => handler.fetch(new Request(url, init)),
+    });
+    await client.connect(transport);
+
+    const call = (name: string, args: Record<string, unknown>) =>
       client.callTool({ name, arguments: args });
     const data = <T>(result: Awaited<ReturnType<typeof call>>): T => {
       const block = result.content[0];
@@ -85,275 +113,440 @@ describe('MCP endpoint', () => {
       return (JSON.parse(block.text) as { data: T }).data;
     };
 
-    expect(data<Array<{ id: string }>>(await call('workspace_list', {}))).toMatchObject([
-      { id: 'vcomp' },
-    ]);
-    expect(
-      data<{ id: string }>(await call('workspace_resolve', { path: temporaryDirectory })).id,
-    ).toBe('vcomp');
+    try {
+      expect(data<Array<{ id: string }>>(await call('workspace_list', {}))).toMatchObject([
+        { id: 'vcomp' },
+      ]);
+      expect(
+        data<{ id: string }>(await call('workspace_resolve', { path: temporaryDirectory })).id,
+      ).toBe('vcomp');
 
-    const project = data<{ id: string; revision: number }>(
-      await call('project_create', {
-        workspaceId: 'vcomp',
-        slug: 'mcp-runtime',
-        title: 'MCP runtime',
-        prd: '# Runtime',
-      }),
-    );
-    const manifests = data<{
-      items: Array<{ id: string; prd?: string; prdSizeBytes: number }>;
-      page: { hasMore: boolean; nextOffset: number | null };
-    }>(
-      await call('project_list', {
-        workspaceId: 'vcomp',
-        state: 'draft',
-        limit: 10,
-        offset: 0,
-      }),
-    );
-    expect(manifests.items[0]).toMatchObject({ id: project.id, prdSizeBytes: 9 });
-    expect(manifests.items[0]?.prd).toBeUndefined();
-    expect(manifests.page).toMatchObject({ hasMore: false, nextOffset: null });
-    const ready = data<{ revision: number }>(
-      await call('project_update', {
-        projectId: project.id,
-        state: 'ready',
-        expectedRevision: project.revision,
-        actor: 'mcp-test',
-      }),
-    );
-    const withPrd = data<{ revision: number }>(
-      await call('project_update_prd', {
-        projectId: project.id,
-        prd: '# Runtime v2',
-        expectedRevision: ready.revision,
-        actor: 'mcp-test',
-      }),
-    );
-    expect(
-      data<{ body: string }>(
-        await call('project_read_prd', {
-          projectId: project.id,
-          offsetCodeUnits: 0,
-          limitCodeUnits: 100,
+      const project = data<{ id: string; revision: number; state: string }>(
+        await call('project_create', {
+          workspaceId: 'vcomp',
+          slug: 'agent-runtime',
+          title: 'Agent runtime',
+          actor: 'mcp-test',
         }),
-      ).body,
-    ).toBe('# Runtime v2');
-    await call('context_put', {
-      projectId: project.id,
-      name: 'architecture',
-      body: '# Architecture',
-      actor: 'mcp-test',
-    });
-    expect(
-      data<{ items: unknown[] }>(await call('context_list', { projectId: project.id })).items,
-    ).toHaveLength(1);
-    expect(
-      data<{ body: string }>(
-        await call('context_read', {
-          projectId: project.id,
-          name: 'architecture',
-          offsetCodeUnits: 0,
-          limitCodeUnits: 100,
-        }),
-      ).body,
-    ).toBe('# Architecture');
+      );
+      expect(project).toMatchObject({ state: 'draft', specCount: 0 });
 
-    const task = data<{ id: string; revision: number }>(
-      await call('task_create', {
-        projectId: project.id,
-        title: 'Implement MCP',
+      const spec = data<{ id: string; revision: number; state: string }>(
+        await call('spec_create', {
+          projectId: project.id,
+          slug: 'mcp-contract',
+          title: 'MCP contract',
+          body: '# Contract\n\nExpose one canonical protocol.',
+          actor: 'mcp-test',
+        }),
+      );
+      expect(spec).toMatchObject({ state: 'draft', taskCount: 0 });
+
+      const openProject = data<{ revision: number; state: string }>(
+        await call('project_update', {
+          projectId: project.id,
+          state: 'open',
+          expectedRevision: project.revision,
+          actor: 'mcp-test',
+        }),
+      );
+      expect(openProject.state).toBe('open');
+
+      const readySpec = data<{ revision: number; state: string }>(
+        await call('spec_update', {
+          specId: spec.id,
+          state: 'ready',
+          expectedRevision: spec.revision,
+          actor: 'mcp-test',
+        }),
+      );
+      expect(readySpec.state).toBe('ready');
+      expect(
+        data<{ body: string }>(
+          await call('spec_read', {
+            specId: spec.id,
+            offsetCodeUnits: 0,
+            limitCodeUnits: 100,
+          }),
+        ).body,
+      ).toContain('canonical protocol');
+
+      await call('context_put', {
+        ownerType: 'workspace',
+        ownerId: 'vcomp',
+        name: 'agents',
+        body: '# Workspace agents',
         actor: 'mcp-test',
-      }),
-    );
-    expect(
-      data<{ items: Array<{ id: string }> }>(
-        await call('task_list', { projectId: project.id, limit: 10, offset: 0 }),
-      ).items[0]?.id,
-    ).toBe(task.id);
-    const updatedTask = data<{ revision: number }>(
-      await call('task_update', {
-        taskId: task.id,
-        body: 'Complete workflow',
+      });
+      await call('context_put', {
+        ownerType: 'project',
+        ownerId: project.id,
+        name: 'agents',
+        body: '# Project agents',
+        actor: 'mcp-test',
+      });
+      expect(
+        data<{ body: string }>(
+          await call('context_read', {
+            ownerType: 'project',
+            ownerId: project.id,
+            name: 'agents',
+            offsetCodeUnits: 0,
+            limitCodeUnits: 100,
+          }),
+        ).body,
+      ).toBe('# Project agents');
+
+      const task = data<{ id: string; revision: number }>(
+        await call('task_create', {
+          specId: spec.id,
+          title: 'Implement MCP',
+          body: 'Ship the v2 tools.',
+          actor: 'mcp-test',
+        }),
+      );
+      expect(
+        data<{ items: Array<{ id: string }> }>(
+          await call('task_list', { specId: spec.id, limit: 10, offset: 0 }),
+        ).items[0]?.id,
+      ).toBe(task.id);
+      expect(
+        data<{ items: Array<{ targetType: string; targetId: string }> }>(
+          await call('work_list', {
+            workspaceId: 'vcomp',
+            projectId: project.id,
+            specId: spec.id,
+            limit: 10,
+          }),
+        ).items,
+      ).toContainEqual(expect.objectContaining({ targetType: 'task', targetId: task.id }));
+
+      const bundle = data<{
+        claim: { targetType: string };
+        spec: { id: string };
+        task: { id: string };
+        workspaceContext: { items: unknown[] };
+        projectContext: { items: unknown[] };
+      }>(
+        await call('work_start', {
+          targetType: 'task',
+          targetId: task.id,
+          agentId: 'mcp-agent',
+          leaseSeconds: 60,
+        }),
+      );
+      expect(bundle).toMatchObject({
+        claim: { targetType: 'task' },
+        spec: { id: spec.id },
+        task: { id: task.id },
+      });
+      expect(bundle.workspaceContext.items).toHaveLength(1);
+      expect(bundle.projectContext.items).toHaveLength(1);
+
+      await call('work_renew', {
+        targetType: 'task',
+        targetId: task.id,
+        agentId: 'mcp-agent',
+        leaseSeconds: 120,
+      });
+      await call('work_release', {
+        targetType: 'task',
+        targetId: task.id,
+        agentId: 'mcp-agent',
+        note: 'handoff check',
+      });
+      await call('work_start', {
+        targetType: 'task',
+        targetId: task.id,
+        agentId: 'mcp-agent',
+        leaseSeconds: 60,
+      });
+      await call('work_complete', {
+        targetType: 'task',
+        targetId: task.id,
+        agentId: 'mcp-agent',
         expectedRevision: task.revision,
+        summary: 'Task delivered',
+        artifacts: [],
+      });
+      expect(
+        data<{ completionSummary: string }>(await call('task_completion_get', { taskId: task.id }))
+          .completionSummary,
+      ).toBe('Task delivered');
+
+      await call('work_start', {
+        targetType: 'spec',
+        targetId: spec.id,
+        agentId: 'mcp-agent',
+        leaseSeconds: 60,
+      });
+      await call('work_complete', {
+        targetType: 'spec',
+        targetId: spec.id,
+        agentId: 'mcp-agent',
+        expectedRevision: readySpec.revision,
+        summary: 'Spec delivered',
+        artifacts: [],
+      });
+      await call('project_complete', {
+        projectId: project.id,
+        expectedRevision: openProject.revision,
+        summary: 'Initiative delivered',
+        artifacts: [],
         actor: 'mcp-test',
-      }),
-    );
-    expect(data<{ id: string }>(await call('task_get', { taskId: task.id })).id).toBe(task.id);
-    expect(
-      data<{ body: string }>(
-        await call('task_read', {
-          taskId: task.id,
-          offsetCodeUnits: 0,
-          limitCodeUnits: 100,
-        }),
-      ).body,
-    ).toBe('Complete workflow');
-    expect(
-      data<{ tasks: { items: unknown[] } }>(await call('project_get', { projectId: project.id }))
-        .tasks.items,
-    ).toHaveLength(1);
-    expect(
-      data<{ items: Array<{ targetId: string }> }>(
-        await call('work_list', { workspaceId: 'vcomp', limit: 10 }),
-      ).items[0]?.targetId,
-    ).toBe(task.id);
+      });
 
-    await call('work_start', {
-      targetType: 'task',
-      targetId: task.id,
-      agentId: 'mcp-agent',
-      leaseSeconds: 60,
-    });
-    await call('work_renew', {
-      targetType: 'task',
-      targetId: task.id,
-      agentId: 'mcp-agent',
-      leaseSeconds: 120,
-    });
-    await call('work_release', {
-      targetType: 'task',
-      targetId: task.id,
-      agentId: 'mcp-agent',
-      note: 'exercise release',
-    });
-    await call('work_start', {
-      targetType: 'task',
-      targetId: task.id,
-      agentId: 'mcp-agent',
-      leaseSeconds: 60,
-    });
-    await call('work_complete', {
-      targetType: 'task',
-      targetId: task.id,
-      agentId: 'mcp-agent',
-      expectedRevision: updatedTask.revision,
-      summary: 'Task delivered',
-      artifacts: [],
-    });
-    expect(
-      data<{ completionSummary: string }>(await call('task_completion_get', { taskId: task.id }))
-        .completionSummary,
-    ).toBe('Task delivered');
-    expect(
-      data<unknown[]>(await call('activity_list', { projectId: project.id, limit: 100 })).length,
-    ).toBeGreaterThan(5);
-
-    await call('work_start', {
-      targetType: 'project',
-      targetId: project.id,
-      agentId: 'mcp-agent',
-      leaseSeconds: 60,
-    });
-    await call('work_complete', {
-      targetType: 'project',
-      targetId: project.id,
-      agentId: 'mcp-agent',
-      expectedRevision: withPrd.revision,
-      summary: 'Project delivered',
-      artifacts: [],
-    });
-    expect(
-      data<{ completionSummary: string }>(
-        await call('project_completion_get', { projectId: project.id }),
-      ).completionSummary,
-    ).toBe('Project delivered');
-    const rejected = await call('work_start', {
-      targetType: 'project',
-      targetId: project.id,
-      agentId: 'mcp-agent',
-      leaseSeconds: 60,
-    });
-    expect(rejected.isError).toBe(true);
-    const rejectedBlock = rejected.content[0];
-    expect(
-      JSON.parse(rejectedBlock?.type === 'text' ? rejectedBlock.text : '').error.suggestion,
-    ).toContain('project');
-
-    await client.close();
-    await handler.close();
+      expect(
+        data<{ completionSummary: string }>(
+          await call('project_completion_get', { projectId: project.id }),
+        ).completionSummary,
+      ).toBe('Initiative delivered');
+      expect(
+        data<unknown[]>(await call('activity_list', { projectId: project.id, limit: 100 })).length,
+      ).toBeGreaterThan(10);
+    } finally {
+      await client.close();
+    }
   });
 
-  it('passes through an already lightweight project manifest from the HTTP gateway', async () => {
-    const manifest: ProjectManifest = {
-      id: 'fb8d757d-bfb0-447e-92d6-38d24f2970a1',
-      workspaceId: 'vcomp',
-      slug: 'remote-manifest',
-      title: 'Remote manifest',
-      state: 'draft',
-      revision: 1,
-      artifactCount: 0,
-      hasCompletion: false,
-      completedAt: null,
-      createdAt: '2026-08-25T00:00:00.000Z',
-      updatedAt: '2026-08-25T00:00:00.000Z',
-      claim: null,
-      prdSizeBytes: 123,
+  it('executes bounded discovery, manifest reads, updates, and every cancellation boundary', async () => {
+    const handler = createPimpampumMcpHandler(store);
+    const client = new Client(
+      { name: 'pimpampum-coverage', version: '0.2.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+    const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {
+      fetch: (url, init) => handler.fetch(new Request(url, init)),
+    });
+    await client.connect(transport);
+
+    const call = (name: string, args: Record<string, unknown>) =>
+      client.callTool({ name, arguments: args });
+    const data = <T>(result: Awaited<ReturnType<typeof call>>): T => {
+      const block = result.content[0];
+      if (!block || block.type !== 'text') throw new Error('Expected an MCP text result');
+      return (JSON.parse(block.text) as { data: T }).data;
     };
-    const gateway = {
-      listProjectManifests: () => [
-        manifest,
-        { ...manifest, id: '0cf8cd67-c730-4146-b7c7-8a3c56f4606b' },
-      ],
-    } as unknown as PimpampumGateway;
-    const handler = createPimpampumMcpHandler(gateway);
-    const client = new Client(
-      { name: 'manifest-test', version: '0.1.0' },
-      { versionNegotiation: { mode: 'auto' } },
-    );
-    const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {
-      fetch: (url, init) => handler.fetch(new Request(url, init)),
-    });
-    await client.connect(transport);
 
-    const result = await client.callTool({
-      name: 'project_list',
-      arguments: { limit: 1, offset: 10 },
-    });
-    const block = result.content[0];
-    expect(block?.type).toBe('text');
-    expect(JSON.parse(block?.type === 'text' ? block.text : '')).toEqual({
-      data: {
-        items: [manifest],
-        page: { limit: 1, offset: 10, returned: 1, hasMore: true, nextOffset: 11 },
-      },
-    });
+    try {
+      const project = data<{ id: string; revision: number }>(
+        await call('project_create', {
+          workspaceId: 'vcomp',
+          slug: 'coverage-project',
+          title: 'Coverage project',
+          actor: 'coverage',
+        }),
+      );
+      const projectToCancel = data<{ id: string; revision: number }>(
+        await call('project_create', {
+          workspaceId: 'vcomp',
+          slug: 'cancel-project',
+          title: 'Cancel project',
+          actor: 'coverage',
+        }),
+      );
 
-    await client.close();
-    await handler.close();
+      const projectPage = data<{
+        items: Array<{ id: string }>;
+        page: { hasMore: boolean; nextOffset: number | null };
+      }>(
+        await call('project_list', {
+          workspaceId: 'vcomp',
+          state: 'draft',
+          limit: 1,
+          offset: 0,
+        }),
+      );
+      expect(projectPage.items).toHaveLength(1);
+      expect(projectPage.page).toMatchObject({ hasMore: true, nextOffset: 1 });
+      expect(data<{ id: string }>(await call('project_get', { projectId: project.id })).id).toBe(
+        project.id,
+      );
+
+      const cancelledSpec = data<{ id: string; revision: number }>(
+        await call('spec_create', {
+          projectId: project.id,
+          slug: 'cancelled-spec',
+          title: 'Cancelled Spec',
+          body: '# Cancel me',
+          actor: 'coverage',
+        }),
+      );
+      const taskSpec = data<{ id: string; revision: number }>(
+        await call('spec_create', {
+          projectId: project.id,
+          slug: 'task-spec',
+          title: 'Task Spec',
+          body: '# Tasks',
+          actor: 'coverage',
+        }),
+      );
+      const specPage = data<{
+        items: Array<{ id: string }>;
+        page: { hasMore: boolean; nextOffset: number | null };
+      }>(
+        await call('spec_list', {
+          projectId: project.id,
+          state: 'draft',
+          limit: 1,
+          offset: 0,
+        }),
+      );
+      expect(specPage.items).toHaveLength(1);
+      expect(specPage.page).toMatchObject({ hasMore: true, nextOffset: 1 });
+      expect(
+        data<{ completionSummary: null }>(
+          await call('spec_completion_get', { specId: cancelledSpec.id }),
+        ).completionSummary,
+      ).toBeNull();
+      expect(
+        data<{ state: string }>(
+          await call('spec_cancel', {
+            specId: cancelledSpec.id,
+            expectedRevision: cancelledSpec.revision,
+            reason: 'Coverage cancellation',
+            actor: 'coverage',
+          }),
+        ).state,
+      ).toBe('cancelled');
+
+      const firstTask = data<{ id: string; revision: number }>(
+        await call('task_create', {
+          specId: taskSpec.id,
+          title: 'First task',
+          body: 'Original task body',
+          actor: 'coverage',
+        }),
+      );
+      await call('task_create', {
+        specId: taskSpec.id,
+        title: 'Second task',
+        body: 'Second task body',
+        actor: 'coverage',
+      });
+      expect(data<{ id: string }>(await call('task_get', { taskId: firstTask.id })).id).toBe(
+        firstTask.id,
+      );
+      expect(
+        data<{ body: string }>(
+          await call('task_read', {
+            taskId: firstTask.id,
+            offsetCodeUnits: 0,
+            limitCodeUnits: 100,
+          }),
+        ).body,
+      ).toBe('Original task body');
+      const updatedTask = data<{ revision: number; title: string }>(
+        await call('task_update', {
+          taskId: firstTask.id,
+          title: 'Updated task',
+          body: 'Updated task body',
+          expectedRevision: firstTask.revision,
+          actor: 'coverage',
+        }),
+      );
+      expect(updatedTask.title).toBe('Updated task');
+      expect(
+        data<{ state: string }>(
+          await call('task_cancel', {
+            taskId: firstTask.id,
+            expectedRevision: updatedTask.revision,
+            reason: 'No longer needed',
+            actor: 'coverage',
+          }),
+        ).state,
+      ).toBe('cancelled');
+
+      await call('context_put', {
+        ownerType: 'project',
+        ownerId: project.id,
+        name: 'architecture',
+        body: '# Architecture',
+        actor: 'coverage',
+      });
+      await call('context_put', {
+        ownerType: 'project',
+        ownerId: project.id,
+        name: 'decisions',
+        body: '# Decisions',
+        actor: 'coverage',
+      });
+      const contextPage = data<{
+        items: Array<{ name: string }>;
+        page: { hasMore: boolean; nextOffset: number | null };
+      }>(
+        await call('context_list', {
+          ownerType: 'project',
+          ownerId: project.id,
+          limit: 1,
+          offset: 0,
+        }),
+      );
+      expect(contextPage.items).toHaveLength(1);
+      expect(contextPage.page).toMatchObject({ hasMore: true, nextOffset: 1 });
+
+      await call('spec_create', {
+        projectId: projectToCancel.id,
+        slug: 'descendant',
+        title: 'Descendant Spec',
+        body: '# Descendant',
+        actor: 'coverage',
+      });
+      expect(
+        data<{ state: string }>(
+          await call('project_cancel', {
+            projectId: projectToCancel.id,
+            expectedRevision: projectToCancel.revision,
+            reason: 'Cancel the initiative',
+            actor: 'coverage',
+          }),
+        ).state,
+      ).toBe('cancelled');
+    } finally {
+      await client.close();
+    }
   });
 
-  it('reports truncation and actionable guidance for unexpected gateway failures', async () => {
-    const gateway = {
-      listWork: () => [{ targetId: 'one' }, { targetId: 'two' }],
-      listWorkspaces: () => {
-        throw new Error('offline');
-      },
-    } as unknown as PimpampumGateway;
-    const handler = createPimpampumMcpHandler(gateway);
+  it('returns actionable envelopes for invalid v2 targets and revision conflicts', async () => {
+    const handler = createPimpampumMcpHandler(store);
     const client = new Client(
-      { name: 'failure-test', version: '0.1.0' },
+      { name: 'pimpampum-errors', version: '0.2.0' },
       { versionNegotiation: { mode: 'auto' } },
     );
     const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {
       fetch: (url, init) => handler.fetch(new Request(url, init)),
     });
     await client.connect(transport);
+    try {
+      const invalidTarget = await client.callTool({
+        name: 'work_start',
+        arguments: {
+          targetType: 'project',
+          targetId: '00000000-0000-4000-8000-000000000001',
+          agentId: 'agent',
+        },
+      });
+      expect(invalidTarget.isError).toBe(true);
+      expect(invalidTarget.content).toContainEqual(
+        expect.objectContaining({ type: 'text', text: expect.stringContaining('spec') }),
+      );
 
-    const work = await client.callTool({ name: 'work_list', arguments: { limit: 1 } });
-    const workBlock = work.content[0];
-    expect(JSON.parse(workBlock?.type === 'text' ? workBlock.text : '').data).toMatchObject({
-      items: [{ targetId: 'one' }],
-      truncated: true,
-    });
-    const failed = await client.callTool({ name: 'workspace_list', arguments: {} });
-    const failedBlock = failed.content[0];
-    expect(failed.isError).toBe(true);
-    expect(
-      JSON.parse(failedBlock?.type === 'text' ? failedBlock.text : '').error.suggestion,
-    ).toContain('daemon logs');
-
-    await client.close();
-    await handler.close();
+      const result = await client.callTool({
+        name: 'spec_get',
+        arguments: { specId: '00000000-0000-4000-8000-000000000001' },
+      });
+      expect(result.isError).toBe(true);
+      const block = result.content[0];
+      if (!block || block.type !== 'text') throw new Error('Expected MCP text error');
+      expect(JSON.parse(block.text)).toEqual({
+        error: expect.objectContaining({
+          code: 'not_found',
+          retryable: false,
+          suggestion: 'Verify the resource ID or resolve the current workspace again.',
+        }),
+      });
+    } finally {
+      await client.close();
+    }
   });
 });

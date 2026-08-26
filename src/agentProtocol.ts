@@ -21,8 +21,9 @@ export type AgentEnvelope<T = unknown> = AgentSuccessEnvelope<T> | AgentErrorEnv
 
 const errorGuidance: Partial<Record<ErrorCode, string>> = {
   bad_request: 'Correct the arguments using this tool input schema, then retry.',
-  conflict: 'Inspect the current claim or resource state before retrying.',
-  invalid_state: 'Inspect the project, task hierarchy, and open work before retrying.',
+  conflict: 'Inspect the current Claim and resource manifest before retrying.',
+  invalid_state:
+    'Inspect the Project, Spec, Task hierarchy and ancestor lifecycle states before retrying.',
   not_found: 'Verify the resource ID or resolve the current workspace again.',
   revision_conflict: 'Read the latest manifest, then retry with its current revision.',
   unauthorized: 'Verify the daemon bearer token used by the MCP transport or stdio bridge.',

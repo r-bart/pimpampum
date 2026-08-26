@@ -14,7 +14,7 @@ struct HelpDialogTests {
     #expect(
       HelpDialogCopy.items.map(\.text) == [
         "Pimpampum runs locally on this machine.",
-        "Projects contain a PRD, tasks, and optional subtasks.",
+        "Projects contain Specs; Specs may contain tasks and optional subtasks.",
         "Agents interact through MCP, the CLI, or the local API.",
         "Claimed work appears under Active work and in the menu-bar count.",
         "Clicking a project opens its workspace in Finder.",

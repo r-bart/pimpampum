@@ -11,15 +11,22 @@ import { createPimpampumMcpHandler } from './mcp.js';
 import { openApiDocument } from './openapi.js';
 import {
   absolutePathSchema,
+  artifactSchema,
+  cancelSchema,
   claimSchema,
   completeSchema,
   createProjectSchema,
+  createSpecSchema,
   createTaskSchema,
-  markdownSchema,
   projectStateSchema,
+  putContextSchema,
   registerWorkspaceSchema,
   slugSchema,
+  specStateSchema,
   targetTypeSchema,
+  updateProjectSchema,
+  updateSpecSchema,
+  updateTaskSchema,
 } from './schemas.js';
 import type { PimpampumHttpGateway } from './types.js';
 
@@ -39,8 +46,12 @@ function routeParam(request: Request, name: string): string {
   return request.params[name] as string;
 }
 
-function responseData(response: Response, data: unknown, status = 200): void {
-  response.status(status).json({ data, meta: { schemaVersion: 1 } });
+function responseData(response: Response, data: unknown, status = 200, schemaVersion = 1): void {
+  response.status(status).json({ data, meta: { schemaVersion } });
+}
+
+function pageData<T>(items: T[], limit: number, offset: number) {
+  return { items, limit, offset, hasMore: items.length === limit };
 }
 
 function normalizeHttpError(error: unknown): AppError {
@@ -125,18 +136,23 @@ export function createHttpApp(
 
   app.get('/api/v1/overview', (_request, response) => {
     const generatedAtMilliseconds = clock();
-    responseData(response, {
-      ...store.getOverview(),
-      daemon: {
-        version: DAEMON_VERSION,
-        startedAt,
-        uptimeSeconds: Math.max(
-          0,
-          Math.floor((generatedAtMilliseconds - startedAtMilliseconds) / 1_000),
-        ),
+    responseData(
+      response,
+      {
+        ...store.getOverview(),
+        daemon: {
+          version: DAEMON_VERSION,
+          startedAt,
+          uptimeSeconds: Math.max(
+            0,
+            Math.floor((generatedAtMilliseconds - startedAtMilliseconds) / 1_000),
+          ),
+        },
+        generatedAt: new Date(generatedAtMilliseconds).toISOString(),
       },
-      generatedAt: new Date(generatedAtMilliseconds).toISOString(),
-    });
+      200,
+      2,
+    );
   });
 
   // HTTP capabilities are mounted only when runtime composition supplies their owner. Omitting
@@ -170,7 +186,7 @@ export function createHttpApp(
   });
 
   app.post('/api/v1/workspaces/resolve', (request, response) => {
-    const input = parse(z.object({ path: absolutePathSchema }), request.body);
+    const input = parse(z.strictObject({ path: absolutePathSchema }), request.body);
     responseData(response, store.resolveWorkspace(input.path));
   });
 
@@ -183,15 +199,13 @@ export function createHttpApp(
       }),
       request.query,
     );
-    responseData(
-      response,
-      store.listProjectManifests({
-        workspaceId: filters.workspaceId ?? null,
-        state: filters.state ?? null,
-        limit: page.limit,
-        offset: page.offset,
-      }),
-    );
+    const items = store.listProjectManifests({
+      workspaceId: filters.workspaceId ?? null,
+      state: filters.state ?? null,
+      limit: page.limit,
+      offset: page.offset,
+    });
+    responseData(response, pageData(items, page.limit, page.offset));
   });
 
   app.post('/api/v1/projects', (request, response) => {
@@ -199,23 +213,11 @@ export function createHttpApp(
   });
 
   app.get('/api/v1/projects/:projectId', (request, response) => {
-    responseData(response, store.getProject(routeParam(request, 'projectId')));
+    responseData(response, store.getProjectManifest(routeParam(request, 'projectId')));
   });
 
   app.get('/api/v1/projects/:projectId/manifest', (request, response) => {
     responseData(response, store.getProjectManifest(routeParam(request, 'projectId')));
-  });
-
-  app.get('/api/v1/projects/:projectId/prd', (request, response) => {
-    const page = parse(markdownPageSchema, request.query);
-    responseData(
-      response,
-      store.readProjectPrd(
-        routeParam(request, 'projectId'),
-        page.offsetCodeUnits,
-        page.limitCodeUnits,
-      ),
-    );
   });
 
   app.get('/api/v1/projects/:projectId/completion', (request, response) => {
@@ -223,51 +225,105 @@ export function createHttpApp(
   });
 
   app.patch('/api/v1/projects/:projectId', (request, response) => {
-    const input = parse(
-      z.object({
-        title: z.string().min(1).max(200).nullable().default(null),
-        state: z.enum(['draft', 'ready']).nullable().default(null),
-        expectedRevision: z.number().int().positive(),
-        actor: z.string().min(1).max(200).nullable().default(null),
-      }),
-      request.body,
-    );
+    const input = parse(updateProjectSchema, request.body);
     responseData(
       response,
       store.updateProject({ projectId: routeParam(request, 'projectId'), ...input }),
     );
   });
 
-  app.put('/api/v1/projects/:projectId/prd', (request, response) => {
+  app.post('/api/v1/projects/:projectId/complete', (request, response) => {
     const input = parse(
-      z.object({
-        prd: markdownSchema,
+      z.strictObject({
         expectedRevision: z.number().int().positive(),
+        summary: z.string().trim().min(1).max(4_000),
+        artifacts: z.array(artifactSchema).max(20).default([]),
         actor: z.string().min(1).max(200).nullable().default(null),
       }),
       request.body,
     );
     responseData(
       response,
-      store.updatePrd({ projectId: routeParam(request, 'projectId'), ...input }),
+      store.completeProject({ projectId: routeParam(request, 'projectId'), ...input }),
     );
+  });
+
+  app.post('/api/v1/projects/:projectId/cancel', (request, response) => {
+    const input = parse(cancelSchema, request.body);
+    responseData(
+      response,
+      store.cancelProject({ projectId: routeParam(request, 'projectId'), ...input }),
+    );
+  });
+
+  app.get('/api/v1/projects/:projectId/specs', (request, response) => {
+    const page = parse(paginationSchema, request.query);
+    const { state } = parse(z.object({ state: specStateSchema.optional() }), request.query);
+    const items = store.listSpecManifests({
+      projectId: routeParam(request, 'projectId'),
+      state: state ?? null,
+      ...page,
+    });
+    responseData(response, pageData(items, page.limit, page.offset));
+  });
+
+  app.post('/api/v1/projects/:projectId/specs', (request, response) => {
+    const input = parse(createSpecSchema, request.body);
+    responseData(
+      response,
+      store.createSpec({ projectId: routeParam(request, 'projectId'), ...input }),
+      201,
+    );
+  });
+
+  app.get('/api/v1/specs/:specId', (request, response) => {
+    responseData(response, store.getSpecManifest(routeParam(request, 'specId')));
+  });
+
+  app.get('/api/v1/specs/:specId/manifest', (request, response) => {
+    responseData(response, store.getSpecManifest(routeParam(request, 'specId')));
+  });
+
+  app.get('/api/v1/specs/:specId/body', (request, response) => {
+    const page = parse(markdownPageSchema, request.query);
+    responseData(
+      response,
+      store.readSpecBody(routeParam(request, 'specId'), page.offsetCodeUnits, page.limitCodeUnits),
+    );
+  });
+
+  app.get('/api/v1/specs/:specId/completion', (request, response) => {
+    responseData(response, store.getSpecCompletion(routeParam(request, 'specId')));
+  });
+
+  app.patch('/api/v1/specs/:specId', (request, response) => {
+    const input = parse(updateSpecSchema, request.body);
+    responseData(response, store.updateSpec({ specId: routeParam(request, 'specId'), ...input }));
+  });
+
+  app.post('/api/v1/specs/:specId/cancel', (request, response) => {
+    const input = parse(cancelSchema, request.body);
+    responseData(response, store.cancelSpec({ specId: routeParam(request, 'specId'), ...input }));
   });
 
   app.get('/api/v1/projects/:projectId/context', (request, response) => {
     const page = parse(paginationSchema, request.query);
-    responseData(
-      response,
-      store.listContextManifests({
-        projectId: routeParam(request, 'projectId'),
-        ...page,
-      }),
-    );
+    const items = store.listContextManifests({
+      ownerType: 'project',
+      ownerId: routeParam(request, 'projectId'),
+      ...page,
+    });
+    responseData(response, pageData(items, page.limit, page.offset));
   });
 
   app.get('/api/v1/projects/:projectId/context/:name', (request, response) => {
     responseData(
       response,
-      store.readContext(routeParam(request, 'projectId'), routeParam(request, 'name')),
+      store.getContextManifest(
+        'project',
+        routeParam(request, 'projectId'),
+        routeParam(request, 'name'),
+      ),
     );
   });
 
@@ -276,6 +332,7 @@ export function createHttpApp(
     responseData(
       response,
       store.readContextPage(
+        'project',
         routeParam(request, 'projectId'),
         routeParam(request, 'name'),
         page.offsetCodeUnits,
@@ -285,40 +342,85 @@ export function createHttpApp(
   });
 
   app.put('/api/v1/projects/:projectId/context/:name', (request, response) => {
-    const input = parse(
-      z.object({
-        body: markdownSchema,
-        expectedRevision: z.number().int().positive().nullable().default(null),
-        actor: z.string().min(1).max(200).nullable().default(null),
-      }),
-      request.body,
-    );
+    const input = parse(putContextSchema, request.body);
     const name = parse(slugSchema, routeParam(request, 'name'));
     responseData(
       response,
-      store.putContext({ projectId: routeParam(request, 'projectId'), name, ...input }),
+      store.putContext({
+        ownerType: 'project',
+        ownerId: routeParam(request, 'projectId'),
+        name,
+        ...input,
+      }),
     );
   });
 
-  app.get('/api/v1/projects/:projectId/tasks', (request, response) => {
+  app.get('/api/v1/workspaces/:workspaceId/context', (request, response) => {
     const page = parse(paginationSchema, request.query);
+    const items = store.listContextManifests({
+      ownerType: 'workspace',
+      ownerId: routeParam(request, 'workspaceId'),
+      ...page,
+    });
+    responseData(response, pageData(items, page.limit, page.offset));
+  });
+
+  app.get('/api/v1/workspaces/:workspaceId/context/:name', (request, response) => {
     responseData(
       response,
-      store.listTaskManifests({ projectId: routeParam(request, 'projectId'), ...page }),
+      store.getContextManifest(
+        'workspace',
+        routeParam(request, 'workspaceId'),
+        routeParam(request, 'name'),
+      ),
     );
   });
 
-  app.post('/api/v1/projects/:projectId/tasks', (request, response) => {
+  app.get('/api/v1/workspaces/:workspaceId/context/:name/body', (request, response) => {
+    const page = parse(markdownPageSchema, request.query);
+    responseData(
+      response,
+      store.readContextPage(
+        'workspace',
+        routeParam(request, 'workspaceId'),
+        routeParam(request, 'name'),
+        page.offsetCodeUnits,
+        page.limitCodeUnits,
+      ),
+    );
+  });
+
+  app.put('/api/v1/workspaces/:workspaceId/context/:name', (request, response) => {
+    const input = parse(putContextSchema, request.body);
+    const name = parse(slugSchema, routeParam(request, 'name'));
+    responseData(
+      response,
+      store.putContext({
+        ownerType: 'workspace',
+        ownerId: routeParam(request, 'workspaceId'),
+        name,
+        ...input,
+      }),
+    );
+  });
+
+  app.get('/api/v1/specs/:specId/tasks', (request, response) => {
+    const page = parse(paginationSchema, request.query);
+    const items = store.listTaskManifests({ specId: routeParam(request, 'specId'), ...page });
+    responseData(response, pageData(items, page.limit, page.offset));
+  });
+
+  app.post('/api/v1/specs/:specId/tasks', (request, response) => {
     const input = parse(createTaskSchema, request.body);
     responseData(
       response,
-      store.createTask({ projectId: routeParam(request, 'projectId'), ...input }),
+      store.createTask({ specId: routeParam(request, 'specId'), ...input }),
       201,
     );
   });
 
   app.get('/api/v1/tasks/:taskId', (request, response) => {
-    responseData(response, store.getTask(routeParam(request, 'taskId')));
+    responseData(response, store.getTaskManifest(routeParam(request, 'taskId')));
   });
 
   app.get('/api/v1/tasks/:taskId/manifest', (request, response) => {
@@ -338,15 +440,7 @@ export function createHttpApp(
   });
 
   app.patch('/api/v1/tasks/:taskId', (request, response) => {
-    const input = parse(
-      z.object({
-        title: z.string().min(1).max(300).nullable().default(null),
-        body: markdownSchema.nullable().optional(),
-        expectedRevision: z.number().int().positive(),
-        actor: z.string().min(1).max(200).nullable().default(null),
-      }),
-      request.body,
-    );
+    const input = parse(updateTaskSchema, request.body);
     const taskId = routeParam(request, 'taskId');
     responseData(
       response,
@@ -360,17 +454,29 @@ export function createHttpApp(
     );
   });
 
+  app.post('/api/v1/tasks/:taskId/cancel', (request, response) => {
+    const input = parse(cancelSchema, request.body);
+    responseData(response, store.cancelTask({ taskId: routeParam(request, 'taskId'), ...input }));
+  });
+
   app.get('/api/v1/work', (request, response) => {
     const input = parse(
       z.object({
         workspaceId: slugSchema.optional(),
+        projectId: z.string().uuid().optional(),
+        specId: z.string().uuid().optional(),
         limit: z.coerce.number().int().min(1).max(200).default(50),
       }),
       request.query,
     );
     responseData(
       response,
-      store.listWork({ workspaceId: input.workspaceId ?? null, limit: input.limit }),
+      store.listWork({
+        workspaceId: input.workspaceId ?? null,
+        projectId: input.projectId ?? null,
+        specId: input.specId ?? null,
+        limit: input.limit,
+      }),
     );
   });
 
@@ -395,7 +501,7 @@ export function createHttpApp(
   app.delete('/api/v1/work/:targetType/:targetId/claim', (request, response) => {
     const targetType = parse(targetTypeSchema, routeParam(request, 'targetType'));
     const input = parse(
-      z.object({
+      z.strictObject({
         agentId: z.string().min(1).max(200),
         note: z.string().max(500).nullable().default(null),
       }),
@@ -423,12 +529,12 @@ export function createHttpApp(
   });
 
   app.post('/api/v1/admin/backup', async (request, response) => {
-    const input = parse(z.object({ directory: absolutePathSchema }), request.body);
+    const input = parse(z.strictObject({ directory: absolutePathSchema }), request.body);
     responseData(response, { path: await store.backup(input.directory) }, 201);
   });
 
   app.post('/api/v1/admin/export', (request, response) => {
-    const input = parse(z.object({ directory: absolutePathSchema }), request.body);
+    const input = parse(z.strictObject({ directory: absolutePathSchema }), request.body);
     responseData(response, { path: store.exportPortable(input.directory) }, 201);
   });
 

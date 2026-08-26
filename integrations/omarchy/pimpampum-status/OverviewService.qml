@@ -45,9 +45,9 @@ Item {
   function validCounts(counts) {
     if (!isObject(counts)) return false
     var fields = [
-      "workspaces", "projects", "draftProjects", "readyProjects",
-      "completedProjects", "openTasks", "completedTasks", "activeClaims",
-      "availableWork"
+      "workspaces", "projects", "specs", "draftProjects", "openProjects",
+      "pausedProjects", "completedProjects", "cancelledProjects", "openTasks",
+      "completedTasks", "cancelledTasks", "activeClaims", "availableWork"
     ]
     for (var index = 0; index < fields.length; index += 1) {
       if (!isCount(counts[fields[index]])) return false
@@ -58,31 +58,33 @@ Item {
   function validProject(project) {
     if (!isObject(project) || !isObject(project.workspace)) return false
     if (!isString(project.id) || !isString(project.slug) || !isString(project.title)) return false
-    if (["draft", "ready", "done"].indexOf(project.lifecycleState) === -1) return false
-    if (["active", "available", "draft", "complete"].indexOf(project.status) === -1) return false
+    if (["draft", "open", "paused", "done", "cancelled"].indexOf(project.lifecycleState) === -1) return false
+    if (["active", "available", "draft", "paused", "complete"].indexOf(project.status) === -1) return false
     if (!isString(project.workspace.id) || !isString(project.workspace.name)) return false
     if (!isAbsoluteWorkspacePath(project.workspace.rootPath)) return false
-    if (!isCount(project.openTaskCount) || !isCount(project.completedTaskCount)) return false
+    if (!isCount(project.specCount) || !isCount(project.openTaskCount) || !isCount(project.completedTaskCount)) return false
     if (!isCount(project.activeClaimCount) || !isCount(project.availableWorkCount)) return false
     return isTimestamp(project.updatedAt)
   }
 
   function validActiveWork(work) {
     if (!isObject(work)) return false
-    if (["project", "task"].indexOf(work.targetType) === -1) return false
+    if (["spec", "task"].indexOf(work.targetType) === -1) return false
     if (!isString(work.targetId) || !isString(work.workspaceId)) return false
     if (!isString(work.projectId) || !isString(work.projectTitle)) return false
+    if (!isString(work.specId) || !isString(work.specTitle)) return false
     if (!isString(work.agentId) || !isTimestamp(work.expiresAt)) return false
     if (work.targetType === "task" && (!isString(work.taskId) || !isString(work.taskTitle))) return false
+    if (work.targetType === "spec" && (work.taskId !== null || work.taskTitle !== null)) return false
     return true
   }
 
   function validateEnvelope(envelope) {
     if (!isObject(envelope) || !isObject(envelope.meta) || !isObject(envelope.data)) return "invalid"
-    if (envelope.meta.schemaVersion !== 1) return "incompatible"
+    if (envelope.meta.schemaVersion !== 2) return "incompatible"
 
     var data = envelope.data
-    if (["active", "available", "complete", "draft", "empty"].indexOf(data.status) === -1) return "invalid"
+    if (["active", "available", "complete", "draft", "paused", "empty"].indexOf(data.status) === -1) return "invalid"
     if (!isObject(data.daemon) || !isString(data.daemon.version) || !isTimestamp(data.daemon.startedAt)) return "invalid"
     if (!isCount(data.daemon.uptimeSeconds) || !isTimestamp(data.generatedAt)) return "invalid"
     if (!validCounts(data.counts) || !Array.isArray(data.projects) || !Array.isArray(data.activeWork)) return "invalid"

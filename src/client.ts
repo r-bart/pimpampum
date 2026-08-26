@@ -9,7 +9,9 @@ import type {
   CompletionDetails,
   ContextDocument,
   ContextManifest,
+  ContextOwnerType,
   CreateProjectInput,
+  CreateSpecInput,
   CreateTaskInput,
   MarkdownPage,
   Overview,
@@ -17,6 +19,9 @@ import type {
   ProjectManifest,
   PimpampumGateway,
   ProjectState,
+  Spec,
+  SpecManifest,
+  SpecState,
   Task,
   TaskManifest,
   TargetType,
@@ -27,6 +32,13 @@ import type {
 
 interface ApiEnvelope<T> {
   data: T;
+}
+
+interface ApiPage<T> {
+  items: T[];
+  limit: number;
+  offset: number;
+  hasMore: boolean;
 }
 
 interface ApiErrorEnvelope {
@@ -118,9 +130,16 @@ export class PimpampumHttpClient implements PimpampumGateway {
     });
   }
 
-  listWork(input: { workspaceId: string | null; limit: number }): Promise<WorkItem[]> {
+  listWork(input: {
+    workspaceId: string | null;
+    projectId: string | null;
+    specId: string | null;
+    limit: number;
+  }): Promise<WorkItem[]> {
     const query = new URLSearchParams({ limit: String(input.limit) });
     if (input.workspaceId) query.set('workspaceId', input.workspaceId);
+    if (input.projectId) query.set('projectId', input.projectId);
+    if (input.specId) query.set('specId', input.specId);
     return this.request(`/api/v1/work?${query.toString()}`);
   }
 
@@ -160,7 +179,7 @@ export class PimpampumHttpClient implements PimpampumGateway {
     });
   }
 
-  completeWork(input: CompleteWorkInput): Promise<Project | Task> {
+  completeWork(input: CompleteWorkInput): Promise<Spec | Task> {
     return this.request(`/api/v1/work/${input.targetType}/${input.targetId}/complete`, {
       method: 'POST',
       body: {
@@ -172,7 +191,7 @@ export class PimpampumHttpClient implements PimpampumGateway {
     });
   }
 
-  getProject(projectId: string): Promise<Project> {
+  getProject(projectId: string): Promise<ProjectManifest> {
     return this.request(`/api/v1/projects/${projectId}`);
   }
 
@@ -180,21 +199,11 @@ export class PimpampumHttpClient implements PimpampumGateway {
     return this.request(`/api/v1/projects/${projectId}/manifest`);
   }
 
-  readProjectPrd(
-    projectId: string,
-    offsetCodeUnits: number,
-    limitCodeUnits: number,
-  ): Promise<MarkdownPage> {
-    return this.request(
-      `/api/v1/projects/${projectId}/prd?offsetCodeUnits=${offsetCodeUnits}&limitCodeUnits=${limitCodeUnits}`,
-    );
-  }
-
   getProjectCompletion(projectId: string): Promise<CompletionDetails> {
     return this.request(`/api/v1/projects/${projectId}/completion`);
   }
 
-  listProjectManifests(input: {
+  async listProjectManifests(input: {
     workspaceId: string | null;
     state: ProjectState | null;
     limit: number;
@@ -203,7 +212,8 @@ export class PimpampumHttpClient implements PimpampumGateway {
     const query = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) });
     if (input.workspaceId) query.set('workspaceId', input.workspaceId);
     if (input.state) query.set('state', input.state);
-    return this.request(`/api/v1/projects?${query.toString()}`);
+    return (await this.request<ApiPage<ProjectManifest>>(`/api/v1/projects?${query.toString()}`))
+      .items;
   }
 
   createProject(input: CreateProjectInput): Promise<Project> {
@@ -213,7 +223,7 @@ export class PimpampumHttpClient implements PimpampumGateway {
   updateProject(input: {
     projectId: string;
     title: string | null;
-    state: Exclude<ProjectState, 'done'> | null;
+    state: Exclude<ProjectState, 'done' | 'cancelled'> | null;
     expectedRevision: number;
     actor: string | null;
   }): Promise<Project> {
@@ -221,22 +231,97 @@ export class PimpampumHttpClient implements PimpampumGateway {
     return this.request(`/api/v1/projects/${projectId}`, { method: 'PATCH', body });
   }
 
-  updatePrd(input: {
+  completeProject(input: {
     projectId: string;
-    prd: string;
     expectedRevision: number;
+    summary: string;
+    artifacts: CompleteWorkInput['artifacts'];
     actor: string | null;
   }): Promise<Project> {
     const { projectId, ...body } = input;
-    return this.request(`/api/v1/projects/${projectId}/prd`, { method: 'PUT', body });
+    return this.request(`/api/v1/projects/${projectId}/complete`, { method: 'POST', body });
+  }
+
+  cancelProject(input: {
+    projectId: string;
+    expectedRevision: number;
+    reason: string;
+    actor: string | null;
+  }): Promise<Project> {
+    const { projectId, ...body } = input;
+    return this.request(`/api/v1/projects/${projectId}/cancel`, { method: 'POST', body });
+  }
+
+  createSpec(input: CreateSpecInput): Promise<Spec> {
+    const { projectId, ...body } = input;
+    return this.request(`/api/v1/projects/${projectId}/specs`, { method: 'POST', body });
+  }
+
+  getSpec(specId: string): Promise<SpecManifest> {
+    return this.request(`/api/v1/specs/${specId}`);
+  }
+
+  getSpecManifest(specId: string): Promise<SpecManifest> {
+    return this.request(`/api/v1/specs/${specId}/manifest`);
+  }
+
+  readSpecBody(
+    specId: string,
+    offsetCodeUnits: number,
+    limitCodeUnits: number,
+  ): Promise<MarkdownPage> {
+    return this.request(
+      `/api/v1/specs/${specId}/body?offsetCodeUnits=${offsetCodeUnits}&limitCodeUnits=${limitCodeUnits}`,
+    );
+  }
+
+  getSpecCompletion(specId: string): Promise<CompletionDetails> {
+    return this.request(`/api/v1/specs/${specId}/completion`);
+  }
+
+  async listSpecManifests(input: {
+    projectId: string;
+    state: SpecState | null;
+    limit: number;
+    offset: number;
+  }): Promise<SpecManifest[]> {
+    const query = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) });
+    if (input.state) query.set('state', input.state);
+    return (
+      await this.request<ApiPage<SpecManifest>>(
+        `/api/v1/projects/${input.projectId}/specs?${query.toString()}`,
+      )
+    ).items;
+  }
+
+  updateSpec(input: {
+    specId: string;
+    title: string | null;
+    body: string | null;
+    state: Exclude<SpecState, 'done' | 'cancelled'> | null;
+    expectedRevision: number;
+    actor: string | null;
+  }): Promise<Spec> {
+    const { specId, ...body } = input;
+    return this.request(`/api/v1/specs/${specId}`, { method: 'PATCH', body });
+  }
+
+  cancelSpec(input: {
+    specId: string;
+    expectedRevision: number;
+    reason: string;
+    actor: string | null;
+  }): Promise<Spec> {
+    const { specId, ...body } = input;
+    return this.request(`/api/v1/specs/${specId}/cancel`, { method: 'POST', body });
   }
 
   createTask(input: CreateTaskInput): Promise<Task> {
-    const { projectId, ...body } = input;
-    return this.request(`/api/v1/projects/${projectId}/tasks`, { method: 'POST', body });
+    const { specId, ...body } = input;
+    return this.request(`/api/v1/specs/${specId}/tasks`, { method: 'POST', body });
   }
 
-  getTask(taskId: string): Promise<Task> {
+  getTask(taskId: string): Promise<TaskManifest> {
     return this.request(`/api/v1/tasks/${taskId}`);
   }
 
@@ -258,14 +343,16 @@ export class PimpampumHttpClient implements PimpampumGateway {
     return this.request(`/api/v1/tasks/${taskId}/completion`);
   }
 
-  listTaskManifests(input: {
-    projectId: string;
+  async listTaskManifests(input: {
+    specId: string;
     limit: number;
     offset: number;
   }): Promise<TaskManifest[]> {
-    return this.request(
-      `/api/v1/projects/${input.projectId}/tasks?limit=${input.limit}&offset=${input.offset}`,
-    );
+    return (
+      await this.request<ApiPage<TaskManifest>>(
+        `/api/v1/specs/${input.specId}/tasks?limit=${input.limit}&offset=${input.offset}`,
+      )
+    ).items;
   }
 
   updateTask(input: {
@@ -279,40 +366,60 @@ export class PimpampumHttpClient implements PimpampumGateway {
     return this.request(`/api/v1/tasks/${taskId}`, { method: 'PATCH', body });
   }
 
-  listContextManifests(input: {
-    projectId: string;
+  cancelTask(input: {
+    taskId: string;
+    expectedRevision: number;
+    reason: string;
+    actor: string | null;
+  }): Promise<Task> {
+    const { taskId, ...body } = input;
+    return this.request(`/api/v1/tasks/${taskId}/cancel`, { method: 'POST', body });
+  }
+
+  async listContextManifests(input: {
+    ownerType: ContextOwnerType;
+    ownerId: string;
     limit: number;
     offset: number;
   }): Promise<ContextManifest[]> {
-    return this.request(
-      `/api/v1/projects/${input.projectId}/context?limit=${input.limit}&offset=${input.offset}`,
-    );
+    const base = this.contextBasePath(input.ownerType, input.ownerId);
+    return (
+      await this.request<ApiPage<ContextManifest>>(
+        `${base}?limit=${input.limit}&offset=${input.offset}`,
+      )
+    ).items;
   }
 
-  readContext(projectId: string, name: string): Promise<ContextDocument> {
-    return this.request(`/api/v1/projects/${projectId}/context/${encodeURIComponent(name)}`);
+  getContextManifest(
+    ownerType: ContextOwnerType,
+    ownerId: string,
+    name: string,
+  ): Promise<ContextManifest> {
+    return this.request(`${this.contextBasePath(ownerType, ownerId)}/${encodeURIComponent(name)}`);
   }
 
   readContextPage(
-    projectId: string,
+    ownerType: ContextOwnerType,
+    ownerId: string,
     name: string,
     offsetCodeUnits: number,
     limitCodeUnits: number,
   ): Promise<MarkdownPage> {
     return this.request(
-      `/api/v1/projects/${projectId}/context/${encodeURIComponent(name)}/body?offsetCodeUnits=${offsetCodeUnits}&limitCodeUnits=${limitCodeUnits}`,
+      `${this.contextBasePath(ownerType, ownerId)}/${encodeURIComponent(name)}/body?offsetCodeUnits=${offsetCodeUnits}&limitCodeUnits=${limitCodeUnits}`,
     );
   }
 
   putContext(input: {
-    projectId: string;
+    ownerType: ContextOwnerType;
+    ownerId: string;
     name: string;
     body: string;
     expectedRevision: number | null;
     actor: string | null;
   }): Promise<ContextDocument> {
-    const { projectId, name, ...body } = input;
-    return this.request(`/api/v1/projects/${projectId}/context/${encodeURIComponent(name)}`, {
+    const { ownerType, ownerId, name, ...body } = input;
+    return this.request(`${this.contextBasePath(ownerType, ownerId)}/${encodeURIComponent(name)}`, {
       method: 'PUT',
       body,
     });
@@ -336,6 +443,10 @@ export class PimpampumHttpClient implements PimpampumGateway {
       body: { directory },
       timeoutMilliseconds: 300_000,
     });
+  }
+
+  private contextBasePath(ownerType: ContextOwnerType, ownerId: string): string {
+    return `/api/v1/${ownerType === 'workspace' ? 'workspaces' : 'projects'}/${ownerId}/context`;
   }
 
   private async request<T>(

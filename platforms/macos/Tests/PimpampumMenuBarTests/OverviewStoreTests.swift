@@ -16,15 +16,26 @@ struct OverviewStoreTests {
       testProject(id: "active-z", status: .active, updatedAt: now),
       testProject(id: "available-new", status: .available, updatedAt: now),
       testProject(id: "complete-a", status: .complete, updatedAt: now),
+      testProject(
+        id: "cancelled-b", status: .complete, updatedAt: now,
+        lifecycleState: .cancelled
+      ),
+      testProject(
+        id: "cancelled-a", status: .complete, updatedAt: now,
+        lifecycleState: .cancelled
+      ),
+      testProject(id: "paused", status: .paused, updatedAt: now),
       testProject(id: "active-a", status: .active, updatedAt: now),
     ]
     let work = [
       OverviewActiveWork(
-        targetType: .project,
-        targetId: "expired",
+        targetType: .spec,
+        targetId: "expired-spec",
         workspaceId: "workspace",
         projectId: "active-a",
         projectTitle: "Active A",
+        specId: "expired-spec",
+        specTitle: "Expired spec",
         taskId: nil,
         taskTitle: nil,
         agentId: "old-agent",
@@ -36,6 +47,8 @@ struct OverviewStoreTests {
         workspaceId: "workspace",
         projectId: "active-z",
         projectTitle: "Active Z",
+        specId: "live-spec",
+        specTitle: "Live spec",
         taskId: "live",
         taskTitle: "Live task",
         agentId: "agent",
@@ -55,9 +68,10 @@ struct OverviewStoreTests {
     #expect(!store.isStale)
     #expect(
       store.incompleteProjects.map(\.id) == [
-        "active-a", "active-z", "available-new", "available-old", "draft",
+        "active-a", "active-z", "available-new", "available-old", "draft", "paused",
       ])
     #expect(store.completedProjects.map(\.id) == ["complete-a", "complete-b"])
+    #expect(store.cancelledProjects.map(\.id) == ["cancelled-a", "cancelled-b"])
     #expect(store.visibleActiveWork.map(\.targetId) == ["live"])
     #expect(store.visibleActiveWork.first?.remainingSeconds(at: now.addingTimeInterval(40)) == 0)
 
@@ -154,6 +168,7 @@ struct OverviewStoreTests {
     #expect(!store.isStale)
     #expect(store.incompleteProjects.isEmpty)
     #expect(store.completedProjects.isEmpty)
+    #expect(store.cancelledProjects.isEmpty)
     #expect(store.visibleActiveWork.isEmpty)
   }
 

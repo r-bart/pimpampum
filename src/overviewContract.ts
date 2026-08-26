@@ -13,15 +13,19 @@ export const overviewSchema = z.strictObject({
     uptimeSeconds: countSchema,
   }),
   generatedAt: timestampSchema,
-  status: z.enum(['active', 'available', 'complete', 'draft', 'empty']),
+  status: z.enum(['active', 'available', 'complete', 'draft', 'paused', 'empty']),
   counts: z.strictObject({
     workspaces: countSchema,
     projects: countSchema,
+    specs: countSchema,
     draftProjects: countSchema,
-    readyProjects: countSchema,
+    openProjects: countSchema,
+    pausedProjects: countSchema,
     completedProjects: countSchema,
+    cancelledProjects: countSchema,
     openTasks: countSchema,
     completedTasks: countSchema,
+    cancelledTasks: countSchema,
     activeClaims: countSchema,
     availableWork: countSchema,
   }),
@@ -36,8 +40,9 @@ export const overviewSchema = z.strictObject({
         }),
         slug: identifierSchema,
         title: z.string().min(1).max(200),
-        lifecycleState: z.enum(['draft', 'ready', 'done']),
-        status: z.enum(['active', 'available', 'complete', 'draft']),
+        lifecycleState: z.enum(['draft', 'open', 'paused', 'done', 'cancelled']),
+        status: z.enum(['active', 'available', 'complete', 'draft', 'paused']),
+        specCount: countSchema,
         openTaskCount: countSchema,
         completedTaskCount: countSchema,
         activeClaimCount: countSchema,
@@ -50,11 +55,13 @@ export const overviewSchema = z.strictObject({
   activeWork: z
     .array(
       z.strictObject({
-        targetType: z.enum(['project', 'task']),
+        targetType: z.enum(['spec', 'task']),
         targetId: identifierSchema,
         workspaceId: identifierSchema,
         projectId: identifierSchema,
         projectTitle: z.string().min(1).max(200),
+        specId: identifierSchema,
+        specTitle: z.string().min(1).max(200),
         taskId: identifierSchema.nullable(),
         taskTitle: z.string().min(1).max(300).nullable(),
         agentId: z.string().min(1).max(200),
@@ -67,7 +74,7 @@ export const overviewSchema = z.strictObject({
 
 export const overviewEnvelopeSchema = z.strictObject({
   data: overviewSchema,
-  meta: z.strictObject({ schemaVersion: z.literal(1) }),
+  meta: z.strictObject({ schemaVersion: z.literal(2) }),
 });
 
 export function parseOverview(value: unknown): Overview {

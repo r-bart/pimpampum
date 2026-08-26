@@ -12,6 +12,7 @@ Item {
   required property var backupService
   property bool opened: false
   property bool completedExpanded: false
+  property bool cancelledExpanded: false
   property bool backupExpanded: false
   property string manualBackupDirectory: ""
   property var backupFolderDialog: null
@@ -27,10 +28,13 @@ Item {
   readonly property var projects: service.overview ? service.overview.projects : []
   readonly property var activeWork: service.overview ? service.overview.activeWork : []
   readonly property var incompleteProjects: projects.filter(function(project) {
-    return project.status !== "complete"
+    return project.lifecycleState !== "done" && project.lifecycleState !== "cancelled"
   })
   readonly property var completedProjects: projects.filter(function(project) {
-    return project.status === "complete"
+    return project.lifecycleState === "done"
+  })
+  readonly property var cancelledProjects: projects.filter(function(project) {
+    return project.lifecycleState === "cancelled"
   })
 
   function open() {
@@ -88,6 +92,10 @@ Item {
     completedExpanded = !completedExpanded
   }
 
+  function toggleCancelled() {
+    cancelledExpanded = !cancelledExpanded
+  }
+
   function toggleBackup() {
     backupExpanded = !backupExpanded
     if (!backupExpanded) return
@@ -135,7 +143,7 @@ Item {
 
   function leaseRemaining(expiresAt) {
     var seconds = Math.max(0, Math.ceil((Date.parse(expiresAt) - service.currentMs) / 1000))
-    if (seconds < 60) return seconds + "s"
+    if (seconds < 60) return "<1m"
     return Math.ceil(seconds / 60) + "m"
   }
 
@@ -254,7 +262,7 @@ Item {
             Text {
               width: parent.width
               elide: Text.ElideRight
-              text: modelData.projectTitle + (modelData.taskTitle ? " — " + modelData.taskTitle : "")
+              text: modelData.taskTitle ? modelData.taskTitle : modelData.specTitle
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -263,7 +271,9 @@ Item {
             Text {
               width: parent.width
               elide: Text.ElideRight
-              text: modelData.agentId + " · " + root.leaseRemaining(modelData.expiresAt)
+              text: modelData.projectTitle
+                + (modelData.taskTitle ? " · " + modelData.specTitle : "")
+                + " · " + modelData.agentId + " · " + root.leaseRemaining(modelData.expiresAt)
               color: root.foreground
               opacity: 0.72
               font.family: root.fontFamily
@@ -424,6 +434,83 @@ Item {
               id: completedRowAction
               anchors.fill: parent
               Accessible.name: "Open " + modelData.title + " in " + modelData.workspace.name
+              onTriggered: root.openWorkspace(modelData.workspace.rootPath)
+            }
+          }
+        }
+
+        Item {
+          visible: root.cancelledProjects.length > 0
+          width: parent.width
+          height: cancelledTitle.implicitHeight + Style.space(8)
+
+          Rectangle {
+            anchors.fill: parent
+            radius: Style.space(4)
+            color: root.foreground
+            opacity: cancelledAction.activeFocus ? 0.13
+              : cancelledAction.containsMouse ? 0.07 : 0
+            border.width: cancelledAction.activeFocus ? 1 : 0
+            border.color: root.foreground
+          }
+
+          Text {
+            id: cancelledTitle
+            anchors.verticalCenter: parent.verticalCenter
+            text: (root.cancelledExpanded ? "▾ " : "▸ ")
+              + "Cancelled (" + root.cancelledProjects.length + ")"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+
+          PimpampumActionArea {
+            id: cancelledAction
+            anchors.fill: parent
+            focusOnTab: parent.visible
+            Accessible.name: cancelledTitle.text
+            Accessible.description: root.cancelledExpanded ? "Expanded" : "Collapsed"
+            onTriggered: root.toggleCancelled()
+          }
+        }
+
+        Repeater {
+          model: root.cancelledExpanded ? root.cancelledProjects : []
+
+          delegate: Item {
+            required property var modelData
+            width: content.width
+            height: cancelledText.implicitHeight + Style.space(10)
+
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.space(4)
+              color: root.foreground
+              opacity: cancelledRowAction.activeFocus ? 0.13
+                : cancelledRowAction.containsMouse ? 0.07 : 0
+              border.width: cancelledRowAction.activeFocus ? 1 : 0
+              border.color: root.foreground
+            }
+
+            Text {
+              id: cancelledText
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width
+              elide: Text.ElideRight
+              text: modelData.title + " · Cancelled · "
+                + modelData.workspace.name + " / " + modelData.slug
+              color: root.foreground
+              opacity: 0.72
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            PimpampumActionArea {
+              id: cancelledRowAction
+              anchors.fill: parent
+              Accessible.name: "Open cancelled project " + modelData.title
+                + " in " + modelData.workspace.name
               onTriggered: root.openWorkspace(modelData.workspace.rootPath)
             }
           }

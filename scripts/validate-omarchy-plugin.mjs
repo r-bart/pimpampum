@@ -70,10 +70,12 @@ function isCount(value) {
 }
 
 function validEnvelope(value) {
-  if (!isObject(value) || !isObject(value.meta) || value.meta.schemaVersion !== 1) return false;
+  if (!isObject(value) || !isObject(value.meta) || value.meta.schemaVersion !== 2) return false;
   if (!isObject(value.data)) return false;
   const { data } = value;
-  if (!['active', 'available', 'complete', 'draft', 'empty'].includes(data.status)) return false;
+  if (!['active', 'available', 'complete', 'draft', 'paused', 'empty'].includes(data.status)) {
+    return false;
+  }
   if (!isObject(data.daemon) || typeof data.daemon.version !== 'string') return false;
   if (!Array.isArray(data.projects) || !Array.isArray(data.activeWork)) return false;
   if (data.projects.length > 500 || data.activeWork.length > 500) return false;
@@ -81,18 +83,22 @@ function validEnvelope(value) {
   const countFields = [
     'workspaces',
     'projects',
+    'specs',
     'draftProjects',
-    'readyProjects',
+    'openProjects',
+    'pausedProjects',
     'completedProjects',
+    'cancelledProjects',
     'openTasks',
     'completedTasks',
+    'cancelledTasks',
     'activeClaims',
     'availableWork',
   ];
   if (!countFields.every((field) => isCount(data.counts[field]))) return false;
   if (typeof data.projectsTruncated !== 'boolean') return false;
   if (typeof data.activeWorkTruncated !== 'boolean') return false;
-  return data.projects.every(
+  const validProjects = data.projects.every(
     (project) =>
       isObject(project) &&
       isObject(project.workspace) &&
@@ -100,8 +106,34 @@ function validEnvelope(value) {
       typeof project.title === 'string' &&
       typeof project.workspace.rootPath === 'string' &&
       isAbsolute(project.workspace.rootPath) &&
-      ['active', 'available', 'draft', 'complete'].includes(project.status),
+      ['draft', 'open', 'paused', 'done', 'cancelled'].includes(project.lifecycleState) &&
+      ['active', 'available', 'draft', 'paused', 'complete'].includes(project.status) &&
+      [
+        'specCount',
+        'openTaskCount',
+        'completedTaskCount',
+        'activeClaimCount',
+        'availableWorkCount',
+      ].every((field) => isCount(project[field])),
   );
+  const validWork = data.activeWork.every(
+    (work) =>
+      isObject(work) &&
+      ['spec', 'task'].includes(work.targetType) &&
+      [
+        'targetId',
+        'workspaceId',
+        'projectId',
+        'projectTitle',
+        'specId',
+        'specTitle',
+        'agentId',
+      ].every((field) => typeof work[field] === 'string' && work[field].length > 0) &&
+      (work.targetType === 'spec'
+        ? work.taskId === null && work.taskTitle === null
+        : typeof work.taskId === 'string' && typeof work.taskTitle === 'string'),
+  );
+  return validProjects && validWork;
 }
 
 const files = walk(pluginRoot);
@@ -292,6 +324,7 @@ invariant(
     pimpampumMark.includes('"active": "dot"') &&
     pimpampumMark.includes('"available": "bar"') &&
     pimpampumMark.includes('"complete": "square"') &&
+    pimpampumMark.includes('"cancelled": "ring"') &&
     pimpampumMark.includes('"offline": "diamond"'),
   'indicator must use semantic accents and distinct external status shapes',
 );
@@ -323,12 +356,13 @@ const popoutOrder = [
   'text: "Active work ("',
   'text: "Projects ("',
   '+ "Completed ("',
+  '+ "Cancelled ("',
   '+ "Backup"',
 ].map((fragment) => statusPopout.indexOf(fragment));
 invariant(
   popoutOrder.every((index) => index >= 0) &&
     popoutOrder.every((index, position) => position === 0 || index > popoutOrder[position - 1]),
-  'popout information order must be header, errors, empty, active, projects, completed, backup',
+  'popout information order must be header, errors, empty, active, projects, completed, cancelled, backup',
 );
 invariant(
   statusPopout.includes('elide: Text.ElideRight') &&
@@ -340,13 +374,15 @@ for (const control of [
   'projectAction',
   'completedAction',
   'completedRowAction',
+  'cancelledAction',
+  'cancelledRowAction',
   'backupAction',
   'actionArea',
 ]) {
   invariant(statusPopout.includes(`id: ${control}`), `missing interactive control: ${control}`);
 }
 invariant(
-  (statusPopout.match(/PimpampumActionArea\s*\{/gu) ?? []).length >= 5 &&
+  (statusPopout.match(/PimpampumActionArea\s*\{/gu) ?? []).length >= 7 &&
     pimpampumActionArea.includes('hoverEnabled: true') &&
     pimpampumActionArea.includes('activeFocusOnTab: focusOnTab') &&
     pimpampumActionArea.includes('Keys.onPressed:') &&
@@ -358,10 +394,18 @@ invariant(
 );
 invariant(
   statusPopout.includes('property bool completedExpanded: false') &&
+    statusPopout.includes('property bool cancelledExpanded: false') &&
     statusPopout.includes('property bool backupExpanded: false') &&
     statusPopout.includes('enabled: modelData.enabled && !root.backupService.busy') &&
     statusPopout.includes('enabled: !root.backupService.busy'),
   'disclosures must start collapsed and backup controls must serialize while busy',
+);
+invariant(
+  barWidget.includes('displayStatus: service.effectiveStatus === "complete" && hasCancellations') &&
+    barWidget.includes('"cancelled": "Finished with cancellations"') &&
+    statusPopout.includes('return project.lifecycleState === "done"') &&
+    statusPopout.includes('return project.lifecycleState === "cancelled"'),
+  'cancelled projects must remain distinct from successful completion',
 );
 invariant(
   !/(?:work_complete|work:start|work:release|project_update|task_update|\bPOST\b|\bPATCH\b|\bDELETE\b)/u.test(

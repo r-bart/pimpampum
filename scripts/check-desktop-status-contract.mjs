@@ -4,11 +4,11 @@ import { readFileSync } from 'node:fs';
 const frozen = new Map([
   [
     'test/desktop-status.acceptance.test.ts',
-    '8a9ee548f504bd9c9f7857716efd7a6b734a8fe08b5e081bd8a30577457a0f14',
+    '0ebbbde0d26e17951dedaea3345b55b7f2852250aac52223fbf93a7616b6b8a1',
   ],
   [
     'test/desktop-status.safety.acceptance.test.ts',
-    '1e1f711b2e38a07f731a880affb15d537eb7047598eaa9a7bee9f550a57644c7',
+    'f7546615d8ffbb9f4911621f95ebb5e7433d52b71e291ef50a1dec7a88d08f91',
   ],
   [
     'test/desktop-status.lifecycle.acceptance.test.ts',
@@ -16,23 +16,23 @@ const frozen = new Map([
   ],
   [
     'test/quattro-live-evidence.acceptance.test.ts',
-    'a96d8aa9b12a3d69cca2dce6135f8f7bee08900603bad5f60f421c7952dfb125',
+    'd72acd89f9699621ccc788bdfee11f4cc03b7473f4c1858fc921bc37ba7b3bcc',
   ],
   [
     'test/fixtures/overview/complete.json',
-    '559fd9930739dc13858312d7e63f2b0b8bd408337ef738db582a2aee3a03c188',
+    'f4769337822cbee1f80f332e6fd27911822d68f6cd829dbacb429eb1d2ce47c1',
   ],
   [
     'test/fixtures/overview/empty.json',
-    '0fe194508bc2249166acb088330491a0c9984308fb204e783883afbd1ef9e9e7',
+    'b4d8d773ad7c3ffedb6807b2cae888b0e8d25f2eeca06dbcb2c75cca8115d66c',
   ],
   [
     'test/fixtures/overview/invalid.json',
-    '87641df18c8f1bf5547ced2b9e78a03a9b11ba36165d8a759bb89fb4f3e0e438',
+    '1dfd2aa7a4db5cffcdd9f07a8df477f6b7c35345eff4b8d94beef25850b6e00f',
   ],
   [
     'test/fixtures/overview/mixed.json',
-    '67600a36f2a12be056a4109d677d7a9c042988cc814a9bc28f048b6a21b413eb',
+    '62ce2eaf98cd34ced77cda10a45f68375fd0a2ca9d00c6b62bd3f742c277a9cb',
   ],
 ]);
 

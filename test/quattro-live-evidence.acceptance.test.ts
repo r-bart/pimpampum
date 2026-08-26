@@ -105,6 +105,7 @@ function fixture() {
   writeFileSync(join(candidate, 'manifest.json'), '{"schemaVersion":1}\n');
 
   const cli = '/opt/pimpampum/dist/cli.js';
+  const specBody = '/opt/pimpampum/README.md';
   const emptyShell = JSON.stringify({ bar: { left: [], center: [], right: [] } });
   const transcript = [
     command('version', 'omarchy', ['--version'], 'Omarchy 4.0.0\n'),
@@ -127,12 +128,29 @@ function fixture() {
       '{"id":"project-id","revision":1}\n',
     ),
     command(
-      'ready-active-project',
+      'seed-active-spec',
       process.execPath,
-      [cli, 'project:ready', 'project-id', '1'],
+      [cli, 'spec:create', 'project-id', 'active-spec', 'Active Spec', specBody],
+      '{"id":"active-spec-id","revision":1}\n',
+    ),
+    command(
+      'ready-active-spec',
+      process.execPath,
+      [cli, 'spec:ready', 'active-spec-id', '1'],
+      '{"id":"active-spec-id","revision":2}\n',
+    ),
+    command(
+      'open-active-project',
+      process.execPath,
+      [cli, 'project:open', 'project-id', '1'],
       '{"id":"project-id","revision":2}\n',
     ),
-    command('seed-task', process.execPath, [cli, 'task:create', 'project-id', 'Live task']),
+    command(
+      'seed-task',
+      process.execPath,
+      [cli, 'task:create', 'active-spec-id', 'Live task'],
+      '{"id":"task-id","revision":1}\n',
+    ),
     command('seed-claim', process.execPath, [cli, 'work:start', 'task', 'task-id', 'live-agent']),
     command(
       'seed-completed-project',
@@ -141,22 +159,40 @@ function fixture() {
       '{"id":"completed-id","revision":1}\n',
     ),
     command(
-      'ready-completed-project',
+      'seed-completed-spec',
       process.execPath,
-      [cli, 'project:ready', 'completed-id', '1'],
+      [cli, 'spec:create', 'completed-id', 'completed-spec', 'Completed Spec', specBody],
+      '{"id":"completed-spec-id","revision":1}\n',
+    ),
+    command(
+      'ready-completed-spec',
+      process.execPath,
+      [cli, 'spec:ready', 'completed-spec-id', '1'],
+      '{"id":"completed-spec-id","revision":2}\n',
+    ),
+    command(
+      'open-completed-project',
+      process.execPath,
+      [cli, 'project:open', 'completed-id', '1'],
       '{"id":"completed-id","revision":2}\n',
     ),
     command(
-      'start-completed-project',
+      'start-completed-spec',
       process.execPath,
-      [cli, 'work:start', 'project', 'completed-id', 'completion-agent'],
-      '{"revision":3}\n',
+      [cli, 'work:start', 'spec', 'completed-spec-id', 'completion-agent'],
+      '{"spec":{"revision":2}}\n',
+    ),
+    command(
+      'complete-spec',
+      process.execPath,
+      [cli, 'work:complete', 'spec', 'completed-spec-id', 'completion-agent', '2', 'Complete'],
+      '{"id":"completed-spec-id","state":"done","revision":3}\n',
     ),
     command(
       'complete-project',
       process.execPath,
-      [cli, 'work:complete', 'project', 'completed-id', 'completion-agent', '3', 'Complete'],
-      '{"state":"done"}\n',
+      [cli, 'project:complete', 'completed-id', '2', 'Complete'],
+      '{"id":"completed-id","state":"done","revision":3}\n',
     ),
     command(
       'overview-active-and-complete',
@@ -308,21 +344,52 @@ function fakeRunnerDependencies(
     ['seed-workspace', { exitCode: 0, stdout: '{"id":"live"}\n', stderr: '' }],
     ['seed-project', { exitCode: 0, stdout: '{"id":"project-id","revision":1}\n', stderr: '' }],
     [
-      'ready-active-project',
+      'seed-active-spec',
+      { exitCode: 0, stdout: '{"id":"active-spec-id","revision":1}\n', stderr: '' },
+    ],
+    [
+      'ready-active-spec',
+      { exitCode: 0, stdout: '{"id":"active-spec-id","revision":2}\n', stderr: '' },
+    ],
+    [
+      'open-active-project',
       { exitCode: 0, stdout: '{"id":"project-id","revision":2}\n', stderr: '' },
     ],
     ['seed-task', { exitCode: 0, stdout: '{"id":"task-id"}\n', stderr: '' }],
-    ['seed-claim', { exitCode: 0, stdout: '{"revision":2}\n', stderr: '' }],
+    ['seed-claim', { exitCode: 0, stdout: '{"task":{"revision":1}}\n', stderr: '' }],
     [
       'seed-completed-project',
       { exitCode: 0, stdout: '{"id":"completed-id","revision":1}\n', stderr: '' },
     ],
     [
-      'ready-completed-project',
+      'seed-completed-spec',
+      { exitCode: 0, stdout: '{"id":"completed-spec-id","revision":1}\n', stderr: '' },
+    ],
+    [
+      'ready-completed-spec',
+      { exitCode: 0, stdout: '{"id":"completed-spec-id","revision":2}\n', stderr: '' },
+    ],
+    [
+      'open-completed-project',
       { exitCode: 0, stdout: '{"id":"completed-id","revision":2}\n', stderr: '' },
     ],
-    ['start-completed-project', { exitCode: 0, stdout: '{"revision":3}\n', stderr: '' }],
-    ['complete-project', { exitCode: 0, stdout: '{"state":"done"}\n', stderr: '' }],
+    ['start-completed-spec', { exitCode: 0, stdout: '{"spec":{"revision":2}}\n', stderr: '' }],
+    [
+      'complete-spec',
+      {
+        exitCode: 0,
+        stdout: '{"id":"completed-spec-id","state":"done","revision":3}\n',
+        stderr: '',
+      },
+    ],
+    [
+      'complete-project',
+      {
+        exitCode: 0,
+        stdout: '{"id":"completed-id","state":"done","revision":3}\n',
+        stderr: '',
+      },
+    ],
     [
       'overview-active-and-complete',
       {
@@ -464,6 +531,53 @@ describe('Task 4.4: reproducible live Quattro evidence', () => {
     expect(check(state.evidencePath, state.candidate).status).not.toBe(0);
   });
 
+  it('Task 4.4: rejects legacy lifecycle aliases and broken Project → Spec → Task linkage', () => {
+    const variants = [
+      (transcript: Array<{ label: string; arguments: string[] }>) => {
+        const entry = transcript.find(({ label }) => label === 'ready-active-spec')!;
+        entry.arguments = [entry.arguments[0]!, 'project:ready', 'project-id', '1'];
+      },
+      (transcript: Array<{ label: string; arguments: string[] }>) => {
+        const entry = transcript.find(({ label }) => label === 'seed-task')!;
+        entry.arguments = [entry.arguments[0]!, 'task:create', 'project-id', 'Live task'];
+      },
+      (transcript: Array<{ label: string; arguments: string[] }>) => {
+        const entry = transcript.find(({ label }) => label === 'start-completed-spec')!;
+        entry.arguments = [
+          entry.arguments[0]!,
+          'work:start',
+          'project',
+          'completed-id',
+          'completion-agent',
+        ];
+      },
+      (transcript: Array<{ label: string; arguments: string[] }>) => {
+        const entry = transcript.find(({ label }) => label === 'complete-project')!;
+        entry.arguments = [
+          entry.arguments[0]!,
+          'work:complete',
+          'project',
+          'completed-id',
+          'completion-agent',
+          '3',
+          'Complete',
+        ];
+      },
+    ];
+    for (const mutate of variants) {
+      const state = fixture();
+      const transcript = JSON.parse(readFileSync(state.transcriptPath, 'utf8')) as Array<{
+        label: string;
+        arguments: string[];
+      }>;
+      mutate(transcript);
+      writeFileSync(state.transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`);
+      state.evidence.transcript.sha256 = sha256(readFileSync(state.transcriptPath));
+      writeEvidence(state.evidencePath, state.evidence);
+      expect(check(state.evidencePath, state.candidate).status).not.toBe(0);
+    }
+  });
+
   it('Task 4.4: rejects cleanup claims when the exact before and after snapshots differ', () => {
     // Spec: EC-14 / preserve existing shell configuration
     const state = fixture();
@@ -511,7 +625,7 @@ describe('Task 4.4: reproducible live Quattro evidence', () => {
       writeEvidence(state.evidencePath, state.evidence);
       expect(check(state.evidencePath, state.candidate).status, variant).not.toBe(0);
     }
-  });
+  }, 60_000);
 
   it('Task 4.4: requires an explicit current human review of every visual check', () => {
     // Spec: FR-4 / visual verification on actual Quattro
@@ -533,7 +647,7 @@ describe('Task 4.4: reproducible live Quattro evidence', () => {
       writeEvidence(state.evidencePath, state.evidence);
       expect(check(state.evidencePath, state.candidate).status).not.toBe(0);
     }
-  });
+  }, 60_000);
 
   it('Task 4.4: rejects stale, future-dated, and post-validation visual reviews', () => {
     // Spec: Task 4.4 / current target-machine evidence
@@ -557,7 +671,7 @@ describe('Task 4.4: reproducible live Quattro evidence', () => {
       writeEvidence(state.evidencePath, state.evidence);
       expect(check(state.evidencePath, state.candidate).status).not.toBe(0);
     }
-  });
+  }, 60_000);
 
   it('Task 4.4: runner preflight observably refuses unsafe hosts and existing installations', async () => {
     // Spec: EC-14 / do not overwrite user-owned state

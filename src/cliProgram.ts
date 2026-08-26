@@ -59,14 +59,26 @@ Usage:
   pimpampum uninstall
   pimpampum workspace:list
   pimpampum workspace:add <id> <name> <root-path>
-  pimpampum work:list [workspace-id]
-  pimpampum work:start <project|task> <id> <agent-id>
-  pimpampum work:release <project|task> <id> <agent-id> [note]
-  pimpampum work:complete <project|task> <id> <agent-id> <revision> <summary>
-  pimpampum project:create <workspace-id> <slug> <title> [prd-file]
+  pimpampum work:list [workspace-id] [project-id] [spec-id]
+  pimpampum work:start <spec|task> <id> <agent-id>
+  pimpampum work:renew <spec|task> <id> <agent-id>
+  pimpampum work:release <spec|task> <id> <agent-id> [note]
+  pimpampum work:complete <spec|task> <id> <agent-id> <revision> <summary>
+  pimpampum project:create <workspace-id> <slug> <title>
   pimpampum project:get <project-id>
-  pimpampum project:ready <project-id> <revision>
-  pimpampum task:create <project-id> <title> [parent-id]
+  pimpampum project:draft <project-id> <revision>
+  pimpampum project:open <project-id> <revision>
+  pimpampum project:pause <project-id> <revision>
+  pimpampum project:complete <project-id> <revision> <summary>
+  pimpampum project:cancel <project-id> <revision> <reason>
+  pimpampum spec:create <project-id> <slug> <title> [body-file]
+  pimpampum spec:get <spec-id>
+  pimpampum spec:draft <spec-id> <revision>
+  pimpampum spec:ready <spec-id> <revision>
+  pimpampum spec:cancel <spec-id> <revision> <reason>
+  pimpampum task:create <spec-id> <title> [parent-id]
+  pimpampum task:get <task-id>
+  pimpampum task:cancel <task-id> <revision> <reason>
   pimpampum backup <directory>
   pimpampum backup status [--json]
   pimpampum backup configure <absolute-directory> [--json]
@@ -82,8 +94,8 @@ function required(value: string | undefined, label: string): string {
 
 function targetType(value: string | undefined): TargetType {
   const resolved = required(value, 'target type');
-  if (resolved !== 'project' && resolved !== 'task') {
-    throw new AppError('bad_request', 'Target type must be project or task', 400);
+  if (resolved !== 'spec' && resolved !== 'task') {
+    throw new AppError('bad_request', 'Target type must be spec or task', 400);
   }
   return resolved;
 }
@@ -278,12 +290,31 @@ async function executeCli(
       );
       return null;
     case 'work:list':
-      print(runtime, await client.listWork({ workspaceId: args[0] ?? null, limit: 50 }));
+      print(
+        runtime,
+        await client.listWork({
+          workspaceId: args[0] ?? null,
+          projectId: args[1] ?? null,
+          specId: args[2] ?? null,
+          limit: 50,
+        }),
+      );
       return null;
     case 'work:start':
       print(
         runtime,
         await client.startWork({
+          targetType: targetType(args[0]),
+          targetId: required(args[1], 'target id'),
+          agentId: required(args[2], 'agent id'),
+          leaseSeconds: 1_800,
+        }),
+      );
+      return null;
+    case 'work:renew':
+      print(
+        runtime,
+        await client.renewWork({
           targetType: targetType(args[0]),
           targetId: required(args[1], 'target id'),
           agentId: required(args[2], 'agent id'),
@@ -313,32 +344,98 @@ async function executeCli(
         }),
       );
       return null;
-    case 'project:create': {
-      const prdFile = args[3];
+    case 'project:create':
       print(
         runtime,
         await client.createProject({
           workspaceId: required(args[0], 'workspace id'),
           slug: required(args[1], 'project slug'),
           title: required(args[2], 'project title'),
-          prd: prdFile ? runtime.readFile(prdFile) : '',
-          state: 'draft',
           actor: 'cli',
         }),
       );
       return null;
-    }
     case 'project:get':
       print(runtime, await client.getProject(required(args[0], 'project id')));
       return null;
-    case 'project:ready':
+    case 'project:draft':
+    case 'project:open':
+    case 'project:pause': {
+      const state =
+        command === 'project:pause' ? 'paused' : command === 'project:open' ? 'open' : 'draft';
       print(
         runtime,
         await client.updateProject({
           projectId: required(args[0], 'project id'),
           title: null,
-          state: 'ready',
+          state,
           expectedRevision: revision(args[1]),
+          actor: 'cli',
+        }),
+      );
+      return null;
+    }
+    case 'project:complete':
+      print(
+        runtime,
+        await client.completeProject({
+          projectId: required(args[0], 'project id'),
+          expectedRevision: revision(args[1]),
+          summary: required(args[2], 'summary'),
+          artifacts: [],
+          actor: 'cli',
+        }),
+      );
+      return null;
+    case 'project:cancel':
+      print(
+        runtime,
+        await client.cancelProject({
+          projectId: required(args[0], 'project id'),
+          expectedRevision: revision(args[1]),
+          reason: required(args[2], 'reason'),
+          actor: 'cli',
+        }),
+      );
+      return null;
+    case 'spec:create': {
+      const bodyFile = args[3];
+      print(
+        runtime,
+        await client.createSpec({
+          projectId: required(args[0], 'project id'),
+          slug: required(args[1], 'spec slug'),
+          title: required(args[2], 'spec title'),
+          body: bodyFile ? runtime.readFile(bodyFile) : '',
+          actor: 'cli',
+        }),
+      );
+      return null;
+    }
+    case 'spec:get':
+      print(runtime, await client.getSpec(required(args[0], 'spec id')));
+      return null;
+    case 'spec:draft':
+    case 'spec:ready':
+      print(
+        runtime,
+        await client.updateSpec({
+          specId: required(args[0], 'spec id'),
+          title: null,
+          body: null,
+          state: command === 'spec:ready' ? 'ready' : 'draft',
+          expectedRevision: revision(args[1]),
+          actor: 'cli',
+        }),
+      );
+      return null;
+    case 'spec:cancel':
+      print(
+        runtime,
+        await client.cancelSpec({
+          specId: required(args[0], 'spec id'),
+          expectedRevision: revision(args[1]),
+          reason: required(args[2], 'reason'),
           actor: 'cli',
         }),
       );
@@ -347,10 +444,24 @@ async function executeCli(
       print(
         runtime,
         await client.createTask({
-          projectId: required(args[0], 'project id'),
+          specId: required(args[0], 'spec id'),
           title: required(args[1], 'task title'),
           parentId: args[2] ?? null,
           body: null,
+          actor: 'cli',
+        }),
+      );
+      return null;
+    case 'task:get':
+      print(runtime, await client.getTask(required(args[0], 'task id')));
+      return null;
+    case 'task:cancel':
+      print(
+        runtime,
+        await client.cancelTask({
+          taskId: required(args[0], 'task id'),
+          expectedRevision: revision(args[1]),
+          reason: required(args[2], 'reason'),
           actor: 'cli',
         }),
       );

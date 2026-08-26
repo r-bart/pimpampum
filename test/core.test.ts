@@ -97,7 +97,7 @@ describe('configuration and infrastructure', () => {
   it('opens, migrates and reopens file and memory databases', () => {
     const databasePath = join(temporaryDirectory(), 'nested', 'project.sqlite');
     const first = openDatabase(databasePath);
-    expect(first.pragma('user_version', { simple: true })).toBe(1);
+    expect(first.pragma('user_version', { simple: true })).toBe(2);
     first.close();
     const second = openDatabase(databasePath);
     expect(second.pragma('journal_mode', { simple: true })).toBe('wal');
@@ -108,7 +108,7 @@ describe('configuration and infrastructure', () => {
 
     const futurePath = join(temporaryDirectory(), 'future.sqlite');
     const future = new Database(futurePath);
-    future.pragma('user_version = 2');
+    future.pragma('user_version = 3');
     future.close();
     expect(() => openDatabase(futurePath)).toThrow(/newer than supported/);
   });
@@ -161,8 +161,15 @@ describe('configuration and infrastructure', () => {
           updatedAt: '2026-01-01T00:00:00.000Z',
         },
       ],
-      listProjects: () => {
+      listProjectManifests: () => {
         throw new Error('source failed');
+      },
+      getProject: () => {
+        throw new Error('unexpected project');
+      },
+      listSpecManifests: () => [],
+      getSpec: () => {
+        throw new Error('unexpected spec');
       },
       listTaskManifests: () => [],
       getTask: () => {
@@ -186,14 +193,12 @@ describe('configuration and infrastructure', () => {
       slug: 'project',
       title: 'Project',
       state: 'draft' as const,
-      prd: '# PRD',
       revision: 1,
       completionSummary: null,
       artifacts: [],
       completedAt: null,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      claim: null,
     };
     const source = {
       listWorkspaces: () => [
@@ -205,9 +210,14 @@ describe('configuration and infrastructure', () => {
           updatedAt: project.updatedAt,
         },
       ],
-      listProjects: ({ offset }: { offset: number }) => {
+      listProjectManifests: ({ offset }: { offset: number }) => {
         offsets.push(offset);
         return offset === 0 ? Array.from({ length: 10 }, () => project) : [];
+      },
+      getProject: () => project,
+      listSpecManifests: () => [],
+      getSpec: () => {
+        throw new Error('unexpected spec');
       },
       listTaskManifests: () => [],
       getTask: () => {
@@ -224,7 +234,9 @@ describe('configuration and infrastructure', () => {
       directory,
     );
     expect(offsets).toEqual([0, 10]);
-    expect(existsSync(join(exported, 'projects', 'ws', 'project', 'prd.md'))).toBe(true);
+    expect(
+      existsSync(join(exported, 'workspaces', 'ws', 'projects', 'project', 'project.json')),
+    ).toBe(true);
   });
 
   it('streams paginated task and context collections without buffering them', () => {
@@ -236,7 +248,20 @@ describe('configuration and infrastructure', () => {
       slug: 'streamed',
       title: 'Streamed',
       state: 'draft' as const,
-      prd: '# Streamed',
+      revision: 1,
+      completionSummary: null,
+      artifacts: [],
+      completedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const spec = {
+      id: 'spec-id',
+      projectId: project.id,
+      slug: 'primary',
+      title: 'Primary',
+      body: '# Streamed',
+      state: 'draft' as const,
       revision: 1,
       completionSummary: null,
       artifacts: [],
@@ -257,7 +282,10 @@ describe('configuration and infrastructure', () => {
           updatedAt: timestamp,
         },
       ],
-      listProjects: ({ offset }: { offset: number }) => (offset === 0 ? [project] : []),
+      listProjectManifests: ({ offset }: { offset: number }) => (offset === 0 ? [project] : []),
+      getProject: () => project,
+      listSpecManifests: ({ offset }: { offset: number }) => (offset === 0 ? [spec] : []),
+      getSpec: () => spec,
       listTaskManifests: ({ offset }: { offset: number }) => {
         taskOffsets.push(offset);
         return offset === 0
@@ -266,7 +294,7 @@ describe('configuration and infrastructure', () => {
       },
       getTask: (id: string) => ({
         id,
-        projectId: project.id,
+        specId: spec.id,
         parentId: null,
         title: id,
         body: `Body ${id}`,
@@ -279,15 +307,17 @@ describe('configuration and infrastructure', () => {
         updatedAt: timestamp,
         claim: null,
       }),
-      listContextManifests: ({ offset }: { offset: number }) => {
+      listContextManifests: ({ ownerType, offset }: { ownerType: string; offset: number }) => {
+        if (ownerType === 'workspace') return [];
         contextOffsets.push(offset);
         return offset === 0
           ? Array.from({ length: 100 }, (_, index) => ({ name: `document-${index}` }))
           : [];
       },
-      readContext: (projectId: string, name: string) => ({
+      readContext: (ownerType: 'workspace' | 'project', ownerId: string, name: string) => ({
         id: name,
-        projectId,
+        ownerType,
+        ownerId,
         name,
         body: `Body ${name}`,
         revision: 1,
@@ -303,10 +333,17 @@ describe('configuration and infrastructure', () => {
     expect(taskOffsets).toEqual([0, 100]);
     expect(contextOffsets).toEqual([0, 100]);
     expect(
-      JSON.parse(readFileSync(join(exported, 'projects/ws/streamed/tasks.json'), 'utf8')),
+      JSON.parse(
+        readFileSync(
+          join(exported, 'workspaces/ws/projects/streamed/specs/primary/tasks.json'),
+          'utf8',
+        ),
+      ),
     ).toHaveLength(100);
     expect(
-      JSON.parse(readFileSync(join(exported, 'projects/ws/streamed/context.json'), 'utf8')),
+      JSON.parse(
+        readFileSync(join(exported, 'workspaces/ws/projects/streamed/context.json'), 'utf8'),
+      ),
     ).toHaveLength(100);
   });
 });
@@ -333,11 +370,15 @@ describe('HTTP client adapter', () => {
             counts: {
               workspaces: 0,
               projects: 0,
+              specs: 0,
               draftProjects: 0,
-              readyProjects: 0,
+              openProjects: 0,
+              pausedProjects: 0,
               completedProjects: 0,
+              cancelledProjects: 0,
               openTasks: 0,
               completedTasks: 0,
+              cancelledTasks: 0,
               activeClaims: 0,
               availableWork: 0,
             },
@@ -384,8 +425,13 @@ describe('HTTP client adapter', () => {
     await client.listWorkspaces();
     await client.registerWorkspace({ id: 'ws', name: 'WS', rootPath: '/tmp/ws' });
     await client.resolveWorkspace('/tmp/ws/project');
-    await client.listWork({ workspaceId: 'ws', limit: 3 });
-    await client.listWork({ workspaceId: null, limit: 4 });
+    await client.listWork({
+      workspaceId: 'ws',
+      projectId: 'project-1',
+      specId: 'spec-1',
+      limit: 3,
+    });
+    await client.listWork({ workspaceId: null, projectId: null, specId: null, limit: 4 });
     await client.startWork({
       targetType: 'task',
       targetId: 'task-1',
@@ -414,33 +460,74 @@ describe('HTTP client adapter', () => {
     });
     expect(await client.getProject('project-1')).toMatchObject({ id: 'project-1' });
     await client.getProjectManifest('project-1');
-    await client.readProjectPrd('project-1', 2, 20);
     await client.getProjectCompletion('project-1');
-    await client.listProjectManifests({ workspaceId: 'ws', state: 'ready', limit: 10, offset: 2 });
+    await client.listProjectManifests({ workspaceId: 'ws', state: 'open', limit: 10, offset: 2 });
     await client.listProjectManifests({ workspaceId: null, state: null, limit: 10, offset: 0 });
     await client.createProject({
       workspaceId: 'ws',
       slug: 'project',
       title: 'Project',
-      prd: '',
-      state: 'draft',
       actor: null,
     });
     await client.updateProject({
       projectId: 'project-1',
       title: 'Updated',
+      state: 'open',
+      expectedRevision: 1,
+      actor: 'agent',
+    });
+    await client.completeProject({
+      projectId: 'project-1',
+      expectedRevision: 2,
+      summary: 'Outcome shipped',
+      artifacts: [],
+      actor: 'agent',
+    });
+    await client.cancelProject({
+      projectId: 'project-1',
+      expectedRevision: 2,
+      reason: 'No longer needed',
+      actor: 'agent',
+    });
+    await client.createSpec({
+      projectId: 'project-1',
+      slug: 'feature',
+      title: 'Feature',
+      body: '# Spec',
+      actor: null,
+    });
+    await client.getSpec('spec-1');
+    await client.getSpecManifest('spec-1');
+    await client.readSpecBody('spec-1', 2, 20);
+    await client.getSpecCompletion('spec-1');
+    await client.listSpecManifests({
+      projectId: 'project-1',
+      state: 'ready',
+      limit: 10,
+      offset: 0,
+    });
+    await client.listSpecManifests({
+      projectId: 'project-1',
+      state: null,
+      limit: 5,
+      offset: 1,
+    });
+    await client.updateSpec({
+      specId: 'spec-1',
+      title: 'Updated feature',
+      body: '# Updated spec',
       state: 'ready',
       expectedRevision: 1,
       actor: 'agent',
     });
-    await client.updatePrd({
-      projectId: 'project-1',
-      prd: '# PRD',
+    await client.cancelSpec({
+      specId: 'spec-1',
       expectedRevision: 2,
+      reason: 'Superseded',
       actor: 'agent',
     });
     await client.createTask({
-      projectId: 'project-1',
+      specId: 'spec-1',
       parentId: null,
       title: 'Task',
       body: null,
@@ -450,7 +537,7 @@ describe('HTTP client adapter', () => {
     await client.getTaskManifest('task-1');
     await client.readTaskBody('task-1', 3, 30);
     await client.getTaskCompletion('task-1');
-    await client.listTaskManifests({ projectId: 'project-1', limit: 10, offset: 0 });
+    await client.listTaskManifests({ specId: 'spec-1', limit: 10, offset: 0 });
     await client.updateTask({
       taskId: 'task-1',
       title: null,
@@ -458,11 +545,24 @@ describe('HTTP client adapter', () => {
       expectedRevision: 1,
       actor: null,
     });
-    await client.listContextManifests({ projectId: 'project-1', limit: 10, offset: 0 });
-    await client.readContext('project-1', 'architecture notes');
-    await client.readContextPage('project-1', 'architecture notes', 4, 40);
+    await client.cancelTask({
+      taskId: 'task-1',
+      expectedRevision: 2,
+      reason: 'Superseded',
+      actor: null,
+    });
+    await client.listContextManifests({
+      ownerType: 'project',
+      ownerId: 'project-1',
+      limit: 10,
+      offset: 0,
+    });
+    await client.getContextManifest('workspace', 'ws', 'shared architecture');
+    await client.getContextManifest('project', 'project-1', 'architecture notes');
+    await client.readContextPage('project', 'project-1', 'architecture notes', 4, 40);
     await client.putContext({
-      projectId: 'project-1',
+      ownerType: 'project',
+      ownerId: 'project-1',
       name: 'architecture notes',
       body: '# Notes',
       expectedRevision: null,
@@ -472,14 +572,35 @@ describe('HTTP client adapter', () => {
     await client.backup('/tmp/backups');
     await client.exportPortable('/tmp/exports');
 
-    expect(calls).toHaveLength(38);
+    expect(calls).toHaveLength(49);
     expect(new Headers(calls[0]?.init.headers).has('authorization')).toBe(false);
     expect(new Headers(calls[1]?.init.headers).get('authorization')).toBe('Bearer secret');
     expect(calls[1]?.url).toBe('http://127.0.0.1:7337/api/v1/overview');
     expect(calls.some(({ url }) => url.endsWith('/work?limit=4'))).toBe(true);
     expect(
       calls.some(({ url }) =>
-        url.endsWith('/projects?limit=10&offset=2&workspaceId=ws&state=ready'),
+        url.endsWith('/work?limit=3&workspaceId=ws&projectId=project-1&specId=spec-1'),
+      ),
+    ).toBe(true);
+    expect(
+      calls.some(({ url }) =>
+        url.endsWith('/projects?limit=10&offset=2&workspaceId=ws&state=open'),
+      ),
+    ).toBe(true);
+    expect(calls.some(({ url }) => url.includes('/projects/project-1/specs?'))).toBe(true);
+    expect(calls.some(({ url }) => url.includes('/specs/spec-1/body?'))).toBe(true);
+    expect(calls.some(({ url }) => url.includes('/specs/spec-1/tasks?'))).toBe(true);
+    expect(calls.some(({ url }) => url.includes('/projects/project-1/context?'))).toBe(true);
+    expect(
+      calls.some(({ url }) => url.includes('/workspaces/ws/context/shared%20architecture')),
+    ).toBe(true);
+    expect(calls.every(({ url }) => !url.includes('/prd'))).toBe(true);
+    expect(
+      calls.some(
+        ({ url, init }) =>
+          url.endsWith('/api/v1/projects') &&
+          init.method === 'POST' &&
+          !String(init.body).includes('prd'),
       ),
     ).toBe(true);
     expect(calls.some(({ url }) => url.includes('architecture%20notes'))).toBe(true);

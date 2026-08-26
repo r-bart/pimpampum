@@ -496,12 +496,17 @@ const prefixLabels = [
   'status-online',
   'seed-workspace',
   'seed-project',
-  'ready-active-project',
+  'seed-active-spec',
+  'ready-active-spec',
+  'open-active-project',
   'seed-task',
   'seed-claim',
   'seed-completed-project',
-  'ready-completed-project',
-  'start-completed-project',
+  'seed-completed-spec',
+  'ready-completed-spec',
+  'open-completed-project',
+  'start-completed-spec',
+  'complete-spec',
   'complete-project',
   'overview-active-and-complete',
   'hot-reload',
@@ -662,8 +667,23 @@ const activeProject = object(
 );
 const activeProjectId = scalar(activeProject.id, 'seed-project.stdout.id');
 const activeRevision = scalar(activeProject.revision, 'seed-project.stdout.revision');
-cli('ready-active-project', ['project:ready', activeProjectId, activeRevision]);
-cli('seed-task', ['task:create', activeProjectId, 'Live task']);
+const specBodyPath = resolve(dirname(cliPath), '..', 'README.md');
+cli('seed-active-spec', [
+  'spec:create',
+  activeProjectId,
+  'active-spec',
+  'Active Spec',
+  specBodyPath,
+]);
+const activeSpec = object(
+  outputJson(commands['seed-active-spec'], 'seed-active-spec'),
+  'seed-active-spec.stdout',
+);
+const activeSpecId = scalar(activeSpec.id, 'seed-active-spec.stdout.id');
+const activeSpecRevision = scalar(activeSpec.revision, 'seed-active-spec.stdout.revision');
+cli('ready-active-spec', ['spec:ready', activeSpecId, activeSpecRevision]);
+cli('open-active-project', ['project:open', activeProjectId, activeRevision]);
+cli('seed-task', ['task:create', activeSpecId, 'Live task']);
 const taskOutput = commands['seed-task'].stdout.trim();
 const taskId =
   taskOutput === ''
@@ -683,26 +703,54 @@ const completedRevision = scalar(
   completedProject.revision,
   'seed-completed-project.stdout.revision',
 );
-cli('ready-completed-project', ['project:ready', completedProjectId, completedRevision]);
-const completedReady = object(
-  outputJson(commands['ready-completed-project'], 'ready-completed-project'),
-  'ready-completed-project.stdout',
+cli('seed-completed-spec', [
+  'spec:create',
+  completedProjectId,
+  'completed-spec',
+  'Completed Spec',
+  specBodyPath,
+]);
+const completedSpec = object(
+  outputJson(commands['seed-completed-spec'], 'seed-completed-spec'),
+  'seed-completed-spec.stdout',
 );
-cli('start-completed-project', ['work:start', 'project', completedProjectId, 'completion-agent']);
+const completedSpecId = scalar(completedSpec.id, 'seed-completed-spec.stdout.id');
+const completedSpecRevision = scalar(completedSpec.revision, 'seed-completed-spec.stdout.revision');
+cli('ready-completed-spec', ['spec:ready', completedSpecId, completedSpecRevision]);
+const completedReady = object(
+  outputJson(commands['ready-completed-spec'], 'ready-completed-spec'),
+  'ready-completed-spec.stdout',
+);
+cli('open-completed-project', ['project:open', completedProjectId, completedRevision]);
+const completedOpen = object(
+  outputJson(commands['open-completed-project'], 'open-completed-project'),
+  'open-completed-project.stdout',
+);
+cli('start-completed-spec', ['work:start', 'spec', completedSpecId, 'completion-agent']);
 const completedClaim = object(
-  outputJson(commands['start-completed-project'], 'start-completed-project'),
-  'start-completed-project.stdout',
+  outputJson(commands['start-completed-spec'], 'start-completed-spec'),
+  'start-completed-spec.stdout',
 );
 const claimedRevision = scalar(
-  completedClaim.project?.revision ?? completedClaim.revision ?? completedReady.revision,
-  'start-completed-project.stdout.revision',
+  completedClaim.spec?.revision ?? completedClaim.revision ?? completedReady.revision,
+  'start-completed-spec.stdout.revision',
 );
-cli('complete-project', [
+cli('complete-spec', [
   'work:complete',
-  'project',
-  completedProjectId,
+  'spec',
+  completedSpecId,
   'completion-agent',
   claimedRevision,
+  'Complete',
+]);
+const completedOpenRevision = scalar(
+  completedOpen.revision,
+  'open-completed-project.stdout.revision',
+);
+cli('complete-project', [
+  'project:complete',
+  completedProjectId,
+  completedOpenRevision,
   'Complete',
 ]);
 cli('overview-active-and-complete', ['overview']);

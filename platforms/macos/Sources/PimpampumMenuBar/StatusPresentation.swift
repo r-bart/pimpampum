@@ -6,6 +6,7 @@ enum StatusBadgeKind: Equatable {
   case availableDiamond
   case draftRing
   case completionCheck
+  case cancellationX
   case emptyRing
   case disconnected
   case alert
@@ -17,6 +18,7 @@ enum StatusBadgeKind: Equatable {
     case .availableDiamond: "diamond.fill"
     case .draftRing: "circle.dashed"
     case .completionCheck: "checkmark.circle.fill"
+    case .cancellationX: "xmark.circle.fill"
     case .emptyRing: "circle"
     case .disconnected: "minus.circle.fill"
     case .alert: "exclamationmark.triangle.fill"
@@ -29,7 +31,9 @@ enum StatusVisualState: Equatable {
   case active
   case available
   case draft
+  case paused
   case complete
+  case cancelled
   case empty
   case stale
   case offline
@@ -42,7 +46,9 @@ enum StatusVisualState: Equatable {
     case .active: "Active"
     case .available: "Work available"
     case .draft: "Drafts only"
+    case .paused: "Projects paused"
     case .complete: "All complete"
+    case .cancelled: "Finished with cancellations"
     case .empty: "No projects"
     case .stale: "Offline — stale data"
     case .offline: "Offline"
@@ -56,8 +62,9 @@ enum StatusVisualState: Equatable {
     case .loading: .loadingRing
     case .active: .activeDot
     case .available: .availableDiamond
-    case .draft: .draftRing
+    case .draft, .paused: .draftRing
     case .complete: .completionCheck
+    case .cancelled: .cancellationX
     case .empty: .emptyRing
     case .stale, .offline: .disconnected
     case .authenticationError, .incompatible: .alert
@@ -70,7 +77,7 @@ enum StatusVisualState: Equatable {
     case .available: .orange
     case .complete: .green
     case .stale, .offline, .authenticationError, .incompatible: .red
-    case .loading, .draft, .empty: .secondary
+    case .loading, .draft, .paused, .cancelled, .empty: .secondary
     }
   }
 }
@@ -104,7 +111,7 @@ extension StatusPopover {
       return overview == nil ? .loading : .stale
     case .online:
       guard let overview else { return .loading }
-      return visualState(for: overview.status)
+      return visualState(for: overview)
     case .offline:
       return overview == nil ? .offline : .stale
     case .invalidToken:
@@ -163,13 +170,18 @@ extension StatusPopover {
       return "\(project.availableWorkCount) available"
     case .draft:
       return "Draft"
+    case .paused:
+      return "Paused"
     case .complete:
-      return "Complete · \(project.completedTaskCount) completed tasks"
+      return project.lifecycleState == .cancelled
+        ? "Cancelled"
+        : "Complete · \(project.completedTaskCount) completed tasks"
     }
   }
 
   static func projectAccessibilityValue(_ project: OverviewProject) -> String {
-    "\(project.status.rawValue), \(projectCountsText(project))"
+    let status = project.lifecycleState == .cancelled ? "cancelled" : project.status.rawValue
+    return "\(status), \(projectCountsText(project))"
   }
 
   static func projectMetadataText(_ project: OverviewProject) -> String {
@@ -188,30 +200,38 @@ extension StatusPopover {
     "\(project.title): \(description)"
   }
 
-  static func projectSymbol(_ status: OverviewProjectStatus) -> String {
-    switch status {
+  static func projectSymbol(_ project: OverviewProject) -> String {
+    if project.lifecycleState == .cancelled { return "xmark.circle.fill" }
+    return switch project.status {
     case .active: "bolt.circle.fill"
     case .available: "circle.fill"
     case .draft: "circle.dashed"
+    case .paused: "pause.circle.fill"
     case .complete: "checkmark.circle.fill"
     }
   }
 
-  static func projectColor(_ status: OverviewProjectStatus) -> Color {
-    switch status {
+  static func projectColor(_ project: OverviewProject) -> Color {
+    if project.lifecycleState == .cancelled { return .secondary }
+    return switch project.status {
     case .active: .blue
     case .available: .orange
     case .draft: .secondary
+    case .paused: .secondary
     case .complete: .green
     }
   }
 
-  private static func visualState(for status: OverviewStatus) -> StatusVisualState {
-    switch status {
+  private static func visualState(for overview: Overview) -> StatusVisualState {
+    if overview.status == .complete, overview.counts.cancelledProjects > 0 {
+      return .cancelled
+    }
+    return switch overview.status {
     case .active: .active
     case .available: .available
     case .complete: .complete
     case .draft: .draft
+    case .paused: .paused
     case .empty: .empty
     }
   }

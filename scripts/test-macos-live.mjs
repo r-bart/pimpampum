@@ -179,7 +179,8 @@ try {
   mkdirSync(dataDirectory, { recursive: true });
   mkdirSync(workspace, { recursive: true });
   const canonicalWorkspace = realpathSync(workspace);
-  writeFileSync(join(workspace, 'prd.md'), '# Live smoke PRD\n');
+  const specBodyPath = join(workspace, 'status-integration-spec.md');
+  writeFileSync(specBodyPath, '# Status integration Spec\n');
 
   const runtimeRoot = join(temporaryRoot, 'runtime');
   prepareMacosRuntimePackage({
@@ -258,10 +259,17 @@ try {
     'live-smoke',
     'status-integration',
     'Status integration',
-    join(workspace, 'prd.md'),
   );
-  const ready = runCli('project:ready', project.id, String(project.revision));
-  const claim = runCli('work:start', 'project', project.id, 'macos-live-smoke');
+  const spec = runCli(
+    'spec:create',
+    project.id,
+    'status-integration-spec',
+    'Status integration Spec',
+    specBodyPath,
+  );
+  const readySpec = runCli('spec:ready', spec.id, String(spec.revision));
+  const openProject = runCli('project:open', project.id, String(project.revision));
+  const claim = runCli('work:start', 'spec', spec.id, 'macos-live-smoke');
   const active = runCli('overview');
   if (active.status !== 'active' || active.counts.activeClaims !== 1) {
     throw new Error('Live overview did not expose the active claim.');
@@ -327,11 +335,17 @@ try {
   }
   runCli(
     'work:complete',
-    'project',
-    project.id,
+    'spec',
+    spec.id,
     'macos-live-smoke',
-    String(claim.project.revision ?? ready.revision),
-    'macOS live smoke complete',
+    String(claim.spec?.revision ?? readySpec.revision),
+    'macOS live smoke Spec complete',
+  );
+  runCli(
+    'project:complete',
+    project.id,
+    String(openProject.revision),
+    'macOS live smoke project complete',
   );
   const complete = runCli('overview');
   if (complete.status !== 'complete') throw new Error('Live overview did not become complete.');

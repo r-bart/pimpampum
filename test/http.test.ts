@@ -169,11 +169,15 @@ describe('HTTP API', () => {
             counts: {
               workspaces: 0,
               projects: 0,
+              specs: 0,
               draftProjects: 0,
-              readyProjects: 0,
+              openProjects: 0,
+              pausedProjects: 0,
               completedProjects: 0,
+              cancelledProjects: 0,
               openTasks: 0,
               completedTasks: 0,
+              cancelledTasks: 0,
               activeClaims: 0,
               availableWork: 0,
             },
@@ -182,12 +186,12 @@ describe('HTTP API', () => {
             activeWork: [],
             activeWorkTruncated: false,
           },
-          meta: { schemaVersion: 1 },
+          meta: { schemaVersion: 2 },
         });
       });
   });
 
-  it('registers a workspace, creates a PRD and lists it as available work', async () => {
+  it('registers a workspace, opens a Project and lists its ready Spec as available work', async () => {
     const authorization = { authorization: `Bearer ${token}` };
     await request(app)
       .post('/api/v1/workspaces')
@@ -203,10 +207,24 @@ describe('HTTP API', () => {
         workspaceId: 'vcomp',
         slug: 'auth',
         title: 'Authentication',
-        prd: '# Authentication',
-        state: 'ready',
       })
       .expect(201);
+    const projectId: string = projectResponse.body.data.id;
+    const specResponse = await request(app)
+      .post(`/api/v1/projects/${projectId}/specs`)
+      .set(authorization)
+      .send({ slug: 'authentication', title: 'Authentication', body: '# Authentication' })
+      .expect(201);
+    await request(app)
+      .patch(`/api/v1/specs/${specResponse.body.data.id}`)
+      .set(authorization)
+      .send({ state: 'ready', expectedRevision: 1, actor: 'test' })
+      .expect(200);
+    await request(app)
+      .patch(`/api/v1/projects/${projectId}`)
+      .set(authorization)
+      .send({ state: 'open', expectedRevision: 1, actor: 'test' })
+      .expect(200);
 
     const workResponse = await request(app)
       .get('/api/v1/work?workspaceId=vcomp')
@@ -215,8 +233,8 @@ describe('HTTP API', () => {
 
     expect(workResponse.body.data).toMatchObject([
       {
-        targetType: 'project',
-        targetId: projectResponse.body.data.id,
+        targetType: 'spec',
+        targetId: specResponse.body.data.id,
         workspaceId: 'vcomp',
       },
     ]);
@@ -248,8 +266,6 @@ describe('HTTP API', () => {
       .send({
         workspaceId: 'lifecycle',
         slug: 'illegal-done',
-        title: 'Illegal',
-        state: 'done',
       })
       .expect(400);
     const created = await request(app)
@@ -259,27 +275,87 @@ describe('HTTP API', () => {
         workspaceId: 'lifecycle',
         slug: 'agent-runtime',
         title: 'Agent runtime',
-        prd: '# Initial',
       })
       .expect(201);
     const projectId: string = created.body.data.id;
+    const cancellableProject = await request(app)
+      .post('/api/v1/projects')
+      .set(authorization)
+      .send({
+        workspaceId: 'lifecycle',
+        slug: 'cancelled-project',
+        title: 'Cancelled project',
+      })
+      .expect(201);
+    await request(app)
+      .post(`/api/v1/projects/${cancellableProject.body.data.id}/cancel`)
+      .set(authorization)
+      .send({ expectedRevision: 1, reason: 'Deliberately cancelled', actor: 'test' })
+      .expect(200)
+      .expect(({ body }) => expect(body.data.state).toBe('cancelled'));
 
-    const ready = await request(app)
+    const createdSpec = await request(app)
+      .post(`/api/v1/projects/${projectId}/specs`)
+      .set(authorization)
+      .send({ slug: 'agent-runtime', title: 'Agent runtime', body: '# Initial' })
+      .expect(201);
+    const specId: string = createdSpec.body.data.id;
+    await request(app)
+      .get(`/api/v1/specs/${specId}`)
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).not.toHaveProperty('body');
+        expect(body.data.bodySizeBytes).toBeGreaterThan(0);
+      });
+    await request(app)
+      .get(`/api/v1/specs/${specId}/manifest`)
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).not.toHaveProperty('body'));
+    const cancellableSpec = await request(app)
+      .post(`/api/v1/projects/${projectId}/specs`)
+      .set(authorization)
+      .send({ slug: 'discarded-spec', title: 'Discarded Spec', body: '# Discarded' })
+      .expect(201);
+    await request(app)
+      .post(`/api/v1/specs/${cancellableSpec.body.data.id}/cancel`)
+      .set(authorization)
+      .send({ expectedRevision: 1, reason: 'No longer needed', actor: 'test' })
+      .expect(200)
+      .expect(({ body }) => expect(body.data.state).toBe('cancelled'));
+    await request(app)
+      .get(`/api/v1/projects/${projectId}/specs?state=cancelled`)
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.items).toHaveLength(1));
+    await request(app)
+      .get(`/api/v1/projects/${projectId}/specs`)
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.items).toHaveLength(2));
+
+    const readySpec = await request(app)
+      .patch(`/api/v1/specs/${specId}`)
+      .set(authorization)
+      .send({ state: 'ready', expectedRevision: 1, actor: 'test' })
+      .expect(200);
+    const opened = await request(app)
       .patch(`/api/v1/projects/${projectId}`)
       .set(authorization)
-      .send({ title: 'Agent runtime v1', state: 'ready', expectedRevision: 1, actor: 'test' })
+      .send({ title: 'Agent runtime v2', state: 'open', expectedRevision: 1, actor: 'test' })
       .expect(200);
-    expect(ready.body.data.revision).toBe(2);
+    expect(opened.body.data.revision).toBe(2);
     await request(app)
-      .put(`/api/v1/projects/${projectId}/prd`)
+      .patch(`/api/v1/specs/${specId}`)
       .set(authorization)
-      .send({ prd: '# Ready', expectedRevision: 1 })
+      .send({ body: '# Ready', expectedRevision: 1 })
       .expect(409)
       .expect(({ body }) => expect(body.error.code).toBe('revision_conflict'));
-    const prd = await request(app)
-      .put(`/api/v1/projects/${projectId}/prd`)
+    const updatedSpec = await request(app)
+      .patch(`/api/v1/specs/${specId}`)
       .set(authorization)
-      .send({ prd: '# Ready', expectedRevision: 2, actor: 'test' })
+      .send({ body: '# Ready', expectedRevision: readySpec.body.data.revision, actor: 'test' })
       .expect(200);
 
     const context = await request(app)
@@ -301,20 +377,60 @@ describe('HTTP API', () => {
       .set(authorization)
       .expect(200)
       .expect(({ body }) => {
-        expect(body.data[0].body).toBeUndefined();
-        expect(body.data[0].sizeBytes).toBeGreaterThan(0);
+        expect(body.data.items[0].body).toBeUndefined();
+        expect(body.data.items[0].sizeBytes).toBeGreaterThan(0);
       });
     await request(app)
       .get(`/api/v1/projects/${projectId}/context/architecture`)
       .set(authorization)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).not.toHaveProperty('body');
+        expect(body.data.sizeBytes).toBeGreaterThan(0);
+      });
+    await request(app)
+      .put('/api/v1/workspaces/lifecycle/context/shared-architecture')
+      .set(authorization)
+      .send({ body: '# Shared architecture', actor: 'test' })
       .expect(200);
+    await request(app)
+      .get('/api/v1/workspaces/lifecycle/context')
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.items[0].name).toBe('shared-architecture'));
+    await request(app)
+      .get('/api/v1/workspaces/lifecycle/context/shared-architecture')
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).not.toHaveProperty('body');
+        expect(body.data.sizeBytes).toBeGreaterThan(0);
+      });
+    await request(app)
+      .get(
+        '/api/v1/workspaces/lifecycle/context/shared-architecture/body?offsetCodeUnits=2&limitCodeUnits=6',
+      )
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.body).toBe('Shared'));
 
     const taskResponse = await request(app)
-      .post(`/api/v1/projects/${projectId}/tasks`)
+      .post(`/api/v1/specs/${specId}/tasks`)
       .set(authorization)
       .send({ title: 'Build API' })
       .expect(201);
     const taskId: string = taskResponse.body.data.id;
+    const cancellableTask = await request(app)
+      .post(`/api/v1/specs/${specId}/tasks`)
+      .set(authorization)
+      .send({ title: 'Discarded task' })
+      .expect(201);
+    await request(app)
+      .post(`/api/v1/tasks/${cancellableTask.body.data.id}/cancel`)
+      .set(authorization)
+      .send({ expectedRevision: 1, reason: 'No longer needed', actor: 'test' })
+      .expect(200)
+      .expect(({ body }) => expect(body.data.state).toBe('cancelled'));
     const updatedTask = await request(app)
       .patch(`/api/v1/tasks/${taskId}`)
       .set(authorization)
@@ -325,10 +441,17 @@ describe('HTTP API', () => {
       .set(authorization)
       .send({ title: 'Build the complete API', expectedRevision: updatedTask.body.data.revision })
       .expect(200);
-    await request(app).get(`/api/v1/tasks/${taskId}`).set(authorization).expect(200);
-    await request(app).get(`/api/v1/projects/${projectId}/tasks`).set(authorization).expect(200);
     await request(app)
-      .get('/api/v1/projects?workspaceId=lifecycle&state=ready&limit=5&offset=0')
+      .get(`/api/v1/tasks/${taskId}`)
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).not.toHaveProperty('body');
+        expect(body.data.bodySizeBytes).toBeGreaterThan(0);
+      });
+    await request(app).get(`/api/v1/specs/${specId}/tasks`).set(authorization).expect(200);
+    await request(app)
+      .get('/api/v1/projects?workspaceId=lifecycle&state=open&limit=5&offset=0')
       .set(authorization)
       .expect(200);
     await request(app)
@@ -336,21 +459,24 @@ describe('HTTP API', () => {
       .set(authorization)
       .expect(200)
       .expect(({ body }) => {
-        expect(body.data[0].prd).toBeUndefined();
-        expect(body.data[0].prdSizeBytes).toBeGreaterThan(0);
+        expect(body.data.items[0]).not.toHaveProperty('body');
+        expect(body.data.items[0].specCount).toBe(2);
       });
     await request(app)
       .get(`/api/v1/projects/${projectId}`)
       .set(authorization)
       .expect(200)
-      .expect(({ body }) => expect(body.data.prd).toBe('# Ready'));
+      .expect(({ body }) => {
+        expect(body.data).not.toHaveProperty('prd');
+        expect(body.data.specCount).toBe(2);
+      });
     await request(app)
       .get(`/api/v1/projects/${projectId}/manifest`)
       .set(authorization)
       .expect(200)
-      .expect(({ body }) => expect(body.data.prdSizeBytes).toBeGreaterThan(0));
+      .expect(({ body }) => expect(body.data.specCount).toBe(2));
     await request(app)
-      .get(`/api/v1/projects/${projectId}/prd?offsetCodeUnits=2&limitCodeUnits=3`)
+      .get(`/api/v1/specs/${specId}/body?offsetCodeUnits=2&limitCodeUnits=3`)
       .set(authorization)
       .expect(200)
       .expect(({ body }) => expect(body.data.body).toBe('Rea'));
@@ -416,17 +542,26 @@ describe('HTTP API', () => {
       .expect(({ body }) => expect(body.data.state).toBe('done'));
 
     await request(app)
-      .put(`/api/v1/work/project/${projectId}/claim`)
+      .put(`/api/v1/work/spec/${specId}/claim`)
       .set(authorization)
       .send({ agentId: 'agent-a', leaseSeconds: 60 })
       .expect(200);
     await request(app)
-      .post(`/api/v1/work/project/${projectId}/complete`)
+      .post(`/api/v1/work/spec/${specId}/complete`)
       .set(authorization)
       .send({
         agentId: 'agent-a',
-        expectedRevision: prd.body.data.revision,
+        expectedRevision: updatedSpec.body.data.revision,
+        summary: 'Spec delivered',
+      })
+      .expect(200);
+    await request(app)
+      .post(`/api/v1/projects/${projectId}/complete`)
+      .set(authorization)
+      .send({
+        expectedRevision: opened.body.data.revision,
         summary: 'Project delivered',
+        actor: 'test',
       })
       .expect(200);
     await request(app)
@@ -434,6 +569,11 @@ describe('HTTP API', () => {
       .set(authorization)
       .expect(200)
       .expect(({ body }) => expect(body.data.completionSummary).toBe('Project delivered'));
+    await request(app)
+      .get(`/api/v1/specs/${specId}/completion`)
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.completionSummary).toBe('Spec delivered'));
     await request(app)
       .get(`/api/v1/tasks/${taskId}/completion`)
       .set(authorization)
@@ -490,6 +630,24 @@ describe('HTTP API', () => {
       .post('/api/v1/workspaces')
       .set(authorization)
       .send({ id: 'invalid!', name: '', rootPath: '.' })
+      .expect(400);
+    await request(app)
+      .post('/api/v1/workspaces')
+      .set(authorization)
+      .send({ id: 'legacy', name: 'Legacy', rootPath: temporaryDirectory, prd: '# Old field' })
+      .expect(400);
+    await request(app)
+      .post('/api/v1/projects')
+      .set(authorization)
+      .send({ workspaceId: 'legacy', slug: 'old', title: 'Old', prd: '# Old field' })
+      .expect(400);
+    await request(app)
+      .post('/api/v1/specs/11111111-1111-4111-8111-111111111111/tasks')
+      .set(authorization)
+      .send({
+        title: 'Old ownership',
+        projectId: '22222222-2222-4222-8222-222222222222',
+      })
       .expect(400);
     await request(app)
       .post('/api/v1/projects')

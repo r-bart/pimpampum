@@ -29,6 +29,7 @@ Item {
       "active": "dot",
       "available": "bar",
       "complete": "square",
+      "cancelled": "ring",
       "draft": "ring",
       "empty": "bar",
       "offline": "diamond",

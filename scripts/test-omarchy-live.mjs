@@ -538,24 +538,47 @@ export default function createLiveRunner(dependencies) {
         assertCandidateUnchanged(candidatePath, initialCandidateHash, 'after install');
         const online = parseObject((await cli('status-online', ['status'])).stdout, 'status');
         if (online.running !== true) throw new Error('Installed Pimpampum daemon is not running');
+        const specBodyPath = resolve(dirname(activeCliPath), '..', 'README.md');
 
         await cli('seed-workspace', ['workspace:add', 'live', 'Live', workspace]);
         const activeProject = parseObject(
           (await cli('seed-project', ['project:create', 'live', 'active', 'Active'])).stdout,
           'active project creation',
         );
+        const activeSpec = parseObject(
+          (
+            await cli('seed-active-spec', [
+              'spec:create',
+              String(activeProject.id),
+              'active-spec',
+              'Active Spec',
+              specBodyPath,
+            ])
+          ).stdout,
+          'active Spec creation',
+        );
         parseObject(
           (
-            await cli('ready-active-project', [
-              'project:ready',
+            await cli('ready-active-spec', [
+              'spec:ready',
+              String(activeSpec.id),
+              String(activeSpec.revision),
+            ])
+          ).stdout,
+          'active Spec ready',
+        );
+        parseObject(
+          (
+            await cli('open-active-project', [
+              'project:open',
               String(activeProject.id),
               String(activeProject.revision),
             ])
           ).stdout,
-          'active project ready',
+          'active project open',
         );
         const task = parseObject(
-          (await cli('seed-task', ['task:create', String(activeProject.id), 'Live task'])).stdout,
+          (await cli('seed-task', ['task:create', String(activeSpec.id), 'Live task'])).stdout,
           'task creation',
         );
         await cli('seed-claim', ['work:start', 'task', String(task.id), 'live-agent']);
@@ -570,35 +593,61 @@ export default function createLiveRunner(dependencies) {
           ).stdout,
           'completed project creation',
         );
+        const completeSpec = parseObject(
+          (
+            await cli('seed-completed-spec', [
+              'spec:create',
+              String(completeProject.id),
+              'completed-spec',
+              'Completed Spec',
+              specBodyPath,
+            ])
+          ).stdout,
+          'completed Spec creation',
+        );
         const completeReady = parseObject(
           (
-            await cli('ready-completed-project', [
-              'project:ready',
+            await cli('ready-completed-spec', [
+              'spec:ready',
+              String(completeSpec.id),
+              String(completeSpec.revision),
+            ])
+          ).stdout,
+          'completed Spec ready',
+        );
+        const completeOpen = parseObject(
+          (
+            await cli('open-completed-project', [
+              'project:open',
               String(completeProject.id),
               String(completeProject.revision),
             ])
           ).stdout,
-          'completed project ready',
+          'completed project open',
         );
         const completeClaim = parseObject(
           (
-            await cli('start-completed-project', [
+            await cli('start-completed-spec', [
               'work:start',
-              'project',
-              String(completeProject.id),
+              'spec',
+              String(completeSpec.id),
               'completion-agent',
             ])
           ).stdout,
-          'completed project claim',
+          'completed Spec claim',
         );
-        await cli('complete-project', [
+        await cli('complete-spec', [
           'work:complete',
-          'project',
-          String(completeProject.id),
+          'spec',
+          String(completeSpec.id),
           'completion-agent',
-          String(
-            completeClaim.project?.revision ?? completeClaim.revision ?? completeReady.revision,
-          ),
+          String(completeClaim.spec?.revision ?? completeClaim.revision ?? completeReady.revision),
+          'Complete',
+        ]);
+        await cli('complete-project', [
+          'project:complete',
+          String(completeProject.id),
+          String(completeOpen.revision),
           'Complete',
         ]);
         const overview = parseObject(

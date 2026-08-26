@@ -51,7 +51,7 @@ enum OverviewClientError: Error, Equatable, LocalizedError, Sendable {
 }
 
 struct OverviewClient: OverviewReading {
-  static let supportedSchemaVersion = 1
+  static let supportedSchemaVersion = 2
   static let maximumItems = 500
 
   private let receiptURL: URL
@@ -147,9 +147,12 @@ struct OverviewClient: OverviewReading {
     guard Set(overview.projects.map(\.id)).count == overview.projects.count else { return false }
     guard
       overview.activeWork.allSatisfy({ work in
-        !work.targetId.isEmpty && !work.projectId.isEmpty && !work.agentId.isEmpty
+        !work.targetId.isEmpty && !work.projectId.isEmpty && !work.specId.isEmpty
+          && !work.specTitle.isEmpty && !work.agentId.isEmpty
           && work.expiresAt > overview.generatedAt
-          && (work.targetType == .task ? work.taskId != nil && work.taskTitle != nil : true)
+          && (work.targetType == .task
+            ? work.taskId != nil && work.taskTitle != nil
+            : work.taskId == nil && work.taskTitle == nil)
       })
     else { return false }
     return true

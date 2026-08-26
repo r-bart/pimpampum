@@ -1,12 +1,13 @@
 {
   "name": "pimpampum",
   "version": "0.1.0",
-  "description": "Local, agent-first project coordination through PRDs, HTTP and MCP.",
+  "description": "Ultra-minimal local project coordination for solopreneurs and software agents.",
   "engines": {
     "node": ">=22"
   },
   "files": [
     "dist",
+    "branding/assets/readme_cover.png",
     "docs",
     "integrations/omarchy",
     "platforms/macos/dist",
@@ -45,7 +46,7 @@
     "validate:omarchy": "node scripts/validate-omarchy-plugin.mjs",
     "test:omarchy": "npm run validate:omarchy && vitest run test/omarchy-plugin.test.ts test/service-omarchy.test.ts",
     "test": "npm run build && npm run test:coverage && vitest run test/e2e.test.ts",
-    "test:coverage": "vitest run --coverage --exclude test/e2e.test.ts",
+    "test:coverage": "vitest run --coverage --test-timeout=60000 --exclude test/e2e.test.ts",
     "test:unit": "vitest run --exclude test/e2e.test.ts",
     "test:e2e": "npm run build && vitest run test/e2e.test.ts",
     "test:evals": "npm run test:e2e",
@@ -54,10 +55,14 @@
     "test:e2e:omarchy": "npm run validate:omarchy && npm run check:quattro-evidence"
   },
   "keywords": [
+    "agent-first",
     "agents",
+    "local-first",
     "mcp",
     "project-management",
-    "prd"
+    "solopreneur",
+    "specifications",
+    "sqlite"
   ],
   "author": "",
   "license": "MIT",

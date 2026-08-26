@@ -1,7 +1,12 @@
 # Product Matrix: Pimpampum v1
 
 **Date**: 2026-08-25
-**Status**: approved
+**Status**: superseded
+**Superseded by**: [`2026-08-26_domain-model-v2.md`](2026-08-26_domain-model-v2.md)
+
+> Historical record only. This document describes the original Project-as-document model and must
+> not be used as the current product or implementation contract. Domain Model v2 replaces it with
+> `Workspace → Project → Spec → Task → Subtask`.
 
 ## Product definition
 

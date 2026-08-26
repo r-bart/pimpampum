@@ -1,4 +1,5 @@
 type JsonSchema = Record<string, unknown>;
+type Operation = Record<string, unknown>;
 
 export interface OpenApiDocument {
   openapi: string;
@@ -17,6 +18,7 @@ export interface OpenApiDocument {
 
 const ref = (name: string): JsonSchema => ({ $ref: `#/components/schemas/${name}` });
 const arrayOf = (schema: JsonSchema): JsonSchema => ({ type: 'array', items: schema });
+const nullable = (schema: JsonSchema): JsonSchema => ({ anyOf: [schema, { type: 'null' }] });
 const body = (schema: JsonSchema) => ({
   required: true,
   content: { 'application/json': { schema } },
@@ -37,54 +39,88 @@ const responses = (schema: JsonSchema, status: '200' | '201' = '200') => ({
   '413': { $ref: '#/components/responses/PayloadTooLarge' },
   '500': { $ref: '#/components/responses/InternalError' },
 });
+const operation = (
+  operationId: string,
+  summary: string,
+  tag: string,
+  schema: JsonSchema,
+  options: {
+    description?: string;
+    parameters?: unknown[];
+    requestBody?: unknown;
+    status?: '200' | '201';
+    security?: unknown[];
+  } = {},
+): Operation => ({
+  operationId,
+  summary,
+  ...(options.description ? { description: options.description } : {}),
+  tags: [tag],
+  ...(options.security ? { security: options.security } : {}),
+  ...(options.parameters ? { parameters: options.parameters } : {}),
+  ...(options.requestBody ? { requestBody: options.requestBody } : {}),
+  responses: responses(schema, options.status),
+});
+const objectSchema = (required: string[], properties: Record<string, JsonSchema>): JsonSchema => ({
+  type: 'object',
+  additionalProperties: false,
+  required,
+  properties,
+});
+const pageSchema = (itemSchema: JsonSchema): JsonSchema =>
+  objectSchema(['items', 'limit', 'offset', 'hasMore'], {
+    items: arrayOf(itemSchema),
+    limit: { type: 'integer', minimum: 1 },
+    offset: { type: 'integer', minimum: 0 },
+    hasMore: { type: 'boolean' },
+  });
 
-const projectId = {
-  name: 'projectId',
+const uuidPath = (name: string, description: string) => ({
+  name,
   in: 'path',
   required: true,
-  description: 'Project UUID.',
-  schema: { type: 'string', format: 'uuid' },
-};
-const taskId = {
-  name: 'taskId',
+  description,
+  schema: ref('Id'),
+});
+const projectId = uuidPath('projectId', 'Project UUID.');
+const specId = uuidPath('specId', 'Spec UUID.');
+const taskId = uuidPath('taskId', 'Task or Subtask UUID.');
+const workspaceId = {
+  name: 'workspaceId',
   in: 'path',
   required: true,
-  description: 'Task or subtask UUID.',
-  schema: { type: 'string', format: 'uuid' },
+  description: 'Workspace ID.',
+  schema: ref('Slug'),
 };
 const contextName = {
   name: 'name',
   in: 'path',
   required: true,
-  description: 'Context document lowercase kebab-case name.',
-  schema: { $ref: '#/components/schemas/Slug' },
+  description: 'Context document name, unique within its explicit scope.',
+  schema: ref('Slug'),
 };
 const targetType = {
   name: 'targetType',
   in: 'path',
   required: true,
-  description: 'Claimed resource kind.',
-  schema: { type: 'string', enum: ['project', 'task'] },
+  description: 'Claimable executable resource kind.',
+  schema: ref('TargetType'),
 };
-const targetId = {
-  name: 'targetId',
-  in: 'path',
-  required: true,
-  description: 'Claimed project or task UUID.',
-  schema: { type: 'string', format: 'uuid' },
-};
-const limit = {
-  name: 'limit',
-  in: 'query',
-  description: 'Maximum items to return.',
-  schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
-};
-const offset = {
-  name: 'offset',
-  in: 'query',
-  description: 'Zero-based deterministic item offset.',
-  schema: { type: 'integer', minimum: 0, default: 0 },
-};
+const targetId = uuidPath('targetId', 'Claimed Spec or Task UUID.');
+const pagination = [
+  {
+    name: 'limit',
+    in: 'query',
+    description: 'Maximum items to return.',
+    schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+  },
+  {
+    name: 'offset',
+    in: 'query',
+    description: 'Zero-based deterministic item offset.',
+    schema: { type: 'integer', minimum: 0, default: 0 },
+  },
+];
 const markdownPageParameters = [
   {
     name: 'offsetCodeUnits',
@@ -100,420 +136,480 @@ const markdownPageParameters = [
   },
 ];
 
+const contextPaths = (scope: 'workspaces' | 'projects', parameter: unknown) => ({
+  [`/api/v1/${scope}/{${scope === 'workspaces' ? 'workspaceId' : 'projectId'}}/context`]: {
+    parameters: [parameter],
+    get: operation(
+      scope === 'workspaces' ? 'listWorkspaceContext' : 'listProjectContext',
+      `List ${scope === 'workspaces' ? 'Workspace' : 'Project'} Context manifests`,
+      'Context',
+      ref('ContextManifestPage'),
+      { parameters: pagination },
+    ),
+  },
+  [`/api/v1/${scope}/{${scope === 'workspaces' ? 'workspaceId' : 'projectId'}}/context/{name}`]: {
+    parameters: [parameter, contextName],
+    get: operation(
+      scope === 'workspaces' ? 'getWorkspaceContext' : 'getProjectContext',
+      `Inspect bounded ${scope === 'workspaces' ? 'Workspace' : 'Project'} Context manifest`,
+      'Context',
+      ref('ContextManifest'),
+    ),
+    put: operation(
+      scope === 'workspaces' ? 'putWorkspaceContext' : 'putProjectContext',
+      `Create or replace ${scope === 'workspaces' ? 'Workspace' : 'Project'} Context`,
+      'Context',
+      ref('ContextDocument'),
+      { requestBody: body(ref('PutContextInput')) },
+    ),
+  },
+  [`/api/v1/${scope}/{${scope === 'workspaces' ? 'workspaceId' : 'projectId'}}/context/{name}/body`]:
+    {
+      parameters: [parameter, contextName],
+      get: operation(
+        scope === 'workspaces' ? 'readWorkspaceContextBody' : 'readProjectContextBody',
+        `Read bounded ${scope === 'workspaces' ? 'Workspace' : 'Project'} Context Markdown`,
+        'Context',
+        ref('MarkdownPage'),
+        { parameters: markdownPageParameters },
+      ),
+    },
+});
+
 export const openApiDocument: OpenApiDocument = {
   openapi: '3.1.0',
   info: {
     title: 'Pimpampum Local API',
     version: '0.1.0',
-    summary: 'Minimal local coordination for humans and software agents.',
+    summary: 'Minimal local portfolio coordination for humans and software agents.',
     description:
-      'One machine-local daemon manages workspaces, Markdown PRDs, contextual documents, tasks, subtasks, expiring claims, backup, and export. JSON writes use optimistic revisions. The bearer token is stored in the configured Pimpampum data directory.',
+      'One machine-local daemon owns Workspaces, Project initiatives, executable Markdown Specs, Tasks, one-level Subtasks, scoped Context, expiring Claims, backup, and export. Writes use optimistic revisions. Project is never an alias for a PRD; a PRD is one possible kind of Spec.',
     license: { name: 'MIT' },
   },
   jsonSchemaDialect: 'https://json-schema.org/draft/2020-12/schema',
   servers: [{ url: 'http://127.0.0.1:7337', description: 'Default local daemon' }],
   security: [{ bearerAuth: [] }],
   tags: [
-    { name: 'System', description: 'Health and machine-readable contracts.' },
+    { name: 'System', description: 'Health and bounded overview schema v2.' },
     { name: 'Workspaces', description: 'Registered repository and directory roots.' },
-    { name: 'Projects', description: 'Projects whose source of intent is a Markdown PRD.' },
-    { name: 'Context', description: 'Named contextual Markdown documents attached to projects.' },
-    { name: 'Tasks', description: 'Top-level tasks and one level of subtasks.' },
-    { name: 'Work', description: 'Claim, lease, release, and completion coordination.' },
-    { name: 'Activity', description: 'Bounded automatic audit events.' },
-    {
-      name: 'Administration',
-      description: 'Automatic backup settings, explicit snapshots, and portable export.',
-    },
-    { name: 'MCP', description: 'MCP Streamable HTTP transport; tools are documented separately.' },
+    { name: 'Projects', description: 'Bounded initiatives that contain Specs.' },
+    { name: 'Specs', description: 'Executable Markdown specifications inside Projects.' },
+    { name: 'Context', description: 'Explicitly Workspace- or Project-scoped Markdown documents.' },
+    { name: 'Tasks', description: 'Tasks and one level of Subtasks owned by Specs.' },
+    { name: 'Work', description: 'Discover, claim, lease, release, and complete Specs or Tasks.' },
+    { name: 'Activity', description: 'Bounded automatic audit events grouped by Project.' },
+    { name: 'Administration', description: 'Automatic backup, explicit snapshots, and export.' },
+    { name: 'MCP', description: 'MCP Streamable HTTP transport and discoverable tools.' },
   ],
   paths: {
     '/health': {
       get: {
-        operationId: 'getHealth',
-        summary: 'Check daemon health',
-        description: 'Public loopback health probe. It does not inspect or expose project data.',
-        tags: ['System'],
-        security: [],
-        responses: {
-          '200': response(ref('Health'), 'Daemon is running'),
-        },
+        ...operation('getHealth', 'Check daemon health', 'System', ref('Health'), {
+          security: [],
+        }),
+        responses: { '200': response(ref('Health'), 'Daemon is running') },
       },
     },
     '/openapi.json': {
       get: {
-        operationId: 'getOpenApi',
-        summary: 'Read the OpenAPI contract',
-        description: 'Public OpenAPI 3.1 document for this daemon version.',
-        tags: ['System'],
-        security: [],
-        responses: {
-          '200': response({ type: 'object' }, 'OpenAPI 3.1 document'),
-        },
+        ...operation(
+          'getOpenApi',
+          'Read the OpenAPI contract',
+          'System',
+          { type: 'object' },
+          {
+            security: [],
+          },
+        ),
+        responses: { '200': response({ type: 'object' }, 'OpenAPI 3.1 document') },
       },
     },
     '/api/v1/overview': {
       get: {
-        operationId: 'getOverview',
-        summary: 'Read bounded ambient project status',
-        description:
-          'Returns semantic project status, global counts, and active claims without Markdown or completion bodies.',
-        tags: ['System'],
-        responses: responses(ref('Overview')),
+        ...operation('getOverview', 'Read bounded portfolio status', 'System', ref('Overview')),
+        responses: {
+          ...responses(ref('Overview')),
+          '200': response(
+            {
+              allOf: [ref('OverviewSuccessEnvelope'), { properties: { data: ref('Overview') } }],
+            },
+            'Success',
+          ),
+        },
       },
     },
     '/api/v1/settings/backup': {
-      get: {
-        operationId: 'getAutomaticBackupStatus',
-        summary: 'Read automatic backup configuration and health',
-        description:
-          'Returns the daemon-owned destination and latest refresh outcome. It never exposes database contents.',
-        tags: ['Administration'],
-        responses: responses(ref('AutomaticBackupStatus')),
-      },
-      put: {
-        operationId: 'configureAutomaticBackup',
-        summary: 'Choose the automatic backup directory',
-        description:
-          'Persists one existing writable absolute directory and immediately attempts an integrity-checked rolling snapshot.',
-        tags: ['Administration'],
-        requestBody: body(ref('DirectoryInput')),
-        responses: responses(ref('AutomaticBackupStatus')),
-      },
-      delete: {
-        operationId: 'disableAutomaticBackup',
-        summary: 'Disable automatic backup',
-        description:
-          'Stops future automatic refreshes without deleting an existing snapshot or changing the live database.',
-        tags: ['Administration'],
-        responses: responses(ref('AutomaticBackupStatus')),
-      },
+      get: operation(
+        'getAutomaticBackupStatus',
+        'Read automatic backup status',
+        'Administration',
+        ref('AutomaticBackupStatus'),
+      ),
+      put: operation(
+        'configureAutomaticBackup',
+        'Choose the automatic backup directory',
+        'Administration',
+        ref('AutomaticBackupStatus'),
+        { requestBody: body(ref('DirectoryInput')) },
+      ),
+      delete: operation(
+        'disableAutomaticBackup',
+        'Disable automatic backup',
+        'Administration',
+        ref('AutomaticBackupStatus'),
+      ),
     },
     '/api/v1/settings/backup/retry': {
-      post: {
-        operationId: 'retryAutomaticBackup',
-        summary: 'Retry the configured automatic backup',
-        description: 'Runs a serialized refresh and returns its resulting health state.',
-        tags: ['Administration'],
-        responses: responses(ref('AutomaticBackupStatus')),
-      },
+      post: operation(
+        'retryAutomaticBackup',
+        'Retry automatic backup',
+        'Administration',
+        ref('AutomaticBackupStatus'),
+      ),
     },
     '/api/v1/workspaces': {
-      get: {
-        operationId: 'listWorkspaces',
-        summary: 'List registered workspaces',
-        tags: ['Workspaces'],
-        responses: responses(arrayOf(ref('Workspace'))),
-      },
-      post: {
-        operationId: 'registerWorkspace',
-        summary: 'Register a local workspace root',
-        description: 'The root path must be absolute and readable by the daemon process.',
-        tags: ['Workspaces'],
-        requestBody: body(ref('RegisterWorkspaceInput')),
-        responses: responses(ref('Workspace'), '201'),
-      },
+      get: operation(
+        'listWorkspaces',
+        'List registered Workspaces',
+        'Workspaces',
+        arrayOf(ref('Workspace')),
+      ),
+      post: operation(
+        'registerWorkspace',
+        'Register a Workspace root',
+        'Workspaces',
+        ref('Workspace'),
+        {
+          requestBody: body(ref('RegisterWorkspaceInput')),
+          status: '201',
+        },
+      ),
     },
     '/api/v1/workspaces/resolve': {
-      post: {
-        operationId: 'resolveWorkspace',
-        summary: 'Resolve a path to its workspace',
-        description: 'Returns the most specific registered root containing the absolute path.',
-        tags: ['Workspaces'],
-        requestBody: body({
-          type: 'object',
-          additionalProperties: false,
-          required: ['path'],
-          properties: { path: ref('AbsolutePath') },
-        }),
-        responses: responses(ref('Workspace')),
-      },
+      post: operation(
+        'resolveWorkspace',
+        'Resolve a path to its Workspace',
+        'Workspaces',
+        ref('Workspace'),
+        {
+          requestBody: body(ref('ResolveWorkspaceInput')),
+        },
+      ),
     },
+    ...contextPaths('workspaces', workspaceId),
     '/api/v1/projects': {
-      get: {
-        operationId: 'listProjects',
-        summary: 'List lightweight project manifests',
-        description: 'PRD and completion bodies are omitted to keep discovery bounded.',
-        tags: ['Projects'],
-        parameters: [
-          {
-            name: 'workspaceId',
-            in: 'query',
-            description: 'Optional workspace ID filter.',
-            schema: ref('Slug'),
-          },
-          {
-            name: 'state',
-            in: 'query',
-            description: 'Optional lifecycle state filter.',
-            schema: { type: 'string', enum: ['draft', 'ready', 'done'] },
-          },
-          limit,
-          offset,
-        ],
-        responses: responses(arrayOf(ref('ProjectManifest'))),
-      },
-      post: {
-        operationId: 'createProject',
-        summary: 'Create a project and Markdown PRD',
-        tags: ['Projects'],
+      get: operation(
+        'listProjects',
+        'List bounded Project manifests',
+        'Projects',
+        ref('ProjectManifestPage'),
+        {
+          parameters: [
+            {
+              name: 'workspaceId',
+              in: 'query',
+              description: 'Optional Workspace ID filter.',
+              schema: ref('Slug'),
+            },
+            {
+              name: 'state',
+              in: 'query',
+              description: 'Optional Project lifecycle filter.',
+              schema: ref('ProjectState'),
+            },
+            ...pagination,
+          ],
+        },
+      ),
+      post: operation('createProject', 'Create a draft Project', 'Projects', ref('Project'), {
         requestBody: body(ref('CreateProjectInput')),
-        responses: responses(ref('Project'), '201'),
-      },
+        status: '201',
+      }),
     },
     '/api/v1/projects/{projectId}': {
       parameters: [projectId],
-      get: {
-        operationId: 'getProject',
-        summary: 'Read a complete project',
-        description:
-          'Includes the complete PRD and completion fields; prefer the manifest for discovery.',
-        tags: ['Projects'],
-        responses: responses(ref('Project')),
-      },
-      patch: {
-        operationId: 'updateProject',
-        summary: 'Update project metadata',
-        description: 'Updates title and/or draft/ready state with optimistic revision control.',
-        tags: ['Projects'],
-        requestBody: body(ref('UpdateProjectInput')),
-        responses: responses(ref('Project')),
-      },
+      get: operation(
+        'getProject',
+        'Inspect a bounded Project manifest',
+        'Projects',
+        ref('ProjectManifest'),
+      ),
+      patch: operation(
+        'updateProject',
+        'Update Project metadata or lifecycle',
+        'Projects',
+        ref('Project'),
+        {
+          requestBody: body(ref('UpdateProjectInput')),
+        },
+      ),
     },
     '/api/v1/projects/{projectId}/manifest': {
       parameters: [projectId],
-      get: {
-        operationId: 'getProjectManifest',
-        summary: 'Read a lightweight project manifest',
-        tags: ['Projects'],
-        responses: responses(ref('ProjectManifest')),
-      },
-    },
-    '/api/v1/projects/{projectId}/prd': {
-      parameters: [projectId],
-      get: {
-        operationId: 'readProjectPrd',
-        summary: 'Read a bounded PRD page',
-        tags: ['Projects'],
-        parameters: markdownPageParameters,
-        responses: responses(ref('MarkdownPage')),
-      },
-      put: {
-        operationId: 'replaceProjectPrd',
-        summary: 'Replace the complete project PRD',
-        tags: ['Projects'],
-        requestBody: body(ref('ReplacePrdInput')),
-        responses: responses(ref('Project')),
-      },
+      get: operation(
+        'getProjectManifest',
+        'Read a bounded Project manifest',
+        'Projects',
+        ref('ProjectManifest'),
+      ),
     },
     '/api/v1/projects/{projectId}/completion': {
       parameters: [projectId],
-      get: {
-        operationId: 'getProjectCompletion',
-        summary: 'Read project completion details',
-        tags: ['Projects'],
-        responses: responses(ref('CompletionDetails')),
-      },
+      get: operation(
+        'getProjectCompletion',
+        'Read Project completion details',
+        'Projects',
+        ref('CompletionDetails'),
+      ),
     },
-    '/api/v1/projects/{projectId}/context': {
+    '/api/v1/projects/{projectId}/complete': {
       parameters: [projectId],
-      get: {
-        operationId: 'listContext',
-        summary: 'List context manifests',
-        description: 'Markdown bodies are omitted.',
-        tags: ['Context'],
-        parameters: [limit, offset],
-        responses: responses(arrayOf(ref('ContextManifest'))),
-      },
+      post: operation('completeProject', 'Complete a Project', 'Projects', ref('Project'), {
+        description: 'Projects complete without Claims after every child Spec is terminal.',
+        requestBody: body(ref('CompleteProjectInput')),
+      }),
     },
-    '/api/v1/projects/{projectId}/context/{name}': {
-      parameters: [projectId, contextName],
-      get: {
-        operationId: 'getContext',
-        summary: 'Read a complete context document',
-        tags: ['Context'],
-        responses: responses(ref('ContextDocument')),
-      },
-      put: {
-        operationId: 'putContext',
-        summary: 'Create or replace a context document',
-        description: 'Use null expectedRevision to create and the current revision to replace.',
-        tags: ['Context'],
-        requestBody: body(ref('PutContextInput')),
-        responses: responses(ref('ContextDocument')),
-      },
+    '/api/v1/projects/{projectId}/cancel': {
+      parameters: [projectId],
+      post: operation('cancelProject', 'Cancel a Project tree', 'Projects', ref('Project'), {
+        description: 'Atomically cancels non-terminal descendants and releases their Claims.',
+        requestBody: body(ref('CancelInput')),
+      }),
     },
-    '/api/v1/projects/{projectId}/context/{name}/body': {
-      parameters: [projectId, contextName],
-      get: {
-        operationId: 'readContextBody',
-        summary: 'Read a bounded context page',
-        tags: ['Context'],
+    '/api/v1/projects/{projectId}/specs': {
+      parameters: [projectId],
+      get: operation(
+        'listProjectSpecs',
+        'List bounded Spec manifests',
+        'Specs',
+        ref('SpecManifestPage'),
+        {
+          parameters: [
+            {
+              name: 'state',
+              in: 'query',
+              description: 'Optional Spec lifecycle filter.',
+              schema: ref('SpecState'),
+            },
+            ...pagination,
+          ],
+        },
+      ),
+      post: operation('createSpec', 'Create a Spec inside a Project', 'Specs', ref('Spec'), {
+        requestBody: body(ref('CreateSpecInput')),
+        status: '201',
+      }),
+    },
+    ...contextPaths('projects', projectId),
+    '/api/v1/specs/{specId}': {
+      parameters: [specId],
+      get: operation('getSpec', 'Inspect a bounded Spec manifest', 'Specs', ref('SpecManifest')),
+      patch: operation(
+        'updateSpec',
+        'Update Spec metadata, Markdown, or lifecycle',
+        'Specs',
+        ref('Spec'),
+        {
+          requestBody: body(ref('UpdateSpecInput')),
+        },
+      ),
+    },
+    '/api/v1/specs/{specId}/manifest': {
+      parameters: [specId],
+      get: operation(
+        'getSpecManifest',
+        'Read a bounded Spec manifest',
+        'Specs',
+        ref('SpecManifest'),
+      ),
+    },
+    '/api/v1/specs/{specId}/body': {
+      parameters: [specId],
+      get: operation('readSpecBody', 'Read bounded Spec Markdown', 'Specs', ref('MarkdownPage'), {
         parameters: markdownPageParameters,
-        responses: responses(ref('MarkdownPage')),
-      },
+      }),
     },
-    '/api/v1/projects/{projectId}/tasks': {
-      parameters: [projectId],
-      get: {
-        operationId: 'listTasks',
-        summary: 'List task and subtask manifests',
-        description: 'Task bodies and completion details are omitted.',
-        tags: ['Tasks'],
-        parameters: [limit, offset],
-        responses: responses(arrayOf(ref('TaskManifest'))),
-      },
-      post: {
-        operationId: 'createTask',
-        summary: 'Create a task or one-level subtask',
-        tags: ['Tasks'],
-        requestBody: body(ref('CreateTaskInput')),
-        responses: responses(ref('Task'), '201'),
-      },
+    '/api/v1/specs/{specId}/completion': {
+      parameters: [specId],
+      get: operation(
+        'getSpecCompletion',
+        'Read Spec completion details',
+        'Specs',
+        ref('CompletionDetails'),
+      ),
+    },
+    '/api/v1/specs/{specId}/cancel': {
+      parameters: [specId],
+      post: operation('cancelSpec', 'Cancel a Spec tree', 'Specs', ref('Spec'), {
+        requestBody: body(ref('CancelInput')),
+      }),
+    },
+    '/api/v1/specs/{specId}/tasks': {
+      parameters: [specId],
+      get: operation(
+        'listSpecTasks',
+        'List bounded Task manifests',
+        'Tasks',
+        ref('TaskManifestPage'),
+        {
+          parameters: pagination,
+        },
+      ),
+      post: operation(
+        'createTask',
+        'Create a Task or Subtask inside a Spec',
+        'Tasks',
+        ref('Task'),
+        {
+          requestBody: body(ref('CreateTaskInput')),
+          status: '201',
+        },
+      ),
     },
     '/api/v1/tasks/{taskId}': {
       parameters: [taskId],
-      get: {
-        operationId: 'getTask',
-        summary: 'Read a complete task',
-        tags: ['Tasks'],
-        responses: responses(ref('Task')),
-      },
-      patch: {
-        operationId: 'updateTask',
-        summary: 'Update an open task',
-        tags: ['Tasks'],
+      get: operation('getTask', 'Inspect a bounded Task manifest', 'Tasks', ref('TaskManifest')),
+      patch: operation('updateTask', 'Update Task metadata or Markdown', 'Tasks', ref('Task'), {
         requestBody: body(ref('UpdateTaskInput')),
-        responses: responses(ref('Task')),
-      },
+      }),
     },
     '/api/v1/tasks/{taskId}/manifest': {
       parameters: [taskId],
-      get: {
-        operationId: 'getTaskManifest',
-        summary: 'Read a lightweight task manifest',
-        tags: ['Tasks'],
-        responses: responses(ref('TaskManifest')),
-      },
+      get: operation(
+        'getTaskManifest',
+        'Read a bounded Task manifest',
+        'Tasks',
+        ref('TaskManifest'),
+      ),
     },
     '/api/v1/tasks/{taskId}/body': {
       parameters: [taskId],
-      get: {
-        operationId: 'readTaskBody',
-        summary: 'Read a bounded task body page',
-        tags: ['Tasks'],
+      get: operation('readTaskBody', 'Read bounded Task Markdown', 'Tasks', ref('MarkdownPage'), {
         parameters: markdownPageParameters,
-        responses: responses(ref('MarkdownPage')),
-      },
+      }),
     },
     '/api/v1/tasks/{taskId}/completion': {
       parameters: [taskId],
-      get: {
-        operationId: 'getTaskCompletion',
-        summary: 'Read task completion details',
-        tags: ['Tasks'],
-        responses: responses(ref('CompletionDetails')),
-      },
+      get: operation(
+        'getTaskCompletion',
+        'Read Task completion details',
+        'Tasks',
+        ref('CompletionDetails'),
+      ),
+    },
+    '/api/v1/tasks/{taskId}/cancel': {
+      parameters: [taskId],
+      post: operation('cancelTask', 'Cancel a Task tree', 'Tasks', ref('Task'), {
+        requestBody: body(ref('CancelInput')),
+      }),
     },
     '/api/v1/work': {
-      get: {
-        operationId: 'listClaimableWork',
-        summary: 'List claimable projects and leaf tasks',
-        tags: ['Work'],
-        parameters: [
-          {
-            name: 'workspaceId',
-            in: 'query',
-            description: 'Optional workspace ID filter.',
-            schema: ref('Slug'),
-          },
-          limit,
-        ],
-        responses: responses(arrayOf(ref('WorkItem'))),
-      },
+      get: operation(
+        'listWork',
+        'List claimable Specs and leaf Tasks',
+        'Work',
+        arrayOf(ref('WorkItem')),
+        {
+          parameters: [
+            {
+              name: 'workspaceId',
+              in: 'query',
+              description: 'Optional Workspace ID.',
+              schema: ref('Slug'),
+            },
+            {
+              name: 'projectId',
+              in: 'query',
+              description: 'Optional Project UUID.',
+              schema: ref('Id'),
+            },
+            { name: 'specId', in: 'query', description: 'Optional Spec UUID.', schema: ref('Id') },
+            {
+              name: 'limit',
+              in: 'query',
+              description: 'Maximum items.',
+              schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+            },
+          ],
+        },
+      ),
     },
     '/api/v1/work/{targetType}/{targetId}/claim': {
       parameters: [targetType, targetId],
-      put: {
-        operationId: 'startWork',
-        summary: 'Atomically claim work',
-        description: 'An active claim by another agent returns conflict.',
-        tags: ['Work'],
+      put: operation('startWork', 'Claim a Spec or Task', 'Work', ref('WorkBundle'), {
         requestBody: body(ref('ClaimInput')),
-        responses: responses(ref('WorkBundle')),
-      },
-      patch: {
-        operationId: 'renewWork',
-        summary: 'Renew an owned claim',
-        tags: ['Work'],
+      }),
+      patch: operation('renewWork', 'Renew a Spec or Task Claim', 'Work', ref('Claim'), {
         requestBody: body(ref('ClaimInput')),
-        responses: responses(ref('Claim')),
-      },
-      delete: {
-        operationId: 'releaseWork',
-        summary: 'Release an owned claim',
-        tags: ['Work'],
+      }),
+      delete: operation('releaseWork', 'Release a Spec or Task Claim', 'Work', ref('Released'), {
         requestBody: body(ref('ReleaseInput')),
-        responses: responses({
-          type: 'object',
-          required: ['released'],
-          properties: { released: { type: 'boolean', const: true } },
-        }),
-      },
+      }),
     },
     '/api/v1/work/{targetType}/{targetId}/complete': {
       parameters: [targetType, targetId],
-      post: {
-        operationId: 'completeWork',
-        summary: 'Complete claimed work',
-        description:
-          'Persists summary and artifact references, marks done, and releases the claim.',
-        tags: ['Work'],
-        requestBody: body(ref('CompleteWorkInput')),
-        responses: responses({ oneOf: [ref('Project'), ref('Task')] }),
-      },
+      post: operation(
+        'completeWork',
+        'Complete claimed Spec or Task work',
+        'Work',
+        {
+          oneOf: [ref('Spec'), ref('Task')],
+        },
+        { requestBody: body(ref('CompleteWorkInput')) },
+      ),
     },
     '/api/v1/projects/{projectId}/activity': {
       parameters: [projectId],
-      get: {
-        operationId: 'listActivity',
-        summary: 'List latest automatic project activity',
-        tags: ['Activity'],
-        parameters: [limit],
-        responses: responses(arrayOf(ref('ActivityEvent'))),
-      },
+      get: operation(
+        'listProjectActivity',
+        'List bounded Project activity',
+        'Activity',
+        arrayOf(ref('ActivityEvent')),
+        {
+          parameters: [
+            {
+              name: 'limit',
+              in: 'query',
+              description: 'Maximum latest events.',
+              schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+            },
+          ],
+        },
+      ),
     },
     '/api/v1/admin/backup': {
-      post: {
-        operationId: 'createBackup',
-        summary: 'Create an integrity-checked SQLite snapshot',
-        tags: ['Administration'],
-        requestBody: body(ref('DirectoryInput')),
-        responses: responses(ref('PathResult'), '201'),
-      },
+      post: operation(
+        'createBackup',
+        'Create an explicit SQLite snapshot',
+        'Administration',
+        ref('PathResult'),
+        {
+          requestBody: body(ref('DirectoryInput')),
+        },
+      ),
     },
     '/api/v1/admin/export': {
-      post: {
-        operationId: 'createPortableExport',
-        summary: 'Export portable JSON and Markdown',
-        description: 'Rejected while active claims exist. The operation is synchronous.',
-        tags: ['Administration'],
-        requestBody: body(ref('DirectoryInput')),
-        responses: responses(ref('PathResult'), '201'),
-      },
+      post: operation(
+        'createPortableExport',
+        'Create a portable schema-v2 export',
+        'Administration',
+        ref('PathResult'),
+        {
+          requestBody: body(ref('DirectoryInput')),
+        },
+      ),
     },
     '/mcp': {
       post: {
-        operationId: 'mcpStreamableHttp',
-        summary: 'Send an MCP Streamable HTTP request',
+        operationId: 'callMcp',
+        summary: 'Use MCP Streamable HTTP',
         description:
-          'Stateless JSON response mode. MCP initialize, tools/list, and tools/call follow the Model Context Protocol. See docs/mcp-tools.md for the agent tool contract.',
+          'Negotiates the canonical agent tool catalog; tool payloads are described by MCP tools/list.',
         tags: ['MCP'],
-        requestBody: body(ref('JsonRpcRequest')),
+        requestBody: body({ type: 'object' }),
         responses: {
-          '200': response({ type: 'object' }, 'MCP JSON-RPC response'),
+          '200': response({ type: 'object' }, 'MCP response'),
           '401': { $ref: '#/components/responses/Unauthorized' },
-          '400': { $ref: '#/components/responses/BadRequest' },
           '500': { $ref: '#/components/responses/InternalError' },
         },
       },
@@ -521,257 +617,157 @@ export const openApiDocument: OpenApiDocument = {
   },
   components: {
     securitySchemes: {
-      bearerAuth: {
-        type: 'http',
-        scheme: 'bearer',
-        description:
-          'Machine-local token from the configured Pimpampum data directory. Never commit it.',
-      },
+      bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'opaque local token' },
     },
     responses: {
-      BadRequest: {
-        description: 'Invalid request',
-        content: { 'application/json': { schema: ref('ErrorResponse') } },
-      },
-      Unauthorized: {
-        description: 'Missing or invalid bearer token',
-        content: { 'application/json': { schema: ref('ErrorResponse') } },
-      },
-      NotFound: {
-        description: 'Resource or route not found',
-        content: { 'application/json': { schema: ref('ErrorResponse') } },
-      },
-      Conflict: {
-        description: 'Claim, revision, uniqueness, or state conflict',
-        content: { 'application/json': { schema: ref('ErrorResponse') } },
-      },
-      PayloadTooLarge: {
-        description: 'JSON body exceeds 2 MB',
-        content: { 'application/json': { schema: ref('ErrorResponse') } },
-      },
-      InternalError: {
-        description: 'Unexpected daemon failure',
-        content: { 'application/json': { schema: ref('ErrorResponse') } },
-      },
+      BadRequest: response(ref('ErrorEnvelope'), 'Invalid request'),
+      Unauthorized: response(ref('ErrorEnvelope'), 'Missing or invalid bearer token'),
+      NotFound: response(ref('ErrorEnvelope'), 'Resource not found'),
+      Conflict: response(ref('ErrorEnvelope'), 'Lifecycle, Claim, or revision conflict'),
+      PayloadTooLarge: response(ref('ErrorEnvelope'), 'Payload exceeds a bounded limit'),
+      InternalError: response(ref('ErrorEnvelope'), 'Unexpected daemon failure'),
     },
     schemas: {
-      Slug: {
-        type: 'string',
-        minLength: 1,
-        maxLength: 80,
-        pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$',
-        examples: ['vcomp'],
-      },
-      AbsolutePath: {
-        type: 'string',
-        minLength: 1,
-        description: 'Absolute filesystem path on the daemon machine.',
-        examples: ['/Users/alex/Projects/vcomp'],
-      },
-      AutomaticBackupStatus: {
-        type: 'object',
-        additionalProperties: false,
-        required: [
-          'enabled',
-          'directory',
-          'snapshotPath',
-          'state',
-          'lastAttemptAt',
-          'lastSuccessAt',
-          'error',
-        ],
-        properties: {
-          enabled: { type: 'boolean' },
-          directory: { oneOf: [ref('AbsolutePath'), { type: 'null' }] },
-          snapshotPath: { oneOf: [ref('AbsolutePath'), { type: 'null' }] },
-          state: { type: 'string', enum: ['disabled', 'pending', 'healthy', 'error'] },
-          lastAttemptAt: { oneOf: [ref('Timestamp'), { type: 'null' }] },
-          lastSuccessAt: { oneOf: [ref('Timestamp'), { type: 'null' }] },
-          error: { type: ['string', 'null'], maxLength: 500 },
-        },
-        examples: [
-          {
-            enabled: true,
-            directory: '/Users/alex/Library/Mobile Documents/Pimpampum',
-            snapshotPath: '/Users/alex/Library/Mobile Documents/Pimpampum/pimpampum-latest.sqlite',
-            state: 'healthy',
-            lastAttemptAt: '2026-08-26T08:00:00.000Z',
-            lastSuccessAt: '2026-08-26T08:00:00.000Z',
-            error: null,
-          },
-        ],
-      },
+      Id: { type: 'string', format: 'uuid' },
+      Slug: { type: 'string', pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$', minLength: 1, maxLength: 80 },
+      AbsolutePath: { type: 'string', minLength: 1 },
       Timestamp: { type: 'string', format: 'date-time' },
-      OverviewDaemon: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['version', 'startedAt', 'uptimeSeconds'],
-        properties: {
-          version: { type: 'string', minLength: 1 },
-          startedAt: ref('Timestamp'),
-          uptimeSeconds: { type: 'integer', minimum: 0 },
+      Markdown: { type: 'string', maxLength: 1_000_000 },
+      ProjectState: { type: 'string', enum: ['draft', 'open', 'paused', 'done', 'cancelled'] },
+      WritableProjectState: { type: 'string', enum: ['draft', 'open', 'paused'] },
+      SpecState: { type: 'string', enum: ['draft', 'ready', 'done', 'cancelled'] },
+      WritableSpecState: { type: 'string', enum: ['draft', 'ready'] },
+      TaskState: { type: 'string', enum: ['open', 'done', 'cancelled'] },
+      TargetType: { type: 'string', enum: ['spec', 'task'] },
+      ContextOwnerType: { type: 'string', enum: ['workspace', 'project'] },
+      SuccessEnvelope: objectSchema(['data', 'meta'], {
+        data: {},
+        meta: objectSchema(['schemaVersion'], { schemaVersion: { type: 'integer', const: 1 } }),
+      }),
+      OverviewSuccessEnvelope: objectSchema(['data', 'meta'], {
+        data: {},
+        meta: objectSchema(['schemaVersion'], { schemaVersion: { type: 'integer', const: 2 } }),
+      }),
+      Error: objectSchema(['code', 'message', 'retryable'], {
+        code: {
+          type: 'string',
+          enum: [
+            'bad_request',
+            'not_found',
+            'conflict',
+            'revision_conflict',
+            'invalid_state',
+            'unauthorized',
+            'payload_too_large',
+            'internal_error',
+          ],
         },
-      },
-      OverviewCounts: {
-        type: 'object',
-        additionalProperties: false,
-        required: [
-          'workspaces',
-          'projects',
-          'draftProjects',
-          'readyProjects',
-          'completedProjects',
-          'openTasks',
-          'completedTasks',
-          'activeClaims',
-          'availableWork',
-        ],
-        properties: {
-          workspaces: { type: 'integer', minimum: 0 },
-          projects: { type: 'integer', minimum: 0 },
-          draftProjects: { type: 'integer', minimum: 0 },
-          readyProjects: { type: 'integer', minimum: 0 },
-          completedProjects: { type: 'integer', minimum: 0 },
-          openTasks: { type: 'integer', minimum: 0 },
-          completedTasks: { type: 'integer', minimum: 0 },
-          activeClaims: { type: 'integer', minimum: 0 },
-          availableWork: { type: 'integer', minimum: 0 },
-        },
-      },
-      OverviewWorkspace: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['id', 'name', 'rootPath'],
-        properties: {
-          id: ref('Slug'),
-          name: { type: 'string', minLength: 1, maxLength: 120 },
-          rootPath: ref('AbsolutePath'),
-        },
-      },
-      OverviewProject: {
-        type: 'object',
-        additionalProperties: false,
-        required: [
+        message: { type: 'string' },
+        retryable: { type: 'boolean' },
+        details: { type: 'object', additionalProperties: true },
+      }),
+      ErrorEnvelope: objectSchema(['error'], { error: ref('Error') }),
+      Health: objectSchema(['status', 'version'], {
+        status: { type: 'string', const: 'ok' },
+        version: { type: 'string', minLength: 1 },
+      }),
+      ArtifactReference: objectSchema(['label', 'uri'], {
+        label: nullable({ type: 'string', maxLength: 120 }),
+        uri: { type: 'string', minLength: 1, maxLength: 1_000 },
+      }),
+      Workspace: objectSchema(['id', 'name', 'rootPath', 'createdAt', 'updatedAt'], {
+        id: ref('Slug'),
+        name: { type: 'string', minLength: 1, maxLength: 120 },
+        rootPath: ref('AbsolutePath'),
+        createdAt: ref('Timestamp'),
+        updatedAt: ref('Timestamp'),
+      }),
+      Project: objectSchema(
+        [
           'id',
-          'workspace',
+          'workspaceId',
           'slug',
           'title',
-          'lifecycleState',
-          'status',
-          'openTaskCount',
-          'completedTaskCount',
-          'activeClaimCount',
-          'availableWorkCount',
+          'state',
+          'revision',
+          'completionSummary',
+          'artifacts',
+          'completedAt',
+          'createdAt',
           'updatedAt',
         ],
-        properties: {
-          id: { type: 'string', minLength: 1 },
-          workspace: ref('OverviewWorkspace'),
+        {
+          id: ref('Id'),
+          workspaceId: ref('Slug'),
           slug: ref('Slug'),
           title: { type: 'string', minLength: 1, maxLength: 200 },
-          lifecycleState: { type: 'string', enum: ['draft', 'ready', 'done'] },
-          status: { type: 'string', enum: ['active', 'available', 'complete', 'draft'] },
-          openTaskCount: { type: 'integer', minimum: 0 },
-          completedTaskCount: { type: 'integer', minimum: 0 },
-          activeClaimCount: { type: 'integer', minimum: 0 },
-          availableWorkCount: { type: 'integer', minimum: 0 },
+          state: ref('ProjectState'),
+          revision: { type: 'integer', minimum: 1 },
+          completionSummary: nullable({ type: 'string', maxLength: 4_000 }),
+          artifacts: arrayOf(ref('ArtifactReference')),
+          completedAt: nullable(ref('Timestamp')),
+          createdAt: ref('Timestamp'),
           updatedAt: ref('Timestamp'),
         },
-      },
-      OverviewActiveWork: {
-        type: 'object',
-        additionalProperties: false,
-        required: [
-          'targetType',
-          'targetId',
-          'workspaceId',
-          'projectId',
-          'projectTitle',
-          'taskId',
-          'taskTitle',
-          'agentId',
-          'expiresAt',
-        ],
-        properties: {
-          targetType: { type: 'string', enum: ['project', 'task'] },
-          targetId: { type: 'string', minLength: 1 },
-          workspaceId: ref('Slug'),
-          projectId: { type: 'string', minLength: 1 },
-          projectTitle: { type: 'string', minLength: 1, maxLength: 200 },
-          taskId: { type: ['string', 'null'], minLength: 1 },
-          taskTitle: { type: ['string', 'null'], maxLength: 300 },
-          agentId: { type: 'string', minLength: 1, maxLength: 200 },
-          expiresAt: ref('Timestamp'),
-        },
-      },
-      Overview: {
-        type: 'object',
-        additionalProperties: false,
-        required: [
-          'daemon',
-          'generatedAt',
-          'status',
-          'counts',
-          'projects',
-          'projectsTruncated',
-          'activeWork',
-          'activeWorkTruncated',
-        ],
-        properties: {
-          daemon: ref('OverviewDaemon'),
-          generatedAt: ref('Timestamp'),
-          status: {
-            type: 'string',
-            enum: ['active', 'available', 'complete', 'draft', 'empty'],
+      ),
+      ProjectManifest: {
+        ...objectSchema(
+          [
+            'id',
+            'workspaceId',
+            'slug',
+            'title',
+            'state',
+            'revision',
+            'completedAt',
+            'createdAt',
+            'updatedAt',
+            'artifactCount',
+            'hasCompletion',
+            'specCount',
+            'draftSpecCount',
+            'readySpecCount',
+            'terminalSpecCount',
+          ],
+          {
+            id: ref('Id'),
+            workspaceId: ref('Slug'),
+            slug: ref('Slug'),
+            title: { type: 'string', minLength: 1, maxLength: 200 },
+            state: ref('ProjectState'),
+            revision: { type: 'integer', minimum: 1 },
+            completedAt: nullable(ref('Timestamp')),
+            createdAt: ref('Timestamp'),
+            updatedAt: ref('Timestamp'),
+            artifactCount: { type: 'integer', minimum: 0 },
+            hasCompletion: { type: 'boolean' },
+            specCount: { type: 'integer', minimum: 0 },
+            draftSpecCount: { type: 'integer', minimum: 0 },
+            readySpecCount: { type: 'integer', minimum: 0 },
+            terminalSpecCount: { type: 'integer', minimum: 0 },
           },
-          counts: ref('OverviewCounts'),
-          projects: { type: 'array', maxItems: 500, items: ref('OverviewProject') },
-          projectsTruncated: { type: 'boolean' },
-          activeWork: { type: 'array', maxItems: 500, items: ref('OverviewActiveWork') },
-          activeWorkTruncated: { type: 'boolean' },
-        },
+        ),
+        description: 'Project metadata with completion body and artifact array omitted.',
       },
-      Artifact: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['label', 'uri'],
-        properties: {
-          label: { type: ['string', 'null'], maxLength: 120 },
-          uri: { type: 'string', minLength: 1, maxLength: 1_000 },
-        },
-      },
-      Claim: {
-        type: 'object',
-        required: ['targetType', 'targetId', 'agentId', 'expiresAt', 'createdAt', 'updatedAt'],
-        properties: {
-          targetType: { type: 'string', enum: ['project', 'task'] },
-          targetId: { type: 'string', format: 'uuid' },
+      Claim: objectSchema(
+        ['targetType', 'targetId', 'agentId', 'expiresAt', 'createdAt', 'updatedAt'],
+        {
+          targetType: ref('TargetType'),
+          targetId: ref('Id'),
           agentId: { type: 'string', minLength: 1, maxLength: 200 },
           expiresAt: ref('Timestamp'),
           createdAt: ref('Timestamp'),
           updatedAt: ref('Timestamp'),
         },
-      },
-      Workspace: {
-        type: 'object',
-        required: ['id', 'name', 'rootPath', 'createdAt', 'updatedAt'],
-        properties: {
-          id: ref('Slug'),
-          name: { type: 'string', minLength: 1, maxLength: 120 },
-          rootPath: ref('AbsolutePath'),
-          createdAt: ref('Timestamp'),
-          updatedAt: ref('Timestamp'),
-        },
-      },
-      Project: {
-        type: 'object',
-        required: [
+      ),
+      Spec: objectSchema(
+        [
           'id',
-          'workspaceId',
+          'projectId',
           'slug',
           'title',
+          'body',
           'state',
-          'prd',
           'revision',
           'completionSummary',
           'artifacts',
@@ -780,64 +776,67 @@ export const openApiDocument: OpenApiDocument = {
           'updatedAt',
           'claim',
         ],
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          workspaceId: ref('Slug'),
+        {
+          id: ref('Id'),
+          projectId: ref('Id'),
           slug: ref('Slug'),
           title: { type: 'string', minLength: 1, maxLength: 200 },
-          state: { type: 'string', enum: ['draft', 'ready', 'done'] },
-          prd: { type: 'string', maxLength: 1_000_000 },
+          body: ref('Markdown'),
+          state: ref('SpecState'),
           revision: { type: 'integer', minimum: 1 },
-          completionSummary: { type: ['string', 'null'], maxLength: 4_000 },
-          artifacts: arrayOf(ref('Artifact')),
-          completedAt: { oneOf: [ref('Timestamp'), { type: 'null' }] },
+          completionSummary: nullable({ type: 'string', maxLength: 4_000 }),
+          artifacts: arrayOf(ref('ArtifactReference')),
+          completedAt: nullable(ref('Timestamp')),
           createdAt: ref('Timestamp'),
           updatedAt: ref('Timestamp'),
-          claim: { oneOf: [ref('Claim'), { type: 'null' }] },
+          claim: nullable(ref('Claim')),
         },
-      },
-      ProjectManifest: {
-        allOf: [
+      ),
+      SpecManifest: {
+        ...objectSchema(
+          [
+            'id',
+            'projectId',
+            'slug',
+            'title',
+            'state',
+            'revision',
+            'completedAt',
+            'createdAt',
+            'updatedAt',
+            'claim',
+            'bodySizeBytes',
+            'artifactCount',
+            'hasCompletion',
+            'taskCount',
+            'openTaskCount',
+            'terminalTaskCount',
+          ],
           {
-            type: 'object',
-            required: [
-              'id',
-              'workspaceId',
-              'slug',
-              'title',
-              'state',
-              'revision',
-              'completedAt',
-              'createdAt',
-              'updatedAt',
-              'claim',
-              'prdSizeBytes',
-              'artifactCount',
-              'hasCompletion',
-            ],
-            properties: {
-              id: { type: 'string', format: 'uuid' },
-              workspaceId: ref('Slug'),
-              slug: ref('Slug'),
-              title: { type: 'string' },
-              state: { type: 'string', enum: ['draft', 'ready', 'done'] },
-              revision: { type: 'integer', minimum: 1 },
-              completedAt: { oneOf: [ref('Timestamp'), { type: 'null' }] },
-              createdAt: ref('Timestamp'),
-              updatedAt: ref('Timestamp'),
-              claim: { oneOf: [ref('Claim'), { type: 'null' }] },
-              prdSizeBytes: { type: 'integer', minimum: 0 },
-              artifactCount: { type: 'integer', minimum: 0 },
-              hasCompletion: { type: 'boolean' },
-            },
+            id: ref('Id'),
+            projectId: ref('Id'),
+            slug: ref('Slug'),
+            title: { type: 'string', minLength: 1, maxLength: 200 },
+            state: ref('SpecState'),
+            revision: { type: 'integer', minimum: 1 },
+            completedAt: nullable(ref('Timestamp')),
+            createdAt: ref('Timestamp'),
+            updatedAt: ref('Timestamp'),
+            claim: nullable(ref('Claim')),
+            bodySizeBytes: { type: 'integer', minimum: 0 },
+            artifactCount: { type: 'integer', minimum: 0 },
+            hasCompletion: { type: 'boolean' },
+            taskCount: { type: 'integer', minimum: 0 },
+            openTaskCount: { type: 'integer', minimum: 0 },
+            terminalTaskCount: { type: 'integer', minimum: 0 },
           },
-        ],
+        ),
+        description: 'Spec metadata with Markdown, completion body, and artifact array omitted.',
       },
-      Task: {
-        type: 'object',
-        required: [
+      Task: objectSchema(
+        [
           'id',
-          'projectId',
+          'specId',
           'parentId',
           'title',
           'body',
@@ -850,144 +849,159 @@ export const openApiDocument: OpenApiDocument = {
           'updatedAt',
           'claim',
         ],
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          projectId: { type: 'string', format: 'uuid' },
-          parentId: { type: ['string', 'null'], format: 'uuid' },
+        {
+          id: ref('Id'),
+          specId: ref('Id'),
+          parentId: nullable(ref('Id')),
           title: { type: 'string', minLength: 1, maxLength: 300 },
-          body: { type: ['string', 'null'], maxLength: 1_000_000 },
-          state: { type: 'string', enum: ['open', 'done'] },
+          body: nullable(ref('Markdown')),
+          state: ref('TaskState'),
           revision: { type: 'integer', minimum: 1 },
-          completionSummary: { type: ['string', 'null'], maxLength: 4_000 },
-          artifacts: arrayOf(ref('Artifact')),
-          completedAt: { oneOf: [ref('Timestamp'), { type: 'null' }] },
+          completionSummary: nullable({ type: 'string', maxLength: 4_000 }),
+          artifacts: arrayOf(ref('ArtifactReference')),
+          completedAt: nullable(ref('Timestamp')),
           createdAt: ref('Timestamp'),
           updatedAt: ref('Timestamp'),
-          claim: { oneOf: [ref('Claim'), { type: 'null' }] },
+          claim: nullable(ref('Claim')),
         },
-      },
+      ),
       TaskManifest: {
-        type: 'object',
-        required: [
-          'id',
-          'projectId',
-          'parentId',
-          'title',
-          'state',
-          'revision',
-          'completedAt',
-          'createdAt',
-          'updatedAt',
-          'claim',
-          'bodySizeBytes',
-          'artifactCount',
-          'hasCompletion',
-        ],
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          projectId: { type: 'string', format: 'uuid' },
-          parentId: { type: ['string', 'null'], format: 'uuid' },
-          title: { type: 'string' },
-          state: { type: 'string', enum: ['open', 'done'] },
-          revision: { type: 'integer', minimum: 1 },
-          completedAt: { oneOf: [ref('Timestamp'), { type: 'null' }] },
-          createdAt: ref('Timestamp'),
-          updatedAt: ref('Timestamp'),
-          claim: { oneOf: [ref('Claim'), { type: 'null' }] },
-          bodySizeBytes: { type: 'integer', minimum: 0 },
-          artifactCount: { type: 'integer', minimum: 0 },
-          hasCompletion: { type: 'boolean' },
-        },
+        ...objectSchema(
+          [
+            'id',
+            'specId',
+            'parentId',
+            'title',
+            'state',
+            'revision',
+            'completedAt',
+            'createdAt',
+            'updatedAt',
+            'claim',
+            'bodySizeBytes',
+            'artifactCount',
+            'hasCompletion',
+            'subtaskCount',
+            'openSubtaskCount',
+          ],
+          {
+            id: ref('Id'),
+            specId: ref('Id'),
+            parentId: nullable(ref('Id')),
+            title: { type: 'string', minLength: 1, maxLength: 300 },
+            state: ref('TaskState'),
+            revision: { type: 'integer', minimum: 1 },
+            completedAt: nullable(ref('Timestamp')),
+            createdAt: ref('Timestamp'),
+            updatedAt: ref('Timestamp'),
+            claim: nullable(ref('Claim')),
+            bodySizeBytes: { type: 'integer', minimum: 0 },
+            artifactCount: { type: 'integer', minimum: 0 },
+            hasCompletion: { type: 'boolean' },
+            subtaskCount: { type: 'integer', minimum: 0 },
+            openSubtaskCount: { type: 'integer', minimum: 0 },
+          },
+        ),
+        description: 'Task metadata with Markdown, completion body, and artifact array omitted.',
       },
-      ContextDocument: {
-        type: 'object',
-        required: ['id', 'projectId', 'name', 'body', 'revision', 'createdAt', 'updatedAt'],
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          projectId: { type: 'string', format: 'uuid' },
+      ContextDocument: objectSchema(
+        ['id', 'ownerType', 'ownerId', 'name', 'body', 'revision', 'createdAt', 'updatedAt'],
+        {
+          id: ref('Id'),
+          ownerType: ref('ContextOwnerType'),
+          ownerId: { type: 'string', minLength: 1 },
           name: ref('Slug'),
-          body: { type: 'string', maxLength: 1_000_000 },
+          body: ref('Markdown'),
           revision: { type: 'integer', minimum: 1 },
           createdAt: ref('Timestamp'),
           updatedAt: ref('Timestamp'),
         },
-      },
+      ),
       ContextManifest: {
-        type: 'object',
-        required: ['id', 'projectId', 'name', 'revision', 'createdAt', 'updatedAt', 'sizeBytes'],
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          projectId: { type: 'string', format: 'uuid' },
-          name: ref('Slug'),
-          revision: { type: 'integer', minimum: 1 },
-          createdAt: ref('Timestamp'),
-          updatedAt: ref('Timestamp'),
-          sizeBytes: { type: 'integer', minimum: 0 },
-        },
+        ...objectSchema(
+          ['id', 'ownerType', 'ownerId', 'name', 'revision', 'createdAt', 'updatedAt', 'sizeBytes'],
+          {
+            id: ref('Id'),
+            ownerType: ref('ContextOwnerType'),
+            ownerId: { type: 'string', minLength: 1 },
+            name: ref('Slug'),
+            revision: { type: 'integer', minimum: 1 },
+            createdAt: ref('Timestamp'),
+            updatedAt: ref('Timestamp'),
+            sizeBytes: { type: 'integer', minimum: 0 },
+          },
+        ),
+        description: 'Context metadata with the Markdown body omitted.',
       },
-      MarkdownPage: {
-        type: 'object',
-        required: ['body', 'offsetCodeUnits', 'totalCodeUnits', 'sizeBytes', 'hasMore'],
-        properties: {
+      MarkdownPage: objectSchema(
+        ['body', 'offsetCodeUnits', 'totalCodeUnits', 'sizeBytes', 'hasMore'],
+        {
           body: { type: 'string' },
           offsetCodeUnits: { type: 'integer', minimum: 0 },
           totalCodeUnits: { type: 'integer', minimum: 0 },
           sizeBytes: { type: 'integer', minimum: 0 },
           hasMore: { type: 'boolean' },
         },
-      },
-      CompletionDetails: {
-        type: 'object',
-        required: ['completionSummary', 'artifacts', 'completedAt'],
-        properties: {
-          completionSummary: { type: ['string', 'null'], maxLength: 4_000 },
-          artifacts: arrayOf(ref('Artifact')),
-          completedAt: { oneOf: [ref('Timestamp'), { type: 'null' }] },
-        },
-      },
-      WorkItem: {
-        type: 'object',
-        required: [
+      ),
+      CompletionDetails: objectSchema(['completionSummary', 'artifacts', 'completedAt'], {
+        completionSummary: nullable({ type: 'string', maxLength: 4_000 }),
+        artifacts: arrayOf(ref('ArtifactReference')),
+        completedAt: nullable(ref('Timestamp')),
+      }),
+      ProjectManifestPage: pageSchema(ref('ProjectManifest')),
+      SpecManifestPage: pageSchema(ref('SpecManifest')),
+      TaskManifestPage: pageSchema(ref('TaskManifest')),
+      ContextManifestPage: pageSchema(ref('ContextManifest')),
+      WorkContextManifestPage: objectSchema(['items', 'hasMore'], {
+        items: arrayOf(ref('ContextManifest')),
+        hasMore: { type: 'boolean' },
+      }),
+      WorkItem: objectSchema(
+        [
           'targetType',
           'targetId',
           'workspaceId',
           'projectId',
           'projectTitle',
+          'specId',
+          'specTitle',
           'taskId',
           'taskTitle',
           'parentTaskId',
           'revision',
         ],
-        properties: {
-          targetType: { type: 'string', enum: ['project', 'task'] },
-          targetId: { type: 'string', format: 'uuid' },
+        {
+          targetType: ref('TargetType'),
+          targetId: ref('Id'),
           workspaceId: ref('Slug'),
-          projectId: { type: 'string', format: 'uuid' },
+          projectId: ref('Id'),
           projectTitle: { type: 'string' },
-          taskId: { type: ['string', 'null'], format: 'uuid' },
-          taskTitle: { type: ['string', 'null'] },
-          parentTaskId: { type: ['string', 'null'], format: 'uuid' },
+          specId: ref('Id'),
+          specTitle: { type: 'string' },
+          taskId: nullable(ref('Id')),
+          taskTitle: nullable({ type: 'string' }),
+          parentTaskId: nullable(ref('Id')),
           revision: { type: 'integer', minimum: 1 },
         },
-      },
-      WorkBundle: {
-        type: 'object',
-        required: ['claim', 'workspace', 'project', 'task', 'context', 'contextHasMore'],
-        properties: {
+      ),
+      WorkBundle: objectSchema(
+        ['claim', 'workspace', 'project', 'spec', 'task', 'workspaceContext', 'projectContext'],
+        {
           claim: ref('Claim'),
           workspace: ref('Workspace'),
           project: ref('ProjectManifest'),
-          task: { oneOf: [ref('TaskManifest'), { type: 'null' }] },
-          context: arrayOf(ref('ContextManifest')),
-          contextHasMore: { type: 'boolean' },
+          spec: ref('SpecManifest'),
+          task: nullable(ref('TaskManifest')),
+          workspaceContext: ref('WorkContextManifestPage'),
+          projectContext: ref('WorkContextManifestPage'),
         },
-      },
-      ActivityEvent: {
-        type: 'object',
-        required: [
+      ),
+      ActivityEvent: objectSchema(
+        [
           'id',
           'workspaceId',
           'projectId',
+          'specId',
           'targetType',
           'targetId',
           'eventType',
@@ -995,192 +1009,240 @@ export const openApiDocument: OpenApiDocument = {
           'data',
           'createdAt',
         ],
-        properties: {
+        {
           id: { type: 'integer', minimum: 1 },
-          workspaceId: { oneOf: [ref('Slug'), { type: 'null' }] },
-          projectId: { type: ['string', 'null'], format: 'uuid' },
+          workspaceId: nullable(ref('Slug')),
+          projectId: nullable(ref('Id')),
+          specId: nullable(ref('Id')),
           targetType: { type: 'string' },
           targetId: { type: 'string' },
           eventType: { type: 'string' },
-          actor: { type: ['string', 'null'] },
+          actor: nullable({ type: 'string' }),
           data: { type: 'object', additionalProperties: true },
           createdAt: ref('Timestamp'),
         },
-      },
-      RegisterWorkspaceInput: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['id', 'name', 'rootPath'],
-        properties: {
-          id: ref('Slug'),
-          name: { type: 'string', minLength: 1, maxLength: 120 },
-          rootPath: ref('AbsolutePath'),
+      ),
+      RegisterWorkspaceInput: objectSchema(['id', 'name', 'rootPath'], {
+        id: ref('Slug'),
+        name: { type: 'string', minLength: 1, maxLength: 120 },
+        rootPath: ref('AbsolutePath'),
+      }),
+      ResolveWorkspaceInput: objectSchema(['path'], { path: ref('AbsolutePath') }),
+      CreateProjectInput: objectSchema(['workspaceId', 'slug', 'title'], {
+        workspaceId: ref('Slug'),
+        slug: ref('Slug'),
+        title: { type: 'string', minLength: 1, maxLength: 200 },
+        actor: nullable({ type: 'string', maxLength: 200 }),
+      }),
+      UpdateProjectInput: objectSchema(['expectedRevision'], {
+        title: nullable({ type: 'string', minLength: 1, maxLength: 200 }),
+        state: nullable(ref('WritableProjectState')),
+        expectedRevision: { type: 'integer', minimum: 1 },
+        actor: nullable({ type: 'string', maxLength: 200 }),
+      }),
+      CompleteProjectInput: objectSchema(['expectedRevision', 'summary'], {
+        expectedRevision: { type: 'integer', minimum: 1 },
+        summary: { type: 'string', minLength: 1, maxLength: 4_000 },
+        artifacts: { type: 'array', maxItems: 20, items: ref('ArtifactReference'), default: [] },
+        actor: nullable({ type: 'string', maxLength: 200 }),
+      }),
+      CancelInput: objectSchema(['expectedRevision', 'reason'], {
+        expectedRevision: { type: 'integer', minimum: 1 },
+        reason: { type: 'string', minLength: 1, maxLength: 4_000 },
+        actor: nullable({ type: 'string', maxLength: 200 }),
+      }),
+      CreateSpecInput: objectSchema(['slug', 'title'], {
+        slug: ref('Slug'),
+        title: { type: 'string', minLength: 1, maxLength: 200 },
+        body: { ...ref('Markdown'), default: '' },
+        actor: nullable({ type: 'string', maxLength: 200 }),
+      }),
+      UpdateSpecInput: objectSchema(['expectedRevision'], {
+        title: nullable({ type: 'string', minLength: 1, maxLength: 200 }),
+        body: nullable(ref('Markdown')),
+        state: nullable(ref('WritableSpecState')),
+        expectedRevision: { type: 'integer', minimum: 1 },
+        actor: nullable({ type: 'string', maxLength: 200 }),
+      }),
+      CreateTaskInput: objectSchema(['title'], {
+        parentId: nullable(ref('Id')),
+        title: { type: 'string', minLength: 1, maxLength: 300 },
+        body: nullable(ref('Markdown')),
+        actor: nullable({ type: 'string', maxLength: 200 }),
+      }),
+      UpdateTaskInput: objectSchema(['expectedRevision'], {
+        title: nullable({ type: 'string', minLength: 1, maxLength: 300 }),
+        body: nullable(ref('Markdown')),
+        expectedRevision: { type: 'integer', minimum: 1 },
+        actor: nullable({ type: 'string', maxLength: 200 }),
+      }),
+      PutContextInput: objectSchema(['body'], {
+        body: ref('Markdown'),
+        expectedRevision: nullable({ type: 'integer', minimum: 1 }),
+        actor: nullable({ type: 'string', maxLength: 200 }),
+      }),
+      ClaimInput: objectSchema(['agentId'], {
+        agentId: { type: 'string', minLength: 1, maxLength: 200 },
+        leaseSeconds: { type: 'integer', minimum: 60, maximum: 86_400, default: 1_800 },
+      }),
+      ReleaseInput: objectSchema(['agentId'], {
+        agentId: { type: 'string', minLength: 1, maxLength: 200 },
+        note: nullable({ type: 'string', maxLength: 500 }),
+      }),
+      CompleteWorkInput: objectSchema(['agentId', 'expectedRevision', 'summary'], {
+        agentId: { type: 'string', minLength: 1, maxLength: 200 },
+        expectedRevision: { type: 'integer', minimum: 1 },
+        summary: { type: 'string', minLength: 1, maxLength: 4_000 },
+        artifacts: { type: 'array', maxItems: 20, items: ref('ArtifactReference'), default: [] },
+      }),
+      Released: objectSchema(['released'], { released: { type: 'boolean', const: true } }),
+      DirectoryInput: objectSchema(['directory'], { directory: ref('AbsolutePath') }),
+      PathResult: objectSchema(['path'], { path: ref('AbsolutePath') }),
+      AutomaticBackupStatus: objectSchema(
+        [
+          'enabled',
+          'directory',
+          'snapshotPath',
+          'state',
+          'lastAttemptAt',
+          'lastSuccessAt',
+          'lastError',
+        ],
+        {
+          enabled: { type: 'boolean' },
+          directory: nullable(ref('AbsolutePath')),
+          snapshotPath: nullable(ref('AbsolutePath')),
+          state: { type: 'string', enum: ['disabled', 'healthy', 'refreshing', 'error'] },
+          lastAttemptAt: nullable(ref('Timestamp')),
+          lastSuccessAt: nullable(ref('Timestamp')),
+          lastError: nullable({ type: 'string' }),
         },
-      },
-      CreateProjectInput: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['workspaceId', 'slug', 'title'],
-        properties: {
-          workspaceId: ref('Slug'),
+      ),
+      OverviewDaemon: objectSchema(['version', 'startedAt', 'uptimeSeconds'], {
+        version: { type: 'string', minLength: 1 },
+        startedAt: ref('Timestamp'),
+        uptimeSeconds: { type: 'integer', minimum: 0 },
+      }),
+      OverviewCounts: objectSchema(
+        [
+          'workspaces',
+          'projects',
+          'specs',
+          'draftProjects',
+          'openProjects',
+          'pausedProjects',
+          'completedProjects',
+          'cancelledProjects',
+          'openTasks',
+          'completedTasks',
+          'cancelledTasks',
+          'activeClaims',
+          'availableWork',
+        ],
+        {
+          workspaces: { type: 'integer', minimum: 0 },
+          projects: { type: 'integer', minimum: 0 },
+          specs: { type: 'integer', minimum: 0 },
+          draftProjects: { type: 'integer', minimum: 0 },
+          openProjects: { type: 'integer', minimum: 0 },
+          pausedProjects: { type: 'integer', minimum: 0 },
+          completedProjects: { type: 'integer', minimum: 0 },
+          cancelledProjects: { type: 'integer', minimum: 0 },
+          openTasks: { type: 'integer', minimum: 0 },
+          completedTasks: { type: 'integer', minimum: 0 },
+          cancelledTasks: { type: 'integer', minimum: 0 },
+          activeClaims: { type: 'integer', minimum: 0 },
+          availableWork: { type: 'integer', minimum: 0 },
+        },
+      ),
+      OverviewWorkspace: objectSchema(['id', 'name', 'rootPath'], {
+        id: ref('Slug'),
+        name: { type: 'string', minLength: 1, maxLength: 120 },
+        rootPath: ref('AbsolutePath'),
+      }),
+      OverviewProject: objectSchema(
+        [
+          'id',
+          'workspace',
+          'slug',
+          'title',
+          'lifecycleState',
+          'status',
+          'specCount',
+          'openTaskCount',
+          'completedTaskCount',
+          'activeClaimCount',
+          'availableWorkCount',
+          'updatedAt',
+        ],
+        {
+          id: ref('Id'),
+          workspace: ref('OverviewWorkspace'),
           slug: ref('Slug'),
           title: { type: 'string', minLength: 1, maxLength: 200 },
-          prd: { type: 'string', maxLength: 1_000_000, default: '' },
-          state: { type: 'string', enum: ['draft', 'ready'], default: 'draft' },
-          actor: { type: ['string', 'null'], maxLength: 200, default: null },
+          lifecycleState: ref('ProjectState'),
+          status: { type: 'string', enum: ['active', 'available', 'complete', 'draft', 'paused'] },
+          specCount: { type: 'integer', minimum: 0 },
+          openTaskCount: { type: 'integer', minimum: 0 },
+          completedTaskCount: { type: 'integer', minimum: 0 },
+          activeClaimCount: { type: 'integer', minimum: 0 },
+          availableWorkCount: { type: 'integer', minimum: 0 },
+          updatedAt: ref('Timestamp'),
         },
-      },
-      UpdateProjectInput: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['expectedRevision'],
-        properties: {
-          title: { type: ['string', 'null'], minLength: 1, maxLength: 200, default: null },
-          state: { type: ['string', 'null'], enum: ['draft', 'ready', null], default: null },
-          expectedRevision: { type: 'integer', minimum: 1 },
-          actor: { type: ['string', 'null'], maxLength: 200, default: null },
-        },
-      },
-      ReplacePrdInput: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['prd', 'expectedRevision'],
-        properties: {
-          prd: { type: 'string', maxLength: 1_000_000 },
-          expectedRevision: { type: 'integer', minimum: 1 },
-          actor: { type: ['string', 'null'], maxLength: 200, default: null },
-        },
-      },
-      PutContextInput: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['body'],
-        properties: {
-          body: { type: 'string', maxLength: 1_000_000 },
-          expectedRevision: { type: ['integer', 'null'], minimum: 1, default: null },
-          actor: { type: ['string', 'null'], maxLength: 200, default: null },
-        },
-      },
-      CreateTaskInput: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['title'],
-        properties: {
-          parentId: { type: ['string', 'null'], format: 'uuid', default: null },
-          title: { type: 'string', minLength: 1, maxLength: 300 },
-          body: { type: ['string', 'null'], maxLength: 1_000_000, default: null },
-          actor: { type: ['string', 'null'], maxLength: 200, default: null },
-        },
-      },
-      UpdateTaskInput: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['expectedRevision'],
-        properties: {
-          title: { type: ['string', 'null'], minLength: 1, maxLength: 300, default: null },
-          body: { type: ['string', 'null'], maxLength: 1_000_000 },
-          expectedRevision: { type: 'integer', minimum: 1 },
-          actor: { type: ['string', 'null'], maxLength: 200, default: null },
-        },
-      },
-      ClaimInput: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['agentId'],
-        properties: {
+      ),
+      OverviewActiveWork: objectSchema(
+        [
+          'targetType',
+          'targetId',
+          'workspaceId',
+          'projectId',
+          'projectTitle',
+          'specId',
+          'specTitle',
+          'taskId',
+          'taskTitle',
+          'agentId',
+          'expiresAt',
+        ],
+        {
+          targetType: ref('TargetType'),
+          targetId: ref('Id'),
+          workspaceId: ref('Slug'),
+          projectId: ref('Id'),
+          projectTitle: { type: 'string' },
+          specId: ref('Id'),
+          specTitle: { type: 'string' },
+          taskId: nullable(ref('Id')),
+          taskTitle: nullable({ type: 'string' }),
           agentId: { type: 'string', minLength: 1, maxLength: 200 },
-          leaseSeconds: { type: 'integer', minimum: 60, maximum: 86_400, default: 1_800 },
+          expiresAt: ref('Timestamp'),
         },
-      },
-      ReleaseInput: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['agentId'],
-        properties: {
-          agentId: { type: 'string', minLength: 1, maxLength: 200 },
-          note: { type: ['string', 'null'], maxLength: 500, default: null },
-        },
-      },
-      CompleteWorkInput: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['agentId', 'expectedRevision', 'summary'],
-        properties: {
-          agentId: { type: 'string', minLength: 1, maxLength: 200 },
-          expectedRevision: { type: 'integer', minimum: 1 },
-          summary: { type: 'string', minLength: 1, maxLength: 4_000 },
-          artifacts: { type: 'array', maxItems: 20, default: [], items: ref('Artifact') },
-        },
-      },
-      DirectoryInput: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['directory'],
-        properties: { directory: ref('AbsolutePath') },
-      },
-      PathResult: {
-        type: 'object',
-        required: ['path'],
-        properties: { path: ref('AbsolutePath') },
-      },
-      Health: {
-        type: 'object',
-        required: ['status', 'version'],
-        properties: {
-          status: { type: 'string', const: 'ok' },
-          version: { type: 'string', const: '0.1.0' },
-        },
-      },
-      JsonRpcRequest: {
-        type: 'object',
-        required: ['jsonrpc', 'method'],
-        properties: {
-          jsonrpc: { type: 'string', const: '2.0' },
-          id: { type: ['string', 'number', 'null'] },
-          method: { type: 'string' },
-          params: { type: 'object' },
-        },
-      },
-      SuccessEnvelope: {
-        type: 'object',
-        required: ['data', 'meta'],
-        properties: {
-          data: {},
-          meta: {
-            type: 'object',
-            required: ['schemaVersion'],
-            properties: { schemaVersion: { type: 'integer', const: 1 } },
+      ),
+      Overview: objectSchema(
+        [
+          'daemon',
+          'generatedAt',
+          'status',
+          'counts',
+          'projects',
+          'projectsTruncated',
+          'activeWork',
+          'activeWorkTruncated',
+        ],
+        {
+          daemon: ref('OverviewDaemon'),
+          generatedAt: ref('Timestamp'),
+          status: {
+            type: 'string',
+            enum: ['active', 'available', 'complete', 'draft', 'paused', 'empty'],
           },
+          counts: ref('OverviewCounts'),
+          projects: { type: 'array', maxItems: 500, items: ref('OverviewProject') },
+          projectsTruncated: { type: 'boolean' },
+          activeWork: { type: 'array', maxItems: 500, items: ref('OverviewActiveWork') },
+          activeWorkTruncated: { type: 'boolean' },
         },
-      },
-      ErrorResponse: {
-        type: 'object',
-        required: ['error'],
-        properties: {
-          error: {
-            type: 'object',
-            required: ['code', 'message', 'retryable'],
-            properties: {
-              code: {
-                type: 'string',
-                enum: [
-                  'bad_request',
-                  'unauthorized',
-                  'not_found',
-                  'conflict',
-                  'revision_conflict',
-                  'invalid_state',
-                  'payload_too_large',
-                  'internal',
-                ],
-              },
-              message: { type: 'string' },
-              retryable: { type: 'boolean' },
-              details: { type: 'object', additionalProperties: true },
-            },
-          },
-        },
-      },
+      ),
     },
   },
 };

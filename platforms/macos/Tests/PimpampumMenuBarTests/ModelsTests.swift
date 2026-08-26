@@ -5,19 +5,21 @@ import Testing
 
 struct ModelsTests {
   @Test
-  func activeWorkFallsBackToItsProjectTitle() {
+  func activeWorkUsesTheSpecTitleWhenNoTaskExists() {
     let work = OverviewActiveWork(
-      targetType: .project,
-      targetId: "project",
+      targetType: .spec,
+      targetId: "spec",
       workspaceId: "workspace",
       projectId: "project",
       projectTitle: "Project title",
+      specId: "spec",
+      specTitle: "Spec title",
       taskId: nil,
       taskTitle: nil,
       agentId: "agent",
       expiresAt: Date.distantFuture
     )
 
-    #expect(work.title == "Project title")
+    #expect(work.title == "Spec title")
   }
 }

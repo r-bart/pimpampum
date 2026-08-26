@@ -1,87 +1,126 @@
 # Pimpampum
 
-**One local operational memory for all your projects and all your agents.**
+![Pimpampum — Agent-first project management. Absurdly simple.](branding/assets/readme_cover.png)
 
-Pimpampum is a minimal, agent-first project manager. A small daemon runs on your machine and coordinates PRDs, contextual documents, tasks, subtasks, and active work across every registered repository.
+**Project management for people who are already the whole company.**
 
-It is not trying to become Linear, Jira, or Basecamp. There are no sprints, priorities, estimates, labels, chat, or configurable workflows. Its job is smaller: give humans and agents a shared, deterministic source of truth that is easy to inspect and automate.
+Pimpampum is an ultra-minimal, agent-first project manager for solopreneurs running a portfolio of
+products. One tiny local service gives every repository and every agent the same operational
+memory: initiatives, specs, context, tasks, active work, and what happened next.
 
-## Value proposition
+No sprint planning. No backlog-grooming ceremony. No mandatory discussion about whether a task
+feels more like a three or a five today. You are already in enough meetings with yourself.
 
-Agents working from different repositories often lose context, duplicate effort, or rely on isolated files that nobody else can discover. Pimpampum solves that problem with one local instance:
+## One small control room for your product portfolio
 
-- An agent can identify its project from its current working directory.
-- It can read the relevant PRD and context without loading entire documents unnecessarily.
-- It can discover available work and claim it atomically, avoiding collisions with other agents.
-- It can complete work with a concise summary and durable artifact references.
-- Another agent can resume the project later from any repository.
-- Humans, scripts, and agents see the same state through CLI, HTTP, or MCP.
+Your products may live in different repositories. Your agents may come from different vendors.
+Your brain may occasionally decline to remember what happened three Tuesdays ago. Pimpampum gives
+all of them one deterministic source of truth without asking you to move your work into another
+cloud dashboard.
 
-Data stays on the machine in SQLite. Intent and context remain readable Markdown; integration uses deterministic JSON.
+An agent working inside any registered repository can:
 
-## Principles
+- Resolve the current product from its working directory.
+- Read only the executable Spec and contextual pages it needs.
+- Discover available work and claim it atomically before touching code.
+- Complete or release work with a durable summary and artifact references.
+- Leave the initiative ready for whichever agent—or human—turns up next.
 
-- **One instance, many projects.** The daemon is the source of truth for every registered directory.
-- **Agent-first.** MCP exposes small, discoverable operations with bounded responses.
-- **Local-first.** It only listens on loopback and has no cloud dependency.
-- **Markdown for knowledge.** PRDs, context, and task bodies stay readable and portable.
-- **JSON for coordination.** Every integration uses deterministic contracts.
-- **Explicit concurrency.** Leased claims and optimistic revisions prevent agents from overwriting each other.
-- **Zero bloat.** The model ends at project, PRD, context, task, and subtask.
-- **No accidental deletion.** The first version exposes no destructive delete operations.
+Humans, scripts, and agents see the same state through MCP, CLI, or HTTP. Data stays local in
+SQLite. Product intent stays readable in Markdown. Integrations speak deterministic JSON. Boring
+formats are excellent colleagues.
 
-## Mental model
+## The useful bits
+
+| You need to…                         | Pimpampum gives you…                                    | Use…                                          |
+| ------------------------------------ | ------------------------------------------------------- | --------------------------------------------- |
+| See the state of every product       | One portfolio overview and native status indicator      | `pimpampum overview` or the desktop menu      |
+| Preserve product intent              | Specs and scoped Context documents in Markdown          | `spec_read`, `context_list`, `context_read`   |
+| Break work down, but not into dust   | Tasks and one optional level of Subtasks                | `task_create`, `task_list`, `task_read`       |
+| Stop agents doing the same job twice | Atomic, expiring Claims                                 | `work_list`, `work_start`, `work_renew`       |
+| Hand work to the next agent          | Completion summaries, releases, and artifact references | `work_complete` or `work_release`             |
+| Use whichever agent you like         | MCP, a JSON-first CLI, and a documented local API       | `pimpampum tools`, `pimpampum call`, OpenAPI  |
+| Keep a current off-machine copy      | Automatic snapshots to any synchronized folder          | **Settings…** or `pimpampum backup configure` |
+
+## The deliberately small model
 
 ```text
 Local instance
-└── Workspace                      registered directory or repository
-    └── Project / PRD              unit of intent and delivery
-        ├── Context document       architecture, research, decisions…
-        └── Task                   executable work
-            └── Subtask            one optional level
+└── Workspace                      product or registered repository
+    ├── Context document           workspace-wide durable knowledge
+    └── Project                    bounded initiative or outcome
+        ├── Context document       knowledge shared by its Specs
+        └── Spec                   executable Markdown specification
+            └── Task               executable work derived from the Spec
+                └── Subtask        one optional level
 ```
 
-Projects move through `draft → ready → done`. Tasks move through `open → done`.
+### Domain language
 
-A PRD without open tasks can be claimed directly. Once open tasks exist, agents work on leaf tasks. A project cannot complete while it has open tasks, and a task cannot complete while it has open subtasks.
+| Term                   | Definition                                                                                                                                                                   |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Local instance**     | The single Pimpampum daemon and database on one machine. Every registered Workspace and connected agent shares it.                                                           |
+| **Workspace**          | A product or body of work anchored to one filesystem root, such as Pimpampum. It owns Projects and Workspace-wide Context.                                                   |
+| **Project**            | A bounded initiative or outcome inside a Workspace. It groups one or more related Specs and shared Context. It is a container, not a directly executable job.                |
+| **Spec**               | The canonical Markdown description of one deliverable. It may describe a feature, requirement, bug, refactor, migration, research effort, or something equally inconvenient. |
+| **PRD**                | A product-requirements form of a Spec. Useful product language, but not a separate Pimpampum entity.                                                                         |
+| **Context document**   | Supplementary Markdown scoped explicitly to a Workspace or Project: architecture, research, conventions, decisions, brand, and similar durable knowledge.                    |
+| **Task**               | A concrete unit of work owned by one Spec. When it has open Subtasks, agents work on those leaves first.                                                                     |
+| **Subtask**            | A child Task used to split larger work. Pimpampum permits one Subtask level and no recursive project-management fan fiction.                                                 |
+| **Claim**              | An expiring lease that reserves one executable Spec or leaf Task for one agent.                                                                                              |
+| **Doing**              | A derived status shown while a valid Claim exists. It is never persisted as a lifecycle state.                                                                               |
+| **Completion summary** | A concise, durable record of what changed when work finishes.                                                                                                                |
+| **Artifact reference** | A durable URI pointing to an output such as a commit, file, report, pull request, or build.                                                                                  |
+| **Revision**           | A monotonically increasing version used to detect concurrent edits before anything is overwritten.                                                                           |
+
+The relationships are strict: a Workspace has many Projects, a Project has many Specs, and a Spec
+has many Tasks. Every Task belongs to exactly one Spec. Every Subtask belongs to exactly one
+top-level Task in that same Spec.
+
+Projects move through `draft | open | paused | done | cancelled`. Specs use
+`draft | ready | done | cancelled`. Tasks and Subtasks use `open | done | cancelled`. A ready Spec
+without open Tasks can be claimed directly; once open Tasks exist, only leaf Tasks are claimable.
+`doing` appears only when a live Claim exists. Terminal records and activity remain available, so
+“cancelled” never quietly means “we deleted the evidence.”
 
 ## Architecture
 
 ```text
-Agents in any repository
+Agents in any registered repository
         │
         ├── MCP Streamable HTTP
         ├── MCP stdio bridge
-        ├── HTTP + OpenAPI
-        └── CLI
+        ├── HTTP + OpenAPI 3.1
+        └── JSON-first CLI
                 │
-          Pimpampum daemon
+          one local daemon
                 │
         SQLite + Markdown/JSON export
 ```
 
-The MCP stdio bridge is stateless: every operation reaches the same authenticated daemon. Codex, Claude, VCOMP, rdiaz racing, and any project under `100-projects` can therefore share one coordination service without creating a database per repository.
+The MCP stdio bridge is stateless: every operation reaches the same authenticated daemon. Codex,
+Claude, VCOMP, rdiaz racing, and anything else living under `100-projects` can share one
+coordination service without creating a tiny lonely database in every repository.
 
 ## Requirements
 
 - Node.js 22 or newer.
+- macOS 13+ for the menu-bar app.
+- Omarchy Quattro for the dedicated Quickshell widget.
 
-## Quick start
-
-### 1. Install and start automatically
+## Install once
 
 ```bash
 npm install --global pimpampum
 pimpampum install
 ```
 
-The command above applies after the first npm release. The package contains the compiled daemon,
-macOS app, and Omarchy integration.
-`pimpampum install` installs one per-user background service and starts the local daemon
-automatically—no root access or open terminal is required. Inspect it with `pimpampum status` and
-remove Pimpampum-owned runtime integrations with `pimpampum uninstall`.
+`pimpampum install` installs one per-user background service and starts the local daemon at login.
+No root access and no terminal window kept alive as a shrine. Inspect it with `pimpampum status`;
+remove only Pimpampum-owned runtime integrations with `pimpampum uninstall`. The database, token,
+logs, backups, and exports are preserved.
 
-Until that release, install from the GitHub checkout:
+Until the first npm release, install from source:
 
 ```bash
 gh repo clone r-bart/pimpampum
@@ -92,300 +131,203 @@ npm run build:macos # macOS only
 npm run cli -- install
 ```
 
-Use `npm run cli -- <command>` instead of `pimpampum <command>` throughout this README when
-running directly from source.
+When running from source, replace `pimpampum <command>` below with
+`npm run cli -- <command>`.
 
-Uninstall is deliberately narrow: it removes the managed service, desktop integration, and
-receipt while it preserves the SQLite database, token, project content, diagnostic logs, backups,
-and exports.
-
-The daemon listens on:
-
-```text
-http://127.0.0.1:7337
-```
-
-On first start it creates:
+The daemon listens on `http://127.0.0.1:7337` and creates:
 
 ```text
 ~/.pimpampum/
   pimpampum.sqlite
-  settings.json # created when automatic backup is configured
+  settings.json     # after automatic backup is configured
   token
   .instance.lock
+  logs/
 ```
 
-To run only the foreground daemon during development:
+Run only the foreground development daemon with `npm run dev`.
 
-```bash
-npm run dev
-```
+## A complete first workflow
 
-### Native status surfaces
-
-Both desktop integrations use one fixed compact identity: a monochrome circle containing a
-lowercase `p`. The silhouette never changes. External badge shape/accent, semantic copy, and an
-optional active-claim count communicate state. The count is hidden at zero and visually capped at
-`99+`; accessibility copy retains the full value.
-
-On macOS 13 or newer, `pimpampum install` copies the unsigned menu-bar-only app to
-`~/Applications/PimpampumMenuBar.app`, registers it as a login item, and installs the daemon as a
-LaunchAgent. If macOS reports `requiresApproval`, open the Pimpampum menu and select
-**Open Login Items Settings**. Because this first local release is unsigned, macOS may require an
-explicit first-open approval in Privacy & Security. The app has no Dock icon. Project data stays
-read-only in the menu app; its Settings view can choose and monitor the daemon's automatic backup
-directory.
-
-Opening the menu shows a 360 pt read-only popover with Summary, Active work, Projects, and a
-session-local collapsed Completed group. Project rows open the exact registered workspace root in
-Finder. **Settings…** opens or focuses one 460 × 270 pt Backup window. **Quit Pimpampum** quits only
-the menu app; the daemon keeps running. Current arm64 live evidence covers the fixed mark, external
-badges, capped display count, uncapped accessibility count, semantic states, Finder opening,
-Settings reuse/focus, no Dock icon, and this Quit boundary.
-
-On Omarchy Quattro, the package includes the dedicated native Quickshell plugin under
-`integrations/omarchy/pimpampum-status`. The same `pimpampum install` command detects `omarchy`
-and `omarchy-shell`, preflights the Quattro build and shell IPC before writing, then installs the
-systemd user service and widget as one receipt-owned transaction. It rescans and enables the widget
-through official Omarchy commands without reading or editing `shell.json`. Before removal it uses
-the pinned Quattro `listShellConfig` IPC method to capture only Pimpampum's exact bar section,
-index, and inline settings; a partial failure restores that entry through `enablePlugin` and
-`setBarWidget`, leaves unrelated layout entries untouched, and restores the exact prior systemd
-enabled/running state. Other Linux desktops keep the plain systemd user service. `pimpampum status`
-reports the widget as `enabled`, `disabled`, or `missing`.
-
-The Quattro widget uses the same fixed mark beside the count in horizontal bars and stacks them in
-vertical bars. Clicking opens a bounded 380-unit native popout ordered as connection state, Active
-work, Projects, Completed, and the collapsed Backup disclosure. Project rows use `xdg-open`.
-Backup uses `FolderDialog` when available and retains an absolute-path + **Save** fallback, with
-**Open**, **Back Up Now**, and **Disable** operating on the same daemon setting as every other
-client.
-
-The widget reads `pimpampum overview` through its installed absolute helper. Installation binds
-that receipt-owned helper to the canonical Node, CLI, data-directory, host, and port configuration,
-so custom local instances work without exposing or copying the bearer token. Static package
-validation remains available as `npm run validate:omarchy`. A release additionally requires, from
-a full source checkout, `npm run build` and
-`PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live` on the exact target Quattro machine,
-followed by `npm run test:e2e:omarchy`. The opt-in live runner is deliberately repository-only and
-is not shipped in the runtime tarball. It refuses root,
-non-Wayland sessions, and machines with an existing Pimpampum service, receipt, or plugin. It
-exercises the real install/seed/hot-reload/offline/recovery/uninstall lifecycle, captures distinct
-UI screenshots, requires an explicit visual review, and writes schema-v2 evidence only after the
-original shell, plugin, systemd, receipt, and owned-path baseline is restored exactly.
-
-No real Quattro evidence is currently recorded. The only external-host clue is an ambiguous SSH
-alias named `factory`; confirm that it is the intended Quattro machine before running the live
-workflow. Static validation and the example evidence file are not release evidence.
-
-Diagnostic logs live under `~/.pimpampum/logs` by default. If an installation fails, fix the
-reported platform prerequisite and rerun `pimpampum install`; reconciliation is idempotent.
-
-### 2. Register an existing repository
-
-In another terminal:
+### 1. Register a repository
 
 ```bash
 pimpampum workspace:add vcomp "VCOMP" /absolute/path/to/vcomp
 pimpampum workspace:list
 ```
 
-A workspace represents the root of a repository or related body of work. Nested directories resolve automatically to the most specific registered workspace.
+Nested directories resolve to the most specific registered Workspace.
 
-### 3. Create a project with a PRD
+### 2. Create the initiative and its first Spec
 
 ```bash
-pimpampum project:create \
-  vcomp \
-  authentication \
-  "Authentication" \
-  /absolute/path/to/prd.md
+pimpampum project:create vcomp authentication "Authentication"
+
+pimpampum spec:create \
+  <project-id> \
+  passwordless-login \
+  "Passwordless login" \
+  /absolute/path/to/spec.md
 ```
 
-The response contains the project `id` and initial `revision`. Projects begin as drafts. Make the project available for work with:
+Both begin as drafts. A Project needs at least one Spec before opening. A Spec needs non-blank
+Markdown before becoming ready:
 
 ```bash
-pimpampum project:ready <project-id> 1
+pimpampum project:open <project-id> <project-revision>
+pimpampum spec:ready <spec-id> <spec-revision>
 ```
 
-The second argument is the expected revision. If another actor changed the project, the operation returns `revision_conflict` instead of overwriting the newer state.
+Expected revisions make a stale writer fail with `revision_conflict` instead of politely erasing
+newer work.
 
-### 4. Add tasks or work directly from the PRD
-
-Create a task:
+### 3. Add Tasks only when they help
 
 ```bash
-pimpampum task:create <project-id> "Implement authentication"
+pimpampum task:create <spec-id> "Implement authentication"
+pimpampum task:create <spec-id> "Add end-to-end tests" <parent-task-id>
 ```
 
-Create a subtask:
+No Tasks are required. A ready Spec with no open Tasks is executable work itself. If Tasks exist,
+agents claim available leaves.
+
+### 4. Claim and finish work
 
 ```bash
-pimpampum task:create <project-id> "Add end-to-end tests" <parent-task-id>
-```
-
-If the project has no open tasks, the project itself appears as claimable work. If tasks exist, only available leaf tasks are returned.
-
-### 5. Claim and complete work
-
-```bash
-pimpampum work:list vcomp
+pimpampum work:list vcomp <project-id> <spec-id>
 pimpampum work:start task <task-id> codex-thread-123
+pimpampum work:renew task <task-id> codex-thread-123
 pimpampum work:complete task <task-id> codex-thread-123 <revision> "Delivery complete"
 ```
 
-Keep the same `agent-id` for the lifetime of a claim. Claims expire and can be renewed through MCP or HTTP. They can also be released without completing:
+Use the same stable agent ID for the Claim lifetime. Release unfinished work with a handoff note:
 
 ```bash
-pimpampum work:release task <task-id> codex-thread-123 "Handoff for the next agent"
+pimpampum work:release task <task-id> codex-thread-123 "Tests remain for the next agent"
 ```
+
+After every Task is terminal, claim and complete the Spec. When every Spec is terminal, complete
+the Project without a Claim:
+
+```bash
+pimpampum work:start spec <spec-id> codex-thread-123
+pimpampum work:complete spec <spec-id> codex-thread-123 <revision> "Spec delivered"
+pimpampum project:complete <project-id> <revision> "Initiative delivered"
+```
+
+Projects may also be paused and reopened. Cancelling a Project, Spec, or Task atomically cancels
+its non-terminal descendants and releases their Claims while preserving history.
 
 ## Using Pimpampum from agents
 
-The daemon exposes MCP Streamable HTTP at:
+Give an agent this brief:
+
+```text
+Use Pimpampum as the shared project memory.
+Resolve the current Workspace, list available work, and claim exactly one Spec or leaf Task before editing.
+Read only the relevant Spec, Task, and explicitly scoped Context documents.
+When finished, complete or release the Claim with a concise summary and artifact references.
+```
+
+That is the workflow. The rest is wiring.
+
+### MCP
+
+Streamable HTTP:
 
 ```text
 POST http://127.0.0.1:7337/mcp
 Authorization: Bearer <local-token>
 ```
 
-The token lives at `~/.pimpampum/token` unless a different data directory is configured.
-
-For clients that only support MCP over stdio:
+For MCP hosts that only support stdio:
 
 ```json
 {
-  "command": "node",
-  "args": ["/absolute/path/to/pimpampum/dist/mcpStdio.js"]
+  "command": "pimpampum-mcp",
+  "args": []
 }
 ```
 
-Recommended agent flow:
+Recommended flow:
 
 ```text
 workspace_resolve
   → work_list
   → work_start
-  → project_read_prd or task_read
-  → context_list / context_read
-  → work_complete
+  → spec_read and/or task_read
+  → context_list / context_read for the explicit scope needed
+  → work_complete or work_release
 ```
 
-Example:
-
-1. An agent starts inside `/100-projects/vcomp/packages/api`.
-2. `workspace_resolve` identifies the `vcomp` workspace.
-3. `work_list` returns available projects or leaf tasks.
-4. `work_start` claims one unit and returns lightweight startup manifests.
-5. The agent reads only the required PRD, task, and context pages.
-6. `work_complete` records the outcome and artifact references.
-
-Available tools:
+The canonical 32-tool catalog is:
 
 ```text
-workspace_list       workspace_resolve
-work_list            work_start
-work_renew           work_release          work_complete
-project_list         project_get           project_read_prd
-project_create       project_update        project_update_prd
+workspace_list          workspace_resolve
+
+project_list            project_get             project_create
+project_update          project_complete        project_cancel
 project_completion_get
-task_list            task_get              task_read
-task_create          task_update           task_completion_get
-context_list         context_read          context_put
+
+spec_list               spec_get                spec_read
+spec_create             spec_update             spec_completion_get
+spec_cancel
+
+task_list               task_get                task_read
+task_create             task_update             task_completion_get
+task_cancel
+
+context_list            context_read            context_put
 activity_list
+
+work_list               work_start              work_renew
+work_release            work_complete
 ```
 
-The complete tool contract, including arguments, effects, pagination, and errors, is documented in [docs/mcp-tools.md](docs/mcp-tools.md). The same metadata is available dynamically through MCP `tools/list`.
+No transitional aliases are exposed. The live MCP `tools/list` result is authoritative and
+includes strict schemas, defaults, descriptions, bounds, and effect annotations. The full human
+reference is [docs/mcp-tools.md](docs/mcp-tools.md).
 
 ### Agent-first CLI
 
-MCP is the preferred agent interface. A shell-only agent can install, configure, discover, and use
-the exact same tool contract through the CLI without hard-coding HTTP routes.
-
-Configuration remains environment-based and non-interactive:
+MCP is preferred. A shell-only agent can still install, configure, discover, and call the exact
+same contract without hard-coding HTTP routes:
 
 ```bash
-export PIMPAMPUM_DATA_DIR="$HOME/.pimpampum"
-export PIMPAMPUM_HOST="127.0.0.1"
-export PIMPAMPUM_PORT="7337"
-
 pimpampum install
 pimpampum status
 pimpampum config
-```
-
-`pimpampum config` works while the daemon is offline. It returns the effective data directory,
-database path, base URL, token source, MCP HTTP URL, and exact stdio command as JSON. `tokenPath` is
-the generated file path when `tokenSource` is `file`, or `null` when the token comes from the
-environment. It never returns the bearer token itself. Normally Pimpampum generates the token;
-`PIMPAMPUM_TOKEN` remains available for deterministic isolated environments and must contain at
-least 32 printable non-space characters.
-
-Discover the live catalog—including descriptions, annotations, defaults, and JSON Schemas:
-
-```bash
 pimpampum tools
+pimpampum call workspace_resolve --input '{"path":"/absolute/project/path"}'
 ```
 
-Call a zero-argument tool or pass one JSON object inline:
+`config` works while offline and reports the effective data directory, base URL, redacted token
+source, MCP URL, and stdio command. It never prints the bearer token.
+
+Call a tool with inline JSON, standard input, or a UTF-8 file:
 
 ```bash
 pimpampum call workspace_list
 
 pimpampum call work_list \
-  --input '{"workspaceId":"vcomp","limit":20}'
-```
+  --input '{"workspaceId":"vcomp","projectId":null,"specId":null,"limit":20}'
 
-Use standard input for Markdown and structured values that are awkward to quote:
-
-```bash
 printf '%s' '{
   "projectId": "PROJECT_ID",
-  "name": "architecture",
-  "body": "# Architecture\n\nOne local daemon.",
-  "expectedRevision": null,
+  "slug": "agent-cli",
+  "title": "Agent-first CLI",
+  "body": "# Contract\n\nExpose the complete MCP surface.",
   "actor": "codex-thread-123"
-}' | pimpampum call context_put --stdin
-```
+}' | pimpampum call spec_create --stdin
 
-Or keep a request in a UTF-8 JSON file:
-
-```bash
 pimpampum call work_complete --input-file ./complete-work.json
 ```
 
-Only one input source may be used. Inputs must be JSON objects and are bounded to 2,000,000 UTF-8
-bytes. Success writes one `{ "data": ... }` envelope to stdout with exit code 0. Local, transport,
-schema, and tool failures write one actionable `{ "error": ... }` envelope to stderr and exit
-non-zero. Every `tools` or `call` command opens and closes a short-lived authenticated MCP session.
+Choose exactly one input source: `--input`, `--stdin`, or `--input-file`. Calls accept JSON objects
+up to 2,000,000 UTF-8 bytes. Success writes one `{ "data": ... }` envelope to stdout with exit
+code 0. Failures write one actionable `{ "error": ... }` envelope to stderr and exit non-zero.
 
-### MCP responses
-
-Each call returns one text content block containing JSON:
-
-```json
-{
-  "data": {}
-}
-```
-
-Failures are actionable:
-
-```json
-{
-  "error": {
-    "code": "revision_conflict",
-    "message": "Expected revision 3, current revision is 4",
-    "retryable": true,
-    "details": {},
-    "suggestion": "Read the latest manifest, then retry with its current revision."
-  }
-}
-```
-
-Paginated list tools return `items`, `hasMore`, and `nextOffset`. Markdown is read in bounded UTF-16 code-unit pages so agent context usage remains predictable.
-
-## Using the HTTP API
+## HTTP and OpenAPI
 
 Every `/api/v1` and `/mcp` request requires:
 
@@ -393,7 +335,7 @@ Every `/api/v1` and `/mcp` request requires:
 Authorization: Bearer <local-token>
 ```
 
-Example:
+The token lives at `~/.pimpampum/token` unless another data directory is configured.
 
 ```bash
 curl \
@@ -401,56 +343,40 @@ curl \
   http://127.0.0.1:7337/api/v1/workspaces
 ```
 
-The complete OpenAPI 3.1 contract is public on loopback:
+The public loopback OpenAPI 3.1 document is available at:
 
 ```text
 GET http://127.0.0.1:7337/openapi.json
 ```
 
-It can be imported directly into Scalar, Swagger UI, Bruno, Postman, or any OpenAPI-compatible generator.
+It documents all Workspace, Project, Spec, Task, scoped Context, work, activity, backup, and export
+operations. `/health` and `/openapi.json` are the only unauthenticated routes. Ordinary success
+envelopes use HTTP schema version 1; the independently versioned portfolio overview uses schema
+version 2 because the macOS and Omarchy clients validate it strictly.
 
-Successful responses use a versioned envelope:
+Domain Model v2 deliberately keeps the pre-release `/api/v1` route prefix. The version of the
+resource model and the URL prefix are separate boundaries. A minimal HTTP creation flow is:
 
-```json
-{
-  "data": {},
-  "meta": {
-    "schemaVersion": 1
-  }
-}
+```bash
+TOKEN="$(tr -d '\n' < ~/.pimpampum/token)"
+
+curl -X POST http://127.0.0.1:7337/api/v1/projects \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"workspaceId":"vcomp","slug":"authentication","title":"Authentication","actor":"human"}'
+
+curl -X POST http://127.0.0.1:7337/api/v1/projects/PROJECT_ID/specs \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"slug":"passwordless-login","title":"Passwordless login","body":"# Passwordless login","actor":"human"}'
 ```
 
-Errors indicate whether retrying may help:
-
-```json
-{
-  "error": {
-    "code": "revision_conflict",
-    "message": "Expected revision 3, current revision is 4",
-    "retryable": true,
-    "details": {}
-  }
-}
-```
-
-Main API areas:
-
-| Area           | Operations                                                                 |
-| -------------- | -------------------------------------------------------------------------- |
-| Workspaces     | Register, list, and resolve directories                                    |
-| Projects       | Create, inspect, and update projects, manifests, PRDs, and completion data |
-| Context        | Create, replace, list, and read contextual Markdown                        |
-| Tasks          | Create, inspect, and update tasks and subtasks                             |
-| Work           | Discover, claim, renew, release, and complete work                         |
-| Activity       | Read bounded automatic activity                                            |
-| Administration | Configure automatic backup, create snapshots, and export portable data     |
-| MCP            | Use the Streamable HTTP transport                                          |
-
-`/health` and `/openapi.json` are the only unauthenticated routes.
+Use `PATCH /api/v1/projects/{projectId}` and `PATCH /api/v1/specs/{specId}` with
+`expectedRevision` for reversible lifecycle changes. Executable work is listed at
+`GET /api/v1/work` and Claims accept only `spec` or `task`. Refer to `/openapi.json` for exact
+request and response schemas rather than reproducing them in an agent prompt.
 
 ## CLI reference
-
-During development, use `npm run cli -- <command>`. A compiled installation exposes `pimpampum <command>`.
 
 ```text
 pimpampum help
@@ -465,14 +391,26 @@ pimpampum status
 pimpampum uninstall
 pimpampum workspace:list
 pimpampum workspace:add <id> <name> <root-path>
-pimpampum work:list [workspace-id]
-pimpampum work:start <project|task> <id> <agent-id>
-pimpampum work:release <project|task> <id> <agent-id> [note]
-pimpampum work:complete <project|task> <id> <agent-id> <revision> <summary>
-pimpampum project:create <workspace-id> <slug> <title> [prd-file]
+pimpampum work:list [workspace-id] [project-id] [spec-id]
+pimpampum work:start <spec|task> <id> <agent-id>
+pimpampum work:renew <spec|task> <id> <agent-id>
+pimpampum work:release <spec|task> <id> <agent-id> [note]
+pimpampum work:complete <spec|task> <id> <agent-id> <revision> <summary>
+pimpampum project:create <workspace-id> <slug> <title>
 pimpampum project:get <project-id>
-pimpampum project:ready <project-id> <revision>
-pimpampum task:create <project-id> <title> [parent-id]
+pimpampum project:draft <project-id> <revision>
+pimpampum project:open <project-id> <revision>
+pimpampum project:pause <project-id> <revision>
+pimpampum project:complete <project-id> <revision> <summary>
+pimpampum project:cancel <project-id> <revision> <reason>
+pimpampum spec:create <project-id> <slug> <title> [body-file]
+pimpampum spec:get <spec-id>
+pimpampum spec:draft <spec-id> <revision>
+pimpampum spec:ready <spec-id> <revision>
+pimpampum spec:cancel <spec-id> <revision> <reason>
+pimpampum task:create <spec-id> <title> [parent-id]
+pimpampum task:get <task-id>
+pimpampum task:cancel <task-id> <revision> <reason>
 pimpampum backup <directory>
 pimpampum backup status [--json]
 pimpampum backup configure <absolute-directory> [--json]
@@ -481,42 +419,51 @@ pimpampum backup disable [--json]
 pimpampum export <directory>
 ```
 
-The named commands cover common human and administrative operations. `tools` and `call` expose the
-complete MCP contract as the canonical shell fallback for agents.
+Named commands cover common human operations. `tools` and `call` expose the complete MCP contract
+as the canonical shell fallback for agents.
+
+## Native status surfaces
+
+The daemon is meant to disappear into the machine, not become a new pet process you check every
+morning.
+
+On **macOS 13+**, installation adds a menu-bar-only app and starts the daemon at login. The menu
+shows portfolio status, active Claims, current Spec/Task work, and every Project. Green means the
+portfolio is terminal; an active badge means an agent owns work; an error means the daemon needs
+attention. Click a Project to open its Workspace in Finder. **Settings…** configures automatic
+backup. **Quit Pimpampum** closes the menu app and deliberately leaves the daemon running.
+
+The first local release is unsigned, so macOS may request approval under Privacy & Security or
+Login Items. The app has no Dock icon. It knows its place.
+
+On **Omarchy Quattro**, installation adds a dedicated Quickshell widget and systemd user service.
+The bar shows the same portfolio state and Claim count. Its popout lists current work and Projects,
+opens Workspaces with `xdg-open`, and exposes the same backup controls. Other Linux desktops receive
+the background service without the Quattro widget.
+
+Both status clients are read-only apart from backup settings. Agents do the work; the status bar
+simply tells you whether they are doing it.
 
 ## Persistence, backup, and export
 
-The live database must remain in Pimpampum's local data directory. **Do not place the active SQLite database in Dropbox, Google Drive, or iCloud.**
+The live SQLite database must remain in Pimpampum's local data directory. **Do not place it inside
+Dropbox, Google Drive, or iCloud.** Synchronized databases are an exciting way to discover file
+locking at the least convenient possible moment.
 
-Backups and exports may be written to synchronized folders:
+Backups and exports may target any locally mounted or synchronized folder:
 
 ```bash
 pimpampum backup /path/to/Dropbox/pimpampum-backups
 pimpampum export /path/to/iCloud/pimpampum-exports
 ```
 
-- Manual backups are immutable SQLite snapshots verified with an integrity check.
-- Exports contain portable JSON metadata plus PRDs, context, and tasks as Markdown.
-- Export is rejected while active claims exist and runs synchronously.
-- The bearer token is not stored inside the SQLite backup.
+- Manual backups are immutable, integrity-checked SQLite snapshots.
+- Automatic backup atomically refreshes `pimpampum-latest.sqlite` after each successful mutation.
+- Backup failure never rolls back committed local project work.
+- Portable export is rejected while live Claims exist.
+- Claims and bearer tokens are excluded from portable exports.
 
-### Automatic synchronized backup
-
-Choose one existing folder in iCloud Drive, Dropbox, Google Drive, or another synchronized
-location. The live database remains local; Pimpampum atomically refreshes only
-`pimpampum-latest.sqlite` after every successful workspace, project, PRD, context, task, subtask,
-or work-claim change.
-
-On macOS, open the Pimpampum menu and select **Settings…**, then **Choose Folder…**. The settings
-view also shows the last successful refresh and offers **Back Up Now**, **Open in Finder**, change,
-and disable actions.
-
-On Omarchy Quattro, open the Pimpampum status popout and expand **Backup**. Use **Choose…** when
-the Qt folder dialog is available, or enter an absolute path in the fallback field. The widget
-uses the same canonical daemon setting as macOS and the CLI; it does not write the path to
-`shell.json`.
-
-Agents and scripts can use deterministic JSON commands:
+Choose automatic backup from **Settings…** on macOS, from **Backup** in the Quattro popout, or with:
 
 ```bash
 pimpampum backup configure "/path/to/Dropbox/Pimpampum" --json
@@ -525,22 +472,27 @@ pimpampum backup retry --json
 pimpampum backup disable --json
 ```
 
-The destination is persisted privately in `~/.pimpampum/settings.json`. Configuration immediately
-creates the rolling snapshot. Later changes are serialized and coalesced, so there is never more
-than one automatic snapshot writer. If the synchronized folder is temporarily unavailable, the
-project mutation still succeeds locally; status becomes `error`, and the next mutation or
-`backup retry` attempts recovery. Disabling automatic backup never deletes an existing snapshot.
+The schema-v2 portable export is deterministic and readable:
 
-The equivalent authenticated API is `GET`, `PUT`, and `DELETE /api/v1/settings/backup`, plus
-`POST /api/v1/settings/backup/retry`; exact schemas and errors are in `/openapi.json`.
+```text
+manifest.json                    schemaVersion: 2
+workspaces.json
+workspaces/<workspace-id>/
+  context.json
+  context/*.md
+  projects/<project-slug>/
+    project.json
+    context.json
+    context/*.md
+    specs/<spec-slug>/
+      spec.json
+      spec.md
+      tasks.json
+```
 
-### Restoring a backup
-
-1. Stop the daemon.
-2. Preserve the `token` file and keep the failed database separately for possible recovery.
-3. Copy the selected snapshot to the configured `pimpampum.sqlite` path.
-4. Do not copy stale `-wal` or `-shm` files.
-5. Keep permissions private, start the daemon, and verify `GET /health` plus a representative project read.
+To restore a SQLite backup: stop the daemon, preserve the token, move the failed database aside,
+copy the selected snapshot to the configured `pimpampum.sqlite`, remove no unrelated files, avoid
+stale `-wal` or `-shm` companions, restart, and verify `/health` plus a representative read.
 
 ## Configuration
 
@@ -551,37 +503,26 @@ The equivalent authenticated API is `GET`, `PUT`, and `DELETE /api/v1/settings/b
 | `PIMPAMPUM_PORT`     | `7337`                  | Daemon port            |
 | `PIMPAMPUM_TOKEN`    | Generated automatically | Local bearer token     |
 
-The host must be `127.0.0.1`, `localhost`, or `::1`. A manually configured token must contain at least 32 printable ASCII characters without spaces.
-
-Only one daemon may own a data directory. The instance lock prevents a second process—even on a different port—from coordinating against the same database.
+The host must be loopback. A manually configured token must contain at least 32 printable ASCII
+characters without spaces. One instance lock prevents two daemons from owning the same data
+directory.
 
 ## Deliberate omissions
 
-Pimpampum intentionally does not include:
+Pimpampum does not include the following, and nobody forgot to add them:
 
-- Sprints, milestones, or roadmaps.
-- Priorities, estimates, points, or labels.
-- Users, teams, roles, or remote permissions.
-- Comments, chat, notifications, or social feeds.
-- Configurable project-workflow automations.
-- Arbitrary task dependencies.
-- More than one level of subtasks.
+- Sprints, milestones, roadmaps, priorities, estimates, points, or labels.
+- Users, teams, roles, comments, chat, notifications, or social feeds.
+- Configurable workflows or arbitrary Task dependencies.
+- More than one level of Subtasks.
 - Cloud synchronization of the live database.
 - A web interface in the first version.
 
-These omissions are part of the product. They keep the contract small, understandable, and stable for agents.
+These omissions keep the contract small enough for an agent to understand and a human to trust.
+Excellent larger tools already exist for the rest; Pimpampum would like to remain comprehensible
+before lunch.
 
 ## Development and quality
-
-The commands in this section require a full source checkout. Development, test, benchmark, native
-build, and destructive live-smoke scripts are intentionally omitted from the published runtime
-manifest. The tarball retains only `start`, static Omarchy validation, schema-v2 Quattro evidence
-verification, and its safe packaging lifecycle hook. Validate externally captured Quattro evidence
-from an unpacked package with:
-
-```bash
-npm run check:quattro-evidence -- /absolute/path/to/quattro-live.json /absolute/path/to/candidate
-```
 
 ```bash
 npm run typecheck
@@ -592,26 +533,23 @@ npm run test:evals
 npm run build
 ```
 
-`npm test` builds from a clean `dist/`, enforces 100% statement, branch, function, and line coverage, and exercises the compiled daemon, CLI, and MCP stdio bridge.
+`npm test` builds from a clean `dist/`, enforces 100% statement, branch, function, and line
+coverage, and exercises the compiled daemon, CLI, HTTP, and MCP boundaries. The deterministic agent
+evaluation rubric lives in [docs/evals.md](docs/evals.md).
 
-`npm run test:evals` is the small deterministic agent-workflow evaluation suite. It runs the compiled product at its real CLI, HTTP, and MCP boundaries. Its score is binary: all nine workflows must pass without mocks or partial credit. The complete rubric is documented in [docs/evals.md](docs/evals.md).
+Quattro live validation is intentionally opt-in because it temporarily touches the real shell and
+requires human visual review:
 
-The evaluation suite covers nine real scenarios:
-
-1. Workspace → project/PRD → task → claim → completion → portable export.
-2. Shell-only agent installation/configuration, tool discovery, and the full MCP contract via CLI.
-3. PRD and contextual Markdown reads and updates through MCP.
-4. Parent/subtask ordering, competing agents, idempotent claims, and artifact recovery.
-5. HTTP authentication, optimistic revision conflicts, and the deliberate no-delete boundary.
-6. Persistence across daemon restart and rejection of a second instance owner.
-7. Automatic backup configuration, post-mutation refresh, unavailable-folder failure isolation,
-   recovery, and disable through the compiled agent-first CLI.
-8. Real SQLite backup, restore, and subsequent portable export.
-9. Per-user service install, status, repeat-install reconciliation, uninstall, and data preservation.
+```bash
+PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live
+npm run test:e2e:omarchy
+```
 
 ## Status
 
-Pimpampum is at `0.1.0`: a functional, deliberately small local-first release. The next product criterion is not how many features can be added, but whether each addition clearly improves agent coordination without eroding simplicity.
+Pimpampum is at `0.1.0`: functional, local-first, and deliberately small. Every future feature has
+one admission test: does it improve coordination more than it increases surface area? If not, it
+can enjoy a fulfilling life in another product.
 
 ## License
 

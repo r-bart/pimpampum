@@ -41,13 +41,19 @@ final class OverviewStore: ObservableObject {
 
   var incompleteProjects: [OverviewProject] {
     (overview?.projects ?? [])
-      .filter { $0.status != .complete }
+      .filter { $0.lifecycleState != .done && $0.lifecycleState != .cancelled }
       .sorted(by: Self.projectComesFirst)
   }
 
   var completedProjects: [OverviewProject] {
     (overview?.projects ?? [])
-      .filter { $0.status == .complete }
+      .filter { $0.lifecycleState == .done }
+      .sorted(by: Self.projectComesFirst)
+  }
+
+  var cancelledProjects: [OverviewProject] {
+    (overview?.projects ?? [])
+      .filter { $0.lifecycleState == .cancelled }
       .sorted(by: Self.projectComesFirst)
   }
 

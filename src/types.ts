@@ -1,6 +1,8 @@
-export type ProjectState = 'draft' | 'ready' | 'done';
-export type TaskState = 'open' | 'done';
-export type TargetType = 'project' | 'task';
+export type ProjectState = 'draft' | 'open' | 'paused' | 'done' | 'cancelled';
+export type SpecState = 'draft' | 'ready' | 'done' | 'cancelled';
+export type TaskState = 'open' | 'done' | 'cancelled';
+export type TargetType = 'spec' | 'task';
+export type ContextOwnerType = 'workspace' | 'project';
 
 export interface Workspace {
   id: string;
@@ -30,7 +32,30 @@ export interface Project {
   slug: string;
   title: string;
   state: ProjectState;
-  prd: string;
+  revision: number;
+  completionSummary: string | null;
+  artifacts: ArtifactReference[];
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ProjectManifest = Omit<Project, 'artifacts' | 'completionSummary'> & {
+  artifactCount: number;
+  hasCompletion: boolean;
+  specCount: number;
+  draftSpecCount: number;
+  readySpecCount: number;
+  terminalSpecCount: number;
+};
+
+export interface Spec {
+  id: string;
+  projectId: string;
+  slug: string;
+  title: string;
+  body: string;
+  state: SpecState;
   revision: number;
   completionSummary: string | null;
   artifacts: ArtifactReference[];
@@ -40,15 +65,19 @@ export interface Project {
   claim: Claim | null;
 }
 
-export type ProjectManifest = Omit<Project, 'prd' | 'artifacts' | 'completionSummary'> & {
-  prdSizeBytes: number;
+export type SpecManifest = Omit<Spec, 'body' | 'artifacts' | 'completionSummary'> & {
+  bodySizeBytes: number;
   artifactCount: number;
   hasCompletion: boolean;
+  taskCount: number;
+  openTaskCount: number;
+  terminalTaskCount: number;
 };
 
 export interface ContextDocument {
   id: string;
-  projectId: string;
+  ownerType: ContextOwnerType;
+  ownerId: string;
   name: string;
   body: string;
   revision: number;
@@ -58,9 +87,14 @@ export interface ContextDocument {
 
 export type ContextManifest = Omit<ContextDocument, 'body'> & { sizeBytes: number };
 
+export interface ContextManifestPage {
+  items: ContextManifest[];
+  hasMore: boolean;
+}
+
 export interface Task {
   id: string;
-  projectId: string;
+  specId: string;
   parentId: string | null;
   title: string;
   body: string | null;
@@ -78,6 +112,8 @@ export type TaskManifest = Omit<Task, 'body' | 'artifacts' | 'completionSummary'
   bodySizeBytes: number;
   artifactCount: number;
   hasCompletion: boolean;
+  subtaskCount: number;
+  openSubtaskCount: number;
 };
 
 export interface MarkdownPage {
@@ -98,6 +134,7 @@ export interface ActivityEvent {
   id: number;
   workspaceId: string | null;
   projectId: string | null;
+  specId: string | null;
   targetType: string;
   targetId: string;
   eventType: string;
@@ -112,6 +149,8 @@ export interface WorkItem {
   workspaceId: string;
   projectId: string;
   projectTitle: string;
+  specId: string;
+  specTitle: string;
   taskId: string | null;
   taskTitle: string | null;
   parentTaskId: string | null;
@@ -122,24 +161,27 @@ export interface WorkBundle {
   claim: Claim;
   workspace: Workspace;
   project: ProjectManifest;
+  spec: SpecManifest;
   task: TaskManifest | null;
-  context: Array<
-    Pick<ContextDocument, 'id' | 'name' | 'revision' | 'updatedAt'> & { sizeBytes: number }
-  >;
-  contextHasMore: boolean;
+  workspaceContext: ContextManifestPage;
+  projectContext: ContextManifestPage;
 }
 
-export type OverviewStatus = 'active' | 'available' | 'complete' | 'draft' | 'empty';
+export type OverviewStatus = 'active' | 'available' | 'complete' | 'draft' | 'paused' | 'empty';
 export type OverviewProjectStatus = Exclude<OverviewStatus, 'empty'>;
 
 export interface OverviewCounts {
   workspaces: number;
   projects: number;
+  specs: number;
   draftProjects: number;
-  readyProjects: number;
+  openProjects: number;
+  pausedProjects: number;
   completedProjects: number;
+  cancelledProjects: number;
   openTasks: number;
   completedTasks: number;
+  cancelledTasks: number;
   activeClaims: number;
   availableWork: number;
 }
@@ -151,6 +193,7 @@ export interface OverviewProject {
   title: string;
   lifecycleState: ProjectState;
   status: OverviewProjectStatus;
+  specCount: number;
   openTaskCount: number;
   completedTaskCount: number;
   activeClaimCount: number;
@@ -164,6 +207,8 @@ export interface OverviewActiveWork {
   workspaceId: string;
   projectId: string;
   projectTitle: string;
+  specId: string;
+  specTitle: string;
   taskId: string | null;
   taskTitle: string | null;
   agentId: string;
@@ -192,13 +237,19 @@ export interface CreateProjectInput {
   workspaceId: string;
   slug: string;
   title: string;
-  prd: string;
-  state: Exclude<ProjectState, 'done'>;
+  actor: string | null;
+}
+
+export interface CreateSpecInput {
+  projectId: string;
+  slug: string;
+  title: string;
+  body: string;
   actor: string | null;
 }
 
 export interface CreateTaskInput {
-  projectId: string;
+  specId: string;
   parentId: string | null;
   title: string;
   body: string | null;
@@ -217,7 +268,12 @@ export interface CompleteWorkInput {
 export interface PimpampumGateway {
   listWorkspaces(): Workspace[] | Promise<Workspace[]>;
   resolveWorkspace(rootPath: string): Workspace | Promise<Workspace>;
-  listWork(input: { workspaceId: string | null; limit: number }): WorkItem[] | Promise<WorkItem[]>;
+  listWork(input: {
+    workspaceId: string | null;
+    projectId: string | null;
+    specId: string | null;
+    limit: number;
+  }): WorkItem[] | Promise<WorkItem[]>;
   startWork(input: {
     targetType: TargetType;
     targetId: string;
@@ -236,14 +292,8 @@ export interface PimpampumGateway {
     agentId: string;
     note: string | null;
   }): void | Promise<void>;
-  completeWork(input: CompleteWorkInput): Project | Task | Promise<Project | Task>;
-  getProject(projectId: string): Project | Promise<Project>;
+  completeWork(input: CompleteWorkInput): Spec | Task | Promise<Spec | Task>;
   getProjectManifest(projectId: string): ProjectManifest | Promise<ProjectManifest>;
-  readProjectPrd(
-    projectId: string,
-    offsetCodeUnits: number,
-    limitCodeUnits: number,
-  ): MarkdownPage | Promise<MarkdownPage>;
   getProjectCompletion(projectId: string): CompletionDetails | Promise<CompletionDetails>;
   listProjectManifests(input: {
     workspaceId: string | null;
@@ -255,18 +305,52 @@ export interface PimpampumGateway {
   updateProject(input: {
     projectId: string;
     title: string | null;
-    state: Exclude<ProjectState, 'done'> | null;
+    state: Exclude<ProjectState, 'done' | 'cancelled'> | null;
     expectedRevision: number;
     actor: string | null;
   }): Project | Promise<Project>;
-  updatePrd(input: {
+  completeProject(input: {
     projectId: string;
-    prd: string;
     expectedRevision: number;
+    summary: string;
+    artifacts: ArtifactReference[];
     actor: string | null;
   }): Project | Promise<Project>;
+  cancelProject(input: {
+    projectId: string;
+    expectedRevision: number;
+    reason: string;
+    actor: string | null;
+  }): Project | Promise<Project>;
+  createSpec(input: CreateSpecInput): Spec | Promise<Spec>;
+  getSpecManifest(specId: string): SpecManifest | Promise<SpecManifest>;
+  readSpecBody(
+    specId: string,
+    offsetCodeUnits: number,
+    limitCodeUnits: number,
+  ): MarkdownPage | Promise<MarkdownPage>;
+  getSpecCompletion(specId: string): CompletionDetails | Promise<CompletionDetails>;
+  listSpecManifests(input: {
+    projectId: string;
+    state: SpecState | null;
+    limit: number;
+    offset: number;
+  }): SpecManifest[] | Promise<SpecManifest[]>;
+  updateSpec(input: {
+    specId: string;
+    title: string | null;
+    body: string | null;
+    state: Exclude<SpecState, 'done' | 'cancelled'> | null;
+    expectedRevision: number;
+    actor: string | null;
+  }): Spec | Promise<Spec>;
+  cancelSpec(input: {
+    specId: string;
+    expectedRevision: number;
+    reason: string;
+    actor: string | null;
+  }): Spec | Promise<Spec>;
   createTask(input: CreateTaskInput): Task | Promise<Task>;
-  getTask(taskId: string): Task | Promise<Task>;
   getTaskManifest(taskId: string): TaskManifest | Promise<TaskManifest>;
   readTaskBody(
     taskId: string,
@@ -275,7 +359,7 @@ export interface PimpampumGateway {
   ): MarkdownPage | Promise<MarkdownPage>;
   getTaskCompletion(taskId: string): CompletionDetails | Promise<CompletionDetails>;
   listTaskManifests(input: {
-    projectId: string;
+    specId: string;
     limit: number;
     offset: number;
   }): TaskManifest[] | Promise<TaskManifest[]>;
@@ -286,20 +370,33 @@ export interface PimpampumGateway {
     expectedRevision: number;
     actor: string | null;
   }): Task | Promise<Task>;
+  cancelTask(input: {
+    taskId: string;
+    expectedRevision: number;
+    reason: string;
+    actor: string | null;
+  }): Task | Promise<Task>;
   listContextManifests(input: {
-    projectId: string;
+    ownerType: ContextOwnerType;
+    ownerId: string;
     limit: number;
     offset: number;
   }): ContextManifest[] | Promise<ContextManifest[]>;
-  readContext(projectId: string, name: string): ContextDocument | Promise<ContextDocument>;
+  getContextManifest(
+    ownerType: ContextOwnerType,
+    ownerId: string,
+    name: string,
+  ): ContextManifest | Promise<ContextManifest>;
   readContextPage(
-    projectId: string,
+    ownerType: ContextOwnerType,
+    ownerId: string,
     name: string,
     offsetCodeUnits: number,
     limitCodeUnits: number,
   ): MarkdownPage | Promise<MarkdownPage>;
   putContext(input: {
-    projectId: string;
+    ownerType: ContextOwnerType;
+    ownerId: string;
     name: string;
     body: string;
     expectedRevision: number | null;

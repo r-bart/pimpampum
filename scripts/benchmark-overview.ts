@@ -18,30 +18,37 @@ try {
   });
   const insertProject = database.prepare(
     `INSERT INTO projects
-       (id, workspace_id, slug, title, state, prd, created_at, updated_at)
-     VALUES (?, 'benchmark', ?, ?, 'ready', ?, ?, ?)`,
+       (id, workspace_id, slug, title, state, created_at, updated_at)
+     VALUES (?, 'benchmark', ?, ?, 'open', ?, ?)`,
+  );
+  const insertSpec = database.prepare(
+    `INSERT INTO specs
+       (id, project_id, slug, title, body, state, created_at, updated_at)
+     VALUES (?, ?, 'primary', ?, ?, 'ready', ?, ?)`,
   );
   const insertTask = database.prepare(
     `INSERT INTO tasks
-       (id, project_id, parent_id, title, body, state, created_at, updated_at)
+       (id, spec_id, parent_id, title, body, state, created_at, updated_at)
      VALUES (?, ?, NULL, ?, ?, 'open', ?, ?)`,
   );
   database.transaction(() => {
     for (let projectIndex = 0; projectIndex < 500; projectIndex += 1) {
       const projectId = `project-${String(projectIndex).padStart(3, '0')}`;
       const timestamp = '2026-08-26T00:00:00.000Z';
-      insertProject.run(
+      insertProject.run(projectId, projectId, `Project ${projectIndex}`, timestamp, timestamp);
+      const specId = `${projectId}-primary`;
+      insertSpec.run(
+        specId,
         projectId,
-        projectId,
-        `Project ${projectIndex}`,
-        '# Benchmark PRD body excluded from overview',
+        `Primary Spec ${projectIndex}`,
+        '# Benchmark Spec body excluded from overview',
         timestamp,
         timestamp,
       );
       for (let taskIndex = 0; taskIndex < 10; taskIndex += 1) {
         insertTask.run(
           `${projectId}-task-${taskIndex}`,
-          projectId,
+          specId,
           `Task ${taskIndex}`,
           'Benchmark task body excluded from overview',
           timestamp,
@@ -61,12 +68,17 @@ try {
     }
     return durationMilliseconds;
   }).sort((left, right) => left - right);
-  const listed = store.listWork({ workspaceId: null, limit: 10_000 });
+  const listed = store.listWork({
+    workspaceId: null,
+    projectId: null,
+    specId: null,
+    limit: 10_000,
+  });
 
   process.stdout.write(
     `${JSON.stringify(
       {
-        fixture: { projects: 500, tasks: 5_000 },
+        fixture: { projects: 500, specs: 500, tasks: 5_000 },
         availableWork: listed.length,
         samplesMilliseconds: samples.map((sample) => Number(sample.toFixed(3))),
         minMilliseconds: Number((samples[0] ?? 0).toFixed(3)),

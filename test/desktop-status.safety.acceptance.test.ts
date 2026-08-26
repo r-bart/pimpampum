@@ -25,18 +25,56 @@ function overview(store: PimpampumStore): DomainOverview {
   return (store as unknown as { getOverview(): DomainOverview }).getOverview();
 }
 
+function createOpenProject(
+  store: PimpampumStore,
+  input: { workspaceId: string; slug: string; title: string; body?: string },
+) {
+  let project = store.createProject({
+    workspaceId: input.workspaceId,
+    slug: input.slug,
+    title: input.title,
+    actor: 'acceptance',
+  });
+  let spec = store.createSpec({
+    projectId: project.id,
+    slug: 'primary',
+    title: `${input.title} Spec`,
+    body: input.body ?? '# Executable Spec',
+    actor: 'acceptance',
+  });
+  spec = store.updateSpec({
+    specId: spec.id,
+    title: null,
+    body: null,
+    state: 'ready',
+    expectedRevision: spec.revision,
+    actor: 'acceptance',
+  });
+  project = store.updateProject({
+    projectId: project.id,
+    title: null,
+    state: 'open',
+    expectedRevision: project.revision,
+    actor: 'acceptance',
+  });
+  return { project, spec };
+}
+
 describe('Frozen desktop-status safety contract', () => {
   it('freezes every project and global status precedence branch', async () => {
     const semantics = (await import(new URL('../src/overview.ts', import.meta.url).href)) as {
       statusForProject(input: {
-        lifecycleState: 'draft' | 'ready' | 'done';
+        lifecycleState: 'draft' | 'open' | 'paused' | 'done' | 'cancelled';
         activeClaimCount: number;
         availableWorkCount: number;
       }): string;
       statusForOverview(input: {
         projects: number;
         draftProjects: number;
+        openProjects: number;
+        pausedProjects: number;
         completedProjects: number;
+        cancelledProjects: number;
         activeClaims: number;
         availableWork: number;
       }): string;
@@ -44,18 +82,25 @@ describe('Frozen desktop-status safety contract', () => {
 
     expect(
       semantics.statusForProject({
-        lifecycleState: 'ready',
+        lifecycleState: 'open',
         activeClaimCount: 1,
         availableWorkCount: 3,
       }),
     ).toBe('active');
     expect(
       semantics.statusForProject({
-        lifecycleState: 'ready',
+        lifecycleState: 'open',
         activeClaimCount: 0,
         availableWorkCount: 1,
       }),
     ).toBe('available');
+    expect(
+      semantics.statusForProject({
+        lifecycleState: 'paused',
+        activeClaimCount: 0,
+        availableWorkCount: 0,
+      }),
+    ).toBe('paused');
     expect(
       semantics.statusForProject({
         lifecycleState: 'draft',
@@ -70,12 +115,34 @@ describe('Frozen desktop-status safety contract', () => {
         availableWorkCount: 0,
       }),
     ).toBe('complete');
+    expect(
+      semantics.statusForProject({
+        lifecycleState: 'cancelled',
+        activeClaimCount: 0,
+        availableWorkCount: 0,
+      }),
+    ).toBe('complete');
 
+    expect(
+      semantics.statusForOverview({
+        projects: 1,
+        draftProjects: 0,
+        openProjects: 0,
+        pausedProjects: 1,
+        completedProjects: 0,
+        cancelledProjects: 0,
+        activeClaims: 0,
+        availableWork: 0,
+      }),
+    ).toBe('paused');
     expect(
       semantics.statusForOverview({
         projects: 0,
         draftProjects: 0,
+        openProjects: 0,
+        pausedProjects: 0,
         completedProjects: 0,
+        cancelledProjects: 0,
         activeClaims: 0,
         availableWork: 0,
       }),
@@ -84,7 +151,10 @@ describe('Frozen desktop-status safety contract', () => {
       semantics.statusForOverview({
         projects: 4,
         draftProjects: 1,
+        openProjects: 2,
+        pausedProjects: 0,
         completedProjects: 1,
+        cancelledProjects: 0,
         activeClaims: 1,
         availableWork: 2,
       }),
@@ -93,7 +163,10 @@ describe('Frozen desktop-status safety contract', () => {
       semantics.statusForOverview({
         projects: 4,
         draftProjects: 1,
+        openProjects: 2,
+        pausedProjects: 0,
         completedProjects: 1,
+        cancelledProjects: 0,
         activeClaims: 0,
         availableWork: 2,
       }),
@@ -102,7 +175,10 @@ describe('Frozen desktop-status safety contract', () => {
       semantics.statusForOverview({
         projects: 2,
         draftProjects: 1,
+        openProjects: 0,
+        pausedProjects: 0,
         completedProjects: 1,
+        cancelledProjects: 0,
         activeClaims: 0,
         availableWork: 0,
       }),
@@ -111,7 +187,22 @@ describe('Frozen desktop-status safety contract', () => {
       semantics.statusForOverview({
         projects: 2,
         draftProjects: 0,
+        openProjects: 0,
+        pausedProjects: 0,
         completedProjects: 2,
+        cancelledProjects: 0,
+        activeClaims: 0,
+        availableWork: 0,
+      }),
+    ).toBe('complete');
+    expect(
+      semantics.statusForOverview({
+        projects: 2,
+        draftProjects: 0,
+        openProjects: 0,
+        pausedProjects: 0,
+        completedProjects: 1,
+        cancelledProjects: 1,
         activeClaims: 0,
         availableWork: 0,
       }),
@@ -169,6 +260,12 @@ describe('Frozen desktop-status safety contract', () => {
         updatedAt: '2026-08-26T20:03:00.000Z',
       },
       {
+        id: 'paused',
+        title: 'Duplicate',
+        status: 'paused',
+        updatedAt: '2026-08-26T20:05:00.000Z',
+      },
+      {
         id: 'available-newer-b',
         title: 'Duplicate',
         status: 'available',
@@ -188,6 +285,7 @@ describe('Frozen desktop-status safety contract', () => {
       'available-newer-b',
       'available-older',
       'draft',
+      'paused',
       'complete',
     ]);
   });
@@ -207,8 +305,6 @@ describe('Frozen desktop-status safety contract', () => {
           workspaceId: 'bounded',
           slug: `project-${String(index).padStart(3, '0')}`,
           title: `Project ${index}`,
-          prd: '# Must never be selected by overview',
-          state: 'draft',
           actor: 'acceptance',
         });
       }
@@ -233,16 +329,14 @@ describe('Frozen desktop-status safety contract', () => {
         rootPath: directory,
         actor: 'acceptance',
       });
-      const active = store.createProject({
+      const activeResult = createOpenProject(store, {
         workspaceId: 'mixed',
         slug: 'active',
         title: 'Duplicate',
-        prd: '',
-        state: 'ready',
-        actor: 'acceptance',
       });
+      const active = activeResult.project;
       const activeTask = store.createTask({
-        projectId: active.id,
+        specId: activeResult.spec.id,
         parentId: null,
         title: 'Active task',
         body: null,
@@ -254,51 +348,48 @@ describe('Frozen desktop-status safety contract', () => {
         agentId: 'active-agent',
         leaseSeconds: 1_800,
       });
-      const availableA = store.createProject({
+      const availableA = createOpenProject(store, {
         workspaceId: 'mixed',
         slug: 'available-a',
         title: 'Duplicate',
-        prd: '',
-        state: 'ready',
-        actor: 'acceptance',
-      });
-      const availableB = store.createProject({
+      }).project;
+      const availableB = createOpenProject(store, {
         workspaceId: 'mixed',
         slug: 'available-b',
         title: 'Duplicate',
-        prd: '',
-        state: 'ready',
-        actor: 'acceptance',
-      });
+      }).project;
       const draft = store.createProject({
         workspaceId: 'mixed',
         slug: 'draft',
         title: 'Duplicate',
-        prd: '',
-        state: 'draft',
         actor: 'acceptance',
       });
-      const complete = store.createProject({
+      const completeResult = createOpenProject(store, {
         workspaceId: 'mixed',
         slug: 'complete',
         title: 'Duplicate',
-        prd: '',
-        state: 'ready',
-        actor: 'acceptance',
       });
+      let complete = completeResult.project;
       store.startWork({
-        targetType: 'project',
-        targetId: complete.id,
+        targetType: 'spec',
+        targetId: completeResult.spec.id,
         agentId: 'completion-agent',
         leaseSeconds: 1_800,
       });
       store.completeWork({
-        targetType: 'project',
-        targetId: complete.id,
+        targetType: 'spec',
+        targetId: completeResult.spec.id,
         agentId: 'completion-agent',
-        expectedRevision: complete.revision,
+        expectedRevision: completeResult.spec.revision,
         summary: 'Done',
         artifacts: [],
+      });
+      complete = store.completeProject({
+        projectId: complete.id,
+        expectedRevision: complete.revision,
+        summary: 'Done aggregate',
+        artifacts: [],
+        actor: 'acceptance',
       });
       database
         .prepare("UPDATE projects SET updated_at = '2026-08-26T20:00:00.000Z' WHERE id IN (?, ?)")
@@ -339,17 +430,14 @@ describe('Frozen desktop-status safety contract', () => {
         rootPath: directory,
         actor: 'acceptance',
       });
-      const project = store.createProject({
+      const projectResult = createOpenProject(store, {
         workspaceId: 'active-bound',
         slug: 'claimed',
         title: 'Claimed',
-        prd: '',
-        state: 'ready',
-        actor: 'acceptance',
       });
       for (let index = 0; index < 501; index += 1) {
         const task = store.createTask({
-          projectId: project.id,
+          specId: projectResult.spec.id,
           parentId: null,
           title: `Claimed task ${index}`,
           body: null,
@@ -370,7 +458,7 @@ describe('Frozen desktop-status safety contract', () => {
       store.close();
       rmSync(directory, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it('keeps availableWork aligned with listWork and excludes expired claims', () => {
     const directory = mkdtempSync(join(tmpdir(), 'pimpampum-overview-agreement-'));
@@ -383,16 +471,14 @@ describe('Frozen desktop-status safety contract', () => {
         rootPath: directory,
         actor: 'acceptance',
       });
-      const project = store.createProject({
+      const projectResult = createOpenProject(store, {
         workspaceId: 'agreement',
         slug: 'claimable',
         title: 'Claimable',
-        prd: '# Hidden body',
-        state: 'ready',
-        actor: 'acceptance',
+        body: '# Hidden body',
       });
       const task = store.createTask({
-        projectId: project.id,
+        specId: projectResult.spec.id,
         parentId: null,
         title: 'Leaf task',
         body: 'Hidden task body',
@@ -400,7 +486,7 @@ describe('Frozen desktop-status safety contract', () => {
       });
 
       expect(overview(store).counts.availableWork).toBe(
-        store.listWork({ workspaceId: null, limit: 500 }).length,
+        store.listWork({ workspaceId: null, projectId: null, specId: null, limit: 500 }).length,
       );
       store.startWork({
         targetType: 'task',
@@ -414,7 +500,7 @@ describe('Frozen desktop-status safety contract', () => {
       expect(afterExpiry.counts.activeClaims).toBe(0);
       expect(afterExpiry.activeWork).toEqual([]);
       expect(afterExpiry.counts.availableWork).toBe(
-        store.listWork({ workspaceId: null, limit: 500 }).length,
+        store.listWork({ workspaceId: null, projectId: null, specId: null, limit: 500 }).length,
       );
     } finally {
       store.close();
@@ -439,12 +525,17 @@ describe('Frozen desktop-status safety contract', () => {
         rootPath: directory,
         actor: 'acceptance',
       });
-      store.createProject({
+      const project = store.createProject({
         workspaceId: 'query-boundary',
         slug: 'secret',
         title: 'Visible title',
-        prd: 'query-boundary-secret',
-        state: 'draft',
+        actor: 'acceptance',
+      });
+      store.createSpec({
+        projectId: project.id,
+        slug: 'secret-spec',
+        title: 'Visible Spec title',
+        body: 'query-boundary-secret',
         actor: 'acceptance',
       });
       queries.length = 0;

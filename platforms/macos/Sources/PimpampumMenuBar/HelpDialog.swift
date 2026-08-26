@@ -21,7 +21,7 @@ enum HelpDialogCopy {
     HelpDialogItem(
       id: "projects",
       systemImage: "doc.text",
-      text: "Projects contain a PRD, tasks, and optional subtasks."
+      text: "Projects contain Specs; Specs may contain tasks and optional subtasks."
     ),
     HelpDialogItem(
       id: "agents",

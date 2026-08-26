@@ -39,6 +39,7 @@ struct PimpampumMarkTests {
       (.available, .availableDiamond),
       (.draft, .draftRing),
       (.complete, .completionCheck),
+      (.cancelled, .cancellationX),
       (.empty, .emptyRing),
       (.stale, .disconnected),
       (.offline, .disconnected),

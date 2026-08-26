@@ -11,12 +11,21 @@ function fixture() {
     registerWorkspace: vi.fn(async (input: unknown) => input),
     listWork: vi.fn(async () => []),
     startWork: vi.fn(async (input: unknown) => input),
+    renewWork: vi.fn(async (input: unknown) => input),
     releaseWork: vi.fn(async () => undefined),
     completeWork: vi.fn(async (input: unknown) => input),
     createProject: vi.fn(async (input: unknown) => input),
     getProject: vi.fn(async (id: string) => ({ id })),
     updateProject: vi.fn(async (input: unknown) => input),
+    completeProject: vi.fn(async (input: unknown) => input),
+    cancelProject: vi.fn(async (input: unknown) => input),
+    createSpec: vi.fn(async (input: unknown) => input),
+    getSpec: vi.fn(async (id: string) => ({ id })),
+    updateSpec: vi.fn(async (input: unknown) => input),
+    cancelSpec: vi.fn(async (input: unknown) => input),
     createTask: vi.fn(async (input: unknown) => input),
+    getTask: vi.fn(async (id: string) => ({ id })),
+    cancelTask: vi.fn(async (input: unknown) => input),
     backup: vi.fn(async (directory: string) => ({ path: directory })),
     getAutomaticBackupStatus: vi.fn(async () => ({ state: 'disabled', enabled: false })),
     configureAutomaticBackup: vi.fn(async (directory: string) => ({
@@ -69,7 +78,7 @@ function fixture() {
       uninstall: vi.fn(async () => ({ uninstalled: true, dataPreserved: true as const })),
     },
     startServer: vi.fn(async () => ({ config: { baseUrl: 'http://127.0.0.1:7337' }, close })),
-    readFile: vi.fn(() => '# PRD'),
+    readFile: vi.fn(() => '# Spec'),
     readStdin: vi.fn(() => '{}'),
     resolvePath: (path) => `/resolved/${path}`,
     stdout: (text) => output.push(text),
@@ -93,16 +102,30 @@ describe('CLI program', () => {
       ['workspace:add', 'ws', 'Workspace', 'root'],
       ['work:list'],
       ['work:list', 'ws'],
+      ['work:list', 'ws', 'project-id', 'spec-id'],
+      ['work:start', 'spec', 'spec-id', 'agent'],
       ['work:start', 'task', 'task-id', 'agent'],
-      ['work:release', 'project', 'project-id', 'agent'],
+      ['work:renew', 'spec', 'spec-id', 'agent'],
+      ['work:release', 'spec', 'spec-id', 'agent'],
       ['work:release', 'task', 'task-id', 'agent', 'handoff'],
       ['work:complete', 'task', 'task-id', 'agent', '2', 'done'],
       ['project:create', 'ws', 'slug', 'Title'],
-      ['project:create', 'ws', 'slug', 'Title', 'prd.md'],
       ['project:get', 'project-id'],
-      ['project:ready', 'project-id', '3'],
-      ['task:create', 'project-id', 'Task'],
-      ['task:create', 'project-id', 'Subtask', 'parent-id'],
+      ['project:draft', 'project-id', '2'],
+      ['project:open', 'project-id', '3'],
+      ['project:pause', 'project-id', '4'],
+      ['project:complete', 'project-id', '5', 'Outcome shipped'],
+      ['project:cancel', 'project-id', '5', 'Outcome abandoned'],
+      ['spec:create', 'project-id', 'feature', 'Feature'],
+      ['spec:create', 'project-id', 'feature-with-body', 'Feature with body', 'spec.md'],
+      ['spec:get', 'spec-id'],
+      ['spec:draft', 'spec-id', '2'],
+      ['spec:ready', 'spec-id', '3'],
+      ['spec:cancel', 'spec-id', '4', 'No longer required'],
+      ['task:create', 'spec-id', 'Task'],
+      ['task:create', 'spec-id', 'Subtask', 'parent-id'],
+      ['task:get', 'task-id'],
+      ['task:cancel', 'task-id', '2', 'Superseded'],
       ['backup', 'backups'],
       ['backup', 'status', '--json'],
       ['backup', 'configure', 'cloud backup', '--json'],
@@ -113,11 +136,20 @@ describe('CLI program', () => {
     for (const command of commands) await runCli(command, state.runtime);
 
     expect(state.output).toHaveLength(commands.length);
-    expect(state.client.startWork).toHaveBeenCalledWith(
-      expect.objectContaining({ targetType: 'task', leaseSeconds: 1_800 }),
+    expect(state.client.listWork).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      projectId: 'project-id',
+      specId: 'spec-id',
+      limit: 50,
+    });
+    expect(state.client.renewWork).toHaveBeenCalledWith(
+      expect.objectContaining({ targetType: 'spec', leaseSeconds: 1_800 }),
     );
     expect(state.client.createProject).toHaveBeenCalledWith(
-      expect.objectContaining({ prd: '# PRD' }),
+      expect.not.objectContaining({ prd: expect.anything() }),
+    );
+    expect(state.client.createSpec).toHaveBeenCalledWith(
+      expect.objectContaining({ body: '# Spec' }),
     );
     expect(state.client.createTask).toHaveBeenCalledWith(
       expect.objectContaining({ parentId: 'parent-id' }),
@@ -206,11 +238,9 @@ describe('CLI program', () => {
     await expect(
       runCli(['work:complete', 'task', 'target', 'agent', 'nope', 'done'], validation.runtime),
     ).rejects.toThrow('exit:1');
-    await expect(runCli(['project:ready', 'project', '0'], validation.runtime)).rejects.toThrow(
-      'exit:1',
-    );
+    await expect(runCli(['spec:ready', 'spec', '0'], validation.runtime)).rejects.toThrow('exit:1');
     expect(validation.errors.join('\n')).toContain('Missing workspace id');
-    expect(validation.errors.join('\n')).toContain('Target type must be project or task');
+    expect(validation.errors.join('\n')).toContain('Target type must be spec or task');
     expect(validation.errors.join('\n')).toContain('Revision must be a positive integer');
   });
 

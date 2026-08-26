@@ -22,17 +22,23 @@ BarWidget {
   readonly property string themeFont: bar ? bar.fontFamily : "monospace"
   readonly property string barPosition: bar ? bar.position : "top"
   readonly property real inheritedBarSize: bar ? bar.barSize : 26
+  readonly property bool hasCancellations: service.overview
+    && service.overview.counts.cancelledProjects > 0
+  readonly property string displayStatus: service.effectiveStatus === "complete" && hasCancellations
+    ? "cancelled" : service.effectiveStatus
   readonly property string baseStatusLabel: ({
         "active": "Active work",
         "available": "Work available",
         "complete": "All complete",
+        "cancelled": "Finished with cancellations",
         "draft": "Drafts only",
+        "paused": "Projects paused",
         "empty": "No projects",
         "offline": "Offline",
         "credentials": "Credentials rejected",
         "invalid": "Invalid response",
         "incompatible": "Incompatible version"
-      }[service.effectiveStatus] || "Unavailable")
+      }[displayStatus] || "Unavailable")
   readonly property string statusLabel: service.stale
     ? "Stale · " + baseStatusLabel
     : baseStatusLabel
@@ -72,7 +78,7 @@ BarWidget {
   PimpampumMark {
     id: indicator
     anchors.centerIn: parent
-    status: service.effectiveStatus
+    status: root.displayStatus
     statusLabel: root.statusLabel
     stale: service.stale
     vertical: root.isVertical

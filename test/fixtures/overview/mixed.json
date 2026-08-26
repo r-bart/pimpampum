@@ -1,5 +1,5 @@
 {
-  "meta": { "schemaVersion": 1 },
+  "meta": { "schemaVersion": 2 },
   "data": {
     "daemon": {
       "version": "0.1.0",
@@ -10,14 +10,18 @@
     "status": "active",
     "counts": {
       "workspaces": 1,
-      "projects": 4,
+      "projects": 6,
+      "specs": 7,
       "draftProjects": 1,
-      "readyProjects": 2,
+      "openProjects": 2,
+      "pausedProjects": 1,
       "completedProjects": 1,
+      "cancelledProjects": 1,
       "openTasks": 2,
-      "completedTasks": 1,
-      "activeClaims": 1,
-      "availableWork": 2
+      "completedTasks": 2,
+      "cancelledTasks": 1,
+      "activeClaims": 2,
+      "availableWork": 1
     },
     "projects": [
       {
@@ -29,12 +33,13 @@
         },
         "slug": "active",
         "title": "Active project",
-        "lifecycleState": "ready",
+        "lifecycleState": "open",
         "status": "active",
+        "specCount": 2,
         "openTaskCount": 1,
         "completedTaskCount": 0,
-        "activeClaimCount": 1,
-        "availableWorkCount": 1,
+        "activeClaimCount": 2,
+        "availableWorkCount": 0,
         "updatedAt": "2026-08-26T20:01:00.000Z"
       },
       {
@@ -46,8 +51,9 @@
         },
         "slug": "available",
         "title": "Available project",
-        "lifecycleState": "ready",
+        "lifecycleState": "open",
         "status": "available",
+        "specCount": 1,
         "openTaskCount": 1,
         "completedTaskCount": 0,
         "activeClaimCount": 0,
@@ -65,11 +71,30 @@
         "title": "Draft project",
         "lifecycleState": "draft",
         "status": "draft",
+        "specCount": 1,
         "openTaskCount": 0,
         "completedTaskCount": 0,
         "activeClaimCount": 0,
         "availableWorkCount": 0,
         "updatedAt": "2026-08-26T20:00:40.000Z"
+      },
+      {
+        "id": "project-paused",
+        "workspace": {
+          "id": "projects",
+          "name": "100 Projects",
+          "rootPath": "/Users/example/100 Projects"
+        },
+        "slug": "paused",
+        "title": "Paused project",
+        "lifecycleState": "paused",
+        "status": "paused",
+        "specCount": 1,
+        "openTaskCount": 0,
+        "completedTaskCount": 0,
+        "activeClaimCount": 0,
+        "availableWorkCount": 0,
+        "updatedAt": "2026-08-26T20:00:35.000Z"
       },
       {
         "id": "project-complete",
@@ -82,11 +107,30 @@
         "title": "Completed project",
         "lifecycleState": "done",
         "status": "complete",
+        "specCount": 1,
         "openTaskCount": 0,
-        "completedTaskCount": 1,
+        "completedTaskCount": 2,
         "activeClaimCount": 0,
         "availableWorkCount": 0,
         "updatedAt": "2026-08-26T20:00:30.000Z"
+      },
+      {
+        "id": "project-cancelled",
+        "workspace": {
+          "id": "projects",
+          "name": "100 Projects",
+          "rootPath": "/Users/example/100 Projects"
+        },
+        "slug": "cancelled",
+        "title": "Cancelled project",
+        "lifecycleState": "cancelled",
+        "status": "complete",
+        "specCount": 1,
+        "openTaskCount": 0,
+        "completedTaskCount": 0,
+        "activeClaimCount": 0,
+        "availableWorkCount": 0,
+        "updatedAt": "2026-08-26T20:00:20.000Z"
       }
     ],
     "projectsTruncated": false,
@@ -97,10 +141,25 @@
         "workspaceId": "projects",
         "projectId": "project-active",
         "projectTitle": "Active project",
+        "specId": "spec-with-task",
+        "specTitle": "Desktop status",
         "taskId": "task-active",
         "taskTitle": "Current work",
-        "agentId": "codex",
+        "agentId": "codex-task",
         "expiresAt": "2026-08-26T20:31:00.000Z"
+      },
+      {
+        "targetType": "spec",
+        "targetId": "spec-direct",
+        "workspaceId": "projects",
+        "projectId": "project-active",
+        "projectTitle": "Active project",
+        "specId": "spec-direct",
+        "specTitle": "Release integration",
+        "taskId": null,
+        "taskTitle": null,
+        "agentId": "codex-spec",
+        "expiresAt": "2026-08-26T20:21:00.000Z"
       }
     ],
     "activeWorkTruncated": false

@@ -43,12 +43,13 @@ describe('Automatic service and desktop status integrations', () => {
           .set('authorization', `Bearer ${token}`)
           .expect(200);
 
-        expect(response.body.meta.schemaVersion).toBe(1);
+        expect(response.body.meta.schemaVersion).toBe(2);
         expect(response.body.data).toMatchObject({
           status: 'empty',
           counts: {
             workspaces: 0,
             projects: 0,
+            specs: 0,
             activeClaims: 0,
             availableWork: 0,
           },
@@ -74,16 +75,36 @@ describe('Automatic service and desktop status integrations', () => {
         rootPath: directory,
         actor: 'acceptance',
       });
-      const project = store.createProject({
+      let project = store.createProject({
         workspaceId: 'vcomp',
         slug: 'agent-runtime',
         title: 'Agent runtime',
-        prd: '# Private PRD body',
+        actor: 'acceptance',
+      });
+      let spec = store.createSpec({
+        projectId: project.id,
+        slug: 'runtime-status',
+        title: 'Runtime status',
+        body: '# Private Spec body',
+        actor: 'acceptance',
+      });
+      spec = store.updateSpec({
+        specId: spec.id,
+        title: null,
+        body: null,
         state: 'ready',
+        expectedRevision: spec.revision,
+        actor: 'acceptance',
+      });
+      project = store.updateProject({
+        projectId: project.id,
+        title: null,
+        state: 'open',
+        expectedRevision: project.revision,
         actor: 'acceptance',
       });
       const task = store.createTask({
-        projectId: project.id,
+        specId: spec.id,
         parentId: null,
         title: 'Implement runtime status',
         body: 'Private task body',
@@ -112,11 +133,13 @@ describe('Automatic service and desktop status integrations', () => {
         });
         expect(response.body.data.activeWork[0]).toMatchObject({
           projectId: project.id,
+          specId: spec.id,
+          specTitle: 'Runtime status',
           targetId: task.id,
           agentId: 'codex-night-shift',
           taskTitle: 'Implement runtime status',
         });
-        expect(JSON.stringify(response.body.data)).not.toContain('Private PRD body');
+        expect(JSON.stringify(response.body.data)).not.toContain('Private Spec body');
         expect(JSON.stringify(response.body.data)).not.toContain('Private task body');
       } finally {
         await composition.close();
@@ -135,27 +158,54 @@ describe('Automatic service and desktop status integrations', () => {
         rootPath: directory,
         actor: 'acceptance',
       });
-      const project = store.createProject({
+      let project = store.createProject({
         workspaceId: 'finished',
         slug: 'shipped',
         title: 'Shipped project',
-        prd: '# Shipped',
+        actor: 'acceptance',
+      });
+      let spec = store.createSpec({
+        projectId: project.id,
+        slug: 'shipped-spec',
+        title: 'Shipped Spec',
+        body: '# Shipped',
+        actor: 'acceptance',
+      });
+      spec = store.updateSpec({
+        specId: spec.id,
+        title: null,
+        body: null,
         state: 'ready',
+        expectedRevision: spec.revision,
+        actor: 'acceptance',
+      });
+      project = store.updateProject({
+        projectId: project.id,
+        title: null,
+        state: 'open',
+        expectedRevision: project.revision,
         actor: 'acceptance',
       });
       store.startWork({
-        targetType: 'project',
-        targetId: project.id,
+        targetType: 'spec',
+        targetId: spec.id,
         agentId: 'delivery-agent',
         leaseSeconds: 60,
       });
       store.completeWork({
-        targetType: 'project',
-        targetId: project.id,
+        targetType: 'spec',
+        targetId: spec.id,
         agentId: 'delivery-agent',
-        expectedRevision: project.revision,
+        expectedRevision: spec.revision,
         summary: 'Delivered',
         artifacts: [],
+      });
+      project = store.completeProject({
+        projectId: project.id,
+        expectedRevision: project.revision,
+        summary: 'Delivered aggregate',
+        artifacts: [],
+        actor: 'acceptance',
       });
       const composition = createHttpApp(store, config(directory));
       try {
@@ -315,15 +365,34 @@ describe('Automatic service and desktop status integrations', () => {
       expect(plist).toContain('<true/>');
     });
 
-    it('US-3/AC-4: collapses completed projects and keeps the macOS UI read-only', () => {
+    it('US-3/AC-4: separates completed and cancelled projects and keeps the macOS UI read-only', () => {
       // Spec: US-3/AC-4, FR-5
       const popover = readFileSync(
         join(process.cwd(), 'platforms/macos/Sources/PimpampumMenuBar/StatusPopover.swift'),
         'utf8',
       );
+      const presentation = readFileSync(
+        join(process.cwd(), 'platforms/macos/Sources/PimpampumMenuBar/StatusPresentation.swift'),
+        'utf8',
+      );
+      const overviewStore = readFileSync(
+        join(process.cwd(), 'platforms/macos/Sources/PimpampumMenuBar/OverviewStore.swift'),
+        'utf8',
+      );
 
       expect(popover).toContain('Completed');
-      expect(popover).toMatch(/DisclosureGroup|isCompletedExpanded/);
+      expect(popover).toContain('Cancelled');
+      expect(popover).toContain('work.specTitle');
+      expect(popover).not.toMatch(/uptimeSeconds|\bsecs?\b/);
+      expect(popover).toContain('isCompletedExpanded');
+      expect(popover).toContain('isCancelledExpanded');
+      expect(overviewStore).toContain('$0.lifecycleState == .done');
+      expect(overviewStore).toContain('$0.lifecycleState == .cancelled');
+      expect(presentation).toContain('case .cancellationX: "xmark.circle.fill"');
+      expect(presentation).toContain('case .cancelled: .cancellationX');
+      expect(presentation).toContain(
+        'case .loading, .draft, .paused, .cancelled, .empty: .secondary',
+      );
       expect(popover).not.toMatch(/work_complete|project_update|task_update|DELETE|PATCH|POST/);
     });
 
@@ -351,7 +420,7 @@ describe('Automatic service and desktop status integrations', () => {
       });
     });
 
-    it('US-3/FR-4: uses native popout coordination, active count and completed disclosure', () => {
+    it('US-3/FR-4: uses native popout coordination, active count, and terminal disclosures', () => {
       // Spec: US-2/AC-2, US-3/AC-4, FR-4
       const widget = readFileSync(
         join(process.cwd(), 'integrations/omarchy/pimpampum-status/BarWidget.qml'),
@@ -365,6 +434,8 @@ describe('Automatic service and desktop status integrations', () => {
       expect(widget).toContain('requestPopout');
       expect(widget).toMatch(/activeClaims|activeClaim/);
       expect(popout).toContain('Completed');
+      expect(popout).toContain('Cancelled');
+      expect(popout).toContain('root.cancelledProjects');
       expect(popout).not.toMatch(/work_complete|project_update|task_update/);
     });
 

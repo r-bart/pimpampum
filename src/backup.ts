@@ -17,7 +17,11 @@ import type {
   ContextDocument,
   ContextManifest,
   Project,
+  ProjectManifest,
   ProjectState,
+  Spec,
+  SpecManifest,
+  SpecState,
   Task,
   TaskManifest,
   Workspace,
@@ -25,24 +29,68 @@ import type {
 
 interface PortableExportSource {
   listWorkspaces(): Workspace[];
-  listProjects(input: {
+  listProjectManifests(input: {
     workspaceId: string | null;
     state: ProjectState | null;
     limit: number;
     offset: number;
-  }): Project[];
-  listTaskManifests(input: { projectId: string; limit: number; offset: number }): TaskManifest[];
+  }): ProjectManifest[];
+  getProject(projectId: string): Project;
+  listSpecManifests(input: {
+    projectId: string;
+    state: SpecState | null;
+    limit: number;
+    offset: number;
+  }): SpecManifest[];
+  getSpec(specId: string): Spec;
+  listTaskManifests(input: { specId: string; limit: number; offset: number }): TaskManifest[];
   getTask(taskId: string): Task;
   listContextManifests(input: {
-    projectId: string;
+    ownerType: 'workspace' | 'project';
+    ownerId: string;
     limit: number;
     offset: number;
   }): ContextManifest[];
-  readContext(projectId: string, name: string): ContextDocument;
+  readContext(ownerType: 'workspace' | 'project', ownerId: string, name: string): ContextDocument;
 }
 
 const PROJECT_EXPORT_PAGE_SIZE = 10;
 const COLLECTION_EXPORT_PAGE_SIZE = 100;
+
+function writeContextExport(
+  source: PortableExportSource,
+  ownerType: 'workspace' | 'project',
+  ownerId: string,
+  ownerPath: string,
+): void {
+  const contextPath = join(ownerPath, 'context');
+  mkdirSync(contextPath, { recursive: true });
+  const metadataPath = join(ownerPath, 'context.json');
+  writeFileSync(metadataPath, '[\n');
+  let offset = 0;
+  let firstDocument = true;
+  while (true) {
+    const manifests = source.listContextManifests({
+      ownerType,
+      ownerId,
+      limit: COLLECTION_EXPORT_PAGE_SIZE,
+      offset,
+    });
+    for (const manifest of manifests) {
+      const document = source.readContext(ownerType, ownerId, manifest.name);
+      const { body: _body, ...metadata } = document;
+      appendFileSync(
+        metadataPath,
+        `${firstDocument ? '' : ',\n'}${JSON.stringify(metadata, null, 2)}`,
+      );
+      firstDocument = false;
+      writeFileSync(join(contextPath, `${document.name}.md`), document.body);
+    }
+    if (manifests.length < COLLECTION_EXPORT_PAGE_SIZE) break;
+    offset += manifests.length;
+  }
+  appendFileSync(metadataPath, '\n]\n');
+}
 
 function safeTimestamp(): string {
   return new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
@@ -135,81 +183,81 @@ export function exportPortable(source: PortableExportSource, destinationDirector
     const workspaces = source.listWorkspaces();
     writeFileSync(
       join(partialPath, 'manifest.json'),
-      `${JSON.stringify({ schemaVersion: 1, exportedAt }, null, 2)}\n`,
+      `${JSON.stringify({ schemaVersion: 2, exportedAt }, null, 2)}\n`,
     );
     writeFileSync(join(partialPath, 'workspaces.json'), `${JSON.stringify(workspaces, null, 2)}\n`);
 
     for (const workspace of workspaces) {
-      const workspacePath = join(partialPath, 'projects', workspace.id);
+      const workspacePath = join(partialPath, 'workspaces', workspace.id);
       mkdirSync(workspacePath, { recursive: true });
+      writeContextExport(source, 'workspace', workspace.id, workspacePath);
+      const projectsPath = join(workspacePath, 'projects');
+      mkdirSync(projectsPath, { recursive: true });
       let offset = 0;
       while (true) {
-        const projects = source.listProjects({
+        const projectManifests = source.listProjectManifests({
           workspaceId: workspace.id,
           state: null,
           limit: PROJECT_EXPORT_PAGE_SIZE,
           offset,
         });
-        for (const project of projects) {
-          const projectPath = join(workspacePath, project.slug);
-          const contextPath = join(projectPath, 'context');
-          mkdirSync(contextPath, { recursive: true });
-          const { prd: _prd, claim: _claim, ...metadata } = project;
-          writeFileSync(
-            join(projectPath, 'project.json'),
-            `${JSON.stringify(metadata, null, 2)}\n`,
-          );
-          writeFileSync(join(projectPath, 'prd.md'), project.prd);
-          const tasksPath = join(projectPath, 'tasks.json');
-          writeFileSync(tasksPath, '[\n');
-          let taskOffset = 0;
-          let firstTask = true;
-          while (true) {
-            const taskManifests = source.listTaskManifests({
-              projectId: project.id,
-              limit: COLLECTION_EXPORT_PAGE_SIZE,
-              offset: taskOffset,
-            });
-            for (const taskManifest of taskManifests) {
-              const { claim: _claim, ...task } = source.getTask(taskManifest.id);
-              appendFileSync(
-                tasksPath,
-                `${firstTask ? '' : ',\n'}${JSON.stringify(task, null, 2)}`,
-              );
-              firstTask = false;
-            }
-            if (taskManifests.length < COLLECTION_EXPORT_PAGE_SIZE) break;
-            taskOffset += taskManifests.length;
-          }
-          appendFileSync(tasksPath, '\n]\n');
+        for (const projectManifest of projectManifests) {
+          const project = source.getProject(projectManifest.id);
+          const projectPath = join(projectsPath, project.slug);
+          mkdirSync(projectPath, { recursive: true });
+          writeFileSync(join(projectPath, 'project.json'), `${JSON.stringify(project, null, 2)}\n`);
+          writeContextExport(source, 'project', project.id, projectPath);
 
-          const contextMetadataPath = join(projectPath, 'context.json');
-          writeFileSync(contextMetadataPath, '[\n');
-          let contextOffset = 0;
-          let firstDocument = true;
+          const specsPath = join(projectPath, 'specs');
+          mkdirSync(specsPath, { recursive: true });
+          let specOffset = 0;
           while (true) {
-            const contextManifests = source.listContextManifests({
+            const specManifests = source.listSpecManifests({
               projectId: project.id,
+              state: null,
               limit: COLLECTION_EXPORT_PAGE_SIZE,
-              offset: contextOffset,
+              offset: specOffset,
             });
-            for (const contextManifest of contextManifests) {
-              const document = source.readContext(project.id, contextManifest.name);
-              const { body: _body, ...metadata } = document;
-              appendFileSync(
-                contextMetadataPath,
-                `${firstDocument ? '' : ',\n'}${JSON.stringify(metadata, null, 2)}`,
+            for (const specManifest of specManifests) {
+              const spec = source.getSpec(specManifest.id);
+              const specPath = join(specsPath, spec.slug);
+              mkdirSync(specPath, { recursive: true });
+              const { body: _body, claim: _claim, ...specMetadata } = spec;
+              writeFileSync(
+                join(specPath, 'spec.json'),
+                `${JSON.stringify(specMetadata, null, 2)}\n`,
               );
-              firstDocument = false;
-              writeFileSync(join(contextPath, `${document.name}.md`), document.body);
+              writeFileSync(join(specPath, 'spec.md'), spec.body);
+
+              const tasksPath = join(specPath, 'tasks.json');
+              writeFileSync(tasksPath, '[\n');
+              let taskOffset = 0;
+              let firstTask = true;
+              while (true) {
+                const taskManifests = source.listTaskManifests({
+                  specId: spec.id,
+                  limit: COLLECTION_EXPORT_PAGE_SIZE,
+                  offset: taskOffset,
+                });
+                for (const taskManifest of taskManifests) {
+                  const { claim: _taskClaim, ...task } = source.getTask(taskManifest.id);
+                  appendFileSync(
+                    tasksPath,
+                    `${firstTask ? '' : ',\n'}${JSON.stringify(task, null, 2)}`,
+                  );
+                  firstTask = false;
+                }
+                if (taskManifests.length < COLLECTION_EXPORT_PAGE_SIZE) break;
+                taskOffset += taskManifests.length;
+              }
+              appendFileSync(tasksPath, '\n]\n');
             }
-            if (contextManifests.length < COLLECTION_EXPORT_PAGE_SIZE) break;
-            contextOffset += contextManifests.length;
+            if (specManifests.length < COLLECTION_EXPORT_PAGE_SIZE) break;
+            specOffset += specManifests.length;
           }
-          appendFileSync(contextMetadataPath, '\n]\n');
         }
-        if (projects.length < PROJECT_EXPORT_PAGE_SIZE) break;
-        offset += projects.length;
+        if (projectManifests.length < PROJECT_EXPORT_PAGE_SIZE) break;
+        offset += projectManifests.length;
       }
     }
     renameSync(partialPath, exportPath);

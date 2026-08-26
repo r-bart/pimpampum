@@ -1,5 +1,5 @@
 {
-  "meta": { "schemaVersion": 999 },
+  "meta": { "schemaVersion": 1 },
   "data": {
     "status": "unknown",
     "counts": null,

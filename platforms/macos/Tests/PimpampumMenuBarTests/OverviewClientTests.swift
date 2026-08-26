@@ -20,10 +20,17 @@ struct OverviewClientTests {
     let overview = try await client.fetchOverview()
 
     #expect(overview.status == .active)
-    #expect(overview.projects.map(\.status) == [.active, .available, .draft, .complete])
+    #expect(
+      overview.projects.map(\.status)
+        == [.active, .available, .draft, .paused, .complete, .complete]
+    )
+    #expect(overview.projects.last?.lifecycleState == .cancelled)
     #expect(overview.activeWork.first?.title == "Current work")
-    #expect(overview.activeWork.first?.id == "task:task-active:codex")
+    #expect(overview.activeWork.first?.id == "task:task-active:codex-task")
     #expect(overview.activeWork.first?.remainingSeconds(at: overview.generatedAt) == 1_770)
+    #expect(overview.activeWork.last?.targetType == .spec)
+    #expect(overview.activeWork.last?.title == "Release integration")
+    #expect(overview.activeWork.last?.taskId == nil)
     #expect(overview.daemon.startedAt == isoDate("2026-08-26T20:00:00.000Z"))
 
     let requests = await recorder.requests
@@ -132,11 +139,11 @@ struct OverviewClientTests {
     }
 
     let incompatible = makeClient(data: try fixtureData("invalid"))
-    await #expect(throws: OverviewClientError.incompatibleOverviewSchema(999)) {
+    await #expect(throws: OverviewClientError.incompatibleOverviewSchema(1)) {
       try await incompatible.fetchOverview()
     }
 
-    for data in [Data("not-json".utf8), Data(#"{"meta":{"schemaVersion":1}}"#.utf8)] {
+    for data in [Data("not-json".utf8), Data(#"{"meta":{"schemaVersion":2}}"#.utf8)] {
       let client = makeClient(data: data)
       await #expect(throws: OverviewClientError.invalidPayload) {
         try await client.fetchOverview()
@@ -185,19 +192,12 @@ struct OverviewClientTests {
   }
 
   @Test
-  func acceptsProjectLevelActiveWorkWithoutTaskFields() async throws {
-    var root = try JSONSerialization.jsonObject(with: fixtureData("mixed")) as! [String: Any]
-    var data = root["data"] as! [String: Any]
-    var work = data["activeWork"] as! [[String: Any]]
-    work[0]["targetType"] = "project"
-    work[0]["taskId"] = nil
-    work[0]["taskTitle"] = nil
-    data["activeWork"] = work
-    root["data"] = data
-
-    let payload = try JSONSerialization.data(withJSONObject: root)
-    #expect(
-      try await makeClient(data: payload).fetchOverview().activeWork.first?.targetType == .project)
+  func acceptsSpecLevelActiveWorkWithoutTaskFields() async throws {
+    let overview = try await makeClient(data: fixtureData("mixed")).fetchOverview()
+    let work = try #require(overview.activeWork.last)
+    #expect(work.targetType == .spec)
+    #expect(work.taskId == nil)
+    #expect(work.taskTitle == nil)
   }
 
   @Test
@@ -276,7 +276,7 @@ struct OverviewClientTests {
       data["activeWork"] = work
       root["data"] = data
     }
-    for key in ["targetId", "projectId", "agentId"] {
+    for key in ["targetId", "projectId", "specId", "agentId"] {
       mutations.append { root in
         var data = root["data"] as! [String: Any]
         var work = data["activeWork"] as! [[String: Any]]
@@ -296,6 +296,14 @@ struct OverviewClientTests {
       var data = root["data"] as! [String: Any]
       var work = data["activeWork"] as! [[String: Any]]
       work[0]["taskTitle"] = nil
+      data["activeWork"] = work
+      root["data"] = data
+    }
+    mutations.append { root in
+      var data = root["data"] as! [String: Any]
+      var work = data["activeWork"] as! [[String: Any]]
+      work[1]["taskId"] = "unexpected-task"
+      work[1]["taskTitle"] = "Unexpected task"
       data["activeWork"] = work
       root["data"] = data
     }

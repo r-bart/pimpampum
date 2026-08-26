@@ -9,7 +9,8 @@ const statusPrecedence: Record<OverviewProjectStatus, number> = {
   active: 0,
   available: 1,
   draft: 2,
-  complete: 3,
+  paused: 3,
+  complete: 4,
 };
 
 export function statusForProject(input: {
@@ -19,21 +20,30 @@ export function statusForProject(input: {
 }): OverviewProjectStatus {
   if (input.activeClaimCount > 0) return 'active';
   if (input.availableWorkCount > 0) return 'available';
-  return input.lifecycleState === 'done' ? 'complete' : 'draft';
+  if (input.lifecycleState === 'paused') return 'paused';
+  return input.lifecycleState === 'done' || input.lifecycleState === 'cancelled'
+    ? 'complete'
+    : 'draft';
 }
 
 export function statusForOverview(input: {
   projects: number;
   draftProjects: number;
+  openProjects: number;
+  pausedProjects: number;
   completedProjects: number;
+  cancelledProjects: number;
   activeClaims: number;
   availableWork: number;
 }): OverviewStatus {
   if (input.projects === 0) return 'empty';
   if (input.activeClaims > 0) return 'active';
   if (input.availableWork > 0) return 'available';
-  if (input.draftProjects > 0) return 'draft';
-  return input.completedProjects === input.projects ? 'complete' : 'draft';
+  if (input.draftProjects > 0 || input.openProjects > 0) return 'draft';
+  if (input.pausedProjects > 0) return 'paused';
+  return input.completedProjects + input.cancelledProjects === input.projects
+    ? 'complete'
+    : 'draft';
 }
 
 export function sortOverviewProjects(

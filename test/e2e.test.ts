@@ -8,24 +8,31 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { MAX_AGENT_INPUT_BYTES } from '../src/cliProgram.js';
 import type { AutomaticBackupStatus } from '../src/backupContract.js';
-import type { Overview, Project, Task, WorkBundle, WorkItem, Workspace } from '../src/types.js';
+import type {
+  ContextDocument,
+  Overview,
+  Project,
+  Spec,
+  Task,
+  WorkBundle,
+  WorkItem,
+  Workspace,
+} from '../src/types.js';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const compiledCli = join(repositoryRoot, 'dist', 'cli.js');
-const compiledMcpBridge = join(repositoryRoot, 'dist', 'mcpStdio.js');
+const compiledMcp = join(repositoryRoot, 'dist', 'mcpStdio.js');
 
 async function availablePort(): Promise<number> {
   return new Promise((resolvePort, reject) => {
@@ -35,7 +42,7 @@ async function availablePort(): Promise<number> {
       const address = server.address();
       if (address === null || typeof address === 'string') {
         server.close();
-        reject(new Error('Could not allocate an ephemeral TCP port'));
+        reject(new Error('Could not allocate a port'));
         return;
       }
       server.close((error) => (error ? reject(error) : resolvePort(address.port)));
@@ -45,66 +52,19 @@ async function availablePort(): Promise<number> {
 
 function executeCli<T>(environment: NodeJS.ProcessEnv, ...arguments_: string[]): Promise<T> {
   return new Promise((resolveResult, reject) => {
-    const cliProcess = spawn(process.execPath, [compiledCli, ...arguments_], {
+    const child = spawn(process.execPath, [compiledCli, ...arguments_], {
       cwd: repositoryRoot,
       env: environment,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
-    cliProcess.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    cliProcess.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    cliProcess.once('error', reject);
-    cliProcess.once('exit', (code, signal) => {
+    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+    child.once('error', reject);
+    child.once('exit', (code) => {
       if (code !== 0) {
-        reject(
-          new Error(
-            `CLI ${arguments_[0] ?? '<unknown>'} exited with code ${String(code)} and signal ${String(signal)}: ${stderr}`,
-          ),
-        );
-        return;
-      }
-      try {
-        const result: unknown = JSON.parse(stdout);
-        resolveResult(result as T);
-      } catch (error) {
-        reject(new Error(`CLI returned invalid JSON: ${stdout}`, { cause: error }));
-      }
-    });
-  });
-}
-
-function executeCliWithInput<T>(
-  environment: NodeJS.ProcessEnv,
-  input: string,
-  ...arguments_: string[]
-): Promise<T> {
-  return new Promise((resolveResult, reject) => {
-    const cliProcess = spawn(process.execPath, [compiledCli, ...arguments_], {
-      cwd: repositoryRoot,
-      env: environment,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    cliProcess.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    cliProcess.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    cliProcess.once('error', reject);
-    cliProcess.once('exit', (code, signal) => {
-      if (code !== 0) {
-        reject(
-          new Error(
-            `CLI ${arguments_[0] ?? '<unknown>'} exited with code ${String(code)} and signal ${String(signal)}: ${stderr}`,
-          ),
-        );
+        reject(new Error(`CLI ${arguments_[0] ?? ''} failed (${String(code)}): ${stderr}`));
         return;
       }
       try {
@@ -113,36 +73,6 @@ function executeCliWithInput<T>(
         reject(new Error(`CLI returned invalid JSON: ${stdout}`, { cause: error }));
       }
     });
-    cliProcess.stdin.end(input);
-  });
-}
-
-function executeCliFailure(
-  environment: NodeJS.ProcessEnv,
-  ...arguments_: string[]
-): Promise<{ code: number | null; stderr: string }> {
-  return new Promise((resolveResult, reject) => {
-    const cliProcess = spawn(process.execPath, [compiledCli, ...arguments_], {
-      cwd: repositoryRoot,
-      env: environment,
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
-    let stderr = '';
-    cliProcess.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    const timeout = setTimeout(() => {
-      cliProcess.kill('SIGKILL');
-      reject(new Error(`CLI ${arguments_[0] ?? '<unknown>'} did not exit after 5 seconds`));
-    }, 5_000);
-    cliProcess.once('error', (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    cliProcess.once('exit', (code) => {
-      clearTimeout(timeout);
-      resolveResult({ code, stderr });
-    });
   });
 }
 
@@ -150,9 +80,7 @@ async function stopDaemon(daemon: ChildProcess | undefined): Promise<void> {
   if (!daemon || daemon.exitCode !== null || daemon.signalCode !== null) return;
   daemon.kill('SIGTERM');
   await new Promise<void>((resolveExit) => {
-    const timeout = setTimeout(() => {
-      daemon.kill('SIGKILL');
-    }, 2_000);
+    const timeout = setTimeout(() => daemon.kill('SIGKILL'), 2_000);
     daemon.once('exit', () => {
       clearTimeout(timeout);
       resolveExit();
@@ -160,7 +88,13 @@ async function stopDaemon(daemon: ChildProcess | undefined): Promise<void> {
   });
 }
 
-describe.sequential('compiled product end to end', () => {
+interface Resource {
+  id: string;
+  revision: number;
+  state: string;
+}
+
+describe.sequential('compiled Domain Model v2 product end to end', () => {
   let daemon: ChildProcess | undefined;
   let environment: NodeJS.ProcessEnv;
   let temporaryDirectory: string;
@@ -168,7 +102,7 @@ describe.sequential('compiled product end to end', () => {
   let workspaceRoot: string;
   let exportRoot: string;
   let baseUrl: string;
-  const token = 'e2e-test-token'.repeat(4);
+  const token = 'compiled-v2-e2e-token'.repeat(3);
 
   async function startDaemon(): Promise<void> {
     daemon = spawn(process.execPath, [compiledCli, 'serve'], {
@@ -176,25 +110,18 @@ describe.sequential('compiled product end to end', () => {
       env: environment,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-
-    let daemonError = '';
-    daemon.stderr?.on('data', (chunk: Buffer) => {
-      daemonError += chunk.toString();
-    });
-
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      if (daemon.exitCode !== null) {
-        throw new Error(`Compiled daemon exited before becoming healthy: ${daemonError}`);
-      }
+    let stderr = '';
+    daemon.stderr?.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+    for (let attempt = 0; attempt < 60; attempt++) {
+      if (daemon.exitCode !== null) throw new Error(`Daemon exited during startup: ${stderr}`);
       try {
-        const response = await fetch(`${baseUrl}/health`);
-        if (response.ok) return;
+        if ((await fetch(`${baseUrl}/health`)).ok) return;
       } catch {
-        // The daemon is still binding its listener.
+        // The compiled daemon is still binding.
       }
       await delay(50);
     }
-    throw new Error(`Compiled daemon did not become healthy: ${daemonError}`);
+    throw new Error(`Daemon did not become healthy: ${stderr}`);
   }
 
   async function restartDaemon(): Promise<void> {
@@ -203,60 +130,70 @@ describe.sequential('compiled product end to end', () => {
     await startDaemon();
   }
 
-  async function api<T>(path: string, init: RequestInit = {}, expectedStatus = 200): Promise<T> {
+  async function raw(path: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(init.headers);
     headers.set('authorization', `Bearer ${token}`);
     if (init.body !== undefined) headers.set('content-type', 'application/json');
-    const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
-    const payload = (await response.json()) as { data?: T; error?: { code: string } };
-    if (response.status !== expectedStatus) {
+    return fetch(`${baseUrl}${path}`, { ...init, headers });
+  }
+
+  async function api<T>(path: string, init: RequestInit = {}, expected = 200): Promise<T> {
+    const response = await raw(path, init);
+    const payload = (await response.json()) as { data?: T; error?: unknown };
+    if (response.status !== expected) {
       throw new Error(
-        `Expected HTTP ${expectedStatus} from ${path}, received ${response.status}: ${JSON.stringify(payload)}`,
+        `${path}: expected ${expected}, got ${response.status}: ${JSON.stringify(payload)}`,
       );
     }
     return (payload.data ?? payload) as T;
   }
 
-  async function connectMcp(): Promise<Client> {
-    const stdioEnvironment = Object.fromEntries(
-      Object.entries(environment).filter(
-        (entry): entry is [string, string] => typeof entry[1] === 'string',
-      ),
+  const post = <T>(path: string, body: object, status = 200) =>
+    api<T>(path, { method: 'POST', body: JSON.stringify(body) }, status);
+  const put = <T>(path: string, body: object, status = 200) =>
+    api<T>(path, { method: 'PUT', body: JSON.stringify(body) }, status);
+  const patch = <T>(path: string, body: object) =>
+    api<T>(path, { method: 'PATCH', body: JSON.stringify(body) });
+
+  async function createProject(slug: string): Promise<Project> {
+    return post<Project>(
+      '/api/v1/projects',
+      { workspaceId: 'e2e-workspace', slug, title: slug },
+      201,
     );
-    const transport = new StdioClientTransport({
-      command: process.execPath,
-      args: [compiledMcpBridge],
-      env: stdioEnvironment,
-      cwd: repositoryRoot,
-      stderr: 'pipe',
-    });
-    const client = new Client(
-      { name: 'compiled-e2e', version: '0.1.0' },
-      { versionNegotiation: { mode: 'auto' } },
-    );
-    await client.connect(transport);
-    return client;
   }
 
-  const mcpData = <T>(result: Awaited<ReturnType<Client['callTool']>>): T => {
-    const block = result.content[0];
-    if (!block || block.type !== 'text') throw new Error('Expected an MCP text result');
-    return (JSON.parse(block.text) as { data: T }).data;
-  };
+  async function createSpec(projectId: string, slug: string, body = `# ${slug}`): Promise<Spec> {
+    return post<Spec>(`/api/v1/projects/${projectId}/specs`, { slug, title: slug, body }, 201);
+  }
+
+  async function ready(spec: Spec): Promise<Spec> {
+    return patch<Spec>(`/api/v1/specs/${spec.id}`, {
+      state: 'ready',
+      expectedRevision: spec.revision,
+      actor: 'e2e',
+    });
+  }
+
+  async function open(project: Project): Promise<Project> {
+    return patch<Project>(`/api/v1/projects/${project.id}`, {
+      state: 'open',
+      expectedRevision: project.revision,
+      actor: 'e2e',
+    });
+  }
 
   beforeAll(async () => {
-    if (!existsSync(compiledCli) || !existsSync(compiledMcpBridge)) {
-      throw new Error('Compiled entrypoints are missing. Run `npm run build` before the E2E test.');
+    if (!existsSync(compiledCli) || !existsSync(compiledMcp)) {
+      throw new Error('Run npm run build before E2E');
     }
-
-    temporaryDirectory = mkdtempSync(join(tmpdir(), 'pimpampum-e2e-'));
+    temporaryDirectory = mkdtempSync(join(tmpdir(), 'pimpampum-compiled-v2-'));
     dataDirectory = join(temporaryDirectory, 'data');
     workspaceRoot = join(temporaryDirectory, 'workspace');
     exportRoot = join(temporaryDirectory, 'exports');
     mkdirSync(workspaceRoot, { recursive: true });
-    workspaceRoot = realpathSync(workspaceRoot);
     mkdirSync(exportRoot, { recursive: true });
-
+    workspaceRoot = realpathSync(workspaceRoot);
     const port = await availablePort();
     baseUrl = `http://127.0.0.1:${port}`;
     environment = {
@@ -266,7 +203,6 @@ describe.sequential('compiled product end to end', () => {
       PIMPAMPUM_PORT: String(port),
       PIMPAMPUM_TOKEN: token,
     };
-
     await startDaemon();
   });
 
@@ -275,12 +211,8 @@ describe.sequential('compiled product end to end', () => {
     if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true });
   });
 
-  it('completes a project with a task and produces a portable export', async () => {
-    await expect(executeCli(environment, 'health')).resolves.toEqual({
-      status: 'ok',
-      version: '0.1.0',
-    });
-
+  it('executes the complete multi-Spec portfolio workflow through the compiled daemon', async () => {
+    expect(await executeCli(environment, 'health')).toEqual({ status: 'ok', version: '0.1.0' });
     const workspace = await executeCli<Workspace>(
       environment,
       'workspace:add',
@@ -288,655 +220,209 @@ describe.sequential('compiled product end to end', () => {
       'E2E Workspace',
       workspaceRoot,
     );
-    expect(workspace).toMatchObject({ id: 'e2e-workspace', rootPath: workspaceRoot });
+    expect(workspace.rootPath).toBe(workspaceRoot);
 
-    const stdioEnvironment = Object.fromEntries(
-      Object.entries(environment).filter(
-        (entry): entry is [string, string] => typeof entry[1] === 'string',
-      ),
+    const workspaceContext = await put<ContextDocument>(
+      `/api/v1/workspaces/${workspace.id}/context/architecture`,
+      { body: '# Shared architecture', expectedRevision: null, actor: 'e2e' },
     );
-    const mcpTransport = new StdioClientTransport({
-      command: process.execPath,
-      args: [compiledMcpBridge],
-      env: stdioEnvironment,
-      cwd: repositoryRoot,
-      stderr: 'pipe',
-    });
-    const mcpClient = new Client(
-      { name: 'compiled-e2e', version: '0.1.0' },
-      { versionNegotiation: { mode: 'auto' } },
+    let project = await createProject('multi-spec-workflow');
+    const projectContext = await put<ContextDocument>(
+      `/api/v1/projects/${project.id}/context/architecture`,
+      { body: '# Project architecture', expectedRevision: null, actor: 'e2e' },
     );
-    await mcpClient.connect(mcpTransport);
-    const mcpTools = await mcpClient.listTools();
-    expect(mcpTools.tools.map((tool) => tool.name)).toContain('project_list');
-    const mcpWorkspaces = await mcpClient.callTool({ name: 'workspace_list', arguments: {} });
-    const mcpData = <T>(result: Awaited<ReturnType<typeof mcpClient.callTool>>): T => {
-      const block = result.content[0];
-      if (!block || block.type !== 'text') throw new Error('Expected an MCP text result');
-      return (JSON.parse(block.text) as { data: T }).data;
-    };
-    expect(mcpData(mcpWorkspaces)).toMatchObject([{ id: workspace.id }]);
-
-    const prdPath = join(temporaryDirectory, 'prd.md');
-    writeFileSync(prdPath, '# E2E project\n\nShip the smallest complete workflow.\n');
-    const draftProject = await executeCli<Project>(
-      environment,
-      'project:create',
-      workspace.id,
-      'e2e-project',
-      'E2E Project',
-      prdPath,
-    );
-    expect(draftProject).toMatchObject({ state: 'draft', revision: 1 });
-    const mcpProjects = await mcpClient.callTool({
-      name: 'project_list',
-      arguments: { workspaceId: workspace.id },
-    });
-    const projectManifests = mcpData<{
-      items: Array<{ id: string; prd?: string; prdSizeBytes: number }>;
-    }>(mcpProjects).items;
-    expect(projectManifests).toMatchObject([
-      { id: draftProject.id, prdSizeBytes: Buffer.byteLength(draftProject.prd, 'utf8') },
+    expect([workspaceContext.ownerType, projectContext.ownerType]).toEqual([
+      'workspace',
+      'project',
     ]);
-    expect(projectManifests[0]?.prd).toBeUndefined();
-    await mcpClient.close();
 
-    const readyProject = await executeCli<Project>(
-      environment,
-      'project:ready',
-      draftProject.id,
-      String(draftProject.revision),
-    );
-    expect(readyProject).toMatchObject({ state: 'ready', revision: 2 });
-
-    const task = await executeCli<Task>(
-      environment,
-      'task:create',
-      draftProject.id,
-      'Verify the compiled workflow',
-    );
-    expect(task).toMatchObject({ projectId: draftProject.id, state: 'open', revision: 1 });
-
-    const taskWork = await executeCli<WorkItem[]>(environment, 'work:list', workspace.id);
-    expect(taskWork).toMatchObject([{ targetType: 'task', targetId: task.id }]);
-
-    const taskBundle = await executeCli<WorkBundle>(
-      environment,
-      'work:start',
-      'task',
-      task.id,
-      'e2e-agent',
-    );
-    expect(taskBundle).toMatchObject({
-      claim: { agentId: 'e2e-agent', targetType: 'task', targetId: task.id },
-      task: { id: task.id, revision: task.revision },
-    });
-    const activeOverview = await executeCli<Overview>(environment, 'overview');
-    expect(activeOverview.counts.activeClaims).toBeGreaterThan(0);
-    expect(activeOverview.activeWork).toContainEqual(
-      expect.objectContaining({ targetId: task.id, agentId: 'e2e-agent' }),
-    );
-
-    const completedTask = await executeCli<Task>(
-      environment,
-      'work:complete',
-      'task',
-      task.id,
-      'e2e-agent',
-      String(taskBundle.task?.revision),
-      'Compiled task workflow verified',
-    );
-    expect(completedTask).toMatchObject({
-      state: 'done',
-      completionSummary: 'Compiled task workflow verified',
-    });
-    const completedTaskOverview = await executeCli<Overview>(environment, 'overview');
-    expect(completedTaskOverview.activeWork).not.toContainEqual(
-      expect.objectContaining({ targetId: task.id }),
-    );
-
-    const projectWork = await executeCli<WorkItem[]>(environment, 'work:list', workspace.id);
-    expect(projectWork).toMatchObject([{ targetType: 'project', targetId: draftProject.id }]);
-
-    const projectBundle = await executeCli<WorkBundle>(
-      environment,
-      'work:start',
-      'project',
-      draftProject.id,
-      'e2e-agent',
-    );
-    const completedProject = await executeCli<Project>(
-      environment,
-      'work:complete',
-      'project',
-      draftProject.id,
-      'e2e-agent',
-      String(projectBundle.project.revision),
-      'Compiled project workflow verified',
-    );
-    expect(completedProject).toMatchObject({
-      state: 'done',
-      completionSummary: 'Compiled project workflow verified',
-    });
-
-    const exported = await executeCli<{ path: string }>(environment, 'export', exportRoot);
-    const projectExport = join(exported.path, 'projects', workspace.id, 'e2e-project');
-    expect(existsSync(join(projectExport, 'prd.md'))).toBe(true);
-    expect(readFileSync(join(projectExport, 'prd.md'), 'utf8')).toContain('# E2E project');
-    const exportedProject = JSON.parse(
-      readFileSync(join(projectExport, 'project.json'), 'utf8'),
-    ) as Project;
-    const exportedTasks = JSON.parse(
-      readFileSync(join(projectExport, 'tasks.json'), 'utf8'),
-    ) as Task[];
-    expect(exportedProject).toMatchObject({ id: draftProject.id, state: 'done' });
-    expect(exportedTasks).toMatchObject([{ id: task.id, state: 'done' }]);
-  }, 15_000);
-
-  it('lets a shell-only agent configure, discover and use every operation through MCP', async () => {
-    const effective = await executeCli<{
-      data: {
-        dataDirectory: string;
-        tokenPath: string | null;
-        tokenSource: 'environment' | 'file';
-        token?: string;
-        mcp: { streamableHttpUrl: string; stdio: { args: string[] } };
-      };
-    }>(environment, 'config');
-    expect(effective.data).toMatchObject({
-      dataDirectory,
-      tokenPath: null,
-      tokenSource: 'environment',
-      mcp: {
-        streamableHttpUrl: `${baseUrl}/mcp`,
-        stdio: { args: [compiledMcpBridge] },
-      },
-    });
-    expect(effective.data.token).toBeUndefined();
-
-    const fileTokenEnvironment = { ...environment };
-    delete fileTokenEnvironment.PIMPAMPUM_TOKEN;
-    fileTokenEnvironment.PIMPAMPUM_DATA_DIR = join(temporaryDirectory, 'file-token-config');
-    const fileTokenConfiguration = await executeCli<{
-      data: { tokenPath: string | null; tokenSource: string; token?: string };
-    }>(fileTokenEnvironment, 'config');
-    expect(fileTokenConfiguration.data).toMatchObject({
-      tokenPath: join(fileTokenEnvironment.PIMPAMPUM_DATA_DIR, 'token'),
-      tokenSource: 'file',
-    });
-    expect(fileTokenConfiguration.data.token).toBeUndefined();
-
-    const catalog = await executeCli<{
-      data: { tools: Array<{ name: string; inputSchema: object }> };
-    }>(environment, 'tools');
-    expect(catalog.data.tools.map((tool) => tool.name)).toEqual(
-      expect.arrayContaining([
-        'workspace_resolve',
-        'project_create',
-        'context_put',
-        'work_complete',
-      ]),
-    );
-    expect(catalog.data.tools.every((tool) => Object.keys(tool.inputSchema).length > 0)).toBe(true);
-
-    const workspaces = await executeCli<{ data: Workspace[] }>(
-      environment,
-      'call',
-      'workspace_list',
-    );
-    expect(workspaces.data).toContainEqual(expect.objectContaining({ id: 'e2e-workspace' }));
-
-    const project = await executeCli<{ data: { id: string; revision: number } }>(
-      environment,
-      'call',
-      'project_create',
-      '--input',
-      JSON.stringify({
-        workspaceId: 'e2e-workspace',
-        slug: 'agent-cli-e2e',
-        title: 'Agent CLI E2E',
-        prd: '# Agent CLI\n\nShell-only workflow 🚀',
-      }),
-    );
-    const context = await executeCliWithInput<{ data: { name: string; revision: number } }>(
-      environment,
-      JSON.stringify({
-        projectId: project.data.id,
-        name: 'agent-notes',
-        body: '# Notes\n\nCreated through standard input.',
-      }),
-      'call',
-      'context_put',
-      '--stdin',
-    );
-    expect(context.data).toMatchObject({ name: 'agent-notes', revision: 1 });
-
-    const multibyteBody = '🚀'.repeat(300_000);
-    const multibyteRequest = JSON.stringify({
-      projectId: project.data.id,
-      name: 'unicode-boundary',
-      body: multibyteBody,
-    });
-    expect(Buffer.byteLength(multibyteRequest, 'utf8')).toBeGreaterThan(1_100_000);
-    expect(Buffer.byteLength(multibyteRequest, 'utf8')).toBeLessThan(MAX_AGENT_INPUT_BYTES);
-    const multibyteContext = await executeCliWithInput<{
-      data: { name: string; sizeBytes: number };
-    }>(environment, multibyteRequest, 'call', 'context_put', '--stdin');
-    expect(multibyteContext.data).toMatchObject({
-      name: 'unicode-boundary',
-      sizeBytes: Buffer.byteLength(multibyteBody, 'utf8'),
-    });
-
-    const requestPath = join(temporaryDirectory, 'agent-cli-request.json');
-    writeFileSync(requestPath, JSON.stringify({ projectId: project.data.id, limit: 10 }));
-    const activity = await executeCli<{ data: Array<{ projectId: string }> }>(
-      environment,
-      'call',
-      'activity_list',
-      '--input-file',
-      requestPath,
-    );
-    expect(activity.data).toContainEqual(expect.objectContaining({ projectId: project.data.id }));
-
-    const rejected = await executeCliFailure(
-      environment,
-      'call',
-      'workspace_resolve',
-      '--input',
-      '{"path":"relative"}',
-    );
-    expect(rejected.code).toBe(1);
+    let direct = await ready(await createSpec(project.id, 'direct-spec'));
+    let decomposed = await ready(await createSpec(project.id, 'decomposed-spec'));
+    project = await open(project);
     expect(
-      JSON.parse(rejected.stderr) as { error: { code: string; suggestion: string } },
-    ).toMatchObject({ error: { code: 'bad_request', suggestion: expect.any(String) } });
+      await api<WorkItem[]>(`/api/v1/work?projectId=${project.id}&specId=${direct.id}`),
+    ).toMatchObject([{ targetType: 'spec', targetId: direct.id }]);
 
-    const oversizedRequestPath = join(temporaryDirectory, 'agent-cli-oversized-request.json');
-    writeFileSync(
-      oversizedRequestPath,
-      JSON.stringify({ body: 'x'.repeat(MAX_AGENT_INPUT_BYTES) }),
-    );
-    const oversized = await executeCliFailure(
-      environment,
-      'call',
-      'context_put',
-      '--input-file',
-      oversizedRequestPath,
-    );
-    expect(oversized.code).toBe(1);
-    expect(JSON.parse(oversized.stderr) as { error: { code: string } }).toMatchObject({
-      error: { code: 'payload_too_large' },
+    project = await patch<Project>(`/api/v1/projects/${project.id}`, {
+      state: 'paused',
+      expectedRevision: project.revision,
+      actor: 'e2e',
     });
+    expect(await api<WorkItem[]>(`/api/v1/work?projectId=${project.id}`)).toEqual([]);
+    project = await open(project);
 
-    const invalidUtf8RequestPath = join(temporaryDirectory, 'agent-cli-invalid-utf8.json');
-    writeFileSync(
-      invalidUtf8RequestPath,
-      Buffer.concat([Buffer.from('{"body":"'), Buffer.from([0xff]), Buffer.from('"}')]),
-    );
-    const invalidUtf8 = await executeCliFailure(
-      environment,
-      'call',
-      'context_put',
-      '--input-file',
-      invalidUtf8RequestPath,
-    );
-    expect(invalidUtf8.code).toBe(1);
+    const firstClaim = await put<WorkBundle>(`/api/v1/work/spec/${direct.id}/claim`, {
+      agentId: 'direct-agent',
+      leaseSeconds: 300,
+    });
+    expect(firstClaim).toMatchObject({
+      project: { id: project.id },
+      spec: { id: direct.id },
+      workspaceContext: { items: [{ name: 'architecture' }] },
+      projectContext: { items: [{ name: 'architecture' }] },
+    });
     expect(
-      JSON.parse(invalidUtf8.stderr) as { error: { code: string; message: string } },
-    ).toMatchObject({
-      error: { code: 'bad_request', message: 'Tool input must be valid UTF-8' },
+      (
+        await raw(`/api/v1/work/spec/${direct.id}/claim`, {
+          method: 'PUT',
+          body: JSON.stringify({ agentId: 'competitor', leaseSeconds: 300 }),
+        })
+      ).status,
+    ).toBe(409);
+    const renewed = await patch<{ expiresAt: string }>(`/api/v1/work/spec/${direct.id}/claim`, {
+      agentId: 'direct-agent',
+      leaseSeconds: 600,
     });
-
-    const invalidConfiguration = await executeCliFailure(
-      { ...environment, PIMPAMPUM_PORT: 'not-a-port' },
-      'config',
-    );
-    expect(invalidConfiguration.code).toBe(1);
-    expect(
-      JSON.parse(invalidConfiguration.stderr) as { error: { code: string; message: string } },
-    ).toMatchObject({
-      error: {
-        code: 'bad_request',
-        message: 'PIMPAMPUM_PORT must be an integer between 1 and 65535',
-      },
+    expect(new Date(renewed.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    await api(`/api/v1/work/spec/${direct.id}/claim`, {
+      method: 'DELETE',
+      body: JSON.stringify({ agentId: 'direct-agent', note: 'verified release' }),
     });
-  }, 20_000);
+    await put(`/api/v1/work/spec/${direct.id}/claim`, {
+      agentId: 'direct-agent',
+      leaseSeconds: 300,
+    });
+    direct = await post<Spec>(`/api/v1/work/spec/${direct.id}/complete`, {
+      agentId: 'direct-agent',
+      expectedRevision: direct.revision,
+      summary: 'Direct Spec delivered',
+      artifacts: [{ label: 'commit', uri: 'git:direct' }],
+    });
+    expect(direct.state).toBe('done');
 
-  it('manages project, PRD and contextual Markdown through the compiled MCP bridge', async () => {
-    const client = await connectMcp();
-    const call = (name: string, arguments_: Record<string, unknown>) =>
-      client.callTool({ name, arguments: arguments_ });
-    try {
-      const project = mcpData<{ id: string; revision: number; state: string }>(
-        await call('project_create', {
-          workspaceId: 'e2e-workspace',
-          slug: 'prd-context-lifecycle',
-          title: 'PRD context lifecycle',
-          prd: '# Initial PRD 😀\n\nAgent-readable outcome.',
-        }),
-      );
-      expect(project).toMatchObject({ state: 'draft', revision: 1 });
-
-      const firstPage = mcpData<{ body: string; hasMore: boolean; totalCodeUnits: number }>(
-        await call('project_read_prd', {
-          projectId: project.id,
-          offsetCodeUnits: 0,
-          limitCodeUnits: 8,
-        }),
-      );
-      expect(firstPage).toMatchObject({ body: '# Initia', hasMore: true });
-      expect(firstPage.totalCodeUnits).toBeGreaterThan(firstPage.body.length);
-
-      const ready = mcpData<{ revision: number; title: string; state: string }>(
-        await call('project_update', {
-          projectId: project.id,
-          title: 'PRD and context lifecycle',
-          state: 'ready',
-          expectedRevision: project.revision,
-          actor: 'e2e-mcp-agent',
-        }),
-      );
-      expect(ready).toMatchObject({ title: 'PRD and context lifecycle', state: 'ready' });
-
-      const updatedPrd = mcpData<{ revision: number; prdSizeBytes: number }>(
-        await call('project_update_prd', {
-          projectId: project.id,
-          prd: '# Updated PRD\n\nThis is the canonical outcome.',
-          expectedRevision: ready.revision,
-          actor: 'e2e-mcp-agent',
-        }),
-      );
-      expect(updatedPrd.revision).toBe(ready.revision + 1);
-      expect(updatedPrd.prdSizeBytes).toBeGreaterThan(20);
-
-      const staleWrite = await call('project_update_prd', {
-        projectId: project.id,
-        prd: '# Stale',
-        expectedRevision: ready.revision,
-        actor: 'stale-agent',
-      });
-      expect(staleWrite.isError).toBe(true);
-
-      const createdContext = mcpData<{ revision: number; body?: string; sizeBytes: number }>(
-        await call('context_put', {
-          projectId: project.id,
-          name: 'architecture-e2e',
-          body: '# Architecture\n\nSQLite daemon.',
-          actor: 'e2e-mcp-agent',
-        }),
-      );
-      expect(createdContext).toMatchObject({ revision: 1 });
-      expect(createdContext.body).toBeUndefined();
-
-      const updatedContext = mcpData<{ revision: number }>(
-        await call('context_put', {
-          projectId: project.id,
-          name: 'architecture-e2e',
-          body: '# Architecture v2\n\nOne persistent daemon.',
-          expectedRevision: createdContext.revision,
-          actor: 'e2e-mcp-agent',
-        }),
-      );
-      expect(updatedContext.revision).toBe(2);
-      const contextPage = mcpData<{ body: string; hasMore: boolean }>(
-        await call('context_read', {
-          projectId: project.id,
-          name: 'architecture-e2e',
-          offsetCodeUnits: 0,
-          limitCodeUnits: 100,
-        }),
-      );
-      expect(contextPage).toMatchObject({
-        body: '# Architecture v2\n\nOne persistent daemon.',
-        hasMore: false,
-      });
-      expect(
-        mcpData<{ items: Array<{ name: string }> }>(
-          await call('context_list', { projectId: project.id }),
-        ).items,
-      ).toMatchObject([{ name: 'architecture-e2e' }]);
-
-      const aggregate = mcpData<{
-        project: { id: string; prd?: string };
-        tasks: { items: unknown[] };
-        context: { items: Array<{ name: string; body?: string }> };
-      }>(await call('project_get', { projectId: project.id }));
-      expect(aggregate.project).toMatchObject({ id: project.id });
-      expect(aggregate.project.prd).toBeUndefined();
-      expect(aggregate.tasks.items).toEqual([]);
-      expect(aggregate.context.items[0]?.body).toBeUndefined();
-
-      const fullProject = await api<Project>(`/api/v1/projects/${project.id}`);
-      expect(fullProject.prd).toContain('# Updated PRD');
-    } finally {
-      await client.close();
-    }
-  });
-
-  it('coordinates a real parent-task and subtask workflow between competing agents', async () => {
-    const client = await connectMcp();
-    const call = (name: string, arguments_: Record<string, unknown>) =>
-      client.callTool({ name, arguments: arguments_ });
-    try {
-      const project = mcpData<{ id: string; revision: number }>(
-        await call('project_create', {
-          workspaceId: 'e2e-workspace',
-          slug: 'task-hierarchy',
-          title: 'Task hierarchy',
-          prd: '# Task hierarchy',
-          state: 'ready',
-        }),
-      );
-      const parent = mcpData<{ id: string; revision: number }>(
-        await call('task_create', {
-          projectId: project.id,
-          title: 'Parent delivery',
-          body: 'Parent acceptance criteria',
-          actor: 'e2e-mcp-agent',
-        }),
-      );
-      const child = mcpData<{ id: string; revision: number }>(
-        await call('task_create', {
-          projectId: project.id,
-          parentId: parent.id,
-          title: 'Leaf implementation',
-          body: 'Leaf acceptance criteria',
-          actor: 'e2e-mcp-agent',
-        }),
-      );
-      const rejectedGrandchild = await call('task_create', {
-        projectId: project.id,
-        parentId: child.id,
-        title: 'Forbidden third level',
-      });
-      expect(rejectedGrandchild.isError).toBe(true);
-
-      const updatedChild = mcpData<{ revision: number; title: string }>(
-        await call('task_update', {
-          taskId: child.id,
-          title: 'Leaf implementation v2',
-          expectedRevision: child.revision,
-          actor: 'e2e-mcp-agent',
-        }),
-      );
-      expect(updatedChild).toMatchObject({ revision: 2, title: 'Leaf implementation v2' });
-      expect(
-        mcpData<{ body: string }>(
-          await call('task_read', {
-            taskId: child.id,
-            offsetCodeUnits: 0,
-            limitCodeUnits: 100,
-          }),
-        ).body,
-      ).toBe('Leaf acceptance criteria');
-
-      const work = mcpData<{ items: Array<{ targetId: string; projectId: string }> }>(
-        await call('work_list', { workspaceId: 'e2e-workspace', limit: 100 }),
-      ).items.filter((item) => item.projectId === project.id);
-      expect(work).toEqual([expect.objectContaining({ targetId: child.id })]);
-      expect(
-        (
-          await call('work_start', {
-            targetType: 'task',
-            targetId: parent.id,
-            agentId: 'parent-agent',
-          })
-        ).isError,
-      ).toBe(true);
-
-      const firstClaim = mcpData<{ claim: { expiresAt: string } }>(
-        await call('work_start', {
-          targetType: 'task',
-          targetId: child.id,
-          agentId: 'agent-a',
-          leaseSeconds: 300,
-        }),
-      );
-      const retriedClaim = mcpData<{ claim: { expiresAt: string } }>(
-        await call('work_start', {
-          targetType: 'task',
-          targetId: child.id,
-          agentId: 'agent-a',
-          leaseSeconds: 600,
-        }),
-      );
-      expect(retriedClaim.claim.expiresAt).toBe(firstClaim.claim.expiresAt);
-      expect(
-        (
-          await call('work_start', {
-            targetType: 'task',
-            targetId: child.id,
-            agentId: 'agent-b',
-          })
-        ).isError,
-      ).toBe(true);
-      await call('work_renew', {
-        targetType: 'task',
-        targetId: child.id,
-        agentId: 'agent-a',
-        leaseSeconds: 600,
-      });
-      await call('work_release', {
-        targetType: 'task',
-        targetId: child.id,
-        agentId: 'agent-a',
-        note: 'Hand off after verification',
-      });
-      await call('work_start', {
-        targetType: 'task',
-        targetId: child.id,
-        agentId: 'agent-b',
-      });
-      const completedChild = mcpData<{ state: string; hasCompletion: boolean }>(
-        await call('work_complete', {
-          targetType: 'task',
-          targetId: child.id,
-          agentId: 'agent-b',
-          expectedRevision: updatedChild.revision,
-          summary: 'Leaf delivered',
-          artifacts: [{ label: 'commit', uri: 'git:child-commit' }],
-        }),
-      );
-      expect(completedChild).toMatchObject({ state: 'done', hasCompletion: true });
-      expect(
-        mcpData<{ artifacts: Array<{ uri: string }> }>(
-          await call('task_completion_get', { taskId: child.id }),
-        ).artifacts,
-      ).toEqual([{ label: 'commit', uri: 'git:child-commit' }]);
-
-      await call('work_start', {
-        targetType: 'task',
-        targetId: parent.id,
-        agentId: 'agent-b',
-      });
-      await call('work_complete', {
-        targetType: 'task',
-        targetId: parent.id,
-        agentId: 'agent-b',
-        expectedRevision: parent.revision,
-        summary: 'Parent delivered',
-      });
-      await call('work_start', {
-        targetType: 'project',
-        targetId: project.id,
-        agentId: 'agent-b',
-      });
-      const completedProject = mcpData<{ state: string }>(
-        await call('work_complete', {
-          targetType: 'project',
-          targetId: project.id,
-          agentId: 'agent-b',
-          expectedRevision: project.revision,
-          summary: 'Hierarchy delivered',
-        }),
-      );
-      expect(completedProject.state).toBe('done');
-    } finally {
-      await client.close();
-    }
-  });
-
-  it('enforces authentication, optimistic revisions and the deliberate no-delete boundary', async () => {
-    const unauthenticated = await fetch(`${baseUrl}/api/v1/projects`);
-    expect(unauthenticated.status).toBe(401);
-
-    const project = await api<Project>(
-      '/api/v1/projects',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'e2e-workspace',
-          slug: 'http-conflicts',
-          title: 'HTTP conflicts',
-          prd: '# HTTP conflicts',
-        }),
-      },
+    let parent = await post<Task>(
+      `/api/v1/specs/${decomposed.id}/tasks`,
+      { title: 'Parent Task', body: 'Integrate the feature.' },
       201,
     );
-    const stale = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, {
-      method: 'PATCH',
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ title: 'Stale write', expectedRevision: 999 }),
-    });
-    expect(stale.status).toBe(409);
-    expect((await stale.json()) as { error: { code: string } }).toMatchObject({
-      error: { code: 'revision_conflict' },
-    });
-
-    const deletion = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, {
-      method: 'DELETE',
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(deletion.status).toBe(404);
-  });
-
-  it('persists state across restart and prevents a second daemon from owning the instance', async () => {
-    const project = await executeCli<Project>(
-      environment,
-      'project:create',
-      'e2e-workspace',
-      'restart-persistence',
-      'Restart persistence',
+    let child = await post<Task>(
+      `/api/v1/specs/${decomposed.id}/tasks`,
+      { parentId: parent.id, title: 'Leaf Subtask' },
+      201,
     );
-    const secondPort = await availablePort();
-    const secondInstance = await executeCliFailure(
-      { ...environment, PIMPAMPUM_PORT: String(secondPort) },
-      'serve',
-    );
-    expect(secondInstance.code).toBe(1);
-    expect(secondInstance.stderr).toContain('Another Pimpampum daemon owns');
-
-    await restartDaemon();
-    const persisted = await executeCli<Project>(environment, 'project:get', project.id);
-    expect(persisted).toMatchObject({ id: project.id, title: 'Restart persistence' });
-    expect(await executeCli<Workspace[]>(environment, 'workspace:list')).toMatchObject([
-      { id: 'e2e-workspace' },
+    expect(
+      (
+        await raw(`/api/v1/work/task/${parent.id}/claim`, {
+          method: 'PUT',
+          body: JSON.stringify({ agentId: 'task-agent', leaseSeconds: 300 }),
+        })
+      ).status,
+    ).toBe(409);
+    await put(`/api/v1/work/task/${child.id}/claim`, {
+      agentId: 'task-agent',
+      leaseSeconds: 300,
+    });
+    child = await post<Task>(`/api/v1/work/task/${child.id}/complete`, {
+      agentId: 'task-agent',
+      expectedRevision: child.revision,
+      summary: 'Leaf delivered',
+      artifacts: [],
+    });
+    await put(`/api/v1/work/task/${parent.id}/claim`, {
+      agentId: 'task-agent',
+      leaseSeconds: 300,
+    });
+    parent = await post<Task>(`/api/v1/work/task/${parent.id}/complete`, {
+      agentId: 'task-agent',
+      expectedRevision: parent.revision,
+      summary: 'Parent delivered',
+      artifacts: [],
+    });
+    await put(`/api/v1/work/spec/${decomposed.id}/claim`, {
+      agentId: 'integration-agent',
+      leaseSeconds: 300,
+    });
+    decomposed = await post<Spec>(`/api/v1/work/spec/${decomposed.id}/complete`, {
+      agentId: 'integration-agent',
+      expectedRevision: decomposed.revision,
+      summary: 'Decomposed Spec integrated',
+      artifacts: [],
+    });
+    project = await post<Project>(`/api/v1/projects/${project.id}/complete`, {
+      expectedRevision: project.revision,
+      summary: 'All Specs delivered',
+      artifacts: [],
+      actor: 'owner',
+    });
+    expect([child.state, parent.state, decomposed.state, project.state]).toEqual([
+      'done',
+      'done',
+      'done',
+      'done',
     ]);
-  });
+  }, 20_000);
 
-  it('configures and recovers the rolling backup through the agent-first CLI', async () => {
+  it('cancels Task, Spec and Project trees atomically through compiled HTTP', async () => {
+    let taskProject = await createProject('task-cancel');
+    let taskSpec = await ready(await createSpec(taskProject.id, 'task-cancel-spec'));
+    taskProject = await open(taskProject);
+    const parent = await post<Task>(`/api/v1/specs/${taskSpec.id}/tasks`, { title: 'Parent' }, 201);
+    const child = await post<Task>(
+      `/api/v1/specs/${taskSpec.id}/tasks`,
+      { parentId: parent.id, title: 'Child' },
+      201,
+    );
+    await put(`/api/v1/work/task/${child.id}/claim`, {
+      agentId: 'cancel-agent',
+      leaseSeconds: 300,
+    });
+    const cancelledTask = await post<Task>(`/api/v1/tasks/${parent.id}/cancel`, {
+      expectedRevision: parent.revision,
+      reason: 'Task obsolete',
+      actor: 'owner',
+    });
+    expect([cancelledTask.state, (await api<Task>(`/api/v1/tasks/${child.id}`)).state]).toEqual([
+      'cancelled',
+      'cancelled',
+    ]);
+
+    let specProject = await createProject('spec-cancel');
+    let cancelledSpec = await ready(await createSpec(specProject.id, 'cancelled-spec'));
+    specProject = await open(specProject);
+    const specTask = await post<Task>(
+      `/api/v1/specs/${cancelledSpec.id}/tasks`,
+      { title: 'Spec Task' },
+      201,
+    );
+    await put(`/api/v1/work/task/${specTask.id}/claim`, {
+      agentId: 'cancel-agent',
+      leaseSeconds: 300,
+    });
+    cancelledSpec = await post<Spec>(`/api/v1/specs/${cancelledSpec.id}/cancel`, {
+      expectedRevision: cancelledSpec.revision,
+      reason: 'Platform removed',
+      actor: 'owner',
+    });
+    expect(cancelledSpec.state).toBe('cancelled');
+    expect((await api<Task>(`/api/v1/tasks/${specTask.id}`)).state).toBe('cancelled');
+
+    let cancelledProject = await createProject('project-cancel');
+    let projectSpec = await ready(await createSpec(cancelledProject.id, 'project-spec'));
+    cancelledProject = await open(cancelledProject);
+    const projectTask = await post<Task>(
+      `/api/v1/specs/${projectSpec.id}/tasks`,
+      { title: 'Project Task' },
+      201,
+    );
+    await put(`/api/v1/work/task/${projectTask.id}/claim`, {
+      agentId: 'cancel-agent',
+      leaseSeconds: 300,
+    });
+    cancelledProject = await post<Project>(`/api/v1/projects/${cancelledProject.id}/cancel`, {
+      expectedRevision: cancelledProject.revision,
+      reason: 'Portfolio decision',
+      actor: 'owner',
+    });
+    projectSpec = await api<Spec>(`/api/v1/specs/${projectSpec.id}`);
+    expect([
+      cancelledProject.state,
+      projectSpec.state,
+      (await api<Task>(`/api/v1/tasks/${projectTask.id}`)).state,
+    ]).toEqual(['cancelled', 'cancelled', 'cancelled']);
+    expect((await executeCli<Overview>(environment, 'overview')).activeWork).toEqual([]);
+  }, 15_000);
+
+  it('persists restart, rolling backup restore and portable export schema 2', async () => {
     const backupDirectory = join(temporaryDirectory, 'Dropbox', 'Pimpampum');
     mkdirSync(backupDirectory, { recursive: true });
     expect(
@@ -947,167 +433,125 @@ describe.sequential('compiled product end to end', () => {
         backupDirectory,
         '--json',
       ),
-    ).toMatchObject({ enabled: true, directory: backupDirectory, state: 'healthy' });
-
-    const backedUp = await executeCli<Project>(
+    ).toMatchObject({ enabled: true, state: 'healthy', directory: backupDirectory });
+    const persisted = await executeCli<Project>(
       environment,
       'project:create',
       'e2e-workspace',
-      'automatic-backup-e2e',
-      'Automatic backup E2E',
+      'restart-and-backup',
+      'Restart and backup',
     );
+    await restartDaemon();
+    expect(await executeCli<Project>(environment, 'project:get', persisted.id)).toMatchObject({
+      id: persisted.id,
+      title: 'Restart and backup',
+    });
+
     const snapshotPath = join(backupDirectory, 'pimpampum-latest.sqlite');
-    for (let attempt = 0; attempt < 50; attempt += 1) {
+    for (let attempt = 0; attempt < 60; attempt++) {
       if (existsSync(snapshotPath)) {
         const snapshot = new Database(snapshotPath, { readonly: true, fileMustExist: true });
-        const found = snapshot.prepare('SELECT id FROM projects WHERE id = ?').get(backedUp.id) as
-          { id: string } | undefined;
+        const found = snapshot.prepare('SELECT id FROM projects WHERE id=?').get(persisted.id);
         snapshot.close();
-        if (found?.id === backedUp.id) break;
+        if (found) break;
       }
-      await delay(20);
+      await delay(50);
     }
-    const current = new Database(snapshotPath, { readonly: true, fileMustExist: true });
-    expect(current.prepare('SELECT id FROM projects WHERE id = ?').get(backedUp.id)).toEqual({
-      id: backedUp.id,
+    const snapshot = new Database(snapshotPath, { readonly: true, fileMustExist: true });
+    expect(snapshot.pragma('user_version', { simple: true })).toBe(2);
+    expect(snapshot.prepare('SELECT id FROM projects WHERE id=?').get(persisted.id)).toEqual({
+      id: persisted.id,
     });
-    current.close();
+    snapshot.close();
 
-    const offlineDirectory = `${backupDirectory}.offline`;
-    renameSync(backupDirectory, offlineDirectory);
-    const survivesFailure = await executeCli<Project>(
-      environment,
-      'project:create',
-      'e2e-workspace',
-      'backup-failure-survives',
-      'Backup failure survives',
-    );
-    let failedStatus: AutomaticBackupStatus | undefined;
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      failedStatus = await executeCli<AutomaticBackupStatus>(
-        environment,
-        'backup',
-        'status',
-        '--json',
-      );
-      if (failedStatus.state === 'error') break;
-      await delay(20);
-    }
-    expect(failedStatus).toMatchObject({ enabled: true, state: 'error' });
-
-    renameSync(offlineDirectory, backupDirectory);
+    const exported = await executeCli<{ path: string }>(environment, 'export', exportRoot);
+    expect(JSON.parse(readFileSync(join(exported.path, 'manifest.json'), 'utf8'))).toMatchObject({
+      schemaVersion: 2,
+    });
     expect(
-      await executeCli<AutomaticBackupStatus>(environment, 'backup', 'retry', '--json'),
-    ).toMatchObject({ state: 'healthy', error: null });
-    const recovered = new Database(snapshotPath, { readonly: true, fileMustExist: true });
-    expect(
-      recovered.prepare('SELECT id FROM projects WHERE id = ?').get(survivesFailure.id),
-    ).toEqual({ id: survivesFailure.id });
-    recovered.close();
-
-    expect(
-      await executeCli<AutomaticBackupStatus>(environment, 'backup', 'disable', '--json'),
-    ).toMatchObject({ enabled: false, state: 'disabled' });
-  });
-
-  it('backs up, restores and exports a real persisted instance', async () => {
-    const survivor = await executeCli<Project>(
-      environment,
-      'project:create',
-      'e2e-workspace',
-      'backup-survivor',
-      'Backup survivor',
-    );
-    const backup = await executeCli<{ path: string }>(environment, 'backup', exportRoot);
-    expect(existsSync(backup.path)).toBe(true);
-    const afterBackup = await executeCli<Project>(
-      environment,
-      'project:create',
-      'e2e-workspace',
-      'after-backup',
-      'After backup',
-    );
+      existsSync(
+        join(
+          exported.path,
+          'workspaces',
+          'e2e-workspace',
+          'projects',
+          'multi-spec-workflow',
+          'specs',
+          'direct-spec',
+          'spec.md',
+        ),
+      ),
+    ).toBe(true);
 
     await stopDaemon(daemon);
     daemon = undefined;
     const databasePath = join(dataDirectory, 'pimpampum.sqlite');
-    copyFileSync(backup.path, databasePath);
+    renameSync(databasePath, `${databasePath}.before-restore`);
     rmSync(`${databasePath}-wal`, { force: true });
     rmSync(`${databasePath}-shm`, { force: true });
+    copyFileSync(snapshotPath, databasePath);
     await startDaemon();
-
-    expect(await executeCli<Project>(environment, 'project:get', survivor.id)).toMatchObject({
-      id: survivor.id,
-      title: 'Backup survivor',
+    expect(await api<Project>(`/api/v1/projects/${persisted.id}`)).toMatchObject({
+      id: persisted.id,
     });
-    const missingAfterRestore = await executeCliFailure(environment, 'project:get', afterBackup.id);
-    expect(missingAfterRestore.code).toBe(1);
-    expect(missingAfterRestore.stderr).toContain('was not found');
+  }, 20_000);
 
-    const exported = await executeCli<{ path: string }>(environment, 'export', exportRoot);
-    expect(existsSync(join(exported.path, 'manifest.json'))).toBe(true);
+  it('publishes only v2 HTTP, MCP, target and overview contracts', async () => {
+    const unauthenticated = await fetch(`${baseUrl}/api/v1/projects`);
+    expect(unauthenticated.status).toBe(401);
+    const projects = await api<{ items: Array<Resource> }>('/api/v1/projects?limit=100&offset=0');
+    const projectId = projects.items[0]?.id;
+    expect(projectId).toBeTruthy();
+    expect((await raw(`/api/v1/projects/${String(projectId)}/prd`)).status).toBe(404);
     expect(
-      existsSync(join(exported.path, 'projects', 'e2e-workspace', 'backup-survivor', 'prd.md')),
-    ).toBe(true);
-  });
+      (
+        await raw(`/api/v1/work/project/${String(projectId)}/claim`, {
+          method: 'PUT',
+          body: JSON.stringify({ agentId: 'old-agent', leaseSeconds: 300 }),
+        })
+      ).status,
+    ).toBe(400);
 
-  it('installs, reconciles, reports and removes compiled per-user services safely', async () => {
-    const compiledModuleUrl = pathToFileURL(
-      join(repositoryRoot, 'dist', 'service', 'manager.js'),
-    ).href;
-    const serviceModule = (await import(
-      compiledModuleUrl
-    )) as typeof import('../src/service/manager.js');
+    const overviewResponse = await raw('/api/v1/overview');
+    const overview = (await overviewResponse.json()) as {
+      data: Overview;
+      meta: { schemaVersion: number };
+    };
+    expect(overview.meta.schemaVersion).toBe(2);
+    expect(overview.data.counts).toHaveProperty('specs');
+    expect(overview.data.counts).toHaveProperty('openProjects');
+    expect(overview.data.counts).not.toHaveProperty('readyProjects');
 
-    for (const platform of ['darwin', 'linux'] as const) {
-      const root = join(temporaryDirectory, `Service Home ${platform} ü`);
-      const serviceData = join(root, 'Pimpampum Data ñ');
-      mkdirSync(serviceData, { recursive: true });
-      writeFileSync(join(serviceData, 'token'), 'compiled-service-secret');
-      writeFileSync(join(serviceData, 'pimpampum.sqlite'), 'preserved-database');
-      const commands: Array<[string, string[]]> = [];
-      const manager = serviceModule.createPlatformServiceManager({
-        platform,
-        homeDirectory: root,
-        dataDirectory: serviceData,
-        nodePath: join(root, 'Runtime ü', 'node'),
-        cliPath: join(root, 'Package with spaces', 'dist', 'cli.js'),
-        version: '0.1.0',
-        runCommand: async (executable, arguments_) => {
-          commands.push([executable, arguments_]);
-          return {
-            exitCode: 0,
-            stdout:
-              platform === 'darwin' && arguments_[0] === 'print'
-                ? 'state = running\npid = 123\n'
-                : platform === 'linux' && arguments_.includes('show')
-                  ? 'LoadState=loaded\nUnitFileState=disabled\nActiveState=active\n'
-                  : '',
-            stderr: '',
-          };
-        },
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [compiledMcp],
+      cwd: repositoryRoot,
+      env: Object.fromEntries(
+        Object.entries(environment).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string',
+        ),
+      ),
+      stderr: 'pipe',
+    });
+    const client = new Client(
+      { name: 'compiled-v2-e2e', version: '0.2.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+    await client.connect(transport);
+    try {
+      const names = (await client.listTools()).tools.map((tool) => tool.name);
+      expect(names).toEqual(expect.arrayContaining(['spec_create', 'spec_read', 'spec_cancel']));
+      expect(names).not.toEqual(expect.arrayContaining(['project_read_prd', 'project_update_prd']));
+      await expect(
+        client.callTool({ name: 'project_read_prd', arguments: { projectId } }),
+      ).rejects.toThrow(/not found/iu);
+      const oldTarget = await client.callTool({
+        name: 'work_start',
+        arguments: { targetType: 'project', targetId: projectId, agentId: 'old-agent' },
       });
-
-      const firstInstall = await manager.install();
-      expect(firstInstall).toMatchObject({ installed: true, reconciled: false });
-      expect(await manager.status()).toMatchObject({ installed: true, running: true });
-      const secondInstall = await manager.install();
-      expect(secondInstall).toMatchObject({ installed: true, reconciled: true });
-      expect(readFileSync(firstInstall.receiptPath, 'utf8')).not.toMatch(
-        /compiled-service-secret|bearer/i,
-      );
-
-      expect(await manager.uninstall()).toEqual({
-        uninstalled: true,
-        dataPreserved: true,
-      });
-      expect(existsSync(firstInstall.receiptPath)).toBe(false);
-      expect(readFileSync(join(serviceData, 'token'), 'utf8')).toBe('compiled-service-secret');
-      expect(readFileSync(join(serviceData, 'pimpampum.sqlite'), 'utf8')).toBe(
-        'preserved-database',
-      );
-      expect(commands.length).toBeGreaterThanOrEqual(4);
-      expect(commands.every(([, arguments_]) => Array.isArray(arguments_))).toBe(true);
+      expect(oldTarget.isError).toBe(true);
+    } finally {
+      await client.close();
     }
-  });
+  }, 15_000);
 });

@@ -1,6 +1,8 @@
 # MCP tools
 
-Pimpampum exposes 24 agent-oriented tools through one local daemon. Tool discovery is the canonical contract: every tool declares a title, a precise description, a strict JSON Schema for its arguments, and MCP effect annotations.
+Pimpampum exposes 32 agent-oriented tools through one local daemon. MCP `tools/list` is the
+canonical machine-readable contract: every tool declares a title, precise description, strict JSON
+Schema, defaults, bounds, and effect annotations.
 
 ## Connect
 
@@ -11,12 +13,12 @@ POST http://127.0.0.1:7337/mcp
 Authorization: Bearer <token>
 ```
 
-For hosts that only support stdio, run `pimpampum-mcp` while the daemon is active. The bridge is stateless and forwards operations to the authenticated HTTP API.
+For hosts that only support stdio, run `pimpampum-mcp` while the daemon is active. The bridge is
+stateless and forwards every operation to the same authenticated instance.
 
 ## Shell-only agents
 
-The CLI negotiates with this same MCP endpoint; it does not maintain a second tool implementation.
-Use it when an agent can execute shell commands but cannot attach an MCP server directly:
+The CLI negotiates with the MCP endpoint; it does not maintain a second tool implementation:
 
 ```bash
 pimpampum config
@@ -24,35 +26,34 @@ pimpampum tools
 pimpampum call workspace_resolve --input '{"path":"/absolute/project/path"}'
 ```
 
-`config` reports MCP HTTP and stdio connection details, plus a redacted `environment` or `file`
-token source, without exposing the token value. `tools`
-returns the live `tools/list` result. `call` accepts no input for zero-argument tools or exactly one
-of `--input <json>`, `--stdin`, and `--input-file <path>`. The JSON root must be an object.
+`config` reports redacted connection details without exposing the token. `tools` returns the live
+catalog. `call` accepts no input for zero-argument tools or exactly one of `--input <json>`,
+`--stdin`, and `--input-file <path>`. The JSON root must be an object.
 
 For multiline Markdown, prefer stdin:
 
 ```bash
 printf '%s' '{
   "projectId": "PROJECT_ID",
-  "prd": "# Updated PRD\n\nAgent-authored outcome.",
-  "expectedRevision": 2,
+  "slug": "agent-cli",
+  "title": "Agent-first CLI",
+  "body": "# Contract\n\nExpose the complete MCP surface.",
   "actor": "agent-session-id"
-}' | pimpampum call project_update_prd --stdin
+}' | pimpampum call spec_create --stdin
 ```
 
-The CLI emits the result contract below unchanged. Success goes to stdout with exit code 0;
-failures go to stderr with a non-zero exit code. MCP SDK validation and transport failures are
-normalized into the same actionable Pimpampum error shape.
+Success is written to stdout with exit code 0. Failures are written to stderr with a non-zero exit
+code. Every invocation opens and closes one short-lived MCP session.
 
 ## Result contract
 
-Successful calls return one JSON text content block:
+A successful tool returns one JSON text content block:
 
 ```json
 { "data": {} }
 ```
 
-Failures set `isError: true` and return:
+A failure sets `isError: true` and returns one actionable envelope:
 
 ```json
 {
@@ -66,9 +67,10 @@ Failures set `isError: true` and return:
 }
 ```
 
-The text block is deliberately canonical. Pimpampum does not copy the same potentially large value into `structuredContent`, keeping context use predictable across MCP hosts.
+Pimpampum does not duplicate large values into `structuredContent`, keeping context use predictable
+across MCP hosts.
 
-List tools with an `offset` return:
+Paginated tools return:
 
 ```json
 {
@@ -85,61 +87,124 @@ List tools with an `offset` return:
 }
 ```
 
-Continue with `nextOffset` while `hasMore` is true. `work_list` has no offset because it is a live claimable-work queue; it returns `truncated` instead.
+Continue from `nextOffset` while `hasMore` is true. `work_list` is a live queue and therefore uses
+`truncated` rather than an offset.
 
-## Recommended workflow
+## Recommended agent workflow
 
 ```text
 workspace_resolve
   → work_list
   → work_start
-  → project_read_prd or task_read
-  → context_list / context_read
-  → work_complete
+  → spec_read and/or task_read
+  → context_list / context_read for an explicit scope
+  → work_complete or work_release
 ```
 
-Use the same stable `agentId` for claim, renewal, release, and completion. Renew before `expiresAt`. Before any update or completion, read the lightweight manifest and pass its current `revision` as `expectedRevision`.
+Use one stable `agentId` for Claim start, renewal, release, and completion. Renew before
+`expiresAt`. Before an update, cancellation, or completion, read the bounded manifest and pass its
+current `revision` as `expectedRevision`.
 
-## Catalog
+## Canonical catalog
 
-| Tool                     | Purpose                                                             | Key arguments                                               |
-| ------------------------ | ------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `workspace_list`         | List registered directory roots.                                    | None                                                        |
-| `workspace_resolve`      | Resolve a current working directory to the most specific workspace. | `path` absolute                                             |
-| `work_list`              | Discover ready projects and open leaf tasks.                        | `workspaceId?`, `limit`                                     |
-| `work_start`             | Atomically claim work and receive bounded startup manifests.        | `targetType`, `targetId`, `agentId`, `leaseSeconds`         |
-| `work_renew`             | Extend an unexpired owned claim.                                    | Same identity fields as start                               |
-| `work_release`           | Release without completing and optionally leave a handoff note.     | Identity fields, `note?`                                    |
-| `work_complete`          | Mark claimed work done with summary and artifact references.        | Identity fields, `expectedRevision`, `summary`, `artifacts` |
-| `project_list`           | Page through lightweight projects in any lifecycle state.           | `workspaceId?`, `state?`, `limit`, `offset`                 |
-| `project_get`            | Read one project plus independently paged task/context manifests.   | `projectId`, task/context limits and offsets                |
-| `project_read_prd`       | Read a bounded PRD page.                                            | `projectId`, UTF-16 offset and limit                        |
-| `project_completion_get` | Read completion summary and artifacts.                              | `projectId`                                                 |
-| `project_create`         | Create a project and initial Markdown PRD.                          | `workspaceId`, `slug`, `title`, `prd`, `state`              |
-| `project_update`         | Change title and/or draft/ready state.                              | `projectId`, changes, `expectedRevision`                    |
-| `project_update_prd`     | Replace the complete PRD.                                           | `projectId`, `prd`, `expectedRevision`                      |
-| `task_list`              | Page through task and subtask manifests.                            | `projectId`, `limit`, `offset`                              |
-| `task_get`               | Read one lightweight task manifest.                                 | `taskId`                                                    |
-| `task_read`              | Read a bounded task-body page.                                      | `taskId`, UTF-16 offset and limit                           |
-| `task_completion_get`    | Read task completion summary and artifacts.                         | `taskId`                                                    |
-| `task_create`            | Create a task or one-level subtask.                                 | `projectId`, `parentId?`, `title`, `body?`                  |
-| `task_update`            | Change an open task title/body.                                     | `taskId`, changes, `expectedRevision`                       |
-| `context_list`           | Page through context manifests without bodies.                      | `projectId`, `limit`, `offset`                              |
-| `context_read`           | Read a bounded contextual Markdown page.                            | `projectId`, `name`, UTF-16 offset and limit                |
-| `context_put`            | Create or replace one context document.                             | `projectId`, `name`, `body`, `expectedRevision?`            |
-| `activity_list`          | Read latest automatic project events.                               | `projectId`, `limit`                                        |
+### Workspace
 
-## State and safety rules
+| Tool                | Purpose                                                           | Key arguments   |
+| ------------------- | ----------------------------------------------------------------- | --------------- |
+| `workspace_list`    | List registered repository and directory roots.                   | None            |
+| `workspace_resolve` | Resolve a working directory to the most specific registered root. | `path` absolute |
 
-- Projects are `draft → ready → done`; only `work_complete` reaches `done`.
-- Tasks are `open → done`; subtasks cannot have children.
-- A project with open tasks cannot complete.
-- A task with open subtasks cannot complete.
-- Once a project has open tasks, agents claim leaf tasks rather than the project.
-- Writes use optimistic concurrency. On `revision_conflict`, reread and decide whether the intended change still applies.
-- Tool annotations set `openWorldHint: false`: tools only access the configured local Pimpampum instance.
-- No tool deletes projects, PRDs, context documents, tasks, or activity.
+Workspace registration is an administrative CLI or HTTP operation. Agents normally resolve an
+already registered repository.
+
+### Project
+
+| Tool                     | Purpose                                                          | Key arguments                                            |
+| ------------------------ | ---------------------------------------------------------------- | -------------------------------------------------------- |
+| `project_list`           | Page through bounded Project manifests.                          | `workspaceId?`, `state?`, `limit`, `offset`              |
+| `project_get`            | Read one bounded Project manifest and Spec rollups.              | `projectId`                                              |
+| `project_create`         | Create a draft Project container.                                | `workspaceId`, `slug`, `title`, `actor?`                 |
+| `project_update`         | Change title or reversible `draft/open/paused` state.            | `projectId`, changes, `expectedRevision`, `actor?`       |
+| `project_complete`       | Mark a Project done after all Specs are terminal.                | `projectId`, `expectedRevision`, `summary`, `artifacts?` |
+| `project_cancel`         | Cancel a Project tree and release descendant Claims atomically.  | `projectId`, `expectedRevision`, `reason`, `actor?`      |
+| `project_completion_get` | Read Project completion summary, artifacts, and completion time. | `projectId`                                              |
+
+A Project groups an initiative. It has no executable Markdown body and is never claimable.
+
+### Spec
+
+| Tool                  | Purpose                                                        | Key arguments                                    |
+| --------------------- | -------------------------------------------------------------- | ------------------------------------------------ |
+| `spec_list`           | Page through bounded Spec manifests in one Project.            | `projectId`, `state?`, `limit`, `offset`         |
+| `spec_get`            | Read one bounded Spec manifest and Task rollups.               | `specId`                                         |
+| `spec_read`           | Read a bounded page of Spec Markdown.                          | `specId`, UTF-16 offset and limit                |
+| `spec_create`         | Create a draft Spec inside a Project.                          | `projectId`, `slug`, `title`, `body?`, `actor?`  |
+| `spec_update`         | Replace title, complete body, or reversible draft/ready state. | `specId`, changes, `expectedRevision`, `actor?`  |
+| `spec_completion_get` | Read Spec completion summary, artifacts, and completion time.  | `specId`                                         |
+| `spec_cancel`         | Cancel a Spec tree and release descendant Claims atomically.   | `specId`, `expectedRevision`, `reason`, `actor?` |
+
+A PRD is one possible form of Spec Markdown, not a separate entity or API family.
+
+### Task and Subtask
+
+| Tool                  | Purpose                                                       | Key arguments                                     |
+| --------------------- | ------------------------------------------------------------- | ------------------------------------------------- |
+| `task_list`           | Page through bounded Task and Subtask manifests for one Spec. | `specId`, `limit`, `offset`                       |
+| `task_get`            | Read one bounded Task manifest.                               | `taskId`                                          |
+| `task_read`           | Read a bounded page of Task Markdown.                         | `taskId`, UTF-16 offset and limit                 |
+| `task_create`         | Create a Task or one-level Subtask.                           | `specId`, `parentId?`, `title`, `body?`, `actor?` |
+| `task_update`         | Replace an open Task title or complete body.                  | `taskId`, changes, `expectedRevision`, `actor?`   |
+| `task_completion_get` | Read Task completion summary, artifacts, and completion time. | `taskId`                                          |
+| `task_cancel`         | Cancel a Task tree and release affected Claims atomically.    | `taskId`, `expectedRevision`, `reason`, `actor?`  |
+
+Tasks always belong to Specs. A Subtask must share its parent's Spec and cannot have children.
+
+### Context and activity
+
+| Tool            | Purpose                                                             | Key arguments                                                         |
+| --------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `context_list`  | Page Context manifests for one explicit Workspace or Project scope. | `ownerType`, `ownerId`, `limit`, `offset`                             |
+| `context_read`  | Read bounded Context Markdown from one explicit scope.              | `ownerType`, `ownerId`, `name`, UTF-16 offset and limit               |
+| `context_put`   | Create or replace Context in one explicit scope.                    | `ownerType`, `ownerId`, `name`, `body`, `expectedRevision?`, `actor?` |
+| `activity_list` | Read bounded automatic activity for a Project and its descendants.  | `projectId`, `limit`                                                  |
+
+Context never inherits implicitly. The same name can exist independently in a Workspace and one of
+its Projects; callers choose the scope they mean.
+
+### Work and Claims
+
+| Tool            | Purpose                                                          | Key arguments                                                |
+| --------------- | ---------------------------------------------------------------- | ------------------------------------------------------------ |
+| `work_list`     | Discover ready Specs and open leaf Tasks beneath open Projects.  | `workspaceId?`, `projectId?`, `specId?`, `limit`             |
+| `work_start`    | Atomically claim work and receive bounded startup manifests.     | `targetType`, `targetId`, `agentId`, `leaseSeconds`          |
+| `work_renew`    | Extend an unexpired Claim owned by the same agent.               | Same identity fields as start                                |
+| `work_release`  | Release without completing and optionally record a handoff note. | Identity fields, `note?`                                     |
+| `work_complete` | Complete claimed work with summary and artifact references.      | Identity fields, `expectedRevision`, `summary`, `artifacts?` |
+
+`targetType` is exactly `spec | task`. A startup bundle contains the Workspace, Project, Spec,
+optional Task, Claim, and separate bounded Workspace- and Project-Context manifest pages.
+
+## Lifecycle and safety
+
+- Projects use `draft | open | paused | done | cancelled`.
+- Specs use `draft | ready | done | cancelled`.
+- Tasks and Subtasks use `open | done | cancelled`.
+- A Project must contain a Spec before opening.
+- A Spec needs non-blank Markdown before becoming ready.
+- Only ready Specs and open leaf Tasks beneath open Projects are claimable.
+- An open Task with open Subtasks cannot complete.
+- A Spec with open Tasks cannot complete.
+- A Project completes without a Claim only after every Spec is terminal.
+- Cancellation is terminal, preserves history, cascades to non-terminal descendants, and releases
+  affected Claims in one transaction.
+- Writes use optimistic revisions. On `revision_conflict`, reread and decide whether the intended
+  change still applies.
+- Tool annotations set `openWorldHint: false`: tools only access the configured local instance.
+- There are no delete tools.
 
 ## Naming decision
 
-Tool names do not repeat a `pimpampum_` prefix because clients already expose them under the Pimpampum server namespace. The shorter names reduce agent tokens while remaining unambiguous within the server.
+Tool names omit a `pimpampum_` prefix because MCP clients already expose them under the Pimpampum
+server namespace. Shorter names save tokens without introducing aliases. The catalog is replaced
+atomically when the domain changes; agents never need to guess whether two names mean the same
+operation.

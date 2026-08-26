@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 const root = process.cwd();
 
 describe('backup settings desktop surfaces', () => {
-  it('ships a native macOS Settings scene and directory-only picker', () => {
+  it('ships a retained native macOS Settings window, menu actions, and directory-only picker', () => {
     const app = readFileSync(
       join(root, 'platforms/macos/Sources/PimpampumMenuBar/App.swift'),
       'utf8',
@@ -30,8 +30,13 @@ describe('backup settings desktop surfaces', () => {
       'utf8',
     );
 
-    expect(app).toMatch(/Settings\s*\{/);
+    expect(app).toContain('@StateObject private var settingsWindowController');
+    expect(app).toContain('BackupSettingsWindowController(store: backupSettingsStore)');
+    expect(app).toContain('settingsWindowOpener: settingsWindowController');
+    expect(app).toContain('quitApplication: { NSApplication.shared.terminate(nil) }');
+    expect(app).not.toMatch(/Settings\s*\{/);
     expect(popover).toContain('settingsWindowOpener.openSettings()');
+    expect(popover).toContain('Label("Settings…", systemImage: "gearshape")');
     expect(popover).toContain('Quit Pimpampum');
     expect(windowController).toContain('NSWindow(contentViewController:');
     expect(windowController).toContain('makeKeyAndOrderFront');
