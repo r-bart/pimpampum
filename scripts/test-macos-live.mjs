@@ -14,6 +14,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { prepareMacosRuntimePackage } from './macos-live-package.mjs';
 
 if (process.env.PIMPAMPUM_RUN_LIVE_MACOS !== '1') {
   throw new Error('Set PIMPAMPUM_RUN_LIVE_MACOS=1 to run the reversible real macOS smoke.');
@@ -128,22 +129,39 @@ try {
   const canonicalWorkspace = realpathSync(workspace);
   writeFileSync(join(workspace, 'prd.md'), '# Live smoke PRD\n');
 
-  execFileSync(process.execPath, [join(repositoryRoot, 'scripts/prepare-package.mjs')], {
-    cwd: repositoryRoot,
-    stdio: 'inherit',
-  });
-
-  const pack = JSON.parse(
-    command('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temporaryRoot]),
-  )[0];
   const runtimeRoot = join(temporaryRoot, 'runtime');
-  command('npm', [
-    'install',
-    '--prefix',
-    runtimeRoot,
-    '--omit=dev',
-    join(temporaryRoot, pack.filename),
-  ]);
+  prepareMacosRuntimePackage({
+    prepare() {
+      execFileSync(process.execPath, [join(repositoryRoot, 'scripts/prepare-package.mjs')], {
+        cwd: repositoryRoot,
+        stdio: 'inherit',
+      });
+    },
+    pack() {
+      return JSON.parse(
+        command('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temporaryRoot]),
+      )[0];
+    },
+    install(pack) {
+      command('npm', [
+        'install',
+        '--prefix',
+        runtimeRoot,
+        '--omit=dev',
+        join(temporaryRoot, pack.filename),
+      ]);
+    },
+    restore() {
+      execFileSync(
+        process.execPath,
+        [join(repositoryRoot, 'scripts/restore-package-manifest.mjs')],
+        {
+          cwd: repositoryRoot,
+          stdio: 'inherit',
+        },
+      );
+    },
+  });
   cli = join(runtimeRoot, 'node_modules/pimpampum/dist/cli.js');
 
   const install = runCli('install');

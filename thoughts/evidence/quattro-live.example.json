@@ -1,36 +1,67 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "status": "pending",
-  "omarchyVersion": "",
   "validatedAt": "",
+  "omarchyVersion": "",
   "candidateHash": "",
   "validatedCandidatePath": "/absolute/path/to/dev.pimpampum.status",
-  "commands": {
-    "version": {
-      "executable": "omarchy",
-      "arguments": ["--version"],
-      "exitCode": null,
-      "stdout": ""
+  "environment": {
+    "platform": "linux",
+    "uid": 1000,
+    "waylandDisplay": "wayland-1",
+    "explicitOptIn": false
+  },
+  "transcript": {
+    "path": "artifacts/transcript.json",
+    "sha256": ""
+  },
+  "baseline": {
+    "beforePath": "artifacts/baseline-before.json",
+    "beforeSha256": "",
+    "afterPath": "artifacts/baseline-after.json",
+    "afterSha256": "",
+    "restored": false
+  },
+  "screenshots": {
+    "activePopout": {
+      "path": "screenshots/activePopout.png",
+      "sha256": ""
     },
-    "validation": {
-      "executable": "omarchy",
-      "arguments": ["plugin", "validate", "/absolute/path/to/dev.pimpampum.status"],
-      "exitCode": null,
-      "passed": false,
-      "stdout": "",
-      "stderr": ""
+    "completedPopout": {
+      "path": "screenshots/completedPopout.png",
+      "sha256": ""
+    },
+    "offlineStale": {
+      "path": "screenshots/offlineStale.png",
+      "sha256": ""
+    },
+    "recovered": {
+      "path": "screenshots/recovered.png",
+      "sha256": ""
+    },
+    "workspaceOpen": {
+      "path": "screenshots/workspaceOpen.png",
+      "sha256": ""
     }
   },
-  "smoke": {
-    "pluginValidation": false,
-    "hotReload": false,
-    "themeInheritance": false,
-    "horizontalTopLayout": false,
-    "popoutCoordination": false,
-    "activeCount": false,
-    "completedCollapse": false,
-    "offlineRecovery": false,
-    "workspaceOpen": false
+  "visualReview": {
+    "approved": false,
+    "reviewer": "",
+    "reviewedAt": "",
+    "checks": {
+      "themeInheritance": "activePopout",
+      "horizontalTopLayout": "activePopout",
+      "popoutCoordination": "activePopout",
+      "activeCount": "activePopout",
+      "completedCollapse": "completedPopout",
+      "offlineRecovery": "offlineStale",
+      "recovered": "recovered",
+      "workspaceOpen": "workspaceOpen"
+    }
   },
-  "notes": "Copy to quattro-live.json on the target Quattro machine. candidateHash uses sorted relative paths, byte lengths, and bytes as implemented by scripts/check-quattro-evidence.mjs."
+  "cleanup": {
+    "completed": false,
+    "baselineRestored": false,
+    "evidenceWrittenAfterCleanup": false
+  }
 }

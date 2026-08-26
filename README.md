@@ -71,16 +71,17 @@ The MCP stdio bridge is stateless: every operation reaches the same authenticate
 ### 1. Install and start automatically
 
 ```bash
-npm install
-npm run build
-npm run build:macos # macOS source builds only
-npm run cli -- install
+npm install --global pimpampum
+pimpampum install
 ```
 
-A packaged installation exposes the same operation as `pimpampum install`. It installs one
-per-user background service and starts the local daemon automatically—no root access or open
-terminal is required. Inspect it with `pimpampum status` and remove Pimpampum-owned runtime
-integrations with `pimpampum uninstall`.
+The published package already contains the compiled daemon, macOS app, and Omarchy integration.
+`pimpampum install` installs one per-user background service and starts the local daemon
+automatically—no root access or open terminal is required. Inspect it with `pimpampum status` and
+remove Pimpampum-owned runtime integrations with `pimpampum uninstall`.
+
+From a source checkout, contributors instead run `npm ci`, `npm run build`, optionally
+`npm run build:macos` on macOS, and `npm run cli -- install`.
 
 Uninstall is deliberately narrow: it removes the managed service, desktop integration, and
 receipt while it preserves the SQLite database, token, project content, diagnostic logs, backups,
@@ -129,9 +130,16 @@ reports the widget as `enabled`, `disabled`, or `missing`.
 
 The widget reads `pimpampum overview` through its installed absolute helper. Installation binds
 that receipt-owned helper to the canonical Node, CLI, data-directory, host, and port configuration,
-so custom local instances work without exposing or copying the bearer token. Repository
-contributors can run `npm run validate:omarchy`; a release additionally requires
-`npm run test:e2e:omarchy` on the exact target Quattro machine.
+so custom local instances work without exposing or copying the bearer token. Static package
+validation remains available as `npm run validate:omarchy`. A release additionally requires, from
+a full source checkout, `npm run build` and
+`PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live` on the exact target Quattro machine,
+followed by `npm run test:e2e:omarchy`. The opt-in live runner is deliberately repository-only and
+is not shipped in the runtime tarball. It refuses root,
+non-Wayland sessions, and machines with an existing Pimpampum service, receipt, or plugin. It
+exercises the real install/seed/hot-reload/offline/recovery/uninstall lifecycle, captures distinct
+UI screenshots, requires an explicit visual review, and writes schema-v2 evidence only after the
+original shell, plugin, systemd, receipt, and owned-path baseline is restored exactly.
 
 Diagnostic logs live under `~/.pimpampum/logs` by default. If an installation fails, fix the
 reported platform prerequisite and rerun `pimpampum install`; reconciliation is idempotent.
@@ -141,8 +149,8 @@ reported platform prerequisite and rerun `pimpampum install`; reconciliation is 
 In another terminal:
 
 ```bash
-npm run cli -- workspace:add vcomp "VCOMP" /absolute/path/to/vcomp
-npm run cli -- workspace:list
+pimpampum workspace:add vcomp "VCOMP" /absolute/path/to/vcomp
+pimpampum workspace:list
 ```
 
 A workspace represents the root of a repository or related body of work. Nested directories resolve automatically to the most specific registered workspace.
@@ -150,7 +158,7 @@ A workspace represents the root of a repository or related body of work. Nested 
 ### 3. Create a project with a PRD
 
 ```bash
-npm run cli -- project:create \
+pimpampum project:create \
   vcomp \
   authentication \
   "Authentication" \
@@ -160,7 +168,7 @@ npm run cli -- project:create \
 The response contains the project `id` and initial `revision`. Projects begin as drafts. Make the project available for work with:
 
 ```bash
-npm run cli -- project:ready <project-id> 1
+pimpampum project:ready <project-id> 1
 ```
 
 The second argument is the expected revision. If another actor changed the project, the operation returns `revision_conflict` instead of overwriting the newer state.
@@ -170,13 +178,13 @@ The second argument is the expected revision. If another actor changed the proje
 Create a task:
 
 ```bash
-npm run cli -- task:create <project-id> "Implement authentication"
+pimpampum task:create <project-id> "Implement authentication"
 ```
 
 Create a subtask:
 
 ```bash
-npm run cli -- task:create <project-id> "Add end-to-end tests" <parent-task-id>
+pimpampum task:create <project-id> "Add end-to-end tests" <parent-task-id>
 ```
 
 If the project has no open tasks, the project itself appears as claimable work. If tasks exist, only available leaf tasks are returned.
@@ -184,15 +192,15 @@ If the project has no open tasks, the project itself appears as claimable work. 
 ### 5. Claim and complete work
 
 ```bash
-npm run cli -- work:list vcomp
-npm run cli -- work:start task <task-id> codex-thread-123
-npm run cli -- work:complete task <task-id> codex-thread-123 <revision> "Delivery complete"
+pimpampum work:list vcomp
+pimpampum work:start task <task-id> codex-thread-123
+pimpampum work:complete task <task-id> codex-thread-123 <revision> "Delivery complete"
 ```
 
 Keep the same `agent-id` for the lifetime of a claim. Claims expire and can be renewed through MCP or HTTP. They can also be released without completing:
 
 ```bash
-npm run cli -- work:release task <task-id> codex-thread-123 "Handoff for the next agent"
+pimpampum work:release task <task-id> codex-thread-123 "Handoff for the next agent"
 ```
 
 ## Using Pimpampum from agents
@@ -371,8 +379,8 @@ The live database must remain in Pimpampum's local data directory. **Do not plac
 Backups and exports may be written to synchronized folders:
 
 ```bash
-npm run cli -- backup /path/to/Dropbox/pimpampum-backups
-npm run cli -- export /path/to/iCloud/pimpampum-exports
+pimpampum backup /path/to/Dropbox/pimpampum-backups
+pimpampum export /path/to/iCloud/pimpampum-exports
 ```
 
 - Backups are immutable SQLite snapshots verified with an integrity check.
@@ -418,6 +426,16 @@ Pimpampum intentionally does not include:
 These omissions are part of the product. They keep the contract small, understandable, and stable for agents.
 
 ## Development and quality
+
+The commands in this section require a full source checkout. Development, test, benchmark, native
+build, and destructive live-smoke scripts are intentionally omitted from the published runtime
+manifest. The tarball retains only `start`, static Omarchy validation, schema-v2 Quattro evidence
+verification, and its safe packaging lifecycle hook. Validate externally captured Quattro evidence
+from an unpacked package with:
+
+```bash
+npm run check:quattro-evidence -- /absolute/path/to/quattro-live.json /absolute/path/to/candidate
+```
 
 ```bash
 npm run typecheck

@@ -1,6 +1,6 @@
 # Agent Workflow Evals
 
-Pimpampum keeps one small deterministic evaluation suite for the workflows that matter to agents. It runs the compiled daemon, CLI, HTTP API, and MCP stdio bridge against temporary real SQLite databases.
+Pimpampum keeps one small deterministic evaluation suite for the workflows that matter to agents. It runs the compiled daemon, CLI, HTTP API, and MCP stdio bridge against temporary real SQLite databases. The suite is repository-only and requires a full source checkout; it is not part of the published runtime tarball.
 
 Run it with:
 
@@ -29,5 +29,16 @@ The suite has seven equally required evaluations. A release passes only when eve
 - MCP calls use the published tool metadata and schemas.
 - Persistent scenarios use real temporary files and SQLite databases.
 - Every run starts from clean temporary state and removes it afterward.
+
+## Platform release gate
+
+The separate Quattro gate is opt-in, target-specific, and repository-only; it remains outside
+`npm run test:evals` because it temporarily mutates the real per-user shell and requires visual
+review. From a full source checkout, run `npm run build`, then
+`PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live`, inspect and approve the captured UI, and
+finally run `npm run test:e2e:omarchy`. Schema-v2 evidence binds the exact candidate to lifecycle
+transcripts, baseline restoration, and the reviewed screenshots. The published package ships the
+non-mutating checker, which accepts explicit evidence and candidate paths through
+`npm run check:quattro-evidence -- <evidence> <candidate>`.
 
 These evals judge Pimpampum's coordination contract, not the quality of any particular model's prose or planning. Model-specific evals can be layered on later without weakening this deterministic release gate.

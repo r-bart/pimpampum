@@ -10,6 +10,11 @@
     "docs",
     "integrations/omarchy",
     "platforms/macos/dist",
+    "scripts/check-quattro-evidence.mjs",
+    "scripts/restore-package-manifest.mjs",
+    "scripts/validate-omarchy-plugin.mjs",
+    "test/fixtures/overview",
+    "thoughts/evidence/quattro-live.example.json",
     "README.md"
   ],
   "type": "module",
@@ -22,6 +27,7 @@
     "clean": "node --eval \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "prepack": "node scripts/prepare-package.mjs",
+    "postpack": "node scripts/restore-package-manifest.mjs",
     "dev": "tsx watch src/daemon.ts",
     "start": "node dist/daemon.js",
     "cli": "tsx src/cli.ts",
@@ -44,6 +50,7 @@
     "test:e2e": "npm run build && vitest run test/e2e.test.ts",
     "test:evals": "npm run test:e2e",
     "test:e2e:macos": "node scripts/test-macos-live.mjs",
+    "test:e2e:omarchy:live": "node scripts/test-omarchy-live.mjs",
     "test:e2e:omarchy": "npm run validate:omarchy && npm run check:quattro-evidence"
   },
   "keywords": [

@@ -60,20 +60,29 @@ equivalent thin wrapper around `pimpampum uninstall`.
 
 ## Validation
 
-The repository's cross-platform validator can run on macOS or Linux:
+The packaged cross-platform validator can run on macOS or Linux:
 
 ```bash
-node scripts/validate-omarchy-plugin.mjs
+npm run validate:omarchy
 ```
 
-On the target machine, also run:
+The following release workflow requires a full source checkout and is intentionally not included
+in the published runtime tarball. On the target machine, run:
 
 ```bash
 omarchy --version
 omarchy plugin validate ./integrations/omarchy/pimpampum-status
+npm run build
+PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live
+npm run test:e2e:omarchy
 ```
 
 Static validation does not prove live Quattro behavior. Release evidence must
 come from the real machine and cover hot reload, theme inheritance, horizontal
 and vertical layouts, popout coordination, offline recovery, completed-project
-collapse, active counts, and directory reveal.
+collapse, active counts, and directory reveal. The live runner is deliberately
+destructive only to the temporary Pimpampum installation it creates: it refuses
+to run over an existing installation, records exact argument-array transcripts,
+and emits no passing evidence unless uninstall restores the captured baseline.
+The visual phase remains human-owned; the reviewer must inspect and approve the
+captured screenshots rather than replacing visual judgment with authored flags.
