@@ -8,6 +8,8 @@
   "files": [
     "dist",
     "docs",
+    "integrations/omarchy",
+    "platforms/macos/dist",
     "README.md"
   ],
   "type": "module",
@@ -19,6 +21,7 @@
   "scripts": {
     "clean": "node --eval \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.build.json",
+    "prepack": "node scripts/prepare-package.mjs",
     "dev": "tsx watch src/daemon.ts",
     "start": "node dist/daemon.js",
     "cli": "tsx src/cli.ts",
@@ -28,12 +31,20 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:desktop-contract": "node scripts/check-desktop-status-contract.mjs",
+    "check:macos-evidence": "node scripts/check-macos-evidence.mjs",
     "check:quattro-evidence": "node scripts/check-quattro-evidence.mjs",
     "benchmark:overview": "tsx scripts/benchmark-overview.ts",
+    "build:macos": "./scripts/build-macos-app.sh",
+    "test:macos": "./scripts/check-swift-coverage.sh",
+    "validate:omarchy": "node scripts/validate-omarchy-plugin.mjs",
+    "test:omarchy": "npm run validate:omarchy && vitest run test/omarchy-plugin.test.ts test/service-omarchy.test.ts",
     "test": "npm run build && npm run test:coverage && vitest run test/e2e.test.ts",
     "test:coverage": "vitest run --coverage --exclude test/e2e.test.ts",
     "test:unit": "vitest run --exclude test/e2e.test.ts",
-    "test:e2e": "npm run build && vitest run test/e2e.test.ts"
+    "test:e2e": "npm run build && vitest run test/e2e.test.ts",
+    "test:evals": "npm run test:e2e",
+    "test:e2e:macos": "node scripts/test-macos-live.mjs",
+    "test:e2e:omarchy": "npm run validate:omarchy && npm run check:quattro-evidence"
   },
   "keywords": [
     "agents",

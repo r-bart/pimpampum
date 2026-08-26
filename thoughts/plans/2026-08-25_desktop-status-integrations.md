@@ -10,6 +10,13 @@
 
 Add a bounded project overview contract, safe per-user service installation, a native unsigned macOS menu bar application, and a native Omarchy Quattro bar widget. All visible status is read-only and derived from canonical project state plus unexpired claims; no `doing` state or database migration is introduced.
 
+## Execution Status
+
+- Phases 0–3 are implemented and verified, including a real macOS service, rendered UI, Finder, login-item, and uninstall smoke tied to the packaged app hash.
+- Phase 4 implementation and static/adversarial verification are complete. Transactional rollback preserves the exact daemon state and the exact Pimpampum bar placement/settings through supported Omarchy IPC, including the pinned runtime's asynchronous rescan behavior.
+- The final cross-platform release gate remains open only because the target Quattro machine is unreachable from the current host. No `quattro-live.json` evidence has been fabricated or inferred from fixtures.
+- Current gates: 238 TypeScript unit tests at 100% coverage, 7 compiled workflow evals, 51 Swift tests at 100% core coverage, 26 focused Omarchy tests, 0 production audit vulnerabilities, and a verified 105-file npm package.
+
 ---
 
 ## Preflight Findings
@@ -34,14 +41,14 @@ Add a bounded project overview contract, safe per-user service installation, a n
 - [x] Return bounded project, count, and active-work summaries without Markdown bodies.
 - [x] Add idempotent `install`, `status`, and `uninstall` commands.
 - [x] Install a per-user LaunchAgent on macOS and a per-user systemd service on Linux.
-- [ ] Install an unsigned SwiftUI menu bar app into `~/Applications`.
-- [ ] Install a native Omarchy Quattro `bar-widget` without overwriting user shell configuration.
-- [ ] Show active-claim count in compact indicators.
-- [ ] Collapse completed projects by default in both detailed views.
-- [ ] Reveal the registered workspace root in Finder or the Linux file explorer.
-- [ ] Keep both status surfaces strictly read-only.
+- [x] Install an unsigned SwiftUI menu bar app into `~/Applications`.
+- [x] Install a native Omarchy Quattro `bar-widget` without overwriting user shell configuration.
+- [x] Show active-claim count in compact indicators.
+- [x] Collapse completed projects by default in both detailed views.
+- [x] Reveal the registered workspace root in Finder or the Linux file explorer.
+- [x] Keep both status surfaces strictly read-only.
 - [x] Preserve `~/.pimpampum` during uninstall.
-- [ ] Maintain the existing TypeScript coverage and compiled E2E gates.
+- [x] Maintain the existing TypeScript coverage and compiled E2E gates.
 
 ---
 
@@ -411,6 +418,23 @@ Use argument-array execution for `systemctl --user daemon-reload`, `enable --now
 - Run an opt-in local smoke: daemon offline, online empty, active claim, completion, stale recovery, Finder reveal, login registration, and uninstall.
 - Confirm no Dock icon appears.
 
+#### Task 3.5: Close strict lifecycle and packaging regressions
+
+- Preserve a pre-existing `requiresApproval` login-item registration during every failed install
+  compensation path; registration is considered changed only when starting from an explicitly
+  unregistered state.
+- Snapshot the daemon and login-item integration state before uninstall, and restore exactly that
+  state when deactivation or a later filesystem step fails. Cover stopped, loaded-inactive,
+  approval-pending, and failure-before-mutation states.
+- Permit direct uninstall from a newer package whose declared bundle removed an older
+  receipt-owned member, but only inside adapter-declared fixed artifact roots and only when the
+  on-disk bytes still match the receipt.
+- Replace API-only smoke assertions with a dedicated native UI smoke harness that renders and
+  observes empty, active, complete, stale, and recovered presentation states; activate a real
+  project row and verify Finder receives its exact registered workspace path.
+- Validate the packaged executable as an arm64 Mach-O, its deployment target, the exact
+  `LSUIElement=true` plist value, and approved immutable artifact metadata on non-macOS pack hosts.
+
 ### Phase 4: Omarchy Quattro Plugin
 
 #### Task 4.1: Build and validate the plugin contract
@@ -438,6 +462,15 @@ Use argument-array execution for `systemctl --user daemon-reload`, `enable --now
 - Never edit `shell.json` directly.
 - On failure, roll back only the staged Pimpampum plugin and leave existing layout untouched.
 - Uninstall through the official plugin command and preserve unrelated plugins.
+- Compose the plugin and systemd user service as one Linux adapter selected automatically when a
+  compatible Quattro runtime is detected. `pimpampum install`, `status`, and `uninstall` remain the
+  only owning lifecycle; bundled shell scripts are thin CLI wrappers.
+- Run compatibility, official-command, source-candidate, and shell-IPC preflight checks inside the
+  manager lifecycle lock before the first write. Own every installed plugin file in the receipt,
+  reject symlink ancestors and unowned destinations, and transactionally compensate partial
+  enable/remove operations.
+- Keep non-Quattro Linux on the plain systemd adapter and report authentication failures and plugin
+  integration state distinctly from daemon-offline state.
 
 #### Task 4.4: Verify on a real Quattro machine
 
@@ -492,11 +525,12 @@ dependencies:
   3.2: [3.1]
   3.3: [2.2, 3.2]
   3.4: [3.3]
+  3.5: [3.4]
   4.1: [0.2, 1.3]
   4.2: [4.1]
   4.3: [2.3, 4.2]
   4.4: [4.3]
-  5.1: [2.4, 3.4, 4.4]
+  5.1: [2.4, 3.5, 4.4]
   5.2: [5.1]
   5.3: [5.2]
 ```
@@ -617,13 +651,13 @@ The matching manifest is `thoughts/tests/2026-08-26_desktop-status-integrations.
 
 ### Phase 3
 
-- [ ] Unsigned app builds with Swift 6.3/Xcode 26.6 and installs under `~/Applications`.
-- [ ] Menu bar indicator shows active count and all semantic states with accessible non-color labels.
-- [ ] Popover shows active work, incomplete projects, and collapsed completed projects.
-- [ ] Finder reveal opens the exact workspace root without shell execution.
-- [ ] Offline state retains and labels stale data.
-- [ ] Login item status and approval path work locally.
-- [ ] Swift unit tests and opt-in macOS smoke pass.
+- [x] Unsigned app builds with Swift 6.3/Xcode 26.6 and installs under `~/Applications`.
+- [x] Menu bar indicator shows active count and all semantic states with accessible non-color labels.
+- [x] Popover shows active work, incomplete projects, and collapsed completed projects.
+- [x] Finder reveal opens the exact workspace root without shell execution.
+- [x] Offline state retains and labels stale data.
+- [x] Login item status and approval path work locally.
+- [x] Swift unit tests and opt-in macOS smoke pass.
 
 ### Phase 4
 
@@ -631,26 +665,26 @@ The matching manifest is `thoughts/tests/2026-08-26_desktop-status-integrations.
 - [ ] Plugin is enabled without direct `shell.json` modification.
 - [ ] Widget inherits theme and works in the actual top bar.
 - [ ] Popout, active count, completed collapse, stale recovery, and file opening pass live smoke.
-- [ ] Plugin removal preserves every unrelated plugin and layout entry.
+- [x] Plugin removal preserves every unrelated plugin and layout entry in transactional fake-platform coverage.
 
 ### Spec Tests
 
-- [ ] All generated feature tests pass.
-- [ ] No generated spec test file was modified after generation.
+- [x] All generated feature tests pass.
+- [x] No generated spec test file was modified after generation.
 
 ### Overall
 
-- [ ] `npm run typecheck` passes with zero errors.
-- [ ] `npm run lint` passes with warnings denied.
-- [ ] `npm run format:check` passes.
-- [ ] `npm test` passes all existing and new compiled scenarios.
-- [ ] TypeScript runtime coverage remains 100% for statements, branches, functions, and lines.
-- [ ] `swift test --enable-code-coverage` passes.
-- [ ] `npm audit --omit=dev` reports no production vulnerabilities.
-- [ ] `npm pack --dry-run` contains every required runtime integration and no local artifacts.
-- [ ] `devtronic:post-review --strict` reports no unresolved findings.
-- [ ] No TODO, FIXME, HACK, embedded secret, user-specific path, or unsafe shell interpolation remains.
-- [ ] README documents install, status, overview, platform behavior, approval, logs, recovery, and uninstall.
+- [x] `npm run typecheck` passes with zero errors.
+- [x] `npm run lint` passes with warnings denied.
+- [x] `npm run format:check` passes.
+- [x] `npm test` passes all existing and new compiled scenarios.
+- [x] TypeScript runtime coverage remains 100% for statements, branches, functions, and lines.
+- [x] `swift test --enable-code-coverage` passes.
+- [x] `npm audit --omit=dev` reports no production vulnerabilities.
+- [x] `npm pack --dry-run` contains every required runtime integration and no local artifacts.
+- [x] `devtronic:post-review --strict` reports no unresolved static/code findings; the real Quattro evidence remains the separately recorded external release gate.
+- [x] No TODO, FIXME, HACK, embedded secret, user-specific production path, or unsafe shell interpolation remains.
+- [x] README documents install, status, overview, platform behavior, approval, logs, recovery, and uninstall.
 
 ---
 

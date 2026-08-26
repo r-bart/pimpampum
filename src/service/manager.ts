@@ -130,16 +130,45 @@ function supportedPlatform(value: NodeJS.Platform): SupportedServicePlatform | n
   return value === 'darwin' || value === 'linux' ? value : null;
 }
 
-function requireAdapter(input: PlatformServiceManagerInput): PlatformServiceAdapter {
+function requireAdapter(
+  input: PlatformServiceManagerInput,
+  receiptAdapterId?: string,
+): PlatformServiceAdapter {
   const platform = supportedPlatform(input.platform);
   if (!platform) throw new Error(`Unsupported service platform: ${input.platform}`);
   const configured = input.adapters?.[platform];
+  const defaultAdapter =
+    configured ?? (platform === 'darwin' ? createLaunchdAdapter() : createSystemdAdapter());
+  if (receiptAdapterId) {
+    const receiptAdapter = [defaultAdapter, ...Object.values(input.receiptAdapters ?? {})].find(
+      (candidate) => candidate?.id === receiptAdapterId,
+    );
+    if (!receiptAdapter) {
+      throw new Error(
+        `Installation receipt does not match an available platform adapter; installed service adapter ${receiptAdapterId} is unavailable, so restore its required platform commands and retry`,
+      );
+    }
+    if (receiptAdapter.platform !== platform) {
+      throw new Error('Service adapter platform mismatch');
+    }
+    return receiptAdapter;
+  }
   if (configured) {
     if (configured.platform !== platform) throw new Error('Service adapter platform mismatch');
     return configured;
   }
-  if (platform === 'darwin') return createLaunchdAdapter();
-  return createSystemdAdapter();
+  return defaultAdapter;
+}
+
+function requireReceiptAdapter(
+  input: PlatformServiceManagerInput,
+  receipt: InstallReceipt,
+): PlatformServiceAdapter {
+  const platform = supportedPlatform(input.platform);
+  if (receipt.platform !== platform) {
+    throw new Error('Installation receipt does not match the current platform');
+  }
+  return requireAdapter(input, receipt.adapter);
 }
 
 function adapterContext(input: PlatformServiceManagerInput): ServiceAdapterContext {
@@ -187,6 +216,32 @@ function validateArtifacts(context: ServiceAdapterContext, artifacts: ServiceArt
   if (artifacts.length === 0) throw new Error('Service adapter returned no artifacts');
 }
 
+function validateOwnedArtifactRoots(
+  adapter: PlatformServiceAdapter,
+  context: ServiceAdapterContext,
+): string[] {
+  const roots = adapter.ownedArtifactRoots?.(context) ?? [];
+  const normalized = roots.map((root) => absolutePath(root, 'Owned artifact root'));
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error('Service adapter returned a duplicate owned artifact root');
+  }
+  for (const root of normalized) {
+    if (!isPathInside(context.homeDirectory, root)) {
+      throw new Error('Owned artifact root must be inside the home directory');
+    }
+    assertNoSymlinkTraversal(root, 'Owned artifact root', context.homeDirectory);
+  }
+  return normalized;
+}
+
+function pathIsAdapterOwned(
+  path: string,
+  allowedPaths: Set<string>,
+  ownedRoots: string[],
+): boolean {
+  return allowedPaths.has(path) || ownedRoots.some((root) => isPathInside(root, path));
+}
+
 function snapshotArtifact(path: string, trustedRoot: string): ArtifactSnapshot {
   assertNoSymlinkTraversal(path, 'Service artifact snapshot', trustedRoot);
   if (!existsSync(path)) return { path, trustedRoot, existed: false };
@@ -232,23 +287,27 @@ function validateOwnedArtifacts(
   context: ServiceAdapterContext,
   receipt: InstallReceipt,
   plannedArtifacts: ServiceArtifact[],
+  ownedRoots: string[],
 ): ServiceArtifact[] {
   const allowedPaths = new Set(plannedArtifacts.map((artifact) => artifact.path));
   const receiptPaths = new Set(receipt.artifacts.map((artifact) => normalize(artifact.path)));
-  if (receipt.artifacts.length !== allowedPaths.size || receiptPaths.size !== allowedPaths.size) {
-    throw new Error('Receipt artifact set does not match the platform adapter');
-  }
-  return receipt.artifacts.map((artifact) => {
+  if (receiptPaths.size !== receipt.artifacts.length)
+    throw new Error('Receipt artifact set contains duplicate paths');
+  const artifacts = receipt.artifacts.map((artifact) => {
     const path = absolutePath(artifact.path, 'Receipt artifact');
     if (!isPathInside(context.homeDirectory, path)) {
       throw new Error('Receipt contains an artifact outside the home directory');
     }
     assertNoSymlinkTraversal(path, 'Receipt artifact', context.homeDirectory);
-    if (!allowedPaths.has(path)) {
+    if (!pathIsAdapterOwned(path, allowedPaths, ownedRoots)) {
       throw new Error('Receipt artifact is not owned by the platform adapter');
     }
     return { path, content: Buffer.alloc(0), mode: artifact.mode };
   });
+  if ([...allowedPaths].some((path) => !receiptPaths.has(path))) {
+    throw new Error('Receipt artifact set does not contain every current adapter artifact');
+  }
+  return artifacts;
 }
 
 function assertOwnedBytes(receipt: InstallReceipt, artifacts: ServiceArtifact[]): void {
@@ -266,16 +325,70 @@ function assertOwnedBytes(receipt: InstallReceipt, artifacts: ServiceArtifact[])
   }
 }
 
+function staleOwnedArtifacts(
+  context: ServiceAdapterContext,
+  receipt: InstallReceipt | null,
+  plannedArtifacts: ServiceArtifact[],
+  ownedRoots: string[],
+): ServiceArtifact[] {
+  if (!receipt) return [];
+  const plannedPaths = new Set(plannedArtifacts.map((artifact) => artifact.path));
+  return receipt.artifacts
+    .filter((artifact) => !plannedPaths.has(normalize(artifact.path)))
+    .map((artifact) => {
+      const path = absolutePath(artifact.path, 'Stale receipt artifact');
+      if (!isPathInside(context.homeDirectory, path)) {
+        throw new Error('Stale receipt artifact must be inside the home directory');
+      }
+      assertNoSymlinkTraversal(path, 'Stale receipt artifact', context.homeDirectory);
+      if (!ownedRoots.some((root) => isPathInside(root, path))) {
+        throw new Error('Stale receipt artifact is not inside an adapter-owned root');
+      }
+      if (!existsSync(path)) return { path, content: Buffer.alloc(0), mode: artifact.mode };
+      const metadata = lstatSync(path);
+      if (
+        !metadata.isFile() ||
+        metadata.isSymbolicLink() ||
+        sha256(readFileSync(path)) !== artifact.sha256
+      ) {
+        throw new Error(`Refusing to replace modified stale service artifact: ${path}`);
+      }
+      return { path, content: Buffer.alloc(0), mode: artifact.mode };
+    });
+}
+
+function repairMissingArtifacts(
+  context: ServiceAdapterContext,
+  receipt: InstallReceipt,
+  plannedArtifacts: ServiceArtifact[],
+): void {
+  const plannedByPath = new Map(plannedArtifacts.map((artifact) => [artifact.path, artifact]));
+  for (const expected of receipt.artifacts) {
+    const path = normalize(expected.path);
+    if (existsSync(path)) continue;
+    const planned = plannedByPath.get(path);
+    if (!planned) continue;
+    if (sha256(planned.content) !== expected.sha256 || planned.mode !== expected.mode) {
+      throw new Error(`Cannot repair missing service artifact from this package: ${path}`);
+    }
+    writePrivateFileAtomic(path, planned.content, planned.mode, context.homeDirectory);
+  }
+}
+
 export function createPlatformServiceManager(input: PlatformServiceManagerInput): ServiceManager {
   const receiptPath = installReceiptPath(absolutePath(input.dataDirectory, 'Data directory'));
 
   return {
     async install(): Promise<InstallResult> {
-      const adapter = requireAdapter(input);
+      const defaultAdapter = requireAdapter(input);
       const context = adapterContext(input);
       return withLifecycleLock(context, async () => {
+        const existing = readInstallReceipt(receiptPath, context.dataDirectory);
+        const adapter = existing ? requireReceiptAdapter(input, existing) : defaultAdapter;
         const artifacts = adapter.artifacts(context);
         validateArtifacts(context, artifacts);
+        const ownedRoots = validateOwnedArtifactRoots(adapter, context);
+        await adapter.preflight?.(context, artifacts, 'install');
         const ownedArtifacts = receiptArtifacts(artifacts);
         const key = installationKey({
           adapter: adapter.id,
@@ -286,16 +399,17 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
           dataDirectory: context.dataDirectory,
           artifacts: ownedArtifacts,
         });
-        const existing = readInstallReceipt(receiptPath, context.dataDirectory);
         if (existing?.installationKey === key && artifactSetIsCurrent(existing, artifacts)) {
           chmodSync(receiptPath, 0o600);
           if (!(await adapter.isRunning(context, artifacts))) {
             await repairRegistration(adapter, context, artifacts);
           }
-          return { installed: true, reconciled: true, receiptPath };
+          const integration = await adapter.afterInstall?.(context, artifacts);
+          return { installed: true, reconciled: true, receiptPath, ...integration };
         }
 
-        const snapshots = artifacts.map((artifact) =>
+        const staleArtifacts = staleOwnedArtifacts(context, existing, artifacts, ownedRoots);
+        const snapshots = [...artifacts, ...staleArtifacts].map((artifact) =>
           snapshotArtifact(artifact.path, context.homeDirectory),
         );
         const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
@@ -314,8 +428,10 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
           logDirectory: context.logDirectory,
           artifacts: ownedArtifacts,
         };
+        let activationCompleted = false;
         try {
           rotateServiceLogs(context.logDirectory, 5, context.dataDirectory);
+          for (const artifact of staleArtifacts) rmSync(artifact.path, { force: true });
           for (const artifact of artifacts) {
             writePrivateFileAtomic(
               artifact.path,
@@ -326,10 +442,28 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
           }
           writeInstallReceipt(receiptPath, receipt, context.dataDirectory);
           await adapter.activate(context, artifacts);
-          return { installed: true, reconciled: existing !== null, receiptPath };
+          activationCompleted = true;
+          const integration = await adapter.afterInstall?.(context, artifacts);
+          return {
+            installed: true,
+            reconciled: existing !== null,
+            receiptPath,
+            ...integration,
+          };
         } catch (error) {
           const rollbackErrors: unknown[] = [error];
           let serviceArtifactsRestored = false;
+          if (activationCompleted) {
+            try {
+              if (adapter.rollbackActivation) {
+                await adapter.rollbackActivation(context, artifacts);
+              } else {
+                await adapter.deactivate(context, artifacts);
+              }
+            } catch (deactivationError) {
+              rollbackErrors.push(deactivationError);
+            }
+          }
           try {
             restoreArtifacts([...snapshots, receiptSnapshot]);
             serviceArtifactsRestored = true;
@@ -347,6 +481,12 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
             } catch (adapterRollbackError) {
               rollbackErrors.push(adapterRollbackError);
             }
+          } else if (serviceArtifactsRestored && activationCompleted && existing) {
+            try {
+              await adapter.activate(context, artifacts);
+            } catch (reactivationError) {
+              rollbackErrors.push(reactivationError);
+            }
           }
           if (rollbackErrors.length > 1) {
             throw new AggregateError(rollbackErrors, 'Service installation and rollback failed');
@@ -357,43 +497,81 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
     },
 
     async status(): Promise<ServiceStatus> {
-      const adapter = requireAdapter(input);
+      requireAdapter(input);
       const context = adapterContext(input);
       return withLifecycleLock(context, async () => {
         const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
         if (!receipt) return { installed: false, running: false, adapter: null, version: null };
-        if (receipt.adapter !== adapter.id || receipt.platform !== adapter.platform) {
-          throw new Error('Installation receipt does not match the platform adapter');
-        }
+        const adapter = requireReceiptAdapter(input, receipt);
         const artifacts = adapter.artifacts(context);
         validateArtifacts(context, artifacts);
         const installed = artifactSetIsCurrent(receipt, artifacts);
+        const integration = await adapter.integrationStatus?.(context, artifacts);
         return {
           installed,
           running: installed ? await adapter.isRunning(context, artifacts) : false,
           adapter: receipt.adapter,
           version: receipt.version,
+          ...integration,
         };
       });
     },
 
     async uninstall(): Promise<UninstallResult> {
-      const adapter = requireAdapter(input);
+      requireAdapter(input);
       const context = adapterContext(input);
       return withLifecycleLock(context, async () => {
         const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
         if (!receipt) return { uninstalled: false, dataPreserved: true };
-        if (receipt.adapter !== adapter.id || receipt.platform !== adapter.platform) {
-          throw new Error('Installation receipt does not match the platform adapter');
-        }
+        const adapter = requireReceiptAdapter(input, receipt);
         const plannedArtifacts = adapter.artifacts(context);
         validateArtifacts(context, plannedArtifacts);
-        const artifacts = validateOwnedArtifacts(context, receipt, plannedArtifacts);
-        assertOwnedBytes(receipt, artifacts);
-        await adapter.deactivate(context, artifacts);
-        for (const artifact of artifacts) rmSync(artifact.path, { force: true });
-        rmSync(receiptPath, { force: true });
-        return { uninstalled: true, dataPreserved: true };
+        const ownedRoots = validateOwnedArtifactRoots(adapter, context);
+        await adapter.preflight?.(context, plannedArtifacts, 'uninstall');
+        const artifacts = validateOwnedArtifacts(context, receipt, plannedArtifacts, ownedRoots);
+        const snapshots = artifacts.map((artifact) =>
+          snapshotArtifact(artifact.path, context.homeDirectory),
+        );
+        const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
+        let rollbackDeactivation: (() => Promise<void>) | undefined;
+        let deactivationAttempted = false;
+        try {
+          repairMissingArtifacts(context, receipt, plannedArtifacts);
+          assertOwnedBytes(receipt, artifacts);
+          rollbackDeactivation = await adapter.prepareDeactivationRollback?.(
+            context,
+            plannedArtifacts,
+          );
+          deactivationAttempted = true;
+          await adapter.deactivate(context, artifacts);
+          for (const artifact of artifacts) rmSync(artifact.path, { force: true });
+          await adapter.afterUninstall?.(context, artifacts);
+          rmSync(receiptPath, { force: true });
+          return { uninstalled: true, dataPreserved: true };
+        } catch (error) {
+          const rollbackErrors: unknown[] = [error];
+          try {
+            restoreArtifacts([...snapshots, receiptSnapshot]);
+          } catch (restoreError) {
+            rollbackErrors.push(restoreError);
+          }
+          if (deactivationAttempted) {
+            try {
+              if (rollbackDeactivation) {
+                await rollbackDeactivation();
+              } else {
+                await adapter.activate(context, plannedArtifacts);
+                await adapter.afterInstall?.(context, plannedArtifacts);
+              }
+            } catch (activationError) {
+              rollbackErrors.push(activationError);
+            }
+          }
+          if (rollbackErrors.length > 1) {
+            throw new AggregateError(rollbackErrors, 'Service uninstallation and rollback failed');
+          }
+          throw error;
+        }
       });
     },
   };

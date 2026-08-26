@@ -641,4 +641,55 @@ describe('systemd user service', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    {
+      label: 'enabled and running',
+      state: serviceState('loaded', 'enabled', 'active'),
+      restore: ['--user', 'enable', '--now', SYSTEMD_UNIT_NAME],
+    },
+    {
+      label: 'enabled but stopped',
+      state: serviceState('loaded', 'enabled', 'inactive'),
+      restore: ['--user', 'enable', SYSTEMD_UNIT_NAME],
+    },
+    {
+      label: 'disabled but running',
+      state: serviceState('loaded', 'disabled', 'active'),
+      restore: ['--user', 'start', SYSTEMD_UNIT_NAME],
+    },
+    {
+      label: 'disabled and stopped',
+      state: serviceState('loaded', 'disabled', 'inactive'),
+      restore: null,
+    },
+  ])('restores the exact prior systemd state: $label', async ({ state, restore }) => {
+    const runCommand = vi.fn<RunCommand>(async (_executable, arguments_) =>
+      arguments_[1] === 'show' ? state : success(),
+    );
+    const adapter = createSystemdAdapter({ systemctlPath: '/custom/systemctl' });
+    const adapterContext = context(runCommand);
+
+    const rollback = await adapter.prepareDeactivationRollback!(adapterContext, []);
+    await adapter.deactivate(adapterContext, []);
+    await rollback();
+
+    expect(runCommand.mock.calls.map(([, arguments_]) => arguments_)).toEqual([
+      [
+        '--user',
+        'show',
+        SYSTEMD_UNIT_NAME,
+        '--property=LoadState',
+        '--property=UnitFileState',
+        '--property=ActiveState',
+        '--no-pager',
+      ],
+      ['--user', 'disable', '--now', SYSTEMD_UNIT_NAME],
+      ['--user', 'reset-failed', SYSTEMD_UNIT_NAME],
+      ['--user', 'disable', '--now', SYSTEMD_UNIT_NAME],
+      ['--user', 'reset-failed', SYSTEMD_UNIT_NAME],
+      ['--user', 'daemon-reload'],
+      ...(restore ? [restore] : []),
+    ]);
+  });
 });

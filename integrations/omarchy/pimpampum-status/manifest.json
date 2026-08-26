@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.pimpampum.status",
+  "name": "Pimpampum Status",
+  "version": "0.1.0",
+  "author": "Pimpampum",
+  "description": "Read-only project and active-work status for Pimpampum",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Pimpampum",
+    "description": "Project health and active work",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

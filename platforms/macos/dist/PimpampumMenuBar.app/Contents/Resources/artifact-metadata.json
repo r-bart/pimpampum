@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "binarySha256": "8dfe7a28d1b7de8cfa1ded032c1a57fbe71cf1bd38032154a423af0eea9352dc",
+  "plistSha256": "ac63ec06a8dcbb3afe8471981edbbc5d43eaf5cbab09773f2cf941dcdea0045c",
+  "binaryFormat": "Mach-O 64-bit",
+  "architecture": "arm64",
+  "minimumMacOS": "13.0.0",
+  "lsMinimumSystemVersion": "13.0",
+  "lsUIElement": true,
+  "bundleIdentifier": "dev.pimpampum.menubar",
+  "executable": "PimpampumMenuBar"
+}

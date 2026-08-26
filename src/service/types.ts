@@ -30,16 +30,43 @@ export interface PlatformServiceAdapter {
   readonly id: string;
   readonly platform: SupportedServicePlatform;
   artifacts(context: ServiceAdapterContext): ServiceArtifact[];
+  ownedArtifactRoots?(context: ServiceAdapterContext): string[];
+  preflight?(
+    context: ServiceAdapterContext,
+    artifacts: ServiceArtifact[],
+    operation: 'install' | 'uninstall',
+  ): Promise<void>;
   activate(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
   deactivate(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
+  prepareDeactivationRollback?(
+    context: ServiceAdapterContext,
+    artifacts: ServiceArtifact[],
+  ): Promise<() => Promise<void>>;
   isRunning(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<boolean>;
+  afterInstall?(
+    context: ServiceAdapterContext,
+    artifacts: ServiceArtifact[],
+  ): Promise<ServiceIntegrationStatus | undefined>;
   afterRollback?(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
+  rollbackActivation?(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
+  afterUninstall?(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
+  integrationStatus?(
+    context: ServiceAdapterContext,
+    artifacts: ServiceArtifact[],
+  ): Promise<ServiceIntegrationStatus | undefined>;
+}
+
+export interface ServiceIntegrationStatus {
+  loginItem?: 'enabled' | 'requiresApproval' | 'error';
+  omarchyPlugin?: 'enabled' | 'disabled' | 'missing';
 }
 
 export interface InstallResult {
   installed: true;
   reconciled: boolean;
   receiptPath: string;
+  loginItem?: 'enabled' | 'requiresApproval' | 'error';
+  omarchyPlugin?: 'enabled' | 'disabled' | 'missing';
 }
 
 export interface ServiceStatus {
@@ -47,6 +74,8 @@ export interface ServiceStatus {
   running: boolean;
   adapter: string | null;
   version: string | null;
+  loginItem?: 'enabled' | 'requiresApproval' | 'error';
+  omarchyPlugin?: 'enabled' | 'disabled' | 'missing';
 }
 
 export interface UninstallResult {
@@ -72,6 +101,7 @@ export interface PlatformServiceManagerInput {
   port?: number;
   logDirectory?: string;
   adapters?: Partial<Record<SupportedServicePlatform, PlatformServiceAdapter>>;
+  receiptAdapters?: Record<string, PlatformServiceAdapter>;
 }
 
 export interface ReceiptArtifact {

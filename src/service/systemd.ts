@@ -202,6 +202,37 @@ async function compensateFailedActivation(
   throw errors[0]!;
 }
 
+async function restoreSystemdState(
+  context: ServiceAdapterContext,
+  systemctlPath: string,
+  previousState: PreviousSystemdState,
+): Promise<void> {
+  await runSystemctlAllowAbsent(context, systemctlPath, 'disable --now', [
+    'disable',
+    '--now',
+    SYSTEMD_UNIT_NAME,
+  ]);
+  await runSystemctlAllowAbsent(context, systemctlPath, 'reset-failed', [
+    'reset-failed',
+    SYSTEMD_UNIT_NAME,
+  ]);
+  await runSystemctl(context, systemctlPath, 'daemon-reload after deactivation rollback', [
+    'daemon-reload',
+  ]);
+  if (previousState.enabled) {
+    await runSystemctl(context, systemctlPath, 'restore enabled state', [
+      'enable',
+      ...(previousState.running ? ['--now'] : []),
+      SYSTEMD_UNIT_NAME,
+    ]);
+  } else if (previousState.running) {
+    await runSystemctl(context, systemctlPath, 'restore running state', [
+      'start',
+      SYSTEMD_UNIT_NAME,
+    ]);
+  }
+}
+
 export function createSystemdAdapter(options: SystemdAdapterOptions = {}): PlatformServiceAdapter {
   const systemctlPath = options.systemctlPath ?? '/usr/bin/systemctl';
   validateAbsolutePath(systemctlPath, 'systemctl path');
@@ -261,6 +292,10 @@ export function createSystemdAdapter(options: SystemdAdapterOptions = {}): Platf
         'reset-failed',
         SYSTEMD_UNIT_NAME,
       ]);
+    },
+    async prepareDeactivationRollback(context) {
+      const previousState = await readPreviousSystemdState(context, systemctlPath);
+      return async () => restoreSystemdState(context, systemctlPath, previousState);
     },
     async isRunning(context) {
       const result = await runSystemctl(context, systemctlPath, 'show', [

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "testedAt": "2026-08-26T01:31:19.848Z",
+  "platform": "macOS",
+  "architecture": "arm64",
+  "appSha256": "8dfe7a28d1b7de8cfa1ded032c1a57fbe71cf1bd38032154a423af0eea9352dc",
+  "loginItem": "enabled",
+  "checks": {
+    "empty": true,
+    "activeClaim": true,
+    "completion": true,
+    "daemonOffline": true,
+    "nativePopoverRendering": true,
+    "staleRecovery": true,
+    "projectRowActivation": true,
+    "finderRevealExactPath": true,
+    "noDockIcon": true,
+    "repeatInstallRecovery": true,
+    "uninstallCleanup": true
+  },
+  "renderings": {
+    "empty": "22809afeb4d73a93558599367cc929863d794de03559e5b1d60b81c6b09a386c",
+    "active": "b94e290e5b6f62b728ac3bced27900b97d142a6cef6b58f4f42f3c7e9d1bed54",
+    "complete": "f5d178ffeca915144f5f4bc65e7ec7c49d91e3e9613d7314d6823e61b4638db2",
+    "stale": "67fd94a64747185d9211cebbc5066d410b274123256a9ddb53f45ca3f48e17e0",
+    "recovered": "f5d178ffeca915144f5f4bc65e7ec7c49d91e3e9613d7314d6823e61b4638db2"
+  }
+}

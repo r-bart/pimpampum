@@ -527,7 +527,7 @@ export const openApiDocument: OpenApiDocument = {
         type: 'string',
         minLength: 1,
         description: 'Absolute filesystem path on the daemon machine.',
-        examples: ['/Users/roberto/Desktop/ventures/vcomp'],
+        examples: ['/Users/alex/Projects/vcomp'],
       },
       Timestamp: { type: 'string', format: 'date-time' },
       OverviewDaemon: {

@@ -173,6 +173,61 @@ function isMissingRegistration(result: CommandResult): boolean {
   );
 }
 
+interface LaunchdRegistrationState {
+  loaded: boolean;
+  running: boolean;
+}
+
+async function readLaunchdState(
+  context: ServiceAdapterContext,
+  launchctlPath: string,
+  guiDomain: string,
+): Promise<LaunchdRegistrationState> {
+  const result = await context.runCommand(launchctlPath, [
+    'print',
+    `${guiDomain}/${LAUNCH_AGENT_LABEL}`,
+  ]);
+  if (result.exitCode !== 0) {
+    if (isMissingRegistration(result)) return { loaded: false, running: false };
+    throw launchctlError('print before deactivation', result);
+  }
+  return {
+    loaded: true,
+    running: /^\s*state\s*=\s*running\s*$/imu.test(result.stdout),
+  };
+}
+
+async function restoreLaunchdState(input: {
+  context: ServiceAdapterContext;
+  launchctlPath: string;
+  guiDomain: string;
+  artifactPath: string;
+  state: LaunchdRegistrationState;
+}): Promise<void> {
+  const current = await input.context.runCommand(input.launchctlPath, [
+    'bootout',
+    input.guiDomain,
+    input.artifactPath,
+  ]);
+  if (current.exitCode !== 0 && !isMissingRegistration(current)) {
+    throw launchctlError('rollback bootout', current);
+  }
+  if (!input.state.loaded) return;
+  const bootstrap = await input.context.runCommand(input.launchctlPath, [
+    'bootstrap',
+    input.guiDomain,
+    input.artifactPath,
+  ]);
+  if (bootstrap.exitCode !== 0) throw launchctlError('rollback bootstrap', bootstrap);
+  const operation = input.state.running
+    ? ['kickstart', '-k', `${input.guiDomain}/${LAUNCH_AGENT_LABEL}`]
+    : ['kill', 'SIGTERM', `${input.guiDomain}/${LAUNCH_AGENT_LABEL}`];
+  const restored = await input.context.runCommand(input.launchctlPath, operation);
+  if (restored.exitCode !== 0) {
+    throw launchctlError(input.state.running ? 'rollback kickstart' : 'rollback stop', restored);
+  }
+}
+
 async function removePartialRegistration(input: {
   context: ServiceAdapterContext;
   launchctlPath: string;
@@ -297,6 +352,18 @@ export function createLaunchdAdapter(options: LaunchdAdapterOptions = {}): Platf
       if (bootout.exitCode !== 0 && !isMissingRegistration(bootout)) {
         throw launchctlError('bootout', bootout);
       }
+    },
+    async prepareDeactivationRollback(context, artifacts) {
+      const artifact = requireArtifact(artifacts);
+      const state = await readLaunchdState(context, launchctlPath, guiDomain);
+      return async () =>
+        restoreLaunchdState({
+          context,
+          launchctlPath,
+          guiDomain,
+          artifactPath: artifact.path,
+          state,
+        });
     },
     async isRunning(context) {
       const status = await context.runCommand(launchctlPath, [

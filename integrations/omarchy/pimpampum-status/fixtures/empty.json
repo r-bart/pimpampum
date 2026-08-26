@@ -1,0 +1,27 @@
+{
+  "meta": { "schemaVersion": 1 },
+  "data": {
+    "daemon": {
+      "version": "0.1.0",
+      "startedAt": "2026-08-26T20:00:00.000Z",
+      "uptimeSeconds": 30
+    },
+    "generatedAt": "2026-08-26T20:00:30.000Z",
+    "status": "empty",
+    "counts": {
+      "workspaces": 0,
+      "projects": 0,
+      "draftProjects": 0,
+      "readyProjects": 0,
+      "completedProjects": 0,
+      "openTasks": 0,
+      "completedTasks": 0,
+      "activeClaims": 0,
+      "availableWork": 0
+    },
+    "projects": [],
+    "projectsTruncated": false,
+    "activeWork": [],
+    "activeWorkTruncated": false
+  }
+}

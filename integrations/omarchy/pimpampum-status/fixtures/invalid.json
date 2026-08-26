@@ -1,0 +1,9 @@
+{
+  "meta": { "schemaVersion": 999 },
+  "data": {
+    "status": "unknown",
+    "counts": null,
+    "projects": "not-an-array",
+    "activeWork": []
+  }
+}

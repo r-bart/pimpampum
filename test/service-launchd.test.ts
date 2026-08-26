@@ -534,4 +534,87 @@ describe('launchctl adapter', () => {
     await expect(adapter.activate(adapterContext, [])).rejects.toThrow(/requires.*artifact/);
     await expect(adapter.deactivate(adapterContext, [])).rejects.toThrow(/requires.*artifact/);
   });
+
+  it.each([
+    {
+      label: 'running',
+      state: commandResult(0, '', 'state = running\n'),
+      restore: ['kickstart', '-k', `gui/520/${LAUNCH_AGENT_LABEL}`],
+    },
+    {
+      label: 'loaded but inactive',
+      state: commandResult(0, '', 'state = exited\n'),
+      restore: ['kill', 'SIGTERM', `gui/520/${LAUNCH_AGENT_LABEL}`],
+    },
+    {
+      label: 'not loaded',
+      state: commandResult(113, 'service not found'),
+      restore: null,
+    },
+  ])('restores the exact prior launchd state: $label', async ({ state, restore }) => {
+    const artifact: ServiceArtifact = {
+      path: '/Users/example/Library/LaunchAgents/dev.pimpampum.daemon.plist',
+      content: '',
+      mode: 0o644,
+    };
+    let calls = 0;
+    const runCommand = vi.fn<RunCommand>(async (_executable, arguments_) => {
+      calls += 1;
+      if (calls === 1) return state;
+      if (!restore && arguments_[0] === 'bootout') return commandResult(113, 'service not found');
+      return commandResult();
+    });
+    const adapter = createLaunchdAdapter({ guiDomain: 'gui/520' });
+    const adapterContext = context(runCommand);
+
+    const rollback = await adapter.prepareDeactivationRollback!(adapterContext, [artifact]);
+    await adapter.deactivate(adapterContext, [artifact]);
+    await rollback();
+
+    expect(runCommand.mock.calls.map(([, arguments_]) => arguments_)).toEqual([
+      ['print', `gui/520/${LAUNCH_AGENT_LABEL}`],
+      ['bootout', 'gui/520', artifact.path],
+      ['bootout', 'gui/520', artifact.path],
+      ...(restore ? [['bootstrap', 'gui/520', artifact.path], restore] : []),
+    ]);
+  });
+
+  it('surfaces every exact-state launchd snapshot and restoration failure', async () => {
+    const artifact: ServiceArtifact = {
+      path: '/Users/example/Library/LaunchAgents/dev.pimpampum.daemon.plist',
+      content: '',
+      mode: 0o644,
+    };
+    const adapter = createLaunchdAdapter({ guiDomain: 'gui/521' });
+    const deniedSnapshot = vi.fn<RunCommand>(async () => commandResult(13, 'permission denied'));
+    await expect(
+      adapter.prepareDeactivationRollback!(context(deniedSnapshot), [artifact]),
+    ).rejects.toThrow(/print before deactivation.*permission denied/);
+
+    for (const [label, failingCall, expected] of [
+      ['bootout', 2, /rollback bootout/],
+      ['bootstrap', 3, /rollback bootstrap/],
+      ['restart', 4, /rollback kickstart/],
+    ] as const) {
+      let call = 0;
+      const runCommand = vi.fn<RunCommand>(async () => {
+        call += 1;
+        if (call === 1) return commandResult(0, '', 'state = running\n');
+        return call === failingCall ? commandResult(77, `${label} denied`) : commandResult();
+      });
+      const rollback = await adapter.prepareDeactivationRollback!(context(runCommand), [artifact]);
+      await expect(rollback()).rejects.toThrow(expected);
+    }
+
+    let inactiveCall = 0;
+    const inactiveRunner = vi.fn<RunCommand>(async () => {
+      inactiveCall += 1;
+      if (inactiveCall === 1) return commandResult(0, '', 'state = exited\n');
+      return inactiveCall === 4 ? commandResult(78, 'stop denied') : commandResult();
+    });
+    const inactiveRollback = await adapter.prepareDeactivationRollback!(context(inactiveRunner), [
+      artifact,
+    ]);
+    await expect(inactiveRollback()).rejects.toThrow(/rollback stop.*stop denied/);
+  });
 });

@@ -5,7 +5,10 @@
 
 node_modules/
 dist/
+!platforms/macos/dist/
+!platforms/macos/dist/**
 coverage/
+platforms/macos/.build/
 .project-master/
 *.sqlite
 *.sqlite-shm

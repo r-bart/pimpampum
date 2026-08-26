@@ -172,8 +172,530 @@ describe('platform-neutral service manager', () => {
       ['/bin/launchctl', 'kickstart'],
       ['/bin/launchctl', 'print'],
       ['/bin/launchctl', 'print'],
+      ['/bin/launchctl', 'print'],
       ['/bin/launchctl', 'bootout'],
     ]);
+  });
+
+  it('removes obsolete receipt-owned files during a version reconciliation', async () => {
+    const root = testRoot('stale-upgrade');
+    const oldPath = join(root.homeDirectory, '.config', 'pimpampum', 'removed-in-v2');
+    const currentPath = join(root.homeDirectory, '.config', 'pimpampum', 'current');
+    const adapter = (includeOld: boolean): PlatformServiceAdapter => ({
+      id: 'upgrade-adapter',
+      platform: 'linux',
+      artifacts: () => [
+        { path: currentPath, content: 'current', mode: 0o600 },
+        ...(includeOld ? [{ path: oldPath, content: 'old', mode: 0o600 }] : []),
+      ],
+      ownedArtifactRoots: () => [join(root.homeDirectory, '.config', 'pimpampum')],
+      activate: async () => undefined,
+      deactivate: async () => undefined,
+      isRunning: async () => true,
+    });
+    const first = createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        adapters: { linux: adapter(true) },
+      }),
+    );
+    const second = createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        version: '0.2.0',
+        adapters: { linux: adapter(false) },
+      }),
+    );
+
+    await first.install();
+    expect(existsSync(oldPath)).toBe(true);
+    await expect(second.install()).resolves.toMatchObject({ reconciled: true });
+    expect(existsSync(oldPath)).toBe(false);
+    expect(existsSync(currentPath)).toBe(true);
+  });
+
+  it('directly uninstalls receipt-owned bundle members removed by a package upgrade', async () => {
+    const root = testRoot('direct-uninstall-upgrade');
+    const bundleRoot = join(root.homeDirectory, 'Applications', 'PimpampumMenuBar.app');
+    const currentPath = join(bundleRoot, 'Contents', 'MacOS', 'PimpampumMenuBar');
+    const removedPath = join(bundleRoot, 'Contents', 'Resources', 'removed-in-v2');
+    const alreadyMissingPath = join(bundleRoot, 'Contents', 'Resources', 'already-missing-in-v2');
+    const adapter = (includeRemoved: boolean): PlatformServiceAdapter => ({
+      id: 'bundle-upgrade-adapter',
+      platform: 'darwin',
+      artifacts: () => [
+        { path: currentPath, content: 'binary', mode: 0o755 },
+        ...(includeRemoved
+          ? [
+              { path: removedPath, content: 'old-resource', mode: 0o600 },
+              { path: alreadyMissingPath, content: 'old-missing-resource', mode: 0o600 },
+            ]
+          : []),
+      ],
+      ownedArtifactRoots: () => [bundleRoot],
+      activate: async () => undefined,
+      deactivate: async () => undefined,
+      isRunning: async () => true,
+    });
+    const input = managerInput(root, async () => success(), {
+      adapters: { darwin: adapter(true) },
+    });
+    await createPlatformServiceManager(input).install();
+    rmSync(alreadyMissingPath);
+
+    await expect(
+      createPlatformServiceManager({
+        ...input,
+        version: '0.2.0',
+        adapters: { darwin: adapter(false) },
+      }).uninstall(),
+    ).resolves.toMatchObject({ uninstalled: true });
+    expect(existsSync(currentPath)).toBe(false);
+    expect(existsSync(removedPath)).toBe(false);
+    expect(existsSync(alreadyMissingPath)).toBe(false);
+  });
+
+  it('repairs a missing owned helper before uninstalling', async () => {
+    const root = testRoot('uninstall-repair');
+    const artifactPath = join(
+      root.homeDirectory,
+      '.config',
+      'systemd',
+      'user',
+      'pimpampum.service',
+    );
+    let sawRepairedArtifact = false;
+    const adapter = testAdapter(root, {
+      deactivate: async () => {
+        sawRepairedArtifact = readFileSync(artifactPath, 'utf8') === 'service-v1';
+      },
+    });
+    const manager = createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        adapters: { linux: adapter },
+      }),
+    );
+
+    await manager.install();
+    rmSync(artifactPath);
+    await expect(manager.uninstall()).resolves.toMatchObject({ uninstalled: true });
+    expect(sawRepairedArtifact).toBe(true);
+    expect(existsSync(artifactPath)).toBe(false);
+  });
+
+  it('restores files and external state when uninstall cleanup fails, then retries', async () => {
+    const root = testRoot('uninstall-rollback');
+    let cleanupAttempts = 0;
+    let activations = 0;
+    let finalizations = 0;
+    const adapter = testAdapter(root, {
+      activate: async () => {
+        activations += 1;
+      },
+      afterInstall: async () => {
+        finalizations += 1;
+        return undefined;
+      },
+      afterUninstall: async () => {
+        cleanupAttempts += 1;
+        if (cleanupAttempts === 1) throw new Error('cleanup failed');
+      },
+    });
+    const manager = createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        adapters: { linux: adapter },
+      }),
+    );
+
+    await manager.install();
+    const receiptPath = installReceiptPath(root.dataDirectory);
+    const artifactPath = join(
+      root.homeDirectory,
+      '.config',
+      'systemd',
+      'user',
+      'pimpampum.service',
+    );
+    await expect(manager.uninstall()).rejects.toThrow('cleanup failed');
+    expect(existsSync(receiptPath)).toBe(true);
+    expect(readFileSync(artifactPath, 'utf8')).toBe('service-v1');
+    expect(activations).toBe(2);
+    expect(finalizations).toBe(2);
+    await expect(manager.uninstall()).resolves.toMatchObject({ uninstalled: true });
+  });
+
+  it('compensates an uninstall deactivation failure and preserves the original error', async () => {
+    const root = testRoot('uninstall-deactivate');
+    let deactivateAttempts = 0;
+    let activations = 0;
+    const adapter = testAdapter(root, {
+      activate: async () => {
+        activations += 1;
+      },
+      deactivate: async () => {
+        deactivateAttempts += 1;
+        if (deactivateAttempts === 1) throw new Error('deactivation failed');
+      },
+    });
+    const manager = createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        adapters: { linux: adapter },
+      }),
+    );
+
+    await manager.install();
+    await expect(manager.uninstall()).rejects.toThrow('deactivation failed');
+    expect(activations).toBe(2);
+    await expect(manager.status()).resolves.toMatchObject({ installed: true, running: true });
+    await expect(manager.uninstall()).resolves.toMatchObject({ uninstalled: true });
+  });
+
+  it('uses the adapter rollback snapshot to preserve a stopped service on early failure', async () => {
+    const root = testRoot('uninstall-stopped-snapshot');
+    let running = false;
+    let activationCount = 0;
+    let rollbackCount = 0;
+    const adapter = testAdapter(root, {
+      activate: async () => {
+        activationCount += 1;
+        running = true;
+      },
+      isRunning: async () => running,
+      prepareDeactivationRollback: async () => {
+        const priorRunning = running;
+        return async () => {
+          rollbackCount += 1;
+          running = priorRunning;
+        };
+      },
+      deactivate: async () => {
+        throw new Error('failed before external mutation');
+      },
+    });
+    const manager = createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        adapters: { linux: adapter },
+      }),
+    );
+
+    await manager.install();
+    running = false;
+    const artifactPath = adapter.artifacts({} as never)[0]!.path;
+    rmSync(artifactPath);
+    await expect(manager.uninstall()).rejects.toThrow('failed before external mutation');
+    expect(running).toBe(false);
+    expect(existsSync(artifactPath)).toBe(false);
+    expect(activationCount).toBe(1);
+    expect(rollbackCount).toBe(1);
+  });
+
+  it('runs adapter preflight inside the lifecycle lock before filesystem mutations', async () => {
+    const root = testRoot('adapter-preflight');
+    const artifactPath = join(root.homeDirectory, '.config', 'pimpampum', 'service');
+    const observations: Array<{ operation: string; artifactExists: boolean }> = [];
+    const adapter: PlatformServiceAdapter = {
+      id: 'preflight-adapter',
+      platform: 'linux',
+      artifacts: () => [{ path: artifactPath, content: 'owned', mode: 0o600 }],
+      preflight: async (_context, _artifacts, operation) => {
+        observations.push({ operation, artifactExists: existsSync(artifactPath) });
+      },
+      activate: async () => undefined,
+      deactivate: async () => undefined,
+      isRunning: async () => true,
+    };
+    const manager = createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        adapters: { linux: adapter },
+      }),
+    );
+
+    await manager.install();
+    await manager.uninstall();
+    expect(observations).toEqual([
+      { operation: 'install', artifactExists: false },
+      { operation: 'uninstall', artifactExists: true },
+    ]);
+  });
+
+  it('rejects mismatched and unsafe stale receipt artifacts during reconciliation', async () => {
+    for (const variant of ['adapter', 'outside', 'modified'] as const) {
+      const root = testRoot(`stale-${variant}`);
+      const oldPath = join(root.homeDirectory, '.config', 'pimpampum', 'old');
+      const currentPath = join(root.homeDirectory, '.config', 'pimpampum', 'current');
+      const oldAdapter: PlatformServiceAdapter = {
+        id: 'stale-adapter',
+        platform: 'linux',
+        artifacts: () => [
+          { path: currentPath, content: 'current', mode: 0o600 },
+          { path: oldPath, content: 'old', mode: 0o600 },
+        ],
+        ownedArtifactRoots: () => [join(root.homeDirectory, '.config', 'pimpampum')],
+        activate: async () => undefined,
+        deactivate: async () => undefined,
+        isRunning: async () => true,
+      };
+      const newAdapter: PlatformServiceAdapter = {
+        ...oldAdapter,
+        artifacts: () => [{ path: currentPath, content: 'current', mode: 0o600 }],
+      };
+      const input = managerInput(root, async () => success(), {
+        platform: 'linux',
+        adapters: { linux: oldAdapter },
+      });
+      await createPlatformServiceManager(input).install();
+      const receiptPath = installReceiptPath(root.dataDirectory);
+      if (variant === 'adapter') {
+        const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as InstallReceipt;
+        writeFileSync(receiptPath, JSON.stringify({ ...receipt, adapter: 'other-adapter' }));
+        await expect(createPlatformServiceManager(input).install()).rejects.toThrow(
+          /does not match/,
+        );
+        continue;
+      }
+      if (variant === 'outside') {
+        const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as InstallReceipt;
+        receipt.artifacts[1]!.path = join(root.root, 'outside');
+        writeFileSync(receiptPath, JSON.stringify(receipt));
+      } else {
+        writeFileSync(oldPath, 'user changed this');
+      }
+      await expect(
+        createPlatformServiceManager({
+          ...input,
+          version: '0.2.0',
+          adapters: { linux: newAdapter },
+        }).install(),
+      ).rejects.toThrow(variant === 'outside' ? /inside the home/ : /modified stale/);
+    }
+
+    const missing = testRoot('stale-missing');
+    const stalePath = join(missing.homeDirectory, '.config', 'pimpampum', 'stale');
+    const stablePath = join(missing.homeDirectory, '.config', 'pimpampum', 'stable');
+    const adapter = (old: boolean): PlatformServiceAdapter => ({
+      id: 'missing-stale-adapter',
+      platform: 'linux',
+      artifacts: () => [
+        { path: stablePath, content: 'stable', mode: 0o600 },
+        ...(old ? [{ path: stalePath, content: 'stale', mode: 0o600 }] : []),
+      ],
+      ownedArtifactRoots: () => [join(missing.homeDirectory, '.config', 'pimpampum')],
+      activate: async () => undefined,
+      deactivate: async () => undefined,
+      isRunning: async () => true,
+    });
+    const base = managerInput(missing, async () => success(), {
+      platform: 'linux',
+      adapters: { linux: adapter(true) },
+    });
+    await createPlatformServiceManager(base).install();
+    rmSync(stalePath);
+    await expect(
+      createPlatformServiceManager({
+        ...base,
+        version: '0.2.0',
+        adapters: { linux: adapter(false) },
+      }).install(),
+    ).resolves.toMatchObject({ reconciled: true });
+  });
+
+  it('refuses to repair a missing artifact from nonmatching package bytes', async () => {
+    const root = testRoot('uninstall-unrepairable');
+    const artifactPath = join(root.homeDirectory, '.config', 'pimpampum', 'artifact');
+    const repairablePath = join(root.homeDirectory, '.config', 'pimpampum', 'repairable');
+    let activations = 0;
+    let deactivations = 0;
+    const adapter = (content: string): PlatformServiceAdapter => ({
+      id: 'repair-adapter',
+      platform: 'linux',
+      artifacts: () => [
+        { path: repairablePath, content: 'stable', mode: 0o600 },
+        { path: artifactPath, content, mode: 0o600 },
+      ],
+      activate: async () => {
+        activations += 1;
+      },
+      deactivate: async () => {
+        deactivations += 1;
+      },
+      isRunning: async () => true,
+    });
+    const input = managerInput(root, async () => success(), {
+      platform: 'linux',
+      adapters: { linux: adapter('v1') },
+    });
+    await createPlatformServiceManager(input).install();
+    rmSync(artifactPath);
+    rmSync(repairablePath);
+    await expect(
+      createPlatformServiceManager({ ...input, adapters: { linux: adapter('v2') } }).uninstall(),
+    ).rejects.toThrow(/cannot repair/i);
+    expect(existsSync(artifactPath)).toBe(false);
+    expect(existsSync(repairablePath)).toBe(false);
+    expect(activations).toBe(1);
+    expect(deactivations).toBe(0);
+  });
+
+  it('aggregates uninstall restore and reactivation failures', async () => {
+    for (const restorationFails of [false, true]) {
+      const root = testRoot(`uninstall-aggregate-${String(restorationFails)}`);
+      const artifactPath = join(
+        root.homeDirectory,
+        '.config',
+        'systemd',
+        'user',
+        'pimpampum.service',
+      );
+      let activationCount = 0;
+      const adapter = testAdapter(root, {
+        activate: async () => {
+          activationCount += 1;
+          if (activationCount > 1) throw new Error('reactivation failed');
+        },
+        afterUninstall: async () => {
+          if (restorationFails) mkdirSync(artifactPath, { recursive: true });
+          throw new Error('cleanup failed');
+        },
+      });
+      const manager = createPlatformServiceManager(
+        managerInput(root, async () => success(), {
+          platform: 'linux',
+          adapters: { linux: adapter },
+        }),
+      );
+      await manager.install();
+      await expect(manager.uninstall()).rejects.toThrow(AggregateError);
+      if (restorationFails) rmSync(artifactPath, { recursive: true, force: true });
+    }
+  });
+
+  it('deactivates a newly activated service when install finalization fails', async () => {
+    const root = testRoot('install-finalization-cleanup');
+    let deactivations = 0;
+    const adapter = testAdapter(root, {
+      afterInstall: async () => {
+        throw new Error('finalization failed');
+      },
+      deactivate: async () => {
+        deactivations += 1;
+      },
+    });
+    const manager = createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        adapters: { linux: adapter },
+      }),
+    );
+
+    await expect(manager.install()).rejects.toThrow('finalization failed');
+    expect(deactivations).toBe(1);
+    expect(existsSync(installReceiptPath(root.dataDirectory))).toBe(false);
+  });
+
+  it('reactivates the restored service after changed-install finalization fails', async () => {
+    const root = testRoot('install-finalization-restore');
+    const artifactPath = join(
+      root.homeDirectory,
+      '.config',
+      'systemd',
+      'user',
+      'pimpampum.service',
+    );
+    let finalizations = 0;
+    let activations = 0;
+    let deactivations = 0;
+    const adapter = (content: string): PlatformServiceAdapter =>
+      testAdapter(root, {
+        artifacts: () => [{ path: artifactPath, content, mode: 0o600 }],
+        activate: async () => {
+          activations += 1;
+        },
+        deactivate: async () => {
+          deactivations += 1;
+        },
+        afterInstall: async () => {
+          finalizations += 1;
+          if (finalizations > 1) throw new Error('replacement finalization failed');
+          return undefined;
+        },
+      });
+    const input = managerInput(root, async () => success(), {
+      platform: 'linux',
+      adapters: { linux: adapter('v1') },
+    });
+    await createPlatformServiceManager(input).install();
+    await expect(
+      createPlatformServiceManager({
+        ...input,
+        version: '0.2.0',
+        adapters: { linux: adapter('v2') },
+      }).install(),
+    ).rejects.toThrow('replacement finalization failed');
+
+    expect(readFileSync(artifactPath, 'utf8')).toBe('v1');
+    expect(activations).toBe(3);
+    expect(deactivations).toBe(1);
+  });
+
+  it('aggregates install deactivation and restored-service reactivation failures', async () => {
+    const freshRoot = testRoot('install-deactivation-failure');
+    const freshAdapter = testAdapter(freshRoot, {
+      afterInstall: async () => {
+        throw new Error('finalization failed');
+      },
+      deactivate: async () => {
+        throw new Error('deactivation failed');
+      },
+    });
+    await expect(
+      createPlatformServiceManager(
+        managerInput(freshRoot, async () => success(), {
+          platform: 'linux',
+          adapters: { linux: freshAdapter },
+        }),
+      ).install(),
+    ).rejects.toThrow(AggregateError);
+
+    const existingRoot = testRoot('install-reactivation-failure');
+    const artifactPath = join(
+      existingRoot.homeDirectory,
+      '.config',
+      'systemd',
+      'user',
+      'pimpampum.service',
+    );
+    let activationCount = 0;
+    let finalizationCount = 0;
+    const adapter = (content: string): PlatformServiceAdapter =>
+      testAdapter(existingRoot, {
+        artifacts: () => [{ path: artifactPath, content, mode: 0o600 }],
+        activate: async () => {
+          activationCount += 1;
+          if (activationCount === 3) throw new Error('reactivation failed');
+        },
+        afterInstall: async () => {
+          finalizationCount += 1;
+          if (finalizationCount === 2) throw new Error('replacement finalization failed');
+          return undefined;
+        },
+      });
+    const input = managerInput(existingRoot, async () => success(), {
+      platform: 'linux',
+      adapters: { linux: adapter('v1') },
+    });
+    await createPlatformServiceManager(input).install();
+    await expect(
+      createPlatformServiceManager({
+        ...input,
+        version: '0.2.0',
+        adapters: { linux: adapter('v2') },
+      }).install(),
+    ).rejects.toThrow(AggregateError);
   });
 
   it('repairs a loaded-but-inactive registration on an otherwise current repeat install', async () => {
@@ -372,7 +894,7 @@ describe('platform-neutral service manager', () => {
     const manager = createPlatformServiceManager(managerInput(root, runCommand));
     await manager.install();
     await expect(manager.status()).resolves.toMatchObject({ installed: true, running: false });
-    await expect(manager.uninstall()).rejects.toThrow('launchctl bootout failed with exit code 4');
+    await expect(manager.uninstall()).rejects.toThrow(AggregateError);
     expect(existsSync(installReceiptPath(root.dataDirectory))).toBe(true);
   });
 
@@ -785,6 +1307,10 @@ describe('platform-neutral service manager', () => {
     await manager.install();
     const receiptPath = installReceiptPath(root.dataDirectory);
     const receipt = readInstallReceipt(receiptPath)!;
+    writeInstallReceipt(receiptPath, { ...receipt, platform: 'darwin' });
+    await expect(manager.status()).rejects.toThrow(/does not match the current platform/);
+    await expect(manager.uninstall()).rejects.toThrow(/does not match the current platform/);
+
     writeInstallReceipt(receiptPath, { ...receipt, adapter: 'another-adapter' });
     await expect(manager.status()).rejects.toThrow(/does not match/);
     await expect(manager.uninstall()).rejects.toThrow(/does not match/);
@@ -812,6 +1338,77 @@ describe('platform-neutral service manager', () => {
 
     writeInstallReceipt(receiptPath, { ...receipt, artifacts: [] });
     await expect(manager.uninstall()).rejects.toThrow(/artifact set/);
+
+    writeInstallReceipt(receiptPath, {
+      ...receipt,
+      artifacts: [receipt.artifacts[0]!, receipt.artifacts[0]!],
+    });
+    await expect(manager.uninstall()).rejects.toThrow(/duplicate paths/);
+  });
+
+  it('rejects unsafe adapter-owned roots and stale files outside those roots', async () => {
+    const outsideRoot = testRoot('owned-root-outside');
+    const outsideAdapter = testAdapter(outsideRoot, {
+      ownedArtifactRoots: () => [join(outsideRoot.root, 'outside')],
+    });
+    await expect(
+      createPlatformServiceManager(
+        managerInput(outsideRoot, async () => success(), {
+          platform: 'linux',
+          adapters: { linux: outsideAdapter },
+        }),
+      ).install(),
+    ).rejects.toThrow(/inside the home/);
+
+    const duplicateRoot = testRoot('owned-root-duplicate');
+    const duplicatePath = join(duplicateRoot.homeDirectory, '.config', 'pimpampum');
+    const duplicateAdapter = testAdapter(duplicateRoot, {
+      ownedArtifactRoots: () => [duplicatePath, duplicatePath],
+    });
+    await expect(
+      createPlatformServiceManager(
+        managerInput(duplicateRoot, async () => success(), {
+          platform: 'linux',
+          adapters: { linux: duplicateAdapter },
+        }),
+      ).install(),
+    ).rejects.toThrow(/duplicate owned/);
+
+    const root = testRoot('stale-outside-owned-root');
+    const allowedRoot = join(root.homeDirectory, '.config', 'pimpampum');
+    const oldPath = join(allowedRoot, 'old');
+    const currentPath = join(allowedRoot, 'current');
+    const adapter = (old: boolean): PlatformServiceAdapter => ({
+      id: 'strict-owned-root',
+      platform: 'linux',
+      artifacts: () => [
+        { path: currentPath, content: 'current', mode: 0o600 },
+        ...(old ? [{ path: oldPath, content: 'old', mode: 0o600 }] : []),
+      ],
+      ownedArtifactRoots: () => [allowedRoot],
+      activate: async () => undefined,
+      deactivate: async () => undefined,
+      isRunning: async () => true,
+    });
+    const input = managerInput(root, async () => success(), {
+      platform: 'linux',
+      adapters: { linux: adapter(true) },
+    });
+    await createPlatformServiceManager(input).install();
+    const receiptPath = installReceiptPath(root.dataDirectory);
+    const receipt = readInstallReceipt(receiptPath)!;
+    const unownedPath = join(root.homeDirectory, 'Documents', 'unowned');
+    mkdirSync(join(root.homeDirectory, 'Documents'));
+    writeFileSync(unownedPath, 'old');
+    receipt.artifacts[1]!.path = unownedPath;
+    writeInstallReceipt(receiptPath, receipt);
+    await expect(
+      createPlatformServiceManager({
+        ...input,
+        version: '0.2.0',
+        adapters: { linux: adapter(false) },
+      }).install(),
+    ).rejects.toThrow(/not inside an adapter-owned root/);
   });
 });
 

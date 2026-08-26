@@ -68,13 +68,23 @@ The MCP stdio bridge is stateless: every operation reaches the same authenticate
 
 ## Quick start
 
-### 1. Install and start
+### 1. Install and start automatically
 
 ```bash
 npm install
 npm run build
-npm start
+npm run build:macos # macOS source builds only
+npm run cli -- install
 ```
+
+A packaged installation exposes the same operation as `pimpampum install`. It installs one
+per-user background service and starts the local daemon automatically—no root access or open
+terminal is required. Inspect it with `pimpampum status` and remove Pimpampum-owned runtime
+integrations with `pimpampum uninstall`.
+
+Uninstall is deliberately narrow: it removes the managed service, desktop integration, and
+receipt while it preserves the SQLite database, token, project content, diagnostic logs, backups,
+and exports.
 
 The daemon listens on:
 
@@ -91,11 +101,40 @@ On first start it creates:
   .instance.lock
 ```
 
-For development with automatic reload:
+To run only the foreground daemon during development:
 
 ```bash
 npm run dev
 ```
+
+### Native status surfaces
+
+On macOS 13 or newer, `pimpampum install` copies the unsigned menu-bar-only app to
+`~/Applications/PimpampumMenuBar.app`, registers it as a login item, and installs the daemon as a
+LaunchAgent. If macOS reports `requiresApproval`, open the Pimpampum menu and select
+**Open Login Items Settings**. Because this first local release is unsigned, macOS may require an
+explicit first-open approval in Privacy & Security. The app has no Dock icon and exposes only
+overview refresh, completed-group disclosure, and Finder reveal.
+
+On Omarchy Quattro, the package includes the dedicated native Quickshell plugin under
+`integrations/omarchy/pimpampum-status`. The same `pimpampum install` command detects `omarchy`
+and `omarchy-shell`, preflights the Quattro build and shell IPC before writing, then installs the
+systemd user service and widget as one receipt-owned transaction. It rescans and enables the widget
+through official Omarchy commands without reading or editing `shell.json`. Before removal it uses
+the pinned Quattro `listShellConfig` IPC method to capture only Pimpampum's exact bar section,
+index, and inline settings; a partial failure restores that entry through `enablePlugin` and
+`setBarWidget`, leaves unrelated layout entries untouched, and restores the exact prior systemd
+enabled/running state. Other Linux desktops keep the plain systemd user service. `pimpampum status`
+reports the widget as `enabled`, `disabled`, or `missing`.
+
+The widget reads `pimpampum overview` through its installed absolute helper. Installation binds
+that receipt-owned helper to the canonical Node, CLI, data-directory, host, and port configuration,
+so custom local instances work without exposing or copying the bearer token. Repository
+contributors can run `npm run validate:omarchy`; a release additionally requires
+`npm run test:e2e:omarchy` on the exact target Quattro machine.
+
+Diagnostic logs live under `~/.pimpampum/logs` by default. If an installation fails, fix the
+reported platform prerequisite and rerun `pimpampum install`; reconciliation is idempotent.
 
 ### 2. Register an existing repository
 
@@ -385,12 +424,15 @@ npm run typecheck
 npm run lint
 npm run format:check
 npm test
+npm run test:evals
 npm run build
 ```
 
 `npm test` builds from a clean `dist/`, enforces 100% statement, branch, function, and line coverage, and exercises the compiled daemon, CLI, and MCP stdio bridge.
 
-The end-to-end suite covers six real scenarios:
+`npm run test:evals` is the small deterministic agent-workflow evaluation suite. It runs the compiled product at its real CLI, HTTP, and MCP boundaries. Its score is binary: all seven workflows must pass without mocks or partial credit. The complete rubric is documented in [docs/evals.md](docs/evals.md).
+
+The evaluation suite covers seven real scenarios:
 
 1. Workspace → project/PRD → task → claim → completion → portable export.
 2. PRD and contextual Markdown reads and updates through MCP.
@@ -398,6 +440,7 @@ The end-to-end suite covers six real scenarios:
 4. HTTP authentication, optimistic revision conflicts, and the deliberate no-delete boundary.
 5. Persistence across daemon restart and rejection of a second instance owner.
 6. Real SQLite backup, restore, and subsequent portable export.
+7. Per-user service install, status, repeat-install reconciliation, uninstall, and data preservation.
 
 ## Status
 
