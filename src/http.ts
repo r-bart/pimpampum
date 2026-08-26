@@ -5,6 +5,7 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { z, type ZodType } from 'zod';
 import type { RuntimeConfig } from './config.js';
 import { AppError, asAppError } from './errors.js';
+import { MCP_HTTP_BODY_LIMIT } from './limits.js';
 import { createPimpampumMcpHandler } from './mcp.js';
 import { openApiDocument } from './openapi.js';
 import {
@@ -103,7 +104,7 @@ export function createHttpApp(
   if (config.host !== '127.0.0.1' && config.host !== 'localhost' && config.host !== '::1') {
     throw new AppError('bad_request', 'Pimpampum HTTP must bind to a loopback host', 400);
   }
-  const app = createMcpExpressApp({ host: config.host, jsonLimit: '2mb' });
+  const app = createMcpExpressApp({ host: config.host, jsonLimit: MCP_HTTP_BODY_LIMIT });
   const requireAuth = bearerAuth(config.token);
   const mcpHandler = createPimpampumMcpHandler(store);
   const nodeMcpHandler = toNodeHandler(mcpHandler);

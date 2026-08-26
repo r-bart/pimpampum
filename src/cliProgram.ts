@@ -1,13 +1,40 @@
-import { AppError } from './errors.js';
+import type { AgentCliClient } from './agentClient.js';
+import {
+  createAgentErrorEnvelope,
+  createAgentSuccessEnvelope,
+  extractAgentEnvelope,
+  type AgentErrorEnvelope,
+} from './agentProtocol.js';
 import type { PimpampumHttpClient } from './client.js';
+import { AppError } from './errors.js';
+import { MAX_AGENT_INPUT_BYTES } from './limits.js';
 import type { ServiceManager } from './service/types.js';
 import type { TargetType } from './types.js';
 
+export interface AgentCliConfiguration {
+  dataDirectory: string;
+  databasePath: string;
+  baseUrl: string;
+  tokenPath: string | null;
+  tokenSource: 'environment' | 'file';
+  tokenConfigured: boolean;
+  mcp: {
+    streamableHttpUrl: string;
+    stdio: {
+      command: string;
+      args: string[];
+    };
+  };
+}
+
 export interface CliRuntime {
   createClient(): PimpampumHttpClient;
+  createAgentClient(): Promise<AgentCliClient>;
+  describeConfig(): AgentCliConfiguration;
   serviceManager: ServiceManager;
   startServer(): Promise<{ config: { baseUrl: string }; close(): Promise<void> }>;
-  readFile(path: string): string;
+  readFile(path: string, maxBytes?: number): string;
+  readStdin(maxBytes?: number): string | Promise<string>;
   resolvePath(path: string): string;
   stdout(text: string): void;
   stderr(text: string): void;
@@ -15,12 +42,18 @@ export interface CliRuntime {
   exit(code: number): never;
 }
 
+export { MAX_AGENT_INPUT_BYTES } from './limits.js';
+
 export const CLI_USAGE = `Pimpampum 0.1.0
 
 Usage:
+  pimpampum help
   pimpampum serve
   pimpampum health
   pimpampum overview
+  pimpampum config
+  pimpampum tools
+  pimpampum call <tool-name> [--input <json> | --stdin | --input-file <path>]
   pimpampum install
   pimpampum status
   pimpampum uninstall
@@ -63,11 +96,109 @@ function print(runtime: CliRuntime, value: unknown): void {
   runtime.stdout(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-export async function runCli(arguments_: string[], runtime: CliRuntime): Promise<void> {
+function writeError(runtime: CliRuntime, value: AgentErrorEnvelope): void {
+  runtime.stderr(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function parseToolInput(
+  arguments_: string[],
+  runtime: CliRuntime,
+): Promise<{ name: string; input: Record<string, unknown> }> {
+  const name = required(arguments_[0], 'tool name');
+  const sources: Array<
+    { kind: 'inline'; value: string } | { kind: 'stdin' } | { kind: 'file'; path: string }
+  > = [];
+  let index = 1;
+  while (index < arguments_.length) {
+    const argument = arguments_[index];
+    if (argument === '--input') {
+      sources.push({
+        kind: 'inline',
+        value: required(arguments_[index + 1], 'inline JSON input'),
+      });
+      index += 2;
+      continue;
+    }
+    if (argument === '--stdin') {
+      sources.push({ kind: 'stdin' });
+      index += 1;
+      continue;
+    }
+    if (argument === '--input-file') {
+      sources.push({
+        kind: 'file',
+        path: runtime.resolvePath(required(arguments_[index + 1], 'input file path')),
+      });
+      index += 2;
+      continue;
+    }
+    throw new AppError('bad_request', `Unknown call argument: ${String(argument)}`, 400);
+  }
+  if (sources.length > 1) {
+    throw new AppError('bad_request', 'Choose only one tool input source', 400);
+  }
+  const source = sources[0];
+  let serialized: string;
+  if (!source) {
+    serialized = '{}';
+  } else if (source.kind === 'inline') {
+    serialized = source.value;
+  } else if (source.kind === 'stdin') {
+    serialized = await runtime.readStdin(MAX_AGENT_INPUT_BYTES);
+  } else {
+    try {
+      serialized = runtime.readFile(source.path, MAX_AGENT_INPUT_BYTES);
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError('bad_request', `Could not read tool input file: ${source.path}`, 400);
+    }
+  }
+  if (Buffer.byteLength(serialized, 'utf8') > MAX_AGENT_INPUT_BYTES) {
+    throw new AppError(
+      'payload_too_large',
+      `Tool input exceeds ${String(MAX_AGENT_INPUT_BYTES)} UTF-8 bytes`,
+      413,
+    );
+  }
+  let input: unknown;
+  try {
+    input = JSON.parse(serialized) as unknown;
+  } catch {
+    throw new AppError('bad_request', 'Tool input must be valid JSON', 400);
+  }
+  if (!isRecord(input)) {
+    throw new AppError('bad_request', 'Tool input must be a JSON object', 400);
+  }
+  return { name, input };
+}
+
+async function withAgentClient<T>(
+  runtime: CliRuntime,
+  operation: (client: AgentCliClient) => Promise<T>,
+): Promise<T> {
+  const client = await runtime.createAgentClient();
+  try {
+    return await operation(client);
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
+async function executeCli(
+  arguments_: string[],
+  runtime: CliRuntime,
+): Promise<AgentErrorEnvelope | null> {
   const [command, ...args] = arguments_;
   if (!command) {
-    runtime.stderr(CLI_USAGE);
-    runtime.exit(1);
+    throw new AppError('bad_request', 'Missing command', 400, false, { usage: CLI_USAGE });
+  }
+  if (command === 'help') {
+    runtime.stdout(CLI_USAGE);
+    return null;
   }
 
   if (command === 'serve') {
@@ -79,33 +210,52 @@ export async function runCli(arguments_: string[], runtime: CliRuntime): Promise
     };
     runtime.onSignal('SIGINT', () => void shutdown());
     runtime.onSignal('SIGTERM', () => void shutdown());
-    return;
+    return null;
+  }
+
+  if (command === 'config') {
+    print(runtime, createAgentSuccessEnvelope(runtime.describeConfig()));
+    return null;
+  }
+  if (command === 'tools') {
+    const catalog = await withAgentClient(runtime, (client) => client.listTools());
+    print(runtime, createAgentSuccessEnvelope(catalog));
+    return null;
+  }
+  if (command === 'call') {
+    const { name, input } = await parseToolInput(args, runtime);
+    const envelope = await withAgentClient(runtime, async (client) =>
+      extractAgentEnvelope(await client.callTool({ name, arguments: input })),
+    );
+    if ('error' in envelope) return envelope;
+    print(runtime, envelope);
+    return null;
   }
 
   if (command === 'install') {
     print(runtime, await runtime.serviceManager.install());
-    return;
+    return null;
   }
   if (command === 'status') {
     print(runtime, await runtime.serviceManager.status());
-    return;
+    return null;
   }
   if (command === 'uninstall') {
     print(runtime, await runtime.serviceManager.uninstall());
-    return;
+    return null;
   }
 
   const client = runtime.createClient();
   switch (command) {
     case 'health':
       print(runtime, await client.health());
-      return;
+      return null;
     case 'overview':
       print(runtime, await client.getOverview());
-      return;
+      return null;
     case 'workspace:list':
       print(runtime, await client.listWorkspaces());
-      return;
+      return null;
     case 'workspace:add':
       print(
         runtime,
@@ -115,10 +265,10 @@ export async function runCli(arguments_: string[], runtime: CliRuntime): Promise
           rootPath: runtime.resolvePath(required(args[2], 'workspace root path')),
         }),
       );
-      return;
+      return null;
     case 'work:list':
       print(runtime, await client.listWork({ workspaceId: args[0] ?? null, limit: 50 }));
-      return;
+      return null;
     case 'work:start':
       print(
         runtime,
@@ -129,7 +279,7 @@ export async function runCli(arguments_: string[], runtime: CliRuntime): Promise
           leaseSeconds: 1_800,
         }),
       );
-      return;
+      return null;
     case 'work:release':
       await client.releaseWork({
         targetType: targetType(args[0]),
@@ -138,7 +288,7 @@ export async function runCli(arguments_: string[], runtime: CliRuntime): Promise
         note: args[3] ?? null,
       });
       print(runtime, { released: true });
-      return;
+      return null;
     case 'work:complete':
       print(
         runtime,
@@ -151,7 +301,7 @@ export async function runCli(arguments_: string[], runtime: CliRuntime): Promise
           artifacts: [],
         }),
       );
-      return;
+      return null;
     case 'project:create': {
       const prdFile = args[3];
       print(
@@ -165,11 +315,11 @@ export async function runCli(arguments_: string[], runtime: CliRuntime): Promise
           actor: 'cli',
         }),
       );
-      return;
+      return null;
     }
     case 'project:get':
       print(runtime, await client.getProject(required(args[0], 'project id')));
-      return;
+      return null;
     case 'project:ready':
       print(
         runtime,
@@ -181,7 +331,7 @@ export async function runCli(arguments_: string[], runtime: CliRuntime): Promise
           actor: 'cli',
         }),
       );
-      return;
+      return null;
     case 'task:create':
       print(
         runtime,
@@ -193,21 +343,35 @@ export async function runCli(arguments_: string[], runtime: CliRuntime): Promise
           actor: 'cli',
         }),
       );
-      return;
+      return null;
     case 'backup':
       print(
         runtime,
         await client.backup(runtime.resolvePath(required(args[0], 'backup directory'))),
       );
-      return;
+      return null;
     case 'export':
       print(
         runtime,
         await client.exportPortable(runtime.resolvePath(required(args[0], 'export directory'))),
       );
-      return;
+      return null;
     default:
-      runtime.stderr(CLI_USAGE);
-      runtime.exit(1);
+      throw new AppError('bad_request', `Unknown command: ${command}`, 400, false, {
+        usage: CLI_USAGE,
+      });
+  }
+}
+
+export async function runCli(arguments_: string[], runtime: CliRuntime): Promise<void> {
+  let failure: AgentErrorEnvelope | null;
+  try {
+    failure = await executeCli(arguments_, runtime);
+  } catch (error) {
+    failure = createAgentErrorEnvelope(error);
+  }
+  if (failure) {
+    writeError(runtime, failure);
+    runtime.exit(1);
   }
 }

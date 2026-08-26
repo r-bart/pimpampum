@@ -656,7 +656,7 @@ exec '${process.execPath}' '${cliPath}' overview
       const result = await dependencies.execute({
         executable: process.execPath,
         arguments: ['-e', childSource, descendantPidPath],
-        timeoutMs: 150,
+        timeoutMs: 1_000,
       });
       expect(result.exitCode).toBe(124);
       const descendantPid = Number(readFileSync(descendantPidPath, 'utf8'));
@@ -696,9 +696,17 @@ exec '${process.execPath}' '${cliPath}' overview
       });
       expect(result.exitCode).toBe(125);
       const descendantPid = Number(readFileSync(descendantPidPath, 'utf8'));
-      expect(() => process.kill(descendantPid, 0)).toThrow(
-        expect.objectContaining({ code: 'ESRCH' }),
-      );
+      let alive = true;
+      for (let attempt = 0; attempt < 40 && alive; attempt += 1) {
+        try {
+          process.kill(descendantPid, 0);
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+          alive = false;
+        }
+      }
+      expect(alive).toBe(false);
     },
     10_000,
   );

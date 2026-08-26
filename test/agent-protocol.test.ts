@@ -1,0 +1,169 @@
+import { describe, expect, it } from 'vitest';
+import {
+  createAgentErrorEnvelope,
+  createAgentSuccessEnvelope,
+  extractAgentEnvelope,
+} from '../src/agentProtocol.js';
+import { AppError, type ErrorCode } from '../src/errors.js';
+
+describe('agent protocol', () => {
+  it('builds success envelopes without changing their data', () => {
+    const data = { nested: ['value'] };
+    expect(createAgentSuccessEnvelope(data)).toEqual({ data });
+  });
+
+  it.each<[ErrorCode, string]>([
+    ['bad_request', 'Correct the arguments using this tool input schema, then retry.'],
+    ['conflict', 'Inspect the current claim or resource state before retrying.'],
+    ['invalid_state', 'Inspect the project, task hierarchy, and open work before retrying.'],
+    ['not_found', 'Verify the resource ID or resolve the current workspace again.'],
+    ['revision_conflict', 'Read the latest manifest, then retry with its current revision.'],
+    ['unauthorized', 'Verify the daemon bearer token used by the MCP transport or stdio bridge.'],
+    [
+      'payload_too_large',
+      'Inspect the daemon logs and retry only if the underlying failure is transient.',
+    ],
+    [
+      'internal_error',
+      'Inspect the daemon logs and retry only if the underlying failure is transient.',
+    ],
+  ])('builds an actionable %s error envelope', (code, suggestion) => {
+    expect(
+      createAgentErrorEnvelope(
+        new AppError(code, 'Operation failed', 400, true, { resourceId: 'resource-id' }),
+      ),
+    ).toEqual({
+      error: {
+        code,
+        message: 'Operation failed',
+        retryable: true,
+        details: { resourceId: 'resource-id' },
+        suggestion,
+      },
+    });
+  });
+
+  it('normalizes unknown failures before building their envelope', () => {
+    expect(createAgentErrorEnvelope('failure')).toEqual({
+      error: {
+        code: 'internal_error',
+        message: 'An internal error occurred',
+        retryable: false,
+        details: {},
+        suggestion:
+          'Inspect the daemon logs and retry only if the underlying failure is transient.',
+      },
+    });
+  });
+
+  it('extracts one successful MCP text envelope unchanged', () => {
+    const envelope = { data: { id: 'workspace-id' } };
+    expect(
+      extractAgentEnvelope({
+        content: [{ type: 'text', text: JSON.stringify(envelope) }],
+      }),
+    ).toEqual(envelope);
+  });
+
+  it('extracts one failed MCP text envelope unchanged', () => {
+    const envelope = createAgentErrorEnvelope(
+      new AppError('revision_conflict', 'Revision changed', 409, true, { currentRevision: 2 }),
+    );
+    expect(
+      extractAgentEnvelope({
+        isError: true,
+        content: [{ type: 'text', text: JSON.stringify(envelope) }],
+      }),
+    ).toEqual(envelope);
+  });
+
+  it.each([
+    { name: 'no content', result: { content: [] } },
+    {
+      name: 'multiple blocks',
+      result: {
+        content: [
+          { type: 'text' as const, text: '{"data":1}' },
+          { type: 'text' as const, text: '{"data":2}' },
+        ],
+      },
+    },
+    {
+      name: 'non-text content',
+      result: { content: [{ type: 'image' as const, data: 'AA==', mimeType: 'image/png' }] },
+    },
+    { name: 'invalid JSON', result: { content: [{ type: 'text' as const, text: 'not-json' }] } },
+    {
+      name: 'a primitive envelope',
+      result: { content: [{ type: 'text' as const, text: 'null' }] },
+    },
+    { name: 'an array envelope', result: { content: [{ type: 'text' as const, text: '[]' }] } },
+    { name: 'a missing data key', result: { content: [{ type: 'text' as const, text: '{}' }] } },
+    {
+      name: 'extra success keys',
+      result: { content: [{ type: 'text' as const, text: '{"data":{},"extra":true}' }] },
+    },
+    {
+      name: 'an error without isError',
+      result: {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(createAgentErrorEnvelope(new AppError('conflict', 'Busy', 409))),
+          },
+        ],
+      },
+    },
+    {
+      name: 'success with isError',
+      result: { isError: true, content: [{ type: 'text' as const, text: '{"data":{}}' }] },
+    },
+    {
+      name: 'extra error envelope keys',
+      result: {
+        isError: true,
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ...createAgentErrorEnvelope(new AppError('conflict', 'Busy', 409)),
+              extra: true,
+            }),
+          },
+        ],
+      },
+    },
+  ])('rejects $name', ({ result }) => {
+    expect(() => extractAgentEnvelope(result)).toThrowError(
+      expect.objectContaining({
+        code: 'internal_error',
+        message: 'MCP tool returned an invalid Pimpampum envelope',
+      }),
+    );
+  });
+
+  it.each([
+    null,
+    {},
+    { code: 'unknown', message: 'Failure', retryable: false, details: {}, suggestion: 'Retry' },
+    { code: 'conflict', message: 1, retryable: false, details: {}, suggestion: 'Retry' },
+    { code: 'conflict', message: 'Failure', retryable: 'no', details: {}, suggestion: 'Retry' },
+    { code: 'conflict', message: 'Failure', retryable: false, details: [], suggestion: 'Retry' },
+    { code: 'conflict', message: 'Failure', retryable: false, details: {}, suggestion: 1 },
+    {
+      code: 'conflict',
+      message: 'Failure',
+      retryable: false,
+      details: {},
+      suggestion: 'Retry',
+      extra: true,
+    },
+  ])('rejects malformed error payload %#', (error) => {
+    expect(() =>
+      extractAgentEnvelope({
+        isError: true,
+        content: [{ type: 'text', text: JSON.stringify({ error }) }],
+      }),
+    ).toThrowError('MCP tool returned an invalid Pimpampum envelope');
+  });
+});

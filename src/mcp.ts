@@ -5,7 +5,7 @@ import {
   type McpHttpHandler,
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import { asAppError } from './errors.js';
+import { createAgentErrorEnvelope, createAgentSuccessEnvelope } from './agentProtocol.js';
 import {
   absolutePathSchema,
   artifactSchema,
@@ -85,15 +85,6 @@ const markdownLimitSchema = z
   .default(20_000)
   .describe('Maximum UTF-16 code units to return, capped at 100,000.');
 
-const errorGuidance: Record<string, string> = {
-  bad_request: 'Correct the arguments using this tool input schema, then retry.',
-  conflict: 'Inspect the current claim or resource state before retrying.',
-  invalid_state: 'Inspect the project, task hierarchy, and open work before retrying.',
-  not_found: 'Verify the resource ID or resolve the current workspace again.',
-  revision_conflict: 'Read the latest manifest, then retry with its current revision.',
-  unauthorized: 'Verify the daemon bearer token used by the MCP transport or stdio bridge.',
-};
-
 function projectManifest(project: Project): ProjectManifest {
   const { prd, artifacts, completionSummary, ...metadata } = project;
   return {
@@ -115,25 +106,15 @@ function taskManifest(task: Task): TaskManifest {
 }
 
 function success(value: unknown): CallToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify({ data: value }) }] };
+  return {
+    content: [{ type: 'text', text: JSON.stringify(createAgentSuccessEnvelope(value)) }],
+  };
 }
 
 function failure(error: unknown): CallToolResult {
-  const appError = asAppError(error);
-  const payload = {
-    error: {
-      code: appError.code,
-      message: appError.message,
-      retryable: appError.retryable,
-      details: appError.details,
-      suggestion:
-        errorGuidance[appError.code] ??
-        'Inspect the daemon logs and retry only if the underlying failure is transient.',
-    },
-  };
   return {
     isError: true,
-    content: [{ type: 'text', text: JSON.stringify(payload) }],
+    content: [{ type: 'text', text: JSON.stringify(createAgentErrorEnvelope(error)) }],
   };
 }
 

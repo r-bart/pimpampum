@@ -75,13 +75,25 @@ npm install --global pimpampum
 pimpampum install
 ```
 
-The published package already contains the compiled daemon, macOS app, and Omarchy integration.
+The command above applies after the first npm release. The package contains the compiled daemon,
+macOS app, and Omarchy integration.
 `pimpampum install` installs one per-user background service and starts the local daemon
 automatically—no root access or open terminal is required. Inspect it with `pimpampum status` and
 remove Pimpampum-owned runtime integrations with `pimpampum uninstall`.
 
-From a source checkout, contributors instead run `npm ci`, `npm run build`, optionally
-`npm run build:macos` on macOS, and `npm run cli -- install`.
+Until that release, install from the GitHub checkout:
+
+```bash
+gh repo clone r-bart/pimpampum
+cd pimpampum
+npm ci
+npm run build
+npm run build:macos # macOS only
+npm run cli -- install
+```
+
+Use `npm run cli -- <command>` instead of `pimpampum <command>` throughout this README when
+running directly from source.
 
 Uninstall is deliberately narrow: it removes the managed service, desktop integration, and
 receipt while it preserves the SQLite database, token, project content, diagnostic logs, backups,
@@ -260,6 +272,68 @@ activity_list
 
 The complete tool contract, including arguments, effects, pagination, and errors, is documented in [docs/mcp-tools.md](docs/mcp-tools.md). The same metadata is available dynamically through MCP `tools/list`.
 
+### Agent-first CLI
+
+MCP is the preferred agent interface. A shell-only agent can install, configure, discover, and use
+the exact same tool contract through the CLI without hard-coding HTTP routes.
+
+Configuration remains environment-based and non-interactive:
+
+```bash
+export PIMPAMPUM_DATA_DIR="$HOME/.pimpampum"
+export PIMPAMPUM_HOST="127.0.0.1"
+export PIMPAMPUM_PORT="7337"
+
+pimpampum install
+pimpampum status
+pimpampum config
+```
+
+`pimpampum config` works while the daemon is offline. It returns the effective data directory,
+database path, base URL, token source, MCP HTTP URL, and exact stdio command as JSON. `tokenPath` is
+the generated file path when `tokenSource` is `file`, or `null` when the token comes from the
+environment. It never returns the bearer token itself. Normally Pimpampum generates the token;
+`PIMPAMPUM_TOKEN` remains available for deterministic isolated environments and must contain at
+least 32 printable non-space characters.
+
+Discover the live catalog—including descriptions, annotations, defaults, and JSON Schemas:
+
+```bash
+pimpampum tools
+```
+
+Call a zero-argument tool or pass one JSON object inline:
+
+```bash
+pimpampum call workspace_list
+
+pimpampum call work_list \
+  --input '{"workspaceId":"vcomp","limit":20}'
+```
+
+Use standard input for Markdown and structured values that are awkward to quote:
+
+```bash
+printf '%s' '{
+  "projectId": "PROJECT_ID",
+  "name": "architecture",
+  "body": "# Architecture\n\nOne local daemon.",
+  "expectedRevision": null,
+  "actor": "codex-thread-123"
+}' | pimpampum call context_put --stdin
+```
+
+Or keep a request in a UTF-8 JSON file:
+
+```bash
+pimpampum call work_complete --input-file ./complete-work.json
+```
+
+Only one input source may be used. Inputs must be JSON objects and are bounded to 2,000,000 UTF-8
+bytes. Success writes one `{ "data": ... }` envelope to stdout with exit code 0. Local, transport,
+schema, and tool failures write one actionable `{ "error": ... }` envelope to stderr and exit
+non-zero. Every `tools` or `call` command opens and closes a short-lived authenticated MCP session.
+
 ### MCP responses
 
 Each call returns one text content block containing JSON:
@@ -354,8 +428,16 @@ Main API areas:
 During development, use `npm run cli -- <command>`. A compiled installation exposes `pimpampum <command>`.
 
 ```text
+pimpampum help
 pimpampum serve
 pimpampum health
+pimpampum overview
+pimpampum config
+pimpampum tools
+pimpampum call <tool-name> [--input <json> | --stdin | --input-file <path>]
+pimpampum install
+pimpampum status
+pimpampum uninstall
 pimpampum workspace:list
 pimpampum workspace:add <id> <name> <root-path>
 pimpampum work:list [workspace-id]
@@ -370,7 +452,8 @@ pimpampum backup <directory>
 pimpampum export <directory>
 ```
 
-The CLI covers common human operations. MCP and HTTP expose the complete contract.
+The named commands cover common human and administrative operations. `tools` and `call` expose the
+complete MCP contract as the canonical shell fallback for agents.
 
 ## Persistence, backup, and export
 

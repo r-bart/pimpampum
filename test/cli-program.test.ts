@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PimpampumHttpClient } from '../src/client.js';
-import { CLI_USAGE, runCli, type CliRuntime } from '../src/cliProgram.js';
+import { MAX_AGENT_INPUT_BYTES, runCli, type CliRuntime } from '../src/cliProgram.js';
+import { AppError } from '../src/errors.js';
 
 function fixture() {
   const client = {
@@ -23,8 +24,28 @@ function fixture() {
   const errors: string[] = [];
   const signals = new Map<string, () => void>();
   const close = vi.fn(async () => undefined);
+  const agentClient = {
+    listTools: vi.fn(async () => ({ tools: [] })),
+    callTool: vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: '{"data":{}}' }],
+    })),
+    close: vi.fn(async () => undefined),
+  };
   const runtime: CliRuntime = {
     createClient: () => client,
+    createAgentClient: vi.fn(async () => agentClient),
+    describeConfig: vi.fn(() => ({
+      dataDirectory: '/data',
+      databasePath: '/data/pimpampum.sqlite',
+      baseUrl: 'http://127.0.0.1:7337',
+      tokenPath: '/data/token',
+      tokenSource: 'file' as const,
+      tokenConfigured: true,
+      mcp: {
+        streamableHttpUrl: 'http://127.0.0.1:7337/mcp',
+        stdio: { command: '/node', args: ['/mcpStdio.js'] },
+      },
+    })),
     serviceManager: {
       install: vi.fn(async () => ({
         installed: true as const,
@@ -41,13 +62,14 @@ function fixture() {
     },
     startServer: vi.fn(async () => ({ config: { baseUrl: 'http://127.0.0.1:7337' }, close })),
     readFile: vi.fn(() => '# PRD'),
+    readStdin: vi.fn(() => '{}'),
     resolvePath: (path) => `/resolved/${path}`,
     stdout: (text) => output.push(text),
     stderr: (text) => errors.push(text),
     onSignal: (signal, callback) => signals.set(signal, callback),
     exit: vi.fn(() => undefined as never),
   };
-  return { client, close, errors, output, runtime, signals };
+  return { agentClient, client, close, errors, output, runtime, signals };
 }
 
 describe('CLI program', () => {
@@ -108,20 +130,77 @@ describe('CLI program', () => {
     });
     await expect(runCli([], state.runtime)).rejects.toThrow('exit:1');
     await expect(runCli(['unknown'], state.runtime)).rejects.toThrow('exit:1');
-    expect(state.errors).toEqual([CLI_USAGE, CLI_USAGE]);
+    expect(state.errors).toHaveLength(2);
+    expect(state.errors.every((error) => JSON.parse(error).error.code === 'bad_request')).toBe(
+      true,
+    );
 
     const validation = fixture();
-    await expect(runCli(['workspace:add'], validation.runtime)).rejects.toThrow(
-      'Missing workspace id',
-    );
+    validation.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+    await expect(runCli(['workspace:add'], validation.runtime)).rejects.toThrow('exit:1');
     await expect(
       runCli(['work:start', 'invalid', 'target', 'agent'], validation.runtime),
-    ).rejects.toThrow('Target type must be project or task');
+    ).rejects.toThrow('exit:1');
     await expect(
       runCli(['work:complete', 'task', 'target', 'agent', 'nope', 'done'], validation.runtime),
-    ).rejects.toThrow('Revision must be a positive integer');
+    ).rejects.toThrow('exit:1');
     await expect(runCli(['project:ready', 'project', '0'], validation.runtime)).rejects.toThrow(
-      'Revision must be a positive integer',
+      'exit:1',
     );
+    expect(validation.errors.join('\n')).toContain('Missing workspace id');
+    expect(validation.errors.join('\n')).toContain('Target type must be project or task');
+    expect(validation.errors.join('\n')).toContain('Revision must be a positive integer');
+  });
+
+  it('prints help and ignores a transport cleanup failure after listing tools', async () => {
+    const help = fixture();
+    await runCli(['help'], help.runtime);
+    expect(help.output).toEqual([expect.stringContaining('pimpampum call')]);
+
+    const tools = fixture();
+    tools.agentClient.close.mockRejectedValueOnce(new Error('close failed'));
+    await runCli(['tools'], tools.runtime);
+    expect(tools.output).toEqual([expect.stringContaining('"tools"')]);
+    expect(tools.agentClient.close).toHaveBeenCalledOnce();
+  });
+
+  it('rejects unreadable and oversized agent input before connecting', async () => {
+    const unreadable = fixture();
+    unreadable.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+    vi.spyOn(unreadable.runtime, 'readFile').mockImplementationOnce(() => {
+      throw new Error('unreadable');
+    });
+    await expect(
+      runCli(['call', 'work_list', '--input-file', 'missing.json'], unreadable.runtime),
+    ).rejects.toThrow('exit:1');
+    expect(unreadable.errors.join('\n')).toContain('Could not read tool input file');
+
+    const bounded = fixture();
+    bounded.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+    vi.spyOn(bounded.runtime, 'readFile').mockImplementationOnce(() => {
+      throw new AppError('payload_too_large', 'bounded read rejected the input', 413);
+    });
+    await expect(
+      runCli(['call', 'context_put', '--input-file', 'large.json'], bounded.runtime),
+    ).rejects.toThrow('exit:1');
+    expect(bounded.errors.join('\n')).toContain('payload_too_large');
+    expect(bounded.runtime.createAgentClient).not.toHaveBeenCalled();
+
+    const oversized = fixture();
+    oversized.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+    const input = JSON.stringify({ body: 'x'.repeat(MAX_AGENT_INPUT_BYTES) });
+    await expect(
+      runCli(['call', 'context_put', '--input', input], oversized.runtime),
+    ).rejects.toThrow('exit:1');
+    expect(oversized.errors.join('\n')).toContain('payload_too_large');
+    expect(oversized.runtime.createAgentClient).not.toHaveBeenCalled();
   });
 });

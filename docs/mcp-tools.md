@@ -13,6 +13,37 @@ Authorization: Bearer <token>
 
 For hosts that only support stdio, run `pimpampum-mcp` while the daemon is active. The bridge is stateless and forwards operations to the authenticated HTTP API.
 
+## Shell-only agents
+
+The CLI negotiates with this same MCP endpoint; it does not maintain a second tool implementation.
+Use it when an agent can execute shell commands but cannot attach an MCP server directly:
+
+```bash
+pimpampum config
+pimpampum tools
+pimpampum call workspace_resolve --input '{"path":"/absolute/project/path"}'
+```
+
+`config` reports MCP HTTP and stdio connection details, plus a redacted `environment` or `file`
+token source, without exposing the token value. `tools`
+returns the live `tools/list` result. `call` accepts no input for zero-argument tools or exactly one
+of `--input <json>`, `--stdin`, and `--input-file <path>`. The JSON root must be an object.
+
+For multiline Markdown, prefer stdin:
+
+```bash
+printf '%s' '{
+  "projectId": "PROJECT_ID",
+  "prd": "# Updated PRD\n\nAgent-authored outcome.",
+  "expectedRevision": 2,
+  "actor": "agent-session-id"
+}' | pimpampum call project_update_prd --stdin
+```
+
+The CLI emits the result contract below unchanged. Success goes to stdout with exit code 0;
+failures go to stderr with a non-zero exit code. MCP SDK validation and transport failures are
+normalized into the same actionable Pimpampum error shape.
+
 ## Result contract
 
 Successful calls return one JSON text content block:

@@ -17,6 +17,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { MAX_AGENT_INPUT_BYTES } from '../src/cliProgram.js';
 import type { Overview, Project, Task, WorkBundle, WorkItem, Workspace } from '../src/types.js';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -71,6 +72,45 @@ function executeCli<T>(environment: NodeJS.ProcessEnv, ...arguments_: string[]):
         reject(new Error(`CLI returned invalid JSON: ${stdout}`, { cause: error }));
       }
     });
+  });
+}
+
+function executeCliWithInput<T>(
+  environment: NodeJS.ProcessEnv,
+  input: string,
+  ...arguments_: string[]
+): Promise<T> {
+  return new Promise((resolveResult, reject) => {
+    const cliProcess = spawn(process.execPath, [compiledCli, ...arguments_], {
+      cwd: repositoryRoot,
+      env: environment,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    cliProcess.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    cliProcess.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    cliProcess.once('error', reject);
+    cliProcess.once('exit', (code, signal) => {
+      if (code !== 0) {
+        reject(
+          new Error(
+            `CLI ${arguments_[0] ?? '<unknown>'} exited with code ${String(code)} and signal ${String(signal)}: ${stderr}`,
+          ),
+        );
+        return;
+      }
+      try {
+        resolveResult(JSON.parse(stdout) as T);
+      } catch (error) {
+        reject(new Error(`CLI returned invalid JSON: ${stdout}`, { cause: error }));
+      }
+    });
+    cliProcess.stdin.end(input);
   });
 }
 
@@ -388,7 +428,175 @@ describe.sequential('compiled product end to end', () => {
     ) as Task[];
     expect(exportedProject).toMatchObject({ id: draftProject.id, state: 'done' });
     expect(exportedTasks).toMatchObject([{ id: task.id, state: 'done' }]);
-  });
+  }, 15_000);
+
+  it('lets a shell-only agent configure, discover and use every operation through MCP', async () => {
+    const effective = await executeCli<{
+      data: {
+        dataDirectory: string;
+        tokenPath: string | null;
+        tokenSource: 'environment' | 'file';
+        token?: string;
+        mcp: { streamableHttpUrl: string; stdio: { args: string[] } };
+      };
+    }>(environment, 'config');
+    expect(effective.data).toMatchObject({
+      dataDirectory,
+      tokenPath: null,
+      tokenSource: 'environment',
+      mcp: {
+        streamableHttpUrl: `${baseUrl}/mcp`,
+        stdio: { args: [compiledMcpBridge] },
+      },
+    });
+    expect(effective.data.token).toBeUndefined();
+
+    const fileTokenEnvironment = { ...environment };
+    delete fileTokenEnvironment.PIMPAMPUM_TOKEN;
+    fileTokenEnvironment.PIMPAMPUM_DATA_DIR = join(temporaryDirectory, 'file-token-config');
+    const fileTokenConfiguration = await executeCli<{
+      data: { tokenPath: string | null; tokenSource: string; token?: string };
+    }>(fileTokenEnvironment, 'config');
+    expect(fileTokenConfiguration.data).toMatchObject({
+      tokenPath: join(fileTokenEnvironment.PIMPAMPUM_DATA_DIR, 'token'),
+      tokenSource: 'file',
+    });
+    expect(fileTokenConfiguration.data.token).toBeUndefined();
+
+    const catalog = await executeCli<{
+      data: { tools: Array<{ name: string; inputSchema: object }> };
+    }>(environment, 'tools');
+    expect(catalog.data.tools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        'workspace_resolve',
+        'project_create',
+        'context_put',
+        'work_complete',
+      ]),
+    );
+    expect(catalog.data.tools.every((tool) => Object.keys(tool.inputSchema).length > 0)).toBe(true);
+
+    const workspaces = await executeCli<{ data: Workspace[] }>(
+      environment,
+      'call',
+      'workspace_list',
+    );
+    expect(workspaces.data).toContainEqual(expect.objectContaining({ id: 'e2e-workspace' }));
+
+    const project = await executeCli<{ data: { id: string; revision: number } }>(
+      environment,
+      'call',
+      'project_create',
+      '--input',
+      JSON.stringify({
+        workspaceId: 'e2e-workspace',
+        slug: 'agent-cli-e2e',
+        title: 'Agent CLI E2E',
+        prd: '# Agent CLI\n\nShell-only workflow 🚀',
+      }),
+    );
+    const context = await executeCliWithInput<{ data: { name: string; revision: number } }>(
+      environment,
+      JSON.stringify({
+        projectId: project.data.id,
+        name: 'agent-notes',
+        body: '# Notes\n\nCreated through standard input.',
+      }),
+      'call',
+      'context_put',
+      '--stdin',
+    );
+    expect(context.data).toMatchObject({ name: 'agent-notes', revision: 1 });
+
+    const multibyteBody = '🚀'.repeat(300_000);
+    const multibyteRequest = JSON.stringify({
+      projectId: project.data.id,
+      name: 'unicode-boundary',
+      body: multibyteBody,
+    });
+    expect(Buffer.byteLength(multibyteRequest, 'utf8')).toBeGreaterThan(1_100_000);
+    expect(Buffer.byteLength(multibyteRequest, 'utf8')).toBeLessThan(MAX_AGENT_INPUT_BYTES);
+    const multibyteContext = await executeCliWithInput<{
+      data: { name: string; sizeBytes: number };
+    }>(environment, multibyteRequest, 'call', 'context_put', '--stdin');
+    expect(multibyteContext.data).toMatchObject({
+      name: 'unicode-boundary',
+      sizeBytes: Buffer.byteLength(multibyteBody, 'utf8'),
+    });
+
+    const requestPath = join(temporaryDirectory, 'agent-cli-request.json');
+    writeFileSync(requestPath, JSON.stringify({ projectId: project.data.id, limit: 10 }));
+    const activity = await executeCli<{ data: Array<{ projectId: string }> }>(
+      environment,
+      'call',
+      'activity_list',
+      '--input-file',
+      requestPath,
+    );
+    expect(activity.data).toContainEqual(expect.objectContaining({ projectId: project.data.id }));
+
+    const rejected = await executeCliFailure(
+      environment,
+      'call',
+      'workspace_resolve',
+      '--input',
+      '{"path":"relative"}',
+    );
+    expect(rejected.code).toBe(1);
+    expect(
+      JSON.parse(rejected.stderr) as { error: { code: string; suggestion: string } },
+    ).toMatchObject({ error: { code: 'bad_request', suggestion: expect.any(String) } });
+
+    const oversizedRequestPath = join(temporaryDirectory, 'agent-cli-oversized-request.json');
+    writeFileSync(
+      oversizedRequestPath,
+      JSON.stringify({ body: 'x'.repeat(MAX_AGENT_INPUT_BYTES) }),
+    );
+    const oversized = await executeCliFailure(
+      environment,
+      'call',
+      'context_put',
+      '--input-file',
+      oversizedRequestPath,
+    );
+    expect(oversized.code).toBe(1);
+    expect(JSON.parse(oversized.stderr) as { error: { code: string } }).toMatchObject({
+      error: { code: 'payload_too_large' },
+    });
+
+    const invalidUtf8RequestPath = join(temporaryDirectory, 'agent-cli-invalid-utf8.json');
+    writeFileSync(
+      invalidUtf8RequestPath,
+      Buffer.concat([Buffer.from('{"body":"'), Buffer.from([0xff]), Buffer.from('"}')]),
+    );
+    const invalidUtf8 = await executeCliFailure(
+      environment,
+      'call',
+      'context_put',
+      '--input-file',
+      invalidUtf8RequestPath,
+    );
+    expect(invalidUtf8.code).toBe(1);
+    expect(
+      JSON.parse(invalidUtf8.stderr) as { error: { code: string; message: string } },
+    ).toMatchObject({
+      error: { code: 'bad_request', message: 'Tool input must be valid UTF-8' },
+    });
+
+    const invalidConfiguration = await executeCliFailure(
+      { ...environment, PIMPAMPUM_PORT: 'not-a-port' },
+      'config',
+    );
+    expect(invalidConfiguration.code).toBe(1);
+    expect(
+      JSON.parse(invalidConfiguration.stderr) as { error: { code: string; message: string } },
+    ).toMatchObject({
+      error: {
+        code: 'bad_request',
+        message: 'PIMPAMPUM_PORT must be an integer between 1 and 65535',
+      },
+    });
+  }, 20_000);
 
   it('manages project, PRD and contextual Markdown through the compiled MCP bridge', async () => {
     const client = await connectMcp();
