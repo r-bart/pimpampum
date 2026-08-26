@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -33,6 +34,37 @@ private final class RecordingWorkspaceOpener: WorkspaceOpening {
 }
 
 @MainActor
+private final class SmokeActionRecorder {
+  private(set) var quitInvoked = false
+
+  func recordQuit() {
+    quitInvoked = true
+  }
+}
+
+private struct SmokeWindowInspection {
+  let reused: Bool?
+  let count: Int?
+  let width: Int?
+  let height: Int?
+  let focused: Bool?
+  let backupState: String?
+  let configuredPath: String?
+  let errorPresent: Bool?
+
+  static let notExercised = SmokeWindowInspection(
+    reused: nil,
+    count: nil,
+    width: nil,
+    height: nil,
+    focused: nil,
+    backupState: nil,
+    configuredPath: nil,
+    errorPresent: nil
+  )
+}
+
+@MainActor
 enum DesktopSmokeHarness {
   static func run(arguments: [String], dataDirectory: URL) async -> Bool {
     let request: SmokeHarnessRequest
@@ -55,13 +87,37 @@ enum DesktopSmokeHarness {
       let reader = SmokeOverviewReader(seed: seed, live: client)
       let store = OverviewStore(reader: reader)
       await store.refresh()
-      if seed != nil { await store.refresh() }
+      if seed != nil, request.refreshAfterSeed { await store.refresh() }
+
+      guard
+        let markURL = Bundle.main.url(
+          forResource: PimpampumMarkAsset.resourceName,
+          withExtension: PimpampumMarkAsset.resourceExtension
+        ),
+        let markImage = PimpampumMarkAsset.templateImage(at: markURL)
+      else {
+        throw DesktopSmokeError.markResourceMissing
+      }
+      let markData = try Data(contentsOf: markURL)
+      let markHash = SHA256.hash(data: markData).map { String(format: "%02x", $0) }.joined()
 
       let opener = RecordingWorkspaceOpener()
+      let backupClient = BackupSettingsClient(
+        receiptURL: dataDirectory.appendingPathComponent("install-receipt.json"),
+        tokenURL: dataDirectory.appendingPathComponent("token")
+      )
+      let backupStore = BackupSettingsStore(client: backupClient)
+      if request.controlLabel == "Settings…" {
+        await backupStore.load()
+      }
+      let actionRecorder = SmokeActionRecorder()
       let rendered = try renderAndInspect(
         store: store,
         opener: opener,
-        projectId: request.projectId
+        backupStore: backupStore,
+        actionRecorder: actionRecorder,
+        projectId: request.projectId,
+        controlLabel: request.controlLabel
       )
       try rendered.png.write(to: request.pngURL, options: .atomic)
 
@@ -80,9 +136,20 @@ enum DesktopSmokeHarness {
         connectionState: store.connectionState,
         stale: store.isStale,
         png: rendered.png,
+        markResourceSha256: markHash,
+        markIsTemplate: markImage.isTemplate,
         accessibilityLabels: rendered.accessibilityLabels,
         activatedControlLabel: rendered.activatedControlLabel,
-        openedWorkspacePath: opener.openedPaths.last
+        openedWorkspacePath: opener.openedPaths.last,
+        settingsWindowReused: rendered.settingsWindow.reused,
+        settingsWindowCount: rendered.settingsWindow.count,
+        settingsWindowWidth: rendered.settingsWindow.width,
+        settingsWindowHeight: rendered.settingsWindow.height,
+        settingsWindowFocused: rendered.settingsWindow.focused,
+        settingsBackupState: rendered.settingsWindow.backupState,
+        settingsConfiguredPath: rendered.settingsWindow.configuredPath,
+        settingsErrorPresent: rendered.settingsWindow.errorPresent,
+        quitActionInvoked: actionRecorder.quitInvoked
       )
       let encoder = JSONEncoder()
       encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -96,9 +163,21 @@ enum DesktopSmokeHarness {
   private static func renderAndInspect(
     store: OverviewStore,
     opener: RecordingWorkspaceOpener,
-    projectId: String?
-  ) throws -> (png: Data, accessibilityLabels: [String], activatedControlLabel: String?) {
-    let content = StatusPopover(store: store, workspaceOpener: opener)
+    backupStore: BackupSettingsStore,
+    actionRecorder: SmokeActionRecorder,
+    projectId: String?,
+    controlLabel: String?
+  ) throws -> (
+    png: Data,
+    accessibilityLabels: [String],
+    activatedControlLabel: String?,
+    settingsWindow: SmokeWindowInspection
+  ) {
+    let content = NativeSettingsStatusPopover(
+      store: store,
+      workspaceOpener: opener,
+      quitApplication: actionRecorder.recordQuit
+    )
       .frame(width: 360, height: 560)
     let renderer = ImageRenderer(content: content)
     renderer.scale = 2
@@ -129,10 +208,15 @@ enum DesktopSmokeHarness {
     let elements = accessibilityElements()
     let labels = elements.compactMap(accessibilityLabel)
     var activatedControlLabel: String?
+    var settingsWindow = SmokeWindowInspection.notExercised
     if let projectId {
       let project = try DesktopSmokeLogic.project(withId: projectId, in: store.overview)
       let expectedLabel = "Open \(project.title) in Finder"
-      guard let control = elements.first(where: { accessibilityLabel($0) == expectedLabel }) else {
+      guard
+        let control = elements.first(where: {
+          accessibilityLabel($0) == expectedLabel && accessibilityRole($0) == kAXButtonRole
+        })
+      else {
         throw DesktopSmokeError.renderedControlMissing(expectedLabel)
       }
       guard AXUIElementPerformAction(control, kAXPressAction as CFString) == .success else {
@@ -140,8 +224,48 @@ enum DesktopSmokeHarness {
       }
       activatedControlLabel = expectedLabel
     }
+    if let controlLabel {
+      guard
+        let control = elements.first(where: {
+          accessibilityLabel($0) == controlLabel && accessibilityRole($0) == kAXButtonRole
+        })
+      else {
+        throw DesktopSmokeError.renderedControlMissing(controlLabel)
+      }
+      guard AXUIElementPerformAction(control, kAXPressAction as CFString) == .success else {
+        throw DesktopSmokeError.renderedControlActivationFailed(controlLabel)
+      }
+      activatedControlLabel = controlLabel
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+
+      if controlLabel == "Settings…" {
+        let settingsWindows = {
+          NSApplication.shared.windows.filter { $0.title == "Pimpampum Settings" }
+        }
+        let firstWindow = settingsWindows().first
+        guard AXUIElementPerformAction(control, kAXPressAction as CFString) == .success else {
+          throw DesktopSmokeError.renderedControlActivationFailed(controlLabel)
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        let currentWindow = settingsWindows().first
+        let contentSize = currentWindow?.contentLayoutRect.size
+        settingsWindow = SmokeWindowInspection(
+          reused: firstWindow != nil && firstWindow === currentWindow,
+          count: settingsWindows().count,
+          width: contentSize.map { Int($0.width.rounded()) },
+          height: contentSize.map { Int($0.height.rounded()) },
+          focused: currentWindow.map {
+            $0.isKeyWindow || NSApplication.shared.orderedWindows.first === $0
+          },
+          backupState: backupStore.settings?.state.rawValue,
+          configuredPath: backupStore.settings?.directory,
+          errorPresent: backupStore.settings?.error != nil || backupStore.errorMessage != nil
+        )
+        currentWindow?.close()
+      }
+    }
     window.orderOut(nil)
-    return (png, labels, activatedControlLabel)
+    return (png, labels, activatedControlLabel, settingsWindow)
   }
 
   private static func accessibilityElements() -> [AXUIElement] {
@@ -168,6 +292,16 @@ enum DesktopSmokeHarness {
       }
     }
     return nil
+  }
+
+  private static func accessibilityRole(_ element: AXUIElement) -> String? {
+    var value: CFTypeRef?
+    guard
+      AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .success
+    else {
+      return nil
+    }
+    return value as? String
   }
 
   private static func accessibilityChildren(_ element: AXUIElement) -> [AXUIElement] {

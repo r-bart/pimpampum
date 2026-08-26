@@ -21,11 +21,15 @@ describe('PimpampumStore', () => {
   let store: PimpampumStore;
   let temporaryDirectory: string;
   let projectSequence: number;
+  let mutationCount: number;
 
   beforeEach(() => {
     temporaryDirectory = mkdtempSync(join(tmpdir(), 'pimpampum-test-'));
     database = openDatabase(':memory:');
-    store = new PimpampumStore(database);
+    mutationCount = 0;
+    store = new PimpampumStore(database, () => {
+      mutationCount += 1;
+    });
     projectSequence = 0;
     store.registerWorkspace({
       id: 'test-workspace',
@@ -33,6 +37,7 @@ describe('PimpampumStore', () => {
       rootPath: temporaryDirectory,
       actor: 'test',
     });
+    mutationCount = 0;
   });
 
   afterEach(() => {
@@ -121,6 +126,31 @@ describe('PimpampumStore', () => {
       artifacts: [{ label: null, uri: 'file:///artifact' }],
     }) as Project;
   }
+
+  it('notifies exactly once after each commit and never after a rejected mutation', () => {
+    const project = createProject({ state: 'draft' });
+    expect(mutationCount).toBe(1);
+
+    expectAppError(
+      () =>
+        store.updatePrd({
+          projectId: project.id,
+          prd: '# Stale',
+          expectedRevision: project.revision + 1,
+          actor: 'test',
+        }),
+      'revision_conflict',
+    );
+    expect(mutationCount).toBe(1);
+
+    store.updatePrd({
+      projectId: project.id,
+      prd: '# Current',
+      expectedRevision: project.revision,
+      actor: 'test',
+    });
+    expect(mutationCount).toBe(2);
+  });
 
   it('registers, lists and resolves the most specific workspace', () => {
     const nestedRoot = join(temporaryDirectory, 'nested');
@@ -1086,6 +1116,10 @@ describe('PimpampumStore', () => {
     ).toBe(true);
 
     await expect(store.backup('relative')).rejects.toMatchObject({
+      code: 'bad_request',
+      status: 400,
+    });
+    await expect(store.backupLatest('relative')).rejects.toMatchObject({
       code: 'bad_request',
       status: 400,
     });

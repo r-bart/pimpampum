@@ -10,16 +10,18 @@ npm run test:evals
 
 ## Rubric
 
-The suite has seven equally required evaluations. A release passes only when every evaluation passes; there is no partial score and no retry that hides a first failure.
+The suite has nine equally required evaluations. A release passes only when every evaluation passes; there is no partial score and no retry that hides a first failure.
 
 | Evaluation          | Product behavior under evaluation                                                    | Pass condition                                                                    |
 | ------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
 | Project delivery    | Workspace registration, project and PRD creation, task claim, completion, and export | The compiled interfaces preserve revisions and produce a portable export          |
+| Agent-first CLI     | Offline configuration, discovery, and every MCP tool through the shell fallback      | A shell-only agent can use the complete canonical contract with JSON envelopes    |
 | MCP project context | PRD and contextual Markdown management through the MCP bridge                        | MCP round-trips exact bounded documents through the shared daemon                 |
 | Competing agents    | Parent/subtask ordering, claims, idempotency, and artifact recovery                  | Only claimable work is offered and concurrent ownership remains safe              |
 | Contract safety     | Authentication, optimistic concurrency, and the no-delete boundary                   | Unauthorized, stale, and intentionally unsupported operations fail explicitly     |
 | Process continuity  | Daemon restart and single-instance ownership                                         | State survives restart and a second daemon cannot own the same data directory     |
 | Data recovery       | SQLite backup, restore, and portable export                                          | The restored instance is usable and exportable without losing project state       |
+| Automatic backup    | Configuration, post-mutation refresh, failure isolation, recovery, and disable       | The rolling snapshot recovers while committed project work remains valid          |
 | Local lifecycle     | Install, status, reconciliation, uninstall, and persistence                          | Per-user artifacts are exact, repeat install is idempotent, and user data remains |
 
 ## Evaluation boundaries

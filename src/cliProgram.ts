@@ -68,6 +68,10 @@ Usage:
   pimpampum project:ready <project-id> <revision>
   pimpampum task:create <project-id> <title> [parent-id]
   pimpampum backup <directory>
+  pimpampum backup status [--json]
+  pimpampum backup configure <absolute-directory> [--json]
+  pimpampum backup retry [--json]
+  pimpampum backup disable [--json]
   pimpampum export <directory>
 `;
 
@@ -90,6 +94,13 @@ function revision(value: string | undefined): number {
     throw new AppError('bad_request', 'Revision must be a positive integer', 400);
   }
   return parsed;
+}
+
+function acceptOptionalJsonFlag(arguments_: string[], startIndex: number): void {
+  const trailing = arguments_.slice(startIndex);
+  if (trailing.length > 1 || trailing.some((argument) => argument !== '--json')) {
+    throw new AppError('bad_request', 'Only the optional --json flag is accepted', 400);
+  }
 }
 
 function print(runtime: CliRuntime, value: unknown): void {
@@ -345,6 +356,40 @@ async function executeCli(
       );
       return null;
     case 'backup':
+      if (args[0] === 'status') {
+        acceptOptionalJsonFlag(args, 1);
+        print(runtime, await client.getAutomaticBackupStatus());
+        return null;
+      }
+      if (args[0] === 'configure') {
+        acceptOptionalJsonFlag(args, 2);
+        print(
+          runtime,
+          await client.configureAutomaticBackup(
+            runtime.resolvePath(required(args[1], 'backup directory')),
+          ),
+        );
+        return null;
+      }
+      if (args[0] === 'retry') {
+        acceptOptionalJsonFlag(args, 1);
+        const status = await client.retryAutomaticBackup();
+        if (status.state === 'error') {
+          throw new AppError(
+            'internal_error',
+            status.error ?? 'Automatic backup retry failed',
+            500,
+            true,
+          );
+        }
+        print(runtime, status);
+        return null;
+      }
+      if (args[0] === 'disable') {
+        acceptOptionalJsonFlag(args, 1);
+        print(runtime, await client.disableAutomaticBackup());
+        return null;
+      }
       print(
         runtime,
         await client.backup(runtime.resolvePath(required(args[0], 'backup directory'))),

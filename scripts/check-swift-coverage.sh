@@ -24,12 +24,17 @@ fi
 covered_sources=(
     "$package_root/Sources/PimpampumMenuBar/Models.swift"
     "$package_root/Sources/PimpampumMenuBar/OverviewClient.swift"
+    "$package_root/Sources/PimpampumMenuBar/AuthenticatedDaemonConfiguration.swift"
     "$package_root/Sources/PimpampumMenuBar/OverviewStore.swift"
     "$package_root/Sources/PimpampumMenuBar/ApplicationConfiguration.swift"
     "$package_root/Sources/PimpampumMenuBar/LoginItemManager.swift"
     "$package_root/Sources/PimpampumMenuBar/WorkspaceOpener.swift"
+    "$package_root/Sources/PimpampumMenuBar/SettingsWindowOpener.swift"
     "$package_root/Sources/PimpampumMenuBar/StatusPresentation.swift"
     "$package_root/Sources/PimpampumMenuBar/DesktopSmokeLogic.swift"
+    "$package_root/Sources/PimpampumMenuBar/BackupSettingsModels.swift"
+    "$package_root/Sources/PimpampumMenuBar/BackupSettingsClient.swift"
+    "$package_root/Sources/PimpampumMenuBar/BackupSettingsStore.swift"
 )
 
 report="$(

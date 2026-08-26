@@ -18,6 +18,14 @@ function fixture() {
     updateProject: vi.fn(async (input: unknown) => input),
     createTask: vi.fn(async (input: unknown) => input),
     backup: vi.fn(async (directory: string) => ({ path: directory })),
+    getAutomaticBackupStatus: vi.fn(async () => ({ state: 'disabled', enabled: false })),
+    configureAutomaticBackup: vi.fn(async (directory: string) => ({
+      state: 'healthy',
+      enabled: true,
+      directory,
+    })),
+    retryAutomaticBackup: vi.fn(async () => ({ state: 'healthy', enabled: true })),
+    disableAutomaticBackup: vi.fn(async () => ({ state: 'disabled', enabled: false })),
     exportPortable: vi.fn(async (directory: string) => ({ path: directory })),
   } as unknown as PimpampumHttpClient;
   const output: string[] = [];
@@ -96,6 +104,10 @@ describe('CLI program', () => {
       ['task:create', 'project-id', 'Task'],
       ['task:create', 'project-id', 'Subtask', 'parent-id'],
       ['backup', 'backups'],
+      ['backup', 'status', '--json'],
+      ['backup', 'configure', 'cloud backup', '--json'],
+      ['backup', 'retry', '--json'],
+      ['backup', 'disable', '--json'],
       ['export', 'exports'],
     ];
     for (const command of commands) await runCli(command, state.runtime);
@@ -110,6 +122,54 @@ describe('CLI program', () => {
     expect(state.client.createTask).toHaveBeenCalledWith(
       expect.objectContaining({ parentId: 'parent-id' }),
     );
+  });
+
+  it('returns a non-zero agent error when automatic backup retry reports failure', async () => {
+    const state = fixture();
+    state.client.retryAutomaticBackup = vi.fn(async () => ({
+      state: 'error',
+      enabled: true,
+      error: 'cloud volume unavailable',
+    })) as never;
+    state.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+
+    await expect(runCli(['backup', 'retry', '--json'], state.runtime)).rejects.toThrow('exit:1');
+    expect(state.errors.join('\n')).toContain('cloud volume unavailable');
+
+    const withoutMessage = fixture();
+    withoutMessage.client.retryAutomaticBackup = vi.fn(async () => ({
+      state: 'error',
+      enabled: true,
+      error: null,
+    })) as never;
+    withoutMessage.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+    await expect(runCli(['backup', 'retry'], withoutMessage.runtime)).rejects.toThrow('exit:1');
+    expect(withoutMessage.errors.join('\n')).toContain('Automatic backup retry failed');
+  });
+
+  it('rejects ambiguous automatic backup subcommand arguments before transport', async () => {
+    const state = fixture();
+    state.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+
+    await expect(runCli(['backup', 'status', 'unexpected'], state.runtime)).rejects.toThrow(
+      'exit:1',
+    );
+    await expect(runCli(['backup', 'disable', '--json', '--json'], state.runtime)).rejects.toThrow(
+      'exit:1',
+    );
+    await expect(
+      runCli(['backup', 'configure', '/backup', '--pretty'], state.runtime),
+    ).rejects.toThrow('exit:1');
+    expect(state.client.getAutomaticBackupStatus).not.toHaveBeenCalled();
+    expect(state.client.configureAutomaticBackup).not.toHaveBeenCalled();
+    expect(state.client.disableAutomaticBackup).not.toHaveBeenCalled();
+    expect(state.errors.join('\n')).toContain('Only the optional --json flag is accepted');
   });
 
   it('starts the server and closes it through either signal', async () => {

@@ -1,4 +1,5 @@
 import type { RuntimeConfig } from './config.js';
+import { parseAutomaticBackupStatus, type AutomaticBackupStatus } from './backupContract.js';
 import { AppError, type ErrorCode } from './errors.js';
 import { parseOverview } from './overviewContract.js';
 import type {
@@ -71,6 +72,35 @@ export class PimpampumHttpClient implements PimpampumGateway {
 
   async getOverview(): Promise<Overview> {
     return parseOverview(await this.request<unknown>('/api/v1/overview'));
+  }
+
+  async getAutomaticBackupStatus(): Promise<AutomaticBackupStatus> {
+    return parseAutomaticBackupStatus(await this.request<unknown>('/api/v1/settings/backup'));
+  }
+
+  async configureAutomaticBackup(directory: string): Promise<AutomaticBackupStatus> {
+    return parseAutomaticBackupStatus(
+      await this.request<unknown>('/api/v1/settings/backup', {
+        method: 'PUT',
+        body: { directory },
+        timeoutMilliseconds: 300_000,
+      }),
+    );
+  }
+
+  async retryAutomaticBackup(): Promise<AutomaticBackupStatus> {
+    return parseAutomaticBackupStatus(
+      await this.request<unknown>('/api/v1/settings/backup/retry', {
+        method: 'POST',
+        timeoutMilliseconds: 300_000,
+      }),
+    );
+  }
+
+  async disableAutomaticBackup(): Promise<AutomaticBackupStatus> {
+    return parseAutomaticBackupStatus(
+      await this.request<unknown>('/api/v1/settings/backup', { method: 'DELETE' }),
+    );
   }
 
   listWorkspaces(): Promise<Workspace[]> {

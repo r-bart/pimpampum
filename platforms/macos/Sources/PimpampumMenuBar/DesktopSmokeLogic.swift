@@ -5,7 +5,9 @@ struct SmokeHarnessRequest: Equatable {
   let jsonURL: URL
   let pngURL: URL
   let seedURL: URL?
+  let refreshAfterSeed: Bool
   let projectId: String?
+  let controlLabel: String?
 }
 
 struct SmokeProjectRow: Codable, Equatable {
@@ -23,11 +25,25 @@ struct DesktopSmokeSnapshot: Codable, Equatable {
   let activeCount: Int
   let connectionState: String
   let stale: Bool
+  let markResource: String
+  let markResourceSha256: String
+  let markIsTemplate: Bool
+  let statusBadgeSystemImage: String
+  let displayedActiveCount: String?
   let projectRows: [SmokeProjectRow]
   let completedCollapsed: Bool
   let renderedPngSha256: String
   let activatedControlLabel: String?
   let openedWorkspacePath: String?
+  let settingsWindowReused: Bool?
+  let settingsWindowCount: Int?
+  let settingsWindowWidth: Int?
+  let settingsWindowHeight: Int?
+  let settingsWindowFocused: Bool?
+  let settingsBackupState: String?
+  let settingsConfiguredPath: String?
+  let settingsErrorPresent: Bool?
+  let quitActionInvoked: Bool
 }
 
 enum DesktopSmokeLogic {
@@ -39,7 +55,9 @@ enum DesktopSmokeLogic {
       jsonURL: URL(fileURLWithPath: arguments[1]),
       pngURL: URL(fileURLWithPath: arguments[2]),
       seedURL: option("--seed-overview", in: arguments).map(URL.init(fileURLWithPath:)),
-      projectId: option("--open-project", in: arguments)
+      refreshAfterSeed: !arguments.contains("--retain-seed"),
+      projectId: option("--open-project", in: arguments),
+      controlLabel: option("--activate-control", in: arguments)
     )
   }
 
@@ -83,11 +101,21 @@ enum DesktopSmokeLogic {
     connectionState: OverviewConnectionState,
     stale: Bool,
     png: Data,
+    markResourceSha256: String,
+    markIsTemplate: Bool,
     accessibilityLabels: [String],
     activatedControlLabel: String?,
-    openedWorkspacePath: String?
+    openedWorkspacePath: String?,
+    settingsWindowReused: Bool?,
+    settingsWindowCount: Int?,
+    settingsWindowWidth: Int?,
+    settingsWindowHeight: Int?,
+    settingsWindowFocused: Bool?,
+    settingsBackupState: String?,
+    settingsConfiguredPath: String?,
+    settingsErrorPresent: Bool?,
+    quitActionInvoked: Bool
   ) -> DesktopSmokeSnapshot {
-    let claims = activeCount == 1 ? "1 active claim" : "\(activeCount) active claims"
     let rows = (overview?.projects ?? []).map { project in
       SmokeProjectRow(
         id: project.id,
@@ -97,18 +125,35 @@ enum DesktopSmokeLogic {
       )
     }
     return DesktopSmokeSnapshot(
-      schemaVersion: 1,
+      schemaVersion: 2,
       visualState: visualState.label,
-      accessibilityLabel: "Pimpampum: \(visualState.label), \(claims)",
+      accessibilityLabel: StatusIndicatorPresentation.accessibilityLabel(
+        state: visualState,
+        activeCount: activeCount
+      ),
       accessibilityLabels: accessibilityLabels.sorted(),
       activeCount: activeCount,
       connectionState: connectionLabel(connectionState),
       stale: stale,
+      markResource: "PimpampumCompact.pdf",
+      markResourceSha256: markResourceSha256,
+      markIsTemplate: markIsTemplate,
+      statusBadgeSystemImage: visualState.badgeKind.systemImageName,
+      displayedActiveCount: StatusIndicatorPresentation.displayCount(activeCount),
       projectRows: rows,
       completedCollapsed: true,
       renderedPngSha256: SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined(),
       activatedControlLabel: activatedControlLabel,
-      openedWorkspacePath: openedWorkspacePath
+      openedWorkspacePath: openedWorkspacePath,
+      settingsWindowReused: settingsWindowReused,
+      settingsWindowCount: settingsWindowCount,
+      settingsWindowWidth: settingsWindowWidth,
+      settingsWindowHeight: settingsWindowHeight,
+      settingsWindowFocused: settingsWindowFocused,
+      settingsBackupState: settingsBackupState,
+      settingsConfiguredPath: settingsConfiguredPath,
+      settingsErrorPresent: settingsErrorPresent,
+      quitActionInvoked: quitActionInvoked
     )
   }
 
@@ -126,6 +171,7 @@ enum DesktopSmokeError: LocalizedError, Equatable {
   case projectMissing(String)
   case renderedControlMissing(String)
   case renderedControlActivationFailed(String)
+  case markResourceMissing
   case renderFailed
 
   var errorDescription: String? {
@@ -136,6 +182,7 @@ enum DesktopSmokeError: LocalizedError, Equatable {
     case .renderedControlMissing(let label): "The rendered control is missing: \(label)"
     case .renderedControlActivationFailed(let label):
       "The rendered control could not be activated: \(label)"
+    case .markResourceMissing: "PimpampumCompact.pdf is missing or invalid."
     case .renderFailed: "The native popover could not be rendered."
     }
   }

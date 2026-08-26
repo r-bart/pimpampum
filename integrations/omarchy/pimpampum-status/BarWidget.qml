@@ -9,10 +9,15 @@ BarWidget {
   readonly property string helperPath: decodeURIComponent(
     Qt.resolvedUrl("pimpampum-overview").toString().replace(/^file:\/\//, "")
   )
+  readonly property string backupHelperPath: decodeURIComponent(
+    Qt.resolvedUrl("pimpampum-backup").toString().replace(/^file:\/\//, "")
+  )
   readonly property bool isVertical: bar ? bar.vertical : false
   readonly property color themeForeground: bar ? bar.foreground : "white"
   readonly property color themeBackground: bar ? bar.background : "#202020"
   readonly property color themeUrgent: bar ? bar.urgent : "#ff5f57"
+  readonly property color activeBlue: "#3b82f6"
+  readonly property color availableAmber: "#f59e0b"
   readonly property color completedGreen: "#22c55e"
   readonly property string themeFont: bar ? bar.fontFamily : "monospace"
   readonly property string barPosition: bar ? bar.position : "top"
@@ -31,20 +36,7 @@ BarWidget {
   readonly property string statusLabel: service.stale
     ? "Stale · " + baseStatusLabel
     : baseStatusLabel
-  readonly property string statusIcon: ({
-    "active": "●",
-    "available": "◐",
-    "complete": "✓",
-    "draft": "○",
-    "empty": "–",
-    "offline": "×",
-    "credentials": "!",
-    "invalid": "!",
-    "incompatible": "!"
-  }[service.effectiveStatus] || "?")
-  readonly property color statusColor: service.connectionState !== "online"
-    ? root.themeUrgent
-    : service.effectiveStatus === "complete" ? root.completedGreen : root.themeForeground
+  readonly property real markSize: Math.max(14, Math.min(16, inheritedBarSize - Style.space(8)))
 
   readonly property bool opened: popout.opened
 
@@ -63,44 +55,46 @@ BarWidget {
     popoutOpen: popout.opened
   }
 
+  BackupService {
+    id: backupService
+    helperPath: root.backupHelperPath
+    popoutOpen: popout.opened
+  }
+
   StatusPopout {
     id: popout
     bar: root.bar
     anchorItem: root
     service: service
+    backupService: backupService
   }
 
-  Grid {
+  PimpampumMark {
     id: indicator
     anchors.centerIn: parent
-    columns: root.isVertical ? 1 : 2
-    spacing: Style.space(4)
-
-    Text {
-      text: root.statusIcon
-      color: root.statusColor
-      font.family: root.themeFont
-      font.pixelSize: Style.font.body
-      horizontalAlignment: Text.AlignHCenter
-      Accessible.name: root.statusLabel
-    }
-
-    Text {
-      visible: service.activeClaims > 0
-      text: String(service.activeClaims)
-      color: root.themeForeground
-      font.family: root.themeFont
-      font.pixelSize: Style.font.bodySmall
-      font.bold: true
-      horizontalAlignment: Text.AlignHCenter
-      Accessible.name: service.activeClaims + " active claims"
-    }
+    status: service.effectiveStatus
+    statusLabel: root.statusLabel
+    stale: service.stale
+    vertical: root.isVertical
+    activeClaims: service.activeClaims
+    foreground: root.themeForeground
+    urgent: root.themeUrgent
+    activeColor: root.activeBlue
+    availableColor: root.availableAmber
+    completeColor: root.completedGreen
+    fontFamily: root.themeFont
+    markSize: root.markSize
+    badgeSize: Style.space(5)
+    itemSpacing: Style.space(4)
   }
 
   MouseArea {
     anchors.fill: parent
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
+    Accessible.role: Accessible.Button
+    Accessible.name: indicator.accessibleLabel
+    Accessible.onPressAction: root.togglePanel()
     onEntered: if (root.bar) root.bar.showTooltip(root, root.statusLabel)
     onExited: if (root.bar) root.bar.hideTooltip(root)
     onClicked: root.togglePanel()

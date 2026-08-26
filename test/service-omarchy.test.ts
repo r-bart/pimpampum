@@ -588,7 +588,7 @@ describe('Omarchy Quattro composite service adapter', () => {
     });
   });
 
-  it('binds the installed overview helper to the canonical CLI and custom data directory', async () => {
+  it('binds installed helpers to the canonical CLI and keeps backup paths as one argument', async () => {
     const root = fixture('canonical-helper');
     const quattro = fakeQuattro(root);
     const composite = adapter(root, daemon(root, []));
@@ -622,6 +622,24 @@ writeFileSync(process.env.HELPER_OUTPUT, JSON.stringify({ dataDirectory: process
       arguments: ['overview'],
     });
     expect(readFileSync(helper, 'utf8')).toContain(process.execPath);
+
+    const backupHelper = join(root.target, 'pimpampum-backup');
+    const backupDirectory = join(root.root, "Dropbox ü ; $(touch nope) 'quoted'");
+    execFileSync(backupHelper, ['configure', backupDirectory], {
+      env: {
+        ...process.env,
+        HELPER_OUTPUT: outputPath,
+        PIMPAMPUM_DATA_DIR: '/wrong/data/directory',
+      },
+    });
+    expect(JSON.parse(readFileSync(outputPath, 'utf8'))).toEqual({
+      dataDirectory: root.data,
+      host: '127.0.0.1',
+      port: '7337',
+      arguments: ['backup', 'configure', backupDirectory],
+    });
+    expect(existsSync(join(root.root, 'nope'))).toBe(false);
+    expect(readFileSync(backupHelper, 'utf8')).toContain('backup "$@"');
   });
 
   it('refuses to pass unreceipted plugin content to the destructive official remove command', async () => {

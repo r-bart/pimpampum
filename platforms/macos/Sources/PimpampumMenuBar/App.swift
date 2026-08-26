@@ -30,6 +30,7 @@ final class PimpampumApplicationDelegate: NSObject, NSApplicationDelegate {
 struct PimpampumMenuBarApp: App {
   @NSApplicationDelegateAdaptor(PimpampumApplicationDelegate.self) private var appDelegate
   @StateObject private var store: OverviewStore
+  @StateObject private var backupSettingsStore: BackupSettingsStore
   private let workspaceOpener = WorkspaceOpener()
 
   init() {
@@ -38,12 +39,22 @@ struct PimpampumMenuBarApp: App {
       receiptURL: dataDirectory.appendingPathComponent("install-receipt.json"),
       tokenURL: dataDirectory.appendingPathComponent("token")
     )
+    let backupClient = BackupSettingsClient(
+      receiptURL: dataDirectory.appendingPathComponent("install-receipt.json"),
+      tokenURL: dataDirectory.appendingPathComponent("token")
+    )
+    let backupSettingsStore = BackupSettingsStore(client: backupClient)
     _store = StateObject(wrappedValue: OverviewStore(reader: client))
+    _backupSettingsStore = StateObject(wrappedValue: backupSettingsStore)
   }
 
   var body: some Scene {
     MenuBarExtra {
-      StatusPopover(store: store, workspaceOpener: workspaceOpener)
+      NativeSettingsStatusPopover(
+        store: store,
+        workspaceOpener: workspaceOpener,
+        quitApplication: { NSApplication.shared.terminate(nil) }
+      )
         .onAppear {
           store.start()
           store.setPopoverOpen(true)
@@ -67,5 +78,13 @@ struct PimpampumMenuBarApp: App {
       }
     }
     .menuBarExtraStyle(.window)
+
+    Settings {
+      BackupSettingsView(store: backupSettingsStore)
+        .background(SettingsWindowConfigurator())
+        .task {
+          await backupSettingsStore.load()
+        }
+    }
   }
 }

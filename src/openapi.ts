@@ -121,7 +121,10 @@ export const openApiDocument: OpenApiDocument = {
     { name: 'Tasks', description: 'Top-level tasks and one level of subtasks.' },
     { name: 'Work', description: 'Claim, lease, release, and completion coordination.' },
     { name: 'Activity', description: 'Bounded automatic audit events.' },
-    { name: 'Administration', description: 'Explicit backup and portable export operations.' },
+    {
+      name: 'Administration',
+      description: 'Automatic backup settings, explicit snapshots, and portable export.',
+    },
     { name: 'MCP', description: 'MCP Streamable HTTP transport; tools are documented separately.' },
   ],
   paths: {
@@ -157,6 +160,42 @@ export const openApiDocument: OpenApiDocument = {
           'Returns semantic project status, global counts, and active claims without Markdown or completion bodies.',
         tags: ['System'],
         responses: responses(ref('Overview')),
+      },
+    },
+    '/api/v1/settings/backup': {
+      get: {
+        operationId: 'getAutomaticBackupStatus',
+        summary: 'Read automatic backup configuration and health',
+        description:
+          'Returns the daemon-owned destination and latest refresh outcome. It never exposes database contents.',
+        tags: ['Administration'],
+        responses: responses(ref('AutomaticBackupStatus')),
+      },
+      put: {
+        operationId: 'configureAutomaticBackup',
+        summary: 'Choose the automatic backup directory',
+        description:
+          'Persists one existing writable absolute directory and immediately attempts an integrity-checked rolling snapshot.',
+        tags: ['Administration'],
+        requestBody: body(ref('DirectoryInput')),
+        responses: responses(ref('AutomaticBackupStatus')),
+      },
+      delete: {
+        operationId: 'disableAutomaticBackup',
+        summary: 'Disable automatic backup',
+        description:
+          'Stops future automatic refreshes without deleting an existing snapshot or changing the live database.',
+        tags: ['Administration'],
+        responses: responses(ref('AutomaticBackupStatus')),
+      },
+    },
+    '/api/v1/settings/backup/retry': {
+      post: {
+        operationId: 'retryAutomaticBackup',
+        summary: 'Retry the configured automatic backup',
+        description: 'Runs a serialized refresh and returns its resulting health state.',
+        tags: ['Administration'],
+        responses: responses(ref('AutomaticBackupStatus')),
       },
     },
     '/api/v1/workspaces': {
@@ -528,6 +567,39 @@ export const openApiDocument: OpenApiDocument = {
         minLength: 1,
         description: 'Absolute filesystem path on the daemon machine.',
         examples: ['/Users/alex/Projects/vcomp'],
+      },
+      AutomaticBackupStatus: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'enabled',
+          'directory',
+          'snapshotPath',
+          'state',
+          'lastAttemptAt',
+          'lastSuccessAt',
+          'error',
+        ],
+        properties: {
+          enabled: { type: 'boolean' },
+          directory: { oneOf: [ref('AbsolutePath'), { type: 'null' }] },
+          snapshotPath: { oneOf: [ref('AbsolutePath'), { type: 'null' }] },
+          state: { type: 'string', enum: ['disabled', 'pending', 'healthy', 'error'] },
+          lastAttemptAt: { oneOf: [ref('Timestamp'), { type: 'null' }] },
+          lastSuccessAt: { oneOf: [ref('Timestamp'), { type: 'null' }] },
+          error: { type: ['string', 'null'], maxLength: 500 },
+        },
+        examples: [
+          {
+            enabled: true,
+            directory: '/Users/alex/Library/Mobile Documents/Pimpampum',
+            snapshotPath: '/Users/alex/Library/Mobile Documents/Pimpampum/pimpampum-latest.sqlite',
+            state: 'healthy',
+            lastAttemptAt: '2026-08-26T08:00:00.000Z',
+            lastSuccessAt: '2026-08-26T08:00:00.000Z',
+            error: null,
+          },
+        ],
       },
       Timestamp: { type: 'string', format: 'date-time' },
       OverviewDaemon: {

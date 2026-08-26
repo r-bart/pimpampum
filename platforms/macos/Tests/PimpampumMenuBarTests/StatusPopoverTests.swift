@@ -24,13 +24,13 @@ struct StatusPopoverTests {
 
     for state in states {
       #expect(!state.label.isEmpty)
-      #expect(!state.symbolName.isEmpty)
+      #expect(!state.badgeKind.systemImageName.isEmpty)
       _ = state.color
     }
   }
 
   @Test
-  func mapsEveryServerSemanticStateToTextAndNativeSymbol() {
+  func mapsEveryServerSemanticStateToTheFixedIndicatorPresentation() {
     let expected: [(OverviewStatus, StatusVisualState)] = [
       (.active, .active),
       (.available, .available),
@@ -46,7 +46,7 @@ struct StatusPopoverTests {
           == visualState
       )
       #expect(!visualState.label.isEmpty)
-      #expect(!visualState.symbolName.isEmpty)
+      #expect(!visualState.badgeKind.systemImageName.isEmpty)
     }
   }
 
@@ -138,6 +138,12 @@ struct StatusPopoverTests {
 
     #expect(StatusPopover.projectCountsText(project) == "2 active · 3 available")
     #expect(StatusPopover.projectAccessibilityValue(project) == "active, 2 active · 3 available")
+    #expect(StatusPopover.projectMetadataText(project) == "100 Projects · project-slug")
+    #expect(StatusPopover.projectOpenAccessibilityLabel(project) == "Open Project in Finder")
+    #expect(StatusPopover.projectOpenAccessibilityHint(project) == "Opens workspace 100 Projects")
+    #expect(
+      StatusPopover.workspaceRevealError(project, description: "Folder missing")
+        == "Project: Folder missing")
     #expect(StatusPopover.projectSymbol(.active) != StatusPopover.projectSymbol(.available))
     #expect(StatusPopover.projectSymbol(.draft) != StatusPopover.projectSymbol(.complete))
   }
@@ -183,6 +189,14 @@ struct StatusPopoverTests {
 
     _ = StatusIndicator(state: .empty, activeCount: 0)
     _ = StatusPopover(store: store, workspaceOpener: opener)
+  }
+
+  @Test
+  func preservesTheApprovedFixedPopoverGeometryAndContentBounds() {
+    #expect(StatusPopover.containerWidth == 360)
+    #expect(StatusPopover.bodyMaximumHeight == 480)
+    #expect(StatusPopover.contentTitleLineLimit == 2)
+    #expect(StatusPopover.metadataLineLimit == 1)
   }
 }
 

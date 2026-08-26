@@ -3,13 +3,17 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const appRoot = resolve(process.argv[2] ?? 'platforms/macos/dist/PimpampumMenuBar.app');
 const approve = process.argv.includes('--approve');
 const executable = join(appRoot, 'Contents/MacOS/PimpampumMenuBar');
 const infoPlist = join(appRoot, 'Contents/Info.plist');
 const metadataPath = join(appRoot, 'Contents/Resources/artifact-metadata.json');
+const sourceCompactMark = join(repositoryRoot, 'platforms/macos/Resources/PimpampumCompact.pdf');
+const packagedCompactMark = join(appRoot, 'Contents/Resources/PimpampumCompact.pdf');
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -21,6 +25,49 @@ function sha256(content) {
 
 function packedVersion(value) {
   return `${value >>> 16}.${(value >>> 8) & 0xff}.${value & 0xff}`;
+}
+
+function validateCompactVectorPDF(bytes, label) {
+  invariant(bytes.length >= 256 && bytes.length <= 32_768, `${label} has an invalid file size.`);
+  const pdf = bytes.toString('latin1');
+  invariant(pdf.startsWith('%PDF-1.'), `${label} is not a PDF.`);
+  invariant(pdf.trimEnd().endsWith('%%EOF'), `${label} has no PDF end marker.`);
+  invariant(
+    /\/MediaBox\s*\[\s*0\s+0\s+16\s+16\s*\]/u.test(pdf),
+    `${label} must use the canonical 16 by 16 vector canvas.`,
+  );
+  invariant(
+    !/(?:\/Subtype\s*\/Image|\/Font\b|\bBT\b|\bTj\b)/u.test(pdf),
+    `${label} must contain outlined vector geometry only.`,
+  );
+  invariant(
+    pdf.includes('15.5 8 m') && pdf.includes('4.8 12.1 m') && pdf.includes('6.3 8.8 m'),
+    `${label} does not contain the canonical circle and lowercase-p outlines.`,
+  );
+  const colors = [...pdf.matchAll(/(?:^|\n)([\d.]+\s+[\d.]+\s+[\d.]+)\s+rg(?:\n|$)/gu)].map(
+    (match) => match[1],
+  );
+  invariant(
+    colors.length === 1 && colors[0] === '0 0 0' && pdf.includes('\nf*\n'),
+    `${label} must contain monochrome product geometry only.`,
+  );
+
+  const streamMatch = /<<\s*\/Length\s+(\d+)\s*>>\s*stream\n/u.exec(pdf);
+  invariant(streamMatch !== null, `${label} has no bounded vector content stream.`);
+  const streamStart = streamMatch.index + streamMatch[0].length;
+  const streamEnd = pdf.indexOf('endstream', streamStart);
+  invariant(streamEnd >= streamStart, `${label} has a malformed vector content stream.`);
+  invariant(
+    Buffer.byteLength(pdf.slice(streamStart, streamEnd), 'latin1') === Number(streamMatch[1]),
+    `${label} has an invalid vector content length.`,
+  );
+
+  const startXref = /startxref\s+(\d+)\s+%%EOF\s*$/u.exec(pdf);
+  invariant(startXref !== null, `${label} has no valid cross-reference pointer.`);
+  invariant(
+    pdf.startsWith('xref\n', Number(startXref[1])),
+    `${label} has a malformed cross-reference pointer.`,
+  );
 }
 
 function inspectArm64MachO(binary) {
@@ -97,7 +144,11 @@ function validateCanonicalPlist(plistBytes) {
   );
 }
 
-for (const path of [executable, infoPlist]) {
+invariant(
+  existsSync(sourceCompactMark) && lstatSync(sourceCompactMark).isFile(),
+  `Missing source compact mark: ${sourceCompactMark}`,
+);
+for (const path of [executable, infoPlist, packagedCompactMark]) {
   invariant(existsSync(path) && lstatSync(path).isFile(), `Missing packaged artifact: ${path}`);
 }
 invariant(
@@ -107,10 +158,19 @@ invariant(
 
 const binary = readFileSync(executable);
 const plistBytes = readFileSync(infoPlist);
+const sourceCompactMarkBytes = readFileSync(sourceCompactMark);
+const packagedCompactMarkBytes = readFileSync(packagedCompactMark);
+validateCompactVectorPDF(sourceCompactMarkBytes, 'The source compact mark');
+validateCompactVectorPDF(packagedCompactMarkBytes, 'The packaged compact mark');
+invariant(
+  packagedCompactMarkBytes.equals(sourceCompactMarkBytes),
+  'The packaged compact mark differs from the reviewed source vector.',
+);
 const metadata = {
   schemaVersion: 1,
   binarySha256: sha256(binary),
   plistSha256: sha256(plistBytes),
+  compactMarkSha256: sha256(packagedCompactMarkBytes),
   binaryFormat: 'Mach-O 64-bit',
   architecture: 'arm64',
   minimumMacOS: inspectArm64MachO(binary),

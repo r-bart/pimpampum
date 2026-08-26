@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   chmodSync,
+  constants,
   copyFileSync,
   mkdirSync,
   renameSync,
@@ -73,7 +74,44 @@ export async function backupDatabase(
       throw new AppError('internal_error', 'SQLite backup failed its integrity check', 500);
     }
 
-    copyFileSync(localTemporaryPath, destinationPartialPath);
+    copyFileSync(localTemporaryPath, destinationPartialPath, constants.COPYFILE_EXCL);
+    chmodSync(destinationPartialPath, 0o600);
+    renameSync(destinationPartialPath, finalPath);
+    return finalPath;
+  } finally {
+    rmSync(localTemporaryPath, { force: true });
+    rmSync(destinationPartialPath, { force: true });
+  }
+}
+
+export async function backupLatestDatabase(
+  database: Database.Database,
+  destinationDirectory: string,
+): Promise<string> {
+  const finalPath = join(destinationDirectory, 'pimpampum-latest.sqlite');
+  const destinationPartialPath = join(
+    destinationDirectory,
+    `.pimpampum-latest-${randomUUID()}.partial`,
+  );
+  const localTemporaryPath = join(tmpdir(), `pimpampum-latest-${randomUUID()}.sqlite`);
+
+  try {
+    await database.backup(localTemporaryPath);
+    chmodSync(localTemporaryPath, 0o600);
+    const snapshot = new Database(localTemporaryPath, { readonly: true, fileMustExist: true });
+    let integrity: unknown;
+    try {
+      integrity = snapshot.pragma('integrity_check', { simple: true });
+    } finally {
+      snapshot.close();
+    }
+    /* v8 ignore start -- SQLite only exposes this branch for a corrupt snapshot. */
+    if (integrity !== 'ok') {
+      throw new AppError('internal_error', 'SQLite backup failed its integrity check', 500);
+    }
+    /* v8 ignore stop */
+
+    copyFileSync(localTemporaryPath, destinationPartialPath, constants.COPYFILE_EXCL);
     chmodSync(destinationPartialPath, 0o600);
     renameSync(destinationPartialPath, finalPath);
     return finalPath;

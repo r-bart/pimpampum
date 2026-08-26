@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -7,20 +8,25 @@ struct StatusIndicator: View {
 
   var body: some View {
     HStack(spacing: 4) {
-      Image(systemName: state.symbolName)
-        .foregroundStyle(state.color)
-      if activeCount > 0 {
-        Text(activeCount, format: .number)
+      ZStack(alignment: .bottomTrailing) {
+        PimpampumMark()
+          .foregroundStyle(.primary)
+        PimpampumStatusBadge(kind: state.badgeKind, color: state.color)
+          .offset(x: 3, y: 2)
+      }
+      .frame(width: 17, height: 16, alignment: .leading)
+
+      if let displayCount = StatusIndicatorPresentation.displayCount(activeCount) {
+        Text(displayCount)
           .monospacedDigit()
+          .foregroundStyle(.secondary)
       }
     }
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel(accessibilityLabel)
-  }
-
-  private var accessibilityLabel: String {
-    let claims = activeCount == 1 ? "1 active claim" : "\(activeCount) active claims"
-    return "Pimpampum: \(state.label), \(claims)"
+    .accessibilityLabel(
+      StatusIndicatorPresentation.accessibilityLabel(state: state, activeCount: activeCount)
+    )
+    .help(StatusIndicatorPresentation.accessibilityLabel(state: state, activeCount: activeCount))
   }
 }
 
@@ -30,6 +36,8 @@ struct StatusPopover: View {
   let workspaceOpener: any WorkspaceOpening
   let loginItemState: LoginItemRegistrationState
   let openLoginSettings: () -> Void
+  let settingsWindowOpener: any SettingsWindowOpening
+  let quitApplication: () -> Void
 
   @State private var isCompletedExpanded = false
   @State private var revealError: String?
@@ -40,12 +48,16 @@ struct StatusPopover: View {
     loginItemState: LoginItemRegistrationState = MainAppLoginItemService().state,
     openLoginSettings: @escaping () -> Void = {
       LoginApprovalSettings.open()
-    }
+    },
+    settingsWindowOpener: any SettingsWindowOpening = SettingsWindowOpener(),
+    quitApplication: @escaping () -> Void = { NSApplication.shared.terminate(nil) }
   ) {
     self.store = store
     self.workspaceOpener = workspaceOpener
     self.loginItemState = loginItemState
     self.openLoginSettings = openLoginSettings
+    self.settingsWindowOpener = settingsWindowOpener
+    self.quitApplication = quitApplication
   }
 
   var body: some View {
@@ -77,9 +89,25 @@ struct StatusPopover: View {
         }
         .padding(16)
       }
-      .frame(maxHeight: 480)
+      .frame(maxHeight: Self.bodyMaximumHeight)
+
+      Divider()
+
+      HStack {
+        Button("Quit Pimpampum", action: quitApplication)
+          .buttonStyle(.plain)
+        Spacer()
+        Button {
+          settingsWindowOpener.openSettings()
+        } label: {
+          Label("Settings…", systemImage: "gearshape")
+        }
+        .buttonStyle(.plain)
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 10)
     }
-    .frame(width: 360)
+    .frame(width: Self.containerWidth)
     .background(.regularMaterial)
   }
 
@@ -241,13 +269,14 @@ struct StatusPopover: View {
     VStack(alignment: .leading, spacing: 4) {
       Text(work.title)
         .font(.subheadline.weight(.medium))
-        .lineLimit(2)
+        .lineLimit(Self.contentTitleLineLimit)
 
       if work.taskTitle != nil {
         Text(work.projectTitle)
           .font(.caption)
           .foregroundStyle(.secondary)
-          .lineLimit(1)
+          .lineLimit(Self.metadataLineLimit)
+          .truncationMode(.tail)
       }
 
       HStack(spacing: 10) {
@@ -267,48 +296,17 @@ struct StatusPopover: View {
   }
 
   private func projectButton(_ project: OverviewProject) -> some View {
-    Button {
+    ProjectRowButton(project: project) {
       do {
         try workspaceOpener.openWorkspace(at: project.workspace.rootPath)
         revealError = nil
       } catch {
-        revealError = "\(project.title): \(error.localizedDescription)"
+        revealError = Self.workspaceRevealError(
+          project,
+          description: error.localizedDescription
+        )
       }
-    } label: {
-      HStack(alignment: .top, spacing: 10) {
-        Image(systemName: Self.projectSymbol(project.status))
-          .foregroundStyle(Self.projectColor(project.status))
-          .frame(width: 16)
-          .accessibilityHidden(true)
-
-        VStack(alignment: .leading, spacing: 3) {
-          Text(project.title)
-            .font(.subheadline.weight(.medium))
-            .lineLimit(2)
-
-          Text("\(project.workspace.name) · \(project.slug)")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-
-          Text(Self.projectCountsText(project))
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-        }
-
-        Spacer(minLength: 4)
-
-        Image(systemName: "arrow.up.forward.app")
-          .font(.caption)
-          .foregroundStyle(.tertiary)
-          .accessibilityHidden(true)
-      }
-      .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel("Open \(project.title) in Finder")
-    .accessibilityValue(Self.projectAccessibilityValue(project))
-    .accessibilityHint("Opens workspace \(project.workspace.name)")
   }
 
   private func unavailableContent() -> some View {
@@ -373,4 +371,60 @@ struct StatusPopover: View {
       .accessibilityAddTraits(.isHeader)
   }
 
+}
+
+@MainActor
+private struct ProjectRowButton: View {
+  let project: OverviewProject
+  let action: () -> Void
+
+  @State private var isHovering = false
+
+  var body: some View {
+    Button(action: action) {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: StatusPopover.projectSymbol(project.status))
+          .foregroundStyle(StatusPopover.projectColor(project.status))
+          .frame(width: 16)
+          .accessibilityHidden(true)
+
+        VStack(alignment: .leading, spacing: 3) {
+          Text(project.title)
+            .font(.subheadline.weight(.medium))
+            .lineLimit(StatusPopover.contentTitleLineLimit)
+
+          Text(StatusPopover.projectMetadataText(project))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(StatusPopover.metadataLineLimit)
+            .truncationMode(.tail)
+
+          Text(StatusPopover.projectCountsText(project))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+
+        Spacer(minLength: 4)
+
+        Image(systemName: "arrow.up.forward.app")
+          .font(.caption)
+          .foregroundStyle(.tertiary)
+          .accessibilityHidden(true)
+      }
+      .padding(.horizontal, 6)
+      .padding(.vertical, 5)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+      .background(
+        isHovering ? Color.primary.opacity(0.06) : Color.clear,
+        in: RoundedRectangle(cornerRadius: 6)
+      )
+    }
+    .buttonStyle(.plain)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .onHover { isHovering = $0 }
+    .accessibilityLabel(StatusPopover.projectOpenAccessibilityLabel(project))
+    .accessibilityValue(StatusPopover.projectAccessibilityValue(project))
+    .accessibilityHint(StatusPopover.projectOpenAccessibilityHint(project))
+  }
 }

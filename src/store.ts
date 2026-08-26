@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative } from 'node:path';
 import type Database from 'better-sqlite3';
-import { backupDatabase, exportPortable } from './backup.js';
+import { backupDatabase, backupLatestDatabase, exportPortable } from './backup.js';
 import { AppError } from './errors.js';
 import {
   boundOverview,
@@ -209,7 +209,10 @@ function isPathInside(rootPath: string, candidatePath: string): boolean {
 }
 
 export class PimpampumStore {
-  constructor(private readonly database: Database.Database) {}
+  constructor(
+    private readonly database: Database.Database,
+    private readonly onMutation: () => void = () => undefined,
+  ) {}
 
   close(): void {
     this.database.close();
@@ -1028,7 +1031,7 @@ export class PimpampumStore {
     agentId: string;
     leaseSeconds: number;
   }): WorkBundle {
-    const transaction = this.database.transaction(() => {
+    this.runImmediate(() => {
       const timestamp = now();
       this.database
         .prepare<[TargetType, string, string]>(
@@ -1059,7 +1062,6 @@ export class PimpampumStore {
         expiresAt,
       });
     });
-    transaction.immediate();
 
     const claim = requireRow(
       this.getClaim(input.targetType, input.targetId),
@@ -1150,7 +1152,7 @@ export class PimpampumStore {
   }
 
   completeWork(input: CompleteWorkInput): Project | Task {
-    const transaction = this.database.transaction(() => {
+    this.runImmediate(() => {
       this.requireOwnedClaim(input.targetType, input.targetId, input.agentId, now());
       const timestamp = now();
 
@@ -1226,7 +1228,6 @@ export class PimpampumStore {
         },
       );
     });
-    transaction.immediate();
 
     return input.targetType === 'project'
       ? this.getProject(input.targetId)
@@ -1258,6 +1259,13 @@ export class PimpampumStore {
       throw new AppError('bad_request', 'Backup destination must be an absolute path', 400);
     }
     return backupDatabase(this.database, destinationDirectory);
+  }
+
+  async backupLatest(destinationDirectory: string): Promise<string> {
+    if (!isAbsolute(destinationDirectory)) {
+      throw new AppError('bad_request', 'Backup destination must be an absolute path', 400);
+    }
+    return backupLatestDatabase(this.database, destinationDirectory);
   }
 
   exportPortable(destinationDirectory: string): string {
@@ -1304,7 +1312,9 @@ export class PimpampumStore {
   }
 
   private runImmediate<T>(operation: () => T): T {
-    return this.database.transaction(operation).immediate();
+    const result = this.database.transaction(operation).immediate();
+    this.onMutation();
+    return result;
   }
 
   private countOpenTasks(projectId: string): number {

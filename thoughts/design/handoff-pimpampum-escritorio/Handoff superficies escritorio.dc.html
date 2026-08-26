@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="theme-color" content="#e6e3db">
+<style>
+html, body { margin: 0; }
+a { color: #161614; text-decoration: underline; text-decoration-color: rgb(22 22 20 / 25%); text-underline-offset: 3px; }
+a:hover { color: #ee3f32; }
+doc-page:not(:defined) { visibility: hidden; }
+</style>
+<script src="./doc-page.js"></script>
+</helmet>
+<doc-page margin="0.7in">
+
+  <div slot="header" style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-bottom: 8px; border-bottom: 1px solid rgb(22 22 20 / 18%); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 8.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">
+    <span>pimpampum · desktop surfaces</span><span>handoff v1</span>
+  </div>
+
+  <div slot="footer" style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-top: 8px; border-top: 1px solid rgb(22 22 20 / 14%); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 8.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">
+    <span>macos menu bar · omarchy quattro</span><span>26 aug 2026</span>
+  </div>
+
+  <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #161614;">
+
+    <h1 style="margin: 30px 0 0; font-size: 40px; font-weight: 700; line-height: 1.02; letter-spacing: -0.05em;">Desktop surfaces</h1>
+    <p style="margin: 14px 0 0; font-size: 17px; font-weight: 500; line-height: 1.35; letter-spacing: -0.02em; color: #3d3b37;">Design handoff for the macOS menu-bar indicator and Omarchy Quattro widget. One daemon, two surfaces, closed scope.</p>
+
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin: 26px 0 0; padding: 16px 0; border-top: 2px solid #161614; border-bottom: 1px solid rgb(22 22 20 / 18%); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10px; line-height: 1.7; letter-spacing: 0.02em; color: #5b5852;">
+      <div><span style="display: block; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">live mockup</span>Superficies escritorio.dc.html</div>
+      <div><span style="display: block; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">brand</span>pimpampum - brand kit.dc.html</div>
+      <div><span style="display: block; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">interface copy</span>English, verbatim from the specification</div>
+    </div>
+
+    <p style="margin: 20px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">This document is the implementation reference. All interface copy is English and transcribed verbatim. Values supplied by the operating system or active Quattro theme are identified and must not be replaced with custom values. The interactive mockup contains the rendered states; this document contains the rules.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">01 · Information model</h2>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">An unexpired claim is the only representation of work in progress. There is no persisted <em>Doing</em> state: when the claim expires, the row disappears. The section is always named <strong style="font-weight: 700;">Active work</strong>.</p>
+
+    <p style="margin: 14px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">The compact count is always the number of unexpired claims, never projects or tasks. Hide it at zero.</p>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Global precedence</h3>
+    <p style="margin: 8px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">When several conditions apply, render the first match in this order: connection, credentials, schema, or payload error; active claims; available work without active claims; drafts only; all complete; no projects.</p>
+
+    <table style="width: 100%; margin: 18px 0 0; border-collapse: collapse; font-size: 12.5px; line-height: 1.5;">
+      <thead>
+        <tr>
+          <th style="padding: 7px 10px 7px 0; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">State</th>
+          <th style="padding: 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Required label</th>
+          <th style="padding: 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Color</th>
+          <th style="padding: 7px 0 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Badge shape</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Loading</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Loading</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; color: #77746d;">Neutral</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Dashed ring + native progress indicator</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Active</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Active</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; color: #1c57a5;">Blue</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Filled disc + count</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Available</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Work available</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Amber</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Hollow ring, no count</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Draft</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Drafts only</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; color: #77746d;">Neutral gray</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Neutral ring, mark at 55%</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Complete</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">All complete</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Green</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Donut: disc with material-colored center</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Empty</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">No projects</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; color: #77746d;">Neutral gray</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">No badge; keep the fixed circle-and-lowercase-p silhouette at reduced opacity</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Offline</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Offline</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; color: #ee3f32;">Red</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Outlined diamond</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Stale</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Offline — stale data</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; color: #ee3f32;">Red + neutral</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Outlined diamond; count retained in tertiary color</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Authentication</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Authentication error</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; color: #ee3f32;">Red</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Filled diamond</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Incompatible</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Incompatible version</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; color: #ee3f32;">Red</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Filled diamond</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Invalid</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Invalid response</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; color: #ee3f32;">Red</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Filled diamond</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p style="margin: 14px 0 0; font-size: 13px; line-height: 1.6; color: #77746d;">Color is never the only signal: every state has its own shape as well as color, plus a label in the popover.</p>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Project states</h3>
+
+    <table style="width: 100%; margin: 12px 0 0; border-collapse: collapse; font-size: 12.5px; line-height: 1.5;">
+      <thead>
+        <tr>
+          <th style="padding: 7px 10px 7px 0; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">State</th>
+          <th style="padding: 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">9 pt marker</th>
+          <th style="padding: 7px 0 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Active · priority 1</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Filled blue disc</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">{N} active · {N} available</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Available · 2</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">2 pt amber ring</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">{N} available</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Draft · 3</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Dashed neutral ring</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Draft</td>
+        </tr>
+        <tr>
+          <td style="padding: 7px 10px 7px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Complete · 4</td>
+          <td style="padding: 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Green donut</td>
+          <td style="padding: 7px 0 7px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Complete · {N} completed tasks</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p style="margin: 14px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">A project may have active and available work at once: its primary state is Active and both counts remain visible. Incomplete projects come first, ordered Active → Available → Draft. Completed projects never mix into that list.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">02 · Approved compact mark</h2>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">The approved variant C mark is one exact 16 × 16 pt circle containing a lowercase <strong style="font-weight: 700;">p</strong>. Its silhouette stays fixed in every compact state on macOS and Quattro. It is a monochrome template icon that inherits the system or active-theme foreground color.</p>
+
+    <div style="margin: 18px 0 0; padding: 16px 18px; border-left: 2px solid #ee3f32; background: rgb(22 22 20 / 3%); break-inside: avoid;">
+      <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">approved decision · final</div>
+      <p style="margin: 7px 0 0; font-size: 13.5px; line-height: 1.6; color: #3d3b37;">Variant C is final and in use. Variants A and B are rejected explorations. State is expressed outside the fixed circle-and-lowercase-p mark through a 5 pt badge or accent, semantic color, count, tooltip, and detailed copy.</p>
+    </div>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Mark rules</h3>
+    <ul style="margin: 8px 0 0; padding-left: 20px; font-size: 14px; line-height: 1.65; color: #3d3b37;">
+      <li style="margin-bottom: 5px;">Never replace the mark. Offline does not turn the app into a Wi-Fi, cloud, database, or generic-warning icon.</li>
+      <li style="margin-bottom: 5px;">Express state with an adjacent 5 pt badge, semantic color, count, tooltip, and detailed copy inside the popover.</li>
+      <li style="margin-bottom: 5px;">Place the count beside the mark, never inside the logo. Use a 4 pt separation.</li>
+      <li style="margin-bottom: 5px;">Keep it legible on light and dark backgrounds in one tint.</li>
+      <li>Deliverables: mark vector, monochrome macOS template variant, light and dark treatments, and horizontal and vertical Quattro variants.</li>
+    </ul>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Active-claim count</h3>
+    <p style="margin: 8px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Hidden at zero. Use tabular or monospaced digits. Show one and two digits directly; cap at <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">99+</span> rather than growing beyond available space. It is visually secondary to the mark but clearly legible. In stale state, retain the count only if it stays clearly secondary in tertiary color; otherwise hide it.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">03 · macOS · menu bar</h2>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Native <code style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 12.5px;">MenuBarExtra</code> with no Dock icon. Use standard menu-bar height, alignment, and click area. Content is the fixed mark plus optional count. Neither “Pimpampum” nor any permanent status word appears in the bar.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Tooltip and accessibility label: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Pimpampum: {status label}, {N active claims}</span>. Singular: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">1 active claim</span>; plural and zero: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">{N} active claims</span>. Icon and count form one accessibility element. Clicking toggles the popover.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">04 · macOS · status popover</h2>
+
+    <table style="width: 100%; margin: 12px 0 0; border-collapse: collapse; font-size: 12.5px; line-height: 1.5;">
+      <thead>
+        <tr>
+          <th style="padding: 7px 10px 7px 0; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Measure</th>
+          <th style="padding: 7px 0 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Width</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">Fixed 360 pt. Long text never widens it.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Body height</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">~480 pt maximum with scrolling. Header and footer stay visible.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Horizontal padding</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">16 pt</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Section gap</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">16 pt (16–18 pt acceptable)</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Row padding</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">10 pt</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Small radius</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">8 pt for rows and notices; container uses system radius</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Background</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">Regular system material with vibrancy and default outer shadow/shape.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Dividers</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">Native 1 px dividers between header, body, and footer</td></tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Information order</h3>
+    <p style="margin: 8px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Fixed: header; connection, credentials, or incompatibility notice; login-approval notice; Summary; Active work; Projects; Completed disclosure; truncation and folder-opening errors beside their source content; footer with Quit and Settings. No navigation, tabs, filters, or backup controls in this popover.</p>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Header</h3>
+    <p style="margin: 8px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Mark and state treatment on the left; “Pimpampum” in headline weight; global status below in secondary caption; relative update time right-aligned in secondary caption-2. Hide time until a valid overview exists. Accessibility: “Updated 4 seconds ago”.</p>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Connection notices</h3>
+    <table style="width: 100%; margin: 12px 0 0; border-collapse: collapse; font-size: 12.5px; line-height: 1.5;">
+      <thead>
+        <tr>
+          <th style="padding: 7px 10px 7px 0; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Condition</th>
+          <th style="padding: 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Title</th>
+          <th style="padding: 7px 0 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Initial load</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Loading overview</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">No detail. Neutral treatment.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Offline without cache</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Pimpampum is offline</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Sanitized connection error, 3 lines maximum.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Offline with cache</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Offline — showing stale data</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Same, with cached rows visibly dimmed.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Credentials</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Authentication error</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Actionable local repair message. Never the token.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Schema</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Incompatible overview version</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Actionable version message.</td></tr>
+      </tbody>
+    </table>
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Compact horizontal notice with leading state icon, 10 pt inner padding, 8 pt radius, red-tinted failure background, and neutral loading background. Use semibold subheadline title and secondary caption detail. Never use modal alerts for these states.</p>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Login approval</h3>
+    <p style="margin: 8px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Show only when macOS requires explicit login-item approval. Use a compact amber-tinted container, system security icon, title <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Login approval required</span>, body <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Allow Pimpampum in Login Items to start it automatically.</span>, and action <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Open Login Items Settings</span>. This is unrelated to automatic backup.</p>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Summary</h3>
+    <p style="margin: 8px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Use the <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">SUMMARY</span> micro-uppercase label. Primary line: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">{projects} projects · {active claims} active · {available work} available</span>; secondary line: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Daemon {version} · {uptime} uptime</span>. Show uptime in seconds below one minute, in minutes below one hour, then as <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Nh</span> or <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Nh Nm</span>. Treat both lines as one accessibility element.</p>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Active work</h3>
+    <p style="margin: 8px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Use the <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">ACTIVE WORK</span> label. When empty, show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">No active work</span> in a secondary subheadline. Otherwise, render one compact row per unexpired claim, with no actions.</p>
+    <p style="margin: 10px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Row content, in order: work title in medium subheadline, maximum two lines; for task claims, project title below in a one-line secondary caption; agent ID with person icon; remaining lease with timer icon. Keep agent and timer on one line, separated by ~10 pt. Use 10 pt padding, 8 pt radius, and the system quaternary background. Treat the whole row as one accessibility element.</p>
+    <p style="margin: 10px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Lease copy: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Expired</span> · <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">&lt;1m remaining</span> · <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Nm remaining</span> · <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Nh remaining</span> · <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Nh Nm remaining</span>. If the API truncates, show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Active work is truncated. Refine the project set to see more.</span> as informational text, not a button.</p>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Projects</h3>
+    <p style="margin: 8px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Each row is a full-width plain button that opens the workspace root in Finder. Content: fixed-width 16 pt semantic marker; project title in medium subheadline, maximum two lines; <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">{workspace name} · {project slug}</span> in a one-line secondary caption; status and counts in caption-2; and a discreet external-open affordance at the end.</p>
+    <p style="margin: 10px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Hover highlights the whole row with the subtle native treatment and changes the pointer. Click, Enter, and Space open the registered workspace root, never a guessed subdirectory. Accessibility label: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Open {project title} in Finder</span>; hint: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Opens workspace {workspace name}</span>.</p>
+    <p style="margin: 10px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">If Finder cannot open the path, keep the project visible and show an inline error after the section: title <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Workspace could not be opened</span>, detail <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">{project title}: {sanitized error}</span>. No modal. If the list is truncated, show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">The project list is truncated. Counts still include every project.</span></p>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Completed, empty states, and footer</h3>
+    <p style="margin: 8px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">The <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Completed ({N})</span> disclosure is collapsed on every launch and omitted when the count is zero; expansion lasts only for the session. Hint: “Collapsed by default. Expand to show completed projects.” Expanded rows reuse the same component and Finder interaction.</p>
+    <p style="margin: 10px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Without a valid overview, replace Summary, Active work, and Projects with the title <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Status unavailable</span> and body <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">No project data is shown until a compatible authenticated overview is available.</span> With a valid overview but no projects, show the normal header and Summary, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">No active work</span>, and <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">No projects yet</span>. No illustration or large onboarding card.</p>
+    <p style="margin: 10px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Fixed footer below the scrolling body: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Quit Pimpampum</span> on the left and <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Settings…</span> with a gear on the right, both native plain buttons. Quit terminates only the menu bar app and does not delete data. Settings opens or focuses one real window and must work without a Dock icon; repeated presses focus the same window.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">05 · macOS · settings window</h2>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Standard titled utility window with native traffic lights. Title: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Pimpampum Settings</span>. One instance; reopening focuses it. Initial content is 460 × 270 pt excluding the title bar, with 24 pt padding. A fixed compact layout is acceptable, but the window grows vertically before clipping when accessible text sizes or localized errors need more room. V1 has no sidebar, toolbar, tabs, or General/Advanced sections; Backup is the only page.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Header: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Backup</span> in semibold title-2, description <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Keep one current snapshot after every change. The live database stays local.</span> in a secondary subheadline, and a borderless icon button with tooltip and label <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Refresh backup status</span>, disabled while an operation is in flight. No cloud-provider logos: the destination may be local, Dropbox, Drive, iCloud, or any synchronized folder.</p>
+
+    <table style="width: 100%; margin: 16px 0 0; border-collapse: collapse; font-size: 12.5px; line-height: 1.5;">
+      <thead>
+        <tr>
+          <th style="padding: 7px 10px 7px 0; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">State</th>
+          <th style="padding: 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Label</th>
+          <th style="padding: 7px 0 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Loading</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Loading backup settings…</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">All disabled. If a previous valid state exists, retain it and indicate activity instead of emptying the window.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Disabled</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Automatic backup is off</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Only <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Choose Folder…</span>. No path, last time, retry, open, or disable.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Pending</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Backing up…</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">None. Change, Open, Back Up Now, Disable, and Refresh are disabled. Keep the folder visible. No percentage: the API provides none.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Healthy</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Up to date</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Back Up Now (primary), Change…, Open in Finder, Disable (destructive). When available, show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Last successful backup {localized date and time}</span>.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Error</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Backup needs attention</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">The primary action becomes <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Try Again</span>. Keep Change…, Open in Finder while the path remains openable, and Disable. Show a sanitized selectable server error below the label; retain the last successful time.</td></tr>
+      </tbody>
+    </table>
+
+    <p style="margin: 14px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Configured-state information order: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">FOLDER</span> label; full absolute path in selectable monospace, maximum two visual lines; <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Change…</span> and <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Open in Finder</span>; health row; primary operational action; and destructive Disable action.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Folder selection: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Choose Folder…</span> and <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Change…</span> open exactly one native directory-only <code style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 12.5px;">NSOpenPanel</code>, with no file selection or creation. When changing an existing destination, initialize the picker there when possible. Cancel changes nothing. Confirm sends the folder to the daemon and immediately enters Pending; the UI does not declare success until the daemon confirms.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Client, installation-receipt, authentication, invalid-folder, and Finder-opening errors appear as one compact inline error below the primary content: warning icon and selectable semantic-red text with enough wrapping to remain actionable. No sheets or alerts for routine errors. Never show credentials or raw payloads. Reference copy: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Pimpampum's installation receipt could not be read. Run pimpampum install.</span> · <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Choose another folder.</span> · <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Pimpampum rejected the local token. Run pimpampum install to reconcile it.</span> · <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Finder could not open the backup directory: {path}</span>.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Disable uses the native destructive role and has no confirmation in v1 because disabling does not delete the existing snapshot. On success, enter Disabled; on failure, retain the configured state and show the inline error.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">06 · Quattro · bar widget</h2>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Native Quickshell <code style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 12.5px;">bar-widget</code> plugin for horizontal and vertical bars. Inherit foreground, background, urgent color, font family, position, and bar size. Do not draw a custom background panel except for Quattro's standard hover or active treatment. Hot reload must not leave duplicate popouts.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Horizontal: vertically center the mark and optional count in the inherited bar size, with ~4 theme units between them and ~12 units of total horizontal breathing room. The count uses the bar's small-body size in semibold or bold, with tabular digits when the inherited font supports them. Vertical: stack and horizontally center the mark and count while respecting the inherited width; hide the count at zero, and make the click area equal the widget bounds.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Use the same semantics and precedence as macOS. State treatment may be an adjacent dot, ring, corner badge, or color accent, provided it remains legible at the actual bar size. On hover, show the native Quattro tooltip with the full label; with cached data after a failure, show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Stale · {last known status}</span>. Click toggles the popout and uses a pointer cursor.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">07 · Quattro · status popout</h2>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Native <code style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 12.5px;">PopupCard</code> anchored to the widget. Target content width is 380 theme units; maximum height is the smaller of 520 units and the available screen height. The body scrolls with clipped, bounded content. The bar owns popout switching so Pimpampum does not create competing popups. Inherit background, foreground, urgent color, font, radii, and spacing from the theme when available.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Order: title and connection state; connection or opening error; empty or configuration instruction; Active work; incomplete projects; Completed disclosure; Backup disclosure. The popout may omit the version and uptime block when space is tight, but never active work, projects, connection state, or backup.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Header: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Pimpampum</span> in the inherited subtitle size and bold, with the connection label beside it: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">online</span>, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">offline</span>, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">credentials</span>, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">invalid</span>, or <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">incompatible</span>. Use normal foreground when online, urgent color otherwise, and <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Stale</span> when showing cached data after a failure. Place the wrapping connection error below in urgent body-small text. Required copy for rejected credentials: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Local credentials were rejected. Run pimpampum install to repair them.</span> Never show the token or raw stderr.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Empty states: without workspaces, show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">No workspaces. Run: pimpampum workspace:add</span>; with workspaces but no projects, show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">No projects</span>. Use ordinary body text with no illustration.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Active work: show the <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Active work ({N})</span> heading only when work exists. Each item shows <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">{project title}</span> for a project claim or <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">{project title} — {task title}</span> for a task claim, with <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">{agent ID} · {remaining lease}</span> on the secondary line. End-elide the primary text; the lease may use Quattro's compact copy: seconds below one minute, then minutes rounded up. No row actions. If truncated, show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Active work list truncated</span> in an urgent caption.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Projects: use the <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Projects ({N})</span> heading for incomplete projects. Each row shows <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">{project title} · {status}</span> with <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">{workspace name} / {slug} · {N} active · {N} available</span> below. The whole row is clickable and opens the exact workspace root in the system file explorer, with a pointer cursor and inherited hover. If the workspace is missing or cannot open, keep the row and show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Could not open the workspace directory</span>. If truncated, show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Project list truncated</span>. Completed projects use a clearly chevroned <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Completed ({N})</span> disclosure, collapsed by default and omitted at zero; expanded rows show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">{project title} · {workspace name} / {slug}</span> and open the workspace root.</p>
+
+    <h3 style="margin: 24px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Popout Backup section</h3>
+    <p style="margin: 8px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Use the <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Backup</span> label with a chevron, collapsed by default and placed after projects so administration does not dominate operational status. Expanding it refreshes the daemon's canonical setting.</p>
+    <p style="margin: 10px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Expanded order: center-elided configured path when enabled; health label and last-success time; state or operation error when present; manual absolute-path label and field; available buttons; and picker-fallback explanation when applicable.</p>
+    <p style="margin: 10px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Field: label <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Backup folder (absolute path)</span>, placeholder <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">/home/you/Dropbox/Pimpampum</span>, one horizontally clipped line, mouse- and keyboard-editable, 28–30 units high. Enter saves only when the value is syntactically absolute; disable the field while an operation is in flight. The daemon remains the final validator: the UI does not declare success from local validation.</p>
+    <p style="margin: 10px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Buttons, in order: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Choose…</span>, visible only when Qt's optional FolderDialog is available; <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Save</span>, enabled only with an absolute path; <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Open</span>, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Back Up Now</span>, and <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Disable</span>, enabled only when backup is configured, with urgent but not oversized treatment for the last action. During activity, disable everything with reduced emphasis, show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Updating…</span> for health, and never run two helper processes in parallel. Without FolderDialog, show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Folder picker unavailable; enter an absolute path above.</span></p>
+    <p style="margin: 10px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Health: neutral <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Automatic backup is off</span>; neutral or amber <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Backup pending</span>; green <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Up to date</span>, with <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">· {localized time}</span> when available; urgent <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Backup needs attention</span>. Place bounded, sanitized, wrapping operation errors below the health label in an urgent caption; do not reserve space for raw logs.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">08 · Backup: one source of truth</h2>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Automatic backup writes one rolling file named <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">pimpampum-latest.sqlite</span>. The live database remains local. Disabling automatic backup does not delete the existing snapshot. The daemon owns one destination: there are no per-project backup settings, history, retention, restore UI, or provider accounts. A backup failure does not imply project-data loss; avoid catastrophic language unless the server explicitly reports loss.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">09 · Refresh and freshness</h2>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Overview: refresh immediately when the integration starts and when the popover or popout opens; every ~5 s while open and every ~10 s while closed. If a later request fails, retain the last valid overview in memory and mark it explicitly as stale. Claims disappear when they expire, including between server refreshes when possible.</p>
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Backup: refresh when the window or disclosure opens and after configuring, retrying, or disabling. macOS provides an explicit refresh icon; Quattro refreshes while the popout is open. During an operation, keep the last known destination visible and disable competing actions. No pull-to-refresh, progress bar, toasts, or success celebration.</p>
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Motion: no decorative animation. Loading uses the platform spinner or progress indicator; disclosures use the default transition; state changes may use a subtle crossfade when the platform provides one naturally. Respect reduced-motion settings.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">10 · Typography, color, and spacing</h2>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">On macOS, use native semantic styles rather than fixed sizes: semibold title-2 for the window title; headline for the popover title; semibold uppercase caption in secondary color for section headings; medium subheadline for primary row text; secondary caption for supporting text; secondary caption-2 for tertiary metadata; and monospaced body for paths. Use system semantic colors—primary, secondary, tertiary, quaternary, red, orange/amber, blue, and green—rather than hard-coded light-mode grays.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">On Quattro, use the active theme tokens: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">bar.foreground</span>, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">bar.background</span>, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">bar.urgent</span>, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">bar.fontFamily</span>, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">bar.barSize</span>, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Style.font.*</span>, and <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Style.space(*)</span>. Introduce blue, amber, and green accents only when the theme has no equivalent token, and verify them in light and dark themes.</p>
+
+    <table style="width: 100%; margin: 16px 0 0; border-collapse: collapse; font-size: 12.5px; line-height: 1.5;">
+      <thead>
+        <tr>
+          <th style="padding: 7px 10px 7px 0; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Element</th>
+          <th style="padding: 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">macOS</th>
+          <th style="padding: 7px 0 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Quattro</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Popover / popout width</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">360 pt</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">380 theme units</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Maximum body height</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">480 pt</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">520 units</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Primary horizontal padding</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">16 pt</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">Style.space(10), context-dependent</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Settings padding</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">24 pt</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">Not applicable</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Section spacing</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">16–18 pt</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">Style.space(10)</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Internal row padding</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">10 pt</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">6–10 units</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Compact control height</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">Native</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">~28–30 units</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Small radius</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">8 pt</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">Theme radius or ~4–8 units</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%);">Mark → count</td><td style="padding: 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">4 pt</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%);">Style.space(4)</td></tr>
+      </tbody>
+    </table>
+
+    <p style="margin: 14px 0 0; font-size: 13px; line-height: 1.6; color: #77746d;">None of these measurements justifies widening the popover to accommodate long text. Use wrapping, truncation, scrolling, and workspace-and-slug disambiguation.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">11 · Copy rules and content limits</h2>
+
+    <ul style="margin: 12px 0 0; padding-left: 20px; font-size: 14px; line-height: 1.65; color: #3d3b37;">
+      <li style="margin-bottom: 5px;">All interface copy is English and sentence case, except macOS micro-uppercase section labels.</li>
+      <li style="margin-bottom: 5px;">Use an ellipsis <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">…</span> only for actions that open another interface before completion: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Settings…</span>, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Choose Folder…</span>, <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Choose…</span>, and <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Change…</span>. <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Back Up Now</span> and <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Disable</span> act immediately and have no ellipsis.</li>
+      <li style="margin-bottom: 5px;">Always show <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Quit Pimpampum</span> explicitly; never use an unlabeled power icon.</li>
+      <li style="margin-bottom: 5px;">Say <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Active work</span>, never <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Doing</span>; and <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">available</span>, never <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">todo</span> or <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">backlog</span>.</li>
+      <li style="margin-bottom: 5px;">Never show raw IDs, token paths, database paths, PRD text, task bodies, artifacts, error stacks, or JSON.</li>
+    </ul>
+
+    <p style="margin: 14px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Limits: project titles allow two lines on macOS and one end-elided line in compact Quattro rows. With duplicate titles, keep the workspace name and slug visible for disambiguation, end-elided on one line if needed. Agent IDs occupy one line and retain enough text to distinguish agents. Completed-task counts may be large but never displace the external-open affordance.</p>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">Paths may contain spaces, Unicode, quotes, and shell metacharacters and are treated only as text. On one line, prefer center elision so the root and final folder remain visible; in macOS settings, paths may wrap to two lines and must be selectable. Never design shell-escaping affordances or command previews. Counts are non-negative integers: popover detail may show the full value, while the compact count caps at <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">99+</span> when width requires it. Connection-error detail occupies at most three visible lines; settings and backup errors may wrap enough to remain actionable; Quattro errors remain compact and bounded, with no scrolling log area.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">12 · Accessibility and keyboard</h2>
+
+    <ul style="margin: 12px 0 0; padding-left: 20px; font-size: 14px; line-height: 1.65; color: #3d3b37;">
+      <li style="margin-bottom: 5px;">Provide full keyboard navigation in visual order with native focus rings. Enter and Space activate the focused button. Escape closes the folder picker, not the settings window unless the platform does so by default.</li>
+      <li style="margin-bottom: 5px;">Every icon-only action has a tooltip and accessibility label. Combine the state icon and its text into one meaningful element.</li>
+      <li style="margin-bottom: 5px;">Menu bar: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Pimpampum: {status label}, {N active claims}</span>. Project rows: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Open {project title} in Finder</span> with hint <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Opens workspace {workspace name}</span>. Completed disclosure: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Collapsed by default. Expand to show completed projects.</span> Quattro widget: <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">{N} active claims</span>.</li>
+      <li style="margin-bottom: 5px;">Support VoiceOver and increased contrast. Do not rely on red and green; accompany every color with a shape or text.</li>
+      <li>On Quattro, every clickable row or button has visible hover and focus; keyboard activation mirrors pointer activation where Quickshell permits; text and controls meet the active theme's accessible contrast; and no custom pointer gestures block scrolling.</li>
+    </ul>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">13 · Out of scope in v1</h2>
+
+    <p style="margin: 12px 0 0; font-size: 14px; line-height: 1.65; color: #3d3b37;">If a control or section does not appear in this document, it must not appear in the design. Specifically excluded: creating or editing projects, PRDs, context documents, tasks, or subtasks; claiming, renewing, releasing, or completing work; a persisted <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px;">Doing</span> state; starting, stopping, or restarting the daemon from these surfaces; logs, terminal output, a diagnostics browser, or database inspection; notifications; search, filters, sorting, tabs, sidebar, or command palette; per-project backup settings; history, retention, restore, or provider accounts; preferences unrelated to backup; analytics or charts; a Dock icon or ordinary application window on macOS; and Waybar support, because Linux targets only Omarchy Quattro/Quickshell.</p>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">14 · Acceptance checklist</h2>
+
+    <h3 style="margin: 14px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Identity</h3>
+    <ul style="margin: 8px 0 0; padding-left: 20px; font-size: 13.5px; line-height: 1.6; color: #3d3b37;">
+      <li>The fixed Pimpampum mark remains visible in every compact state.</li>
+      <li>Offline is not represented by replacing the mark with a Wi-Fi icon.</li>
+      <li>The count is legible and hidden at zero.</li>
+      <li>Every semantic color is accompanied by text or a distinct shape.</li>
+    </ul>
+
+    <h3 style="margin: 18px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">macOS</h3>
+    <ul style="margin: 8px 0 0; padding-left: 20px; font-size: 13.5px; line-height: 1.6; color: #3d3b37;">
+      <li>The menu bar app has no Dock presence.</li>
+      <li>The popover is 360 pt wide with fixed header and footer and a scrolling body.</li>
+      <li>Active work and project data follow the described hierarchy exactly.</li>
+      <li>Completed projects are collapsed by default.</li>
+      <li>Project rows clearly indicate that they open Finder and show disambiguation.</li>
+      <li>Cached data is clearly marked as stale.</li>
+      <li>The footer contains <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Quit Pimpampum</span> and <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Settings…</span>.</li>
+      <li>Settings opens or focuses one real window.</li>
+      <li>The backup window covers loading, disabled, pending, healthy, and error.</li>
+      <li>Folder selection is native and directory-only.</li>
+      <li>Errors are inline and actionable.</li>
+    </ul>
+
+    <h3 style="margin: 18px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Quattro</h3>
+    <ul style="margin: 8px 0 0; padding-left: 20px; font-size: 13.5px; line-height: 1.6; color: #3d3b37;">
+      <li>The widget works in horizontal and vertical bar geometry.</li>
+      <li>The widget inherits the active Quattro theme tokens.</li>
+      <li>The popout uses native PopupCard behavior and remains bounded and scrollable.</li>
+      <li>Active work, projects, Completed disclosure, and backup appear in the required order.</li>
+      <li>Workspace rows clearly indicate that they open the system file explorer.</li>
+      <li>Backup remains collapsed by default.</li>
+      <li>Both the folder dialog and manual absolute-path fallback are designed.</li>
+      <li>In-flight operations disable competing actions.</li>
+      <li>No token, raw stderr, or shell command appears in the interface.</li>
+    </ul>
+
+    <h3 style="margin: 18px 0 0; font-size: 15px; font-weight: 700; letter-spacing: -0.02em;">Scope</h3>
+    <ul style="margin: 8px 0 0; padding-left: 20px; font-size: 13.5px; line-height: 1.6; color: #3d3b37;">
+      <li>No project, task, or PRD editing controls have been added.</li>
+      <li>No <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Doing</span> lifecycle state appears.</li>
+      <li>No daemon lifecycle controls have been added.</li>
+      <li>No backup history, restore flow, or account interface has been added.</li>
+      <li>No additional navigation or settings categories have been added.</li>
+    </ul>
+
+    <h2 style="margin: 34px 0 0; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #ee3f32; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;">15 · Package contents</h2>
+
+    <table style="width: 100%; margin: 12px 0 0; border-collapse: collapse; font-size: 12.5px; line-height: 1.5;">
+      <thead>
+        <tr>
+          <th style="padding: 7px 10px 7px 0; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">File</th>
+          <th style="padding: 7px 0 7px 10px; border-bottom: 1.5px solid #161614; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">Contents</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Handoff superficies escritorio.dc.html</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">This document: rules, measurements, exact copy, accessibility, and checklist.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">Superficies escritorio.dc.html</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Interactive mockup: menu bar strip, popover in four states, settings window in six, Quattro widget and popout with backup in five states, content limits, and provenance matrix. Includes light/dark and Quattro-theme switches.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">pimpampum - brand kit.dc.html</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Source identity: wordmark, symbol, avatars, favicon, palette, and typography.</td></tr>
+        <tr><td style="padding: 6px 10px 6px 0; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">support.js · doc-page.js</td><td style="padding: 6px 0 6px 10px; border-top: 1px solid rgb(22 22 20 / 14%); vertical-align: top;">Runtime required to open the preceding files directly in a browser.</td></tr>
+      </tbody>
+    </table>
+
+    <p style="margin: 18px 0 0; padding-top: 16px; border-top: 2px solid #161614; font-size: 13.5px; line-height: 1.6; color: #3d3b37;">Visual polish may change typography metrics and native-token mapping, but it must preserve the exact approved variant C circle-and-lowercase-p geometry. It may not change the information architecture, state semantics, actions, copy intent, or scope defined here. Any additional functionality remains out of scope unless the product specification is explicitly revised.</p>
+
+  </div>
+</doc-page>
+</x-dc>
+</body>
+</html>

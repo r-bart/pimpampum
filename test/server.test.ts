@@ -1,4 +1,12 @@
-import { existsSync, linkSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,9 +40,33 @@ describe('server composition', () => {
     const address = running.server.address() as AddressInfo;
     const response = await fetch(`http://127.0.0.1:${address.port}/health`);
     expect(await response.json()).toEqual({ status: 'ok', version: '0.1.0' });
+    const workspaceResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/workspaces`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${running.config.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ id: 'server-test', name: 'Server test', rootPath: directory }),
+    });
+    expect(workspaceResponse.status).toBe(201);
     await running.close();
     await running.close();
     running = null;
+  });
+
+  it('refreshes a persisted automatic backup destination during startup', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'pimpampum-server-backup-'));
+    const backupDirectory = join(directory, 'backup');
+    mkdirSync(backupDirectory);
+    writeFileSync(
+      join(directory, 'settings.json'),
+      `${JSON.stringify({ schemaVersion: 1, backupDirectory })}\n`,
+    );
+
+    running = await startServer(config());
+    await vi.waitFor(() => {
+      expect(existsSync(join(backupDirectory, 'pimpampum-latest.sqlite'))).toBe(true);
+    });
   });
 
   it('cleans up composition resources when the server cannot bind', async () => {
@@ -96,6 +128,18 @@ describe('server composition', () => {
       code: 'bad_request',
     });
     expect(existsSync(join(directory, '.instance.lock'))).toBe(false);
+  });
+
+  it('closes a newly opened database when persisted backup settings are corrupt', async () => {
+    directory = mkdtempSync(join(tmpdir(), 'pimpampum-server-settings-'));
+    const settingsPath = join(directory, 'settings.json');
+    writeFileSync(settingsPath, 'not json');
+
+    await expect(startServer(config())).rejects.toThrow('backup settings are invalid');
+    expect(existsSync(join(directory, '.instance.lock'))).toBe(false);
+
+    writeFileSync(settingsPath, '{"schemaVersion":1,"backupDirectory":null}\n');
+    running = await startServer(config());
   });
 
   it('propagates instance-lock filesystem failures', async () => {

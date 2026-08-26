@@ -413,6 +413,28 @@ export PIMPAMPUM_PORT='7337'
 exec '${process.execPath}' '${cliPath}' overview
 `;
     writeFileSync(join(plugin, 'pimpampum-overview'), helper);
+    const backupHelper = `#!/bin/bash
+set -euo pipefail
+
+case \${1:-} in
+  status|retry|disable)
+    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-backup: invalid arguments' >&2; exit 64; }
+    ;;
+  configure)
+    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-backup: configure requires one directory' >&2; exit 64; }
+    ;;
+  *)
+    printf '%s\\n' 'pimpampum-backup: expected status, configure, retry, or disable' >&2
+    exit 64
+    ;;
+esac
+
+export PIMPAMPUM_DATA_DIR='${join(root, 'data')}'
+export PIMPAMPUM_HOST='127.0.0.1'
+export PIMPAMPUM_PORT='7337'
+exec '${process.execPath}' '${cliPath}' backup "$@"
+`;
+    writeFileSync(join(plugin, 'pimpampum-backup'), backupHelper);
     const artifacts: Array<{ path: string; sha256: string; mode: number }> = [];
     const visit = (directory: string) => {
       for (const name of readdirSync(directory)) {
@@ -420,7 +442,12 @@ exec '${process.execPath}' '${cliPath}' overview
         if (lstatSync(path).isDirectory()) visit(path);
         else {
           const child = relative(plugin, path);
-          const mode = ['install.sh', 'uninstall.sh', 'pimpampum-overview'].includes(child)
+          const mode = [
+            'install.sh',
+            'uninstall.sh',
+            'pimpampum-backup',
+            'pimpampum-overview',
+          ].includes(child)
             ? 0o755
             : 0o644;
           chmodSync(path, mode);

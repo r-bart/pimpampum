@@ -110,6 +110,7 @@ On first start it creates:
 ```text
 ~/.pimpampum/
   pimpampum.sqlite
+  settings.json # created when automatic backup is configured
   token
   .instance.lock
 ```
@@ -122,12 +123,25 @@ npm run dev
 
 ### Native status surfaces
 
+Both desktop integrations use one fixed compact identity: a monochrome circle containing a
+lowercase `p`. The silhouette never changes. External badge shape/accent, semantic copy, and an
+optional active-claim count communicate state. The count is hidden at zero and visually capped at
+`99+`; accessibility copy retains the full value.
+
 On macOS 13 or newer, `pimpampum install` copies the unsigned menu-bar-only app to
 `~/Applications/PimpampumMenuBar.app`, registers it as a login item, and installs the daemon as a
 LaunchAgent. If macOS reports `requiresApproval`, open the Pimpampum menu and select
 **Open Login Items Settings**. Because this first local release is unsigned, macOS may require an
-explicit first-open approval in Privacy & Security. The app has no Dock icon and exposes only
-overview refresh, completed-group disclosure, and Finder reveal.
+explicit first-open approval in Privacy & Security. The app has no Dock icon. Project data stays
+read-only in the menu app; its Settings view can choose and monitor the daemon's automatic backup
+directory.
+
+Opening the menu shows a 360 pt read-only popover with Summary, Active work, Projects, and a
+session-local collapsed Completed group. Project rows open the exact registered workspace root in
+Finder. **Settings…** opens or focuses one 460 × 270 pt Backup window. **Quit Pimpampum** quits only
+the menu app; the daemon keeps running. Current arm64 live evidence covers the fixed mark, external
+badges, capped display count, uncapped accessibility count, semantic states, Finder opening,
+Settings reuse/focus, no Dock icon, and this Quit boundary.
 
 On Omarchy Quattro, the package includes the dedicated native Quickshell plugin under
 `integrations/omarchy/pimpampum-status`. The same `pimpampum install` command detects `omarchy`
@@ -139,6 +153,13 @@ index, and inline settings; a partial failure restores that entry through `enabl
 `setBarWidget`, leaves unrelated layout entries untouched, and restores the exact prior systemd
 enabled/running state. Other Linux desktops keep the plain systemd user service. `pimpampum status`
 reports the widget as `enabled`, `disabled`, or `missing`.
+
+The Quattro widget uses the same fixed mark beside the count in horizontal bars and stacks them in
+vertical bars. Clicking opens a bounded 380-unit native popout ordered as connection state, Active
+work, Projects, Completed, and the collapsed Backup disclosure. Project rows use `xdg-open`.
+Backup uses `FolderDialog` when available and retains an absolute-path + **Save** fallback, with
+**Open**, **Back Up Now**, and **Disable** operating on the same daemon setting as every other
+client.
 
 The widget reads `pimpampum overview` through its installed absolute helper. Installation binds
 that receipt-owned helper to the canonical Node, CLI, data-directory, host, and port configuration,
@@ -152,6 +173,10 @@ non-Wayland sessions, and machines with an existing Pimpampum service, receipt, 
 exercises the real install/seed/hot-reload/offline/recovery/uninstall lifecycle, captures distinct
 UI screenshots, requires an explicit visual review, and writes schema-v2 evidence only after the
 original shell, plugin, systemd, receipt, and owned-path baseline is restored exactly.
+
+No real Quattro evidence is currently recorded. The only external-host clue is an ambiguous SSH
+alias named `factory`; confirm that it is the intended Quattro machine before running the live
+workflow. Static validation and the example evidence file are not release evidence.
 
 Diagnostic logs live under `~/.pimpampum/logs` by default. If an installation fails, fix the
 reported platform prerequisite and rerun `pimpampum install`; reconciliation is idempotent.
@@ -418,7 +443,7 @@ Main API areas:
 | Tasks          | Create, inspect, and update tasks and subtasks                             |
 | Work           | Discover, claim, renew, release, and complete work                         |
 | Activity       | Read bounded automatic activity                                            |
-| Administration | Create SQLite backups and portable exports                                 |
+| Administration | Configure automatic backup, create snapshots, and export portable data     |
 | MCP            | Use the Streamable HTTP transport                                          |
 
 `/health` and `/openapi.json` are the only unauthenticated routes.
@@ -449,6 +474,10 @@ pimpampum project:get <project-id>
 pimpampum project:ready <project-id> <revision>
 pimpampum task:create <project-id> <title> [parent-id]
 pimpampum backup <directory>
+pimpampum backup status [--json]
+pimpampum backup configure <absolute-directory> [--json]
+pimpampum backup retry [--json]
+pimpampum backup disable [--json]
 pimpampum export <directory>
 ```
 
@@ -466,10 +495,44 @@ pimpampum backup /path/to/Dropbox/pimpampum-backups
 pimpampum export /path/to/iCloud/pimpampum-exports
 ```
 
-- Backups are immutable SQLite snapshots verified with an integrity check.
+- Manual backups are immutable SQLite snapshots verified with an integrity check.
 - Exports contain portable JSON metadata plus PRDs, context, and tasks as Markdown.
 - Export is rejected while active claims exist and runs synchronously.
 - The bearer token is not stored inside the SQLite backup.
+
+### Automatic synchronized backup
+
+Choose one existing folder in iCloud Drive, Dropbox, Google Drive, or another synchronized
+location. The live database remains local; Pimpampum atomically refreshes only
+`pimpampum-latest.sqlite` after every successful workspace, project, PRD, context, task, subtask,
+or work-claim change.
+
+On macOS, open the Pimpampum menu and select **Settings…**, then **Choose Folder…**. The settings
+view also shows the last successful refresh and offers **Back Up Now**, **Open in Finder**, change,
+and disable actions.
+
+On Omarchy Quattro, open the Pimpampum status popout and expand **Backup**. Use **Choose…** when
+the Qt folder dialog is available, or enter an absolute path in the fallback field. The widget
+uses the same canonical daemon setting as macOS and the CLI; it does not write the path to
+`shell.json`.
+
+Agents and scripts can use deterministic JSON commands:
+
+```bash
+pimpampum backup configure "/path/to/Dropbox/Pimpampum" --json
+pimpampum backup status --json
+pimpampum backup retry --json
+pimpampum backup disable --json
+```
+
+The destination is persisted privately in `~/.pimpampum/settings.json`. Configuration immediately
+creates the rolling snapshot. Later changes are serialized and coalesced, so there is never more
+than one automatic snapshot writer. If the synchronized folder is temporarily unavailable, the
+project mutation still succeeds locally; status becomes `error`, and the next mutation or
+`backup retry` attempts recovery. Disabling automatic backup never deletes an existing snapshot.
+
+The equivalent authenticated API is `GET`, `PUT`, and `DELETE /api/v1/settings/backup`, plus
+`POST /api/v1/settings/backup/retry`; exact schemas and errors are in `/openapi.json`.
 
 ### Restoring a backup
 
@@ -500,7 +563,7 @@ Pimpampum intentionally does not include:
 - Priorities, estimates, points, or labels.
 - Users, teams, roles, or remote permissions.
 - Comments, chat, notifications, or social feeds.
-- Configurable automations.
+- Configurable project-workflow automations.
 - Arbitrary task dependencies.
 - More than one level of subtasks.
 - Cloud synchronization of the live database.
@@ -531,17 +594,20 @@ npm run build
 
 `npm test` builds from a clean `dist/`, enforces 100% statement, branch, function, and line coverage, and exercises the compiled daemon, CLI, and MCP stdio bridge.
 
-`npm run test:evals` is the small deterministic agent-workflow evaluation suite. It runs the compiled product at its real CLI, HTTP, and MCP boundaries. Its score is binary: all seven workflows must pass without mocks or partial credit. The complete rubric is documented in [docs/evals.md](docs/evals.md).
+`npm run test:evals` is the small deterministic agent-workflow evaluation suite. It runs the compiled product at its real CLI, HTTP, and MCP boundaries. Its score is binary: all nine workflows must pass without mocks or partial credit. The complete rubric is documented in [docs/evals.md](docs/evals.md).
 
-The evaluation suite covers seven real scenarios:
+The evaluation suite covers nine real scenarios:
 
 1. Workspace → project/PRD → task → claim → completion → portable export.
-2. PRD and contextual Markdown reads and updates through MCP.
-3. Parent/subtask ordering, competing agents, idempotent claims, and artifact recovery.
-4. HTTP authentication, optimistic revision conflicts, and the deliberate no-delete boundary.
-5. Persistence across daemon restart and rejection of a second instance owner.
-6. Real SQLite backup, restore, and subsequent portable export.
-7. Per-user service install, status, repeat-install reconciliation, uninstall, and data preservation.
+2. Shell-only agent installation/configuration, tool discovery, and the full MCP contract via CLI.
+3. PRD and contextual Markdown reads and updates through MCP.
+4. Parent/subtask ordering, competing agents, idempotent claims, and artifact recovery.
+5. HTTP authentication, optimistic revision conflicts, and the deliberate no-delete boundary.
+6. Persistence across daemon restart and rejection of a second instance owner.
+7. Automatic backup configuration, post-mutation refresh, unavailable-folder failure isolation,
+   recovery, and disable through the compiled agent-first CLI.
+8. Real SQLite backup, restore, and subsequent portable export.
+9. Per-user service install, status, repeat-install reconciliation, uninstall, and data preservation.
 
 ## Status
 

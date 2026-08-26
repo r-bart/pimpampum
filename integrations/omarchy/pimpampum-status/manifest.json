@@ -4,14 +4,14 @@
   "name": "Pimpampum Status",
   "version": "0.1.0",
   "author": "Pimpampum",
-  "description": "Read-only project and active-work status for Pimpampum",
+  "description": "Project status and automatic backup settings for Pimpampum",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
     "displayName": "Pimpampum",
-    "description": "Project health and active work",
+    "description": "Project health, active work, and backup settings",
     "category": "Info",
     "allowMultiple": false,
     "defaultSection": "right"

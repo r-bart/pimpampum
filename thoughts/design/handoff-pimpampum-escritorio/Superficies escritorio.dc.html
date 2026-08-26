@@ -1,0 +1,1376 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="theme-color" content="#e6e3db">
+<style>
+html, body { margin: 0; background: #e6e3db; -webkit-font-smoothing: antialiased; }
+a { color: #161614; text-decoration: underline; text-decoration-color: rgb(22 22 20 / 25%); text-underline-offset: 3px; }
+a:hover { color: #ee3f32; }
+[data-pp="light"] { --bg: rgba(246,246,246,0.78); --solid: #f6f6f6; --card: #ffffff; --label: #000000; --l2: rgba(0,0,0,0.56); --l3: rgba(0,0,0,0.36); --quat: rgba(0,0,0,0.045); --hov: rgba(0,0,0,0.06); --sep: rgba(0,0,0,0.11); --ring: rgba(0,0,0,0.16); --blue: #007aff; --blueT: #0059c9; --amber: #ff9500; --amberT: #a06000; --green: #34c759; --greenT: #1b7a35; --red: #ff3b30; --redT: #c50f0a; --tintR: rgba(255,59,48,0.09); --tintA: rgba(255,149,0,0.13); --tintN: rgba(0,0,0,0.05); --field: #ffffff; --neutral: rgba(0,0,0,0.42); }
+[data-pp="dark"] { --bg: rgba(42,42,44,0.74); --solid: #2a2a2c; --card: #1e1e20; --label: #ffffff; --l2: rgba(255,255,255,0.58); --l3: rgba(255,255,255,0.38); --quat: rgba(255,255,255,0.07); --hov: rgba(255,255,255,0.1); --sep: rgba(255,255,255,0.13); --ring: rgba(255,255,255,0.14); --blue: #0a84ff; --blueT: #7fbaff; --amber: #ff9f0a; --amberT: #ffc267; --green: #30d158; --greenT: #74e18d; --red: #ff453a; --redT: #ff8a82; --tintR: rgba(255,69,58,0.15); --tintA: rgba(255,159,10,0.15); --tintN: rgba(255,255,255,0.06); --field: #1b1b1d; --neutral: rgba(255,255,255,0.45); }
+[data-q="dark"] { --qbg: #16161e; --qfg: #c0caf5; --qfg2: rgba(192,202,245,0.55); --qurg: #f7768e; --qok: #9ece6a; --qwarn: #e0af68; --qact: #7aa2f7; --qhov: rgba(192,202,245,0.09); --qsep: rgba(192,202,245,0.14); --qfield: rgba(192,202,245,0.07); }
+[data-q="light"] { --qbg: #eff1f5; --qfg: #4c4f69; --qfg2: rgba(76,79,105,0.6); --qurg: #d20f39; --qok: #40a02b; --qwarn: #df8e1d; --qact: #1e66f5; --qhov: rgba(76,79,105,0.08); --qsep: rgba(76,79,105,0.16); --qfield: rgba(76,79,105,0.07); }
+.pp-mark { position: relative; display: inline-grid; place-items: center; width: 16px; height: 16px; flex: none; border-radius: 50%; background: currentColor; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: -0.06em; line-height: 1; }
+.pp-mark > .pp-mark-letter { margin-top: -1px; color: var(--solid); }
+[data-q] .pp-mark > .pp-mark-letter { color: var(--qbg); }
+.pp-mark-large { width: 128px; height: 128px; font-size: 96px; }
+.pp-mark-large > .pp-mark-letter { margin-top: -8px; }
+</style>
+</helmet>
+<div style="width: 1440px; margin: 0 auto; padding: 72px 80px 160px; box-sizing: border-box; color: #161614; background: #e6e3db; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+
+  <header style="display: flex; align-items: baseline; justify-content: space-between; gap: 40px; padding-bottom: 20px; border-bottom: 1px solid rgb(22 22 20 / 18%);">
+    <div style="display: flex; align-items: baseline; gap: 18px;">
+      <span style="font-size: 26px; font-weight: 700; letter-spacing: -0.045em;">pimpampum</span>
+      <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">desktop surfaces · v1</span>
+    </div>
+    <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">macos menu bar · omarchy quattro</span>
+  </header>
+
+  <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 64px; align-items: start; margin-top: 34px;">
+    <p style="max-width: 64ch; margin: 0; font-size: 19px; line-height: 1.5; letter-spacing: -0.012em; color: #3d3b37; text-wrap: pretty;">Two surfaces, one daemon. Both answer at a glance whether Pimpampum is online, whether an agent is working, and which projects have work. UI copy and canonical annotations are in English. Use the chips to switch between real states.</p>
+    <div style="display: grid; gap: 10px; justify-items: end;">
+      <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">macos appearance</span>
+      <div style="display: flex; gap: 6px;">
+        <div style="{{ cs_theme_light }}" onClick="{{ on_theme_light }}">light</div>
+        <div style="{{ cs_theme_dark }}" onClick="{{ on_theme_dark }}">dark</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: grid; gap: 104px; margin-top: 88px;">
+
+    <section>
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-bottom: 14px; margin-bottom: 32px; border-bottom: 1px solid rgb(22 22 20 / 14%); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #77746d;">
+        <span>01 · approved compact mark · final variant C at actual size</span><span>16 pt</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 56px; align-items: start;">
+        <div data-pp="{{ theme }}" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; background: rgb(22 22 20 / 14%);">
+
+          <div style="display: grid; gap: 26px; padding: 32px; background: #f5f3ed;">
+            <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px;">
+              <span style="font-size: 17px; font-weight: 700; letter-spacing: -0.03em;">A · three dots</span>
+              <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">rejected</span>
+            </div>
+            <div style="display: grid; place-items: center; height: 96px; background: var(--solid); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span style="display: inline-flex; align-items: center; gap: 2.5px; color: var(--label);">
+                <span style="width: 4px; height: 4px; border-radius: 50%; background: currentColor;"></span>
+                <span style="width: 4px; height: 4px; border-radius: 50%; background: currentColor;"></span>
+                <span style="width: 4px; height: 4px; border-radius: 50%; background: currentColor;"></span>
+              </span>
+            </div>
+            <div style="display: grid; place-items: center; padding: 24px 0; background: var(--card); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span style="display: inline-flex; align-items: center; gap: 20px; color: var(--label);">
+                <span style="width: 32px; height: 32px; border-radius: 50%; background: currentColor;"></span>
+                <span style="width: 32px; height: 32px; border-radius: 50%; background: currentColor;"></span>
+                <span style="width: 32px; height: 32px; border-radius: 50%; background: currentColor;"></span>
+              </span>
+            </div>
+            <p style="margin: 0; font-size: 13.5px; line-height: 1.55; color: #3d3b37; text-wrap: pretty;">Rejected exploration. At 16 pt the literal three-dot brand-kit reduction can read as an ellipsis.</p>
+          </div>
+
+          <div style="display: grid; gap: 26px; padding: 32px; background: #f5f3ed;">
+            <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px;">
+              <span style="font-size: 17px; font-weight: 700; letter-spacing: -0.03em;">B · progressive dots</span>
+              <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">rejected</span>
+            </div>
+            <div style="display: grid; place-items: center; height: 96px; background: var(--solid); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span style="display: inline-flex; align-items: flex-end; gap: 2.5px; color: var(--label);">
+                <span style="width: 4px; height: 4px; border-radius: 50%; background: currentColor;"></span>
+                <span style="width: 4px; height: 4px; margin-bottom: 4px; border-radius: 50%; background: currentColor;"></span>
+                <span style="width: 4px; height: 4px; margin-bottom: 8px; border-radius: 50%; background: currentColor;"></span>
+              </span>
+            </div>
+            <div style="display: grid; place-items: center; padding: 24px 0; background: var(--card); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span style="display: inline-flex; align-items: flex-end; gap: 20px; color: var(--label);">
+                <span style="width: 32px; height: 32px; border-radius: 50%; background: currentColor;"></span>
+                <span style="width: 32px; height: 32px; margin-bottom: 32px; border-radius: 50%; background: currentColor;"></span>
+                <span style="width: 32px; height: 32px; margin-bottom: 64px; border-radius: 50%; background: currentColor;"></span>
+              </span>
+            </div>
+            <p style="margin: 0; font-size: 13.5px; line-height: 1.55; color: #3d3b37; text-wrap: pretty;">Rejected exploration. The stepped dots improve the square footprint but do not provide the approved product silhouette.</p>
+          </div>
+
+          <div style="display: grid; gap: 26px; padding: 32px; background: #f5f3ed;">
+            <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px;">
+              <span style="font-size: 17px; font-weight: 700; letter-spacing: -0.03em;">C · lowercase p in circle</span>
+              <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #ee3f32;">approved · final</span>
+            </div>
+            <div style="display: grid; place-items: center; height: 96px; background: var(--solid); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span class="pp-mark" style="color: var(--label);">
+                <span class="pp-mark-letter">p</span>
+              </span>
+            </div>
+            <div style="display: grid; place-items: center; padding: 24px 0; background: var(--card); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span class="pp-mark pp-mark-large" style="color: var(--label);">
+                <span class="pp-mark-letter">p</span>
+              </span>
+            </div>
+            <p style="margin: 0; font-size: 13.5px; line-height: 1.55; color: #3d3b37; text-wrap: pretty;">Approved final mark. Use this exact circle containing the lowercase <strong>p</strong> at every compact size and in every semantic state.</p>
+          </div>
+        </div>
+
+        <sc-if value="{{ showAnn }}" hint-placeholder-val="{{ true }}">
+        <div style="display: grid; gap: 16px; width: 292px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10.5px; line-height: 1.6; color: #5b5852;">
+          <div style="font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">canonical annotations</div>
+          <div style="display: grid; gap: 8px;">
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">size</span><span>exact 16 × 16 pt circle containing a lowercase p</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">template</span><span>monochrome; inherits the bar foreground color</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">silhouette</span><span>fixed in every semantic state on both platforms</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">state</span><span>always external: adjacent 5 pt badge, accent, count, tooltip, and detail copy</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">offline</span><span>never replace the product mark with a Wi-Fi symbol</span></div>
+          </div>
+          <p style="margin: 6px 0 0; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 13.5px; line-height: 1.55; color: #3d3b37; text-wrap: pretty;">Decision closed: variant C is final. Every compact mockup below uses the same approved mark.</p>
+        </div>
+        </sc-if>
+      </div>
+    </section>
+
+    <section>
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-bottom: 14px; margin-bottom: 32px; border-bottom: 1px solid rgb(22 22 20 / 14%); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #77746d;">
+        <span>02 · macos · menu-bar state strip</span><span>actual size</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 56px; align-items: start;">
+        <div data-pp="{{ theme }}" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; background: rgb(22 22 20 / 14%);">
+
+          <div style="display: grid; gap: 12px; padding: 24px; background: #f5f3ed;">
+            <div style="display: flex; align-items: center; justify-content: center; height: 24px; background: var(--bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span class="pp-mark" style="color: var(--label); opacity: 0.6;">
+                <span class="pp-mark-letter">p</span>
+                <span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; box-sizing: border-box; border: 1px dashed var(--neutral); border-radius: 50%;"></span>
+              </span>
+            </div>
+            <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">loading · no count</div>
+          </div>
+
+          <div style="display: grid; gap: 12px; padding: 24px; background: #f5f3ed;">
+            <div style="display: flex; align-items: center; justify-content: center; height: 24px; background: var(--bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span class="pp-mark" style="color: var(--label);">
+                <span class="pp-mark-letter">p</span>
+                <span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; border-radius: 50%; background: var(--blue);"></span>
+              </span>
+              <span style="margin-left: 9px; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--label);">3</span>
+            </div>
+            <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">active · 3 claims</div>
+          </div>
+
+          <div style="display: grid; gap: 12px; padding: 24px; background: #f5f3ed;">
+            <div style="display: flex; align-items: center; justify-content: center; height: 24px; background: var(--bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span class="pp-mark" style="color: var(--label);">
+                <span class="pp-mark-letter">p</span>
+                <span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; box-sizing: border-box; border: 1.5px solid var(--amber); border-radius: 50%;"></span>
+              </span>
+            </div>
+            <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">work available</div>
+          </div>
+
+          <div style="display: grid; gap: 12px; padding: 24px; background: #f5f3ed;">
+            <div style="display: flex; align-items: center; justify-content: center; height: 24px; background: var(--bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span class="pp-mark" style="color: var(--label); opacity: 0.55;">
+                <span class="pp-mark-letter">p</span>
+                <span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; box-sizing: border-box; border: 1.5px solid var(--neutral); border-radius: 50%;"></span>
+              </span>
+            </div>
+            <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">drafts only</div>
+          </div>
+
+          <div style="display: grid; gap: 12px; padding: 24px; background: #f5f3ed;">
+            <div style="display: flex; align-items: center; justify-content: center; height: 24px; background: var(--bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span class="pp-mark" style="color: var(--label);">
+                <span class="pp-mark-letter">p</span>
+                <span style="position: absolute; right: -7px; top: -5px; display: grid; place-items: center; width: 5px; height: 5px; border-radius: 50%; background: var(--green);"><span style="width: 1.5px; height: 1.5px; border-radius: 50%; background: var(--solid);"></span></span>
+              </span>
+            </div>
+            <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">all complete</div>
+          </div>
+
+          <div style="display: grid; gap: 12px; padding: 24px; background: #f5f3ed;">
+            <div style="display: flex; align-items: center; justify-content: center; height: 24px; background: var(--bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span class="pp-mark" style="color: var(--label); opacity: 0.42;">
+                <span class="pp-mark-letter">p</span>
+              </span>
+            </div>
+            <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">no projects</div>
+          </div>
+
+          <div style="display: grid; gap: 12px; padding: 24px; background: #f5f3ed;">
+            <div style="display: flex; align-items: center; justify-content: center; height: 24px; background: var(--bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span class="pp-mark" style="color: var(--label);">
+                <span class="pp-mark-letter">p</span>
+                <span style="position: absolute; right: -8px; top: -5px; width: 5px; height: 5px; box-sizing: border-box; border: 1.5px solid var(--red); transform: rotate(45deg);"></span>
+              </span>
+              <span style="margin-left: 10px; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--l3);">3</span>
+            </div>
+            <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">offline · stale</div>
+          </div>
+
+          <div style="display: grid; gap: 12px; padding: 24px; background: #f5f3ed;">
+            <div style="display: flex; align-items: center; justify-content: center; height: 24px; background: var(--bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: inset 0 0 0 1px var(--sep);">
+              <span class="pp-mark" style="color: var(--label);">
+                <span class="pp-mark-letter">p</span>
+                <span style="position: absolute; right: -8px; top: -5px; width: 5px; height: 5px; background: var(--red); transform: rotate(45deg);"></span>
+              </span>
+            </div>
+            <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">authentication error</div>
+          </div>
+        </div>
+
+        <sc-if value="{{ showAnn }}" hint-placeholder-val="{{ true }}">
+        <div style="display: grid; gap: 16px; width: 292px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10.5px; line-height: 1.6; color: #5b5852;">
+          <div style="font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">annotations</div>
+          <div style="display: grid; gap: 8px;">
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">bar</span><span>standard macOS height · no Dock icon</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">badge</span><span>disco = activo · anillo = disponible / draft · dona = completo · rombo = error</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">diamond</span><span>outline = offline · filled = credentials / version / payload</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">count</span><span>Active only · hidden at zero · tabular digits · capped at 99+</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">stale</span><span>retain the count in tertiary gray, clearly secondary</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">gap</span><span>mark → count 4 pt · badge 5 pt</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">a11y</span><span>“Pimpampum: Active, 3 active claims” · icon and count form one element</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">click</span><span>toggles the popover</span></div>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+    </section>
+
+    <section>
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-bottom: 14px; margin-bottom: 24px; border-bottom: 1px solid rgb(22 22 20 / 14%); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #77746d;">
+        <span>03 · macos · status popover</span><span>360 pt · interactive</span>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 32px;">
+        <div style="{{ cs_pop_mixed }}" onClick="{{ on_pop_mixed }}">mixed load</div>
+        <div style="{{ cs_pop_stale }}" onClick="{{ on_pop_stale }}">offline · stale</div>
+        <div style="{{ cs_pop_unavailable }}" onClick="{{ on_pop_unavailable }}">no disponible</div>
+        <div style="{{ cs_pop_loading }}" onClick="{{ on_pop_loading }}">cargando</div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 56px; align-items: start;">
+        <div data-pp="{{ theme }}" data-screen-label="macOS popover" style="padding: 0 0 40px; background: {{ desk }};">
+          <div style="display: flex; align-items: center; justify-content: flex-end; gap: 18px; height: 24px; padding: 0 14px; background: var(--bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; font-size: 11px; color: var(--label);">
+            <span style="margin-right: auto; font-weight: 600; opacity: 0.85;">Finder</span>
+            <span style="opacity: 0.55;">Wed 26 Aug</span>
+            <span style="opacity: 0.55;">14:32</span>
+            <span class="pp-mark" style="color: var(--label);">
+              <span class="pp-mark-letter">p</span>
+              <span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; border-radius: 50%; background: var(--blue);"></span>
+            </span>
+            <span style="font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;">3</span>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; padding: 8px 12px 0;">
+
+            <sc-if value="{{ is_pop_mixed }}" hint-placeholder-val="{{ true }}">
+            <div style="width: 360px; border-radius: 11px; background: var(--bg); backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%); box-shadow: 0 0 0 0.5px var(--ring), 0 18px 46px -12px rgba(0,0,0,0.5); color: var(--label); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; overflow: hidden;">
+              <div style="display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px 11px;">
+                <span class="pp-mark" style="color: var(--label); margin-top: 4px;">
+                  <span class="pp-mark-letter">p</span>
+                  <span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; border-radius: 50%; background: var(--blue);"></span>
+                </span>
+                <div style="flex: 1; min-width: 0; padding-left: 6px;">
+                  <div style="font-size: 13px; font-weight: 600; letter-spacing: -0.01em;">Pimpampum</div>
+                  <div style="margin-top: 1px; font-size: 11px; color: var(--l2);">Active</div>
+                </div>
+                <span style="padding-top: 2px; font-size: 10px; color: var(--l3); white-space: nowrap;">Updated 4 seconds ago</span>
+              </div>
+              <div style="height: 1px; background: var(--sep);"></div>
+
+              <div style="max-height: 480px; overflow-y: auto; padding: 16px 16px 4px; display: grid; gap: 16px;">
+                <div>
+                  <div style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--l2);">Summary</div>
+                  <div style="margin-top: 6px; font-size: 12px;">4 projects · 2 active · 7 available</div>
+                  <div style="margin-top: 2px; font-size: 10px; color: var(--l3);">Daemon 0.9.3 · 3h 12m uptime</div>
+                </div>
+
+                <div>
+                  <div style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--l2);">Active work</div>
+                  <div style="display: grid; gap: 6px; margin-top: 8px;">
+                    <div style="padding: 10px; border-radius: 8px; background: var(--quat);">
+                      <div style="font-size: 13px; font-weight: 500; line-height: 1.3;">Ship the menu-bar status popover</div>
+                      <div style="margin-top: 2px; font-size: 11px; color: var(--l2);">Desktop status surfaces</div>
+                      <div style="display: flex; align-items: center; gap: 10px; margin-top: 7px; font-size: 11px; color: var(--l2);">
+                        <span style="display: inline-flex; align-items: center; gap: 4px;"><svg width="11" height="11" viewBox="0 0 11 11" style="display: block;"><circle cx="5.5" cy="3.4" r="2.1" fill="currentColor"></circle><path d="M1.4 10c0-2.2 1.8-3.4 4.1-3.4S9.6 7.8 9.6 10z" fill="currentColor"></path></svg>claude-code-01</span>
+                        <span style="display: inline-flex; align-items: center; gap: 4px;"><svg width="11" height="11" viewBox="0 0 11 11" style="display: block;"><circle cx="5.5" cy="5.5" r="4.2" fill="none" stroke="currentColor" stroke-width="1.2"></circle><path d="M5.5 3.1V5.7L7.4 6.9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg>24m remaining</span>
+                      </div>
+                    </div>
+                    <div style="padding: 10px; border-radius: 8px; background: var(--quat);">
+                      <div style="font-size: 13px; font-weight: 500; line-height: 1.3;">Sweep expired claims on daemon boot</div>
+                      <div style="margin-top: 2px; font-size: 11px; color: var(--l2);">Daemon core</div>
+                      <div style="display: flex; align-items: center; gap: 10px; margin-top: 7px; font-size: 11px; color: var(--l2);">
+                        <span style="display: inline-flex; align-items: center; gap: 4px;"><svg width="11" height="11" viewBox="0 0 11 11" style="display: block;"><circle cx="5.5" cy="3.4" r="2.1" fill="currentColor"></circle><path d="M1.4 10c0-2.2 1.8-3.4 4.1-3.4S9.6 7.8 9.6 10z" fill="currentColor"></path></svg>codex-agent-02</span>
+                        <span style="display: inline-flex; align-items: center; gap: 4px;"><svg width="11" height="11" viewBox="0 0 11 11" style="display: block;"><circle cx="5.5" cy="5.5" r="4.2" fill="none" stroke="currentColor" stroke-width="1.2"></circle><path d="M5.5 3.1V5.7L7.4 6.9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg>1h 12m remaining</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--l2);">Projects</div>
+                  <div style="display: grid; margin-top: 4px;">
+                    <div style="display: flex; align-items: flex-start; gap: 8px; padding: 8px 8px; margin: 0 -8px; border-radius: 6px; cursor: pointer;" style-hover="background: var(--hov);">
+                      <span style="display: grid; place-items: center; width: 16px; height: 18px; flex: none;"><span style="width: 9px; height: 9px; border-radius: 50%; background: var(--blue);"></span></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 13px; font-weight: 500; line-height: 1.3;">Desktop status surfaces</div>
+                        <div style="margin-top: 1px; font-size: 11px; color: var(--l2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">28.project-master · desktop-status-surfaces</div>
+                        <div style="margin-top: 2px; font-size: 10px; color: var(--l3);">1 active · 3 available</div>
+                      </div>
+                      <span style="flex: none; padding-top: 2px; font-size: 11px; color: var(--l3);">↗</span>
+                    </div>
+                    <div style="display: flex; align-items: flex-start; gap: 8px; padding: 8px 8px; margin: 0 -8px; border-radius: 6px; cursor: pointer;" style-hover="background: var(--hov);">
+                      <span style="display: grid; place-items: center; width: 16px; height: 18px; flex: none;"><span style="width: 9px; height: 9px; border-radius: 50%; background: var(--blue);"></span></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 13px; font-weight: 500; line-height: 1.3;">Daemon core</div>
+                        <div style="margin-top: 1px; font-size: 11px; color: var(--l2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">28.project-master · daemon-core</div>
+                        <div style="margin-top: 2px; font-size: 10px; color: var(--l3);">1 active · 2 available</div>
+                      </div>
+                      <span style="flex: none; padding-top: 2px; font-size: 11px; color: var(--l3);">↗</span>
+                    </div>
+                    <div style="display: flex; align-items: flex-start; gap: 8px; padding: 8px 8px; margin: 0 -8px; border-radius: 6px; background: var(--hov); cursor: pointer;">
+                      <span style="display: grid; place-items: center; width: 16px; height: 18px; flex: none;"><span style="width: 9px; height: 9px; box-sizing: border-box; border: 2px solid var(--amber); border-radius: 50%;"></span></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 13px; font-weight: 500; line-height: 1.3;">Quattro bar widget</div>
+                        <div style="margin-top: 1px; font-size: 11px; color: var(--l2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">omarchy-lab · quattro-bar-widget</div>
+                        <div style="margin-top: 2px; font-size: 10px; color: var(--l3);">2 available</div>
+                      </div>
+                      <span style="flex: none; padding-top: 2px; font-size: 11px; color: var(--l2);">↗</span>
+                    </div>
+                    <div style="display: flex; align-items: flex-start; gap: 8px; padding: 8px 8px; margin: 0 -8px; border-radius: 6px; cursor: pointer;" style-hover="background: var(--hov);">
+                      <span style="display: grid; place-items: center; width: 16px; height: 18px; flex: none;"><span style="width: 9px; height: 9px; box-sizing: border-box; border: 1.5px dashed var(--neutral); border-radius: 50%;"></span></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 13px; font-weight: 500; line-height: 1.3;">Snapshot restore spike</div>
+                        <div style="margin-top: 1px; font-size: 11px; color: var(--l2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">omarchy-lab · snapshot-restore-spike</div>
+                        <div style="margin-top: 2px; font-size: 10px; color: var(--l3);">Draft</div>
+                      </div>
+                      <span style="flex: none; padding-top: 2px; font-size: 11px; color: var(--l3);">↗</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display: grid; gap: 4px;">
+                  <div style="display: flex; align-items: center; gap: 6px; padding: 4px 8px; margin: 0 -8px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--l2);" onClick="{{ toggleDone }}" style-hover="background: var(--hov);">
+                    <sc-if value="{{ done }}"><span style="width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid currentColor;"></span></sc-if>
+                    <sc-if value="{{ notDone }}" hint-placeholder-val="{{ true }}"><span style="width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 5px solid currentColor;"></span></sc-if>
+                    <span>Completed (2)</span>
+                  </div>
+                  <sc-if value="{{ done }}">
+                  <div style="display: grid;">
+                    <div style="display: flex; align-items: flex-start; gap: 8px; padding: 8px 8px; margin: 0 -8px; border-radius: 6px; cursor: pointer;" style-hover="background: var(--hov);">
+                      <span style="display: grid; place-items: center; width: 16px; height: 18px; flex: none;"><span style="display: grid; place-items: center; width: 9px; height: 9px; border-radius: 50%; background: var(--green);"><span style="width: 3px; height: 3px; border-radius: 50%; background: var(--solid);"></span></span></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 13px; font-weight: 500; line-height: 1.3;">CLI claim lifecycle</div>
+                        <div style="margin-top: 1px; font-size: 11px; color: var(--l2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">28.project-master · cli-claim-lifecycle</div>
+                        <div style="margin-top: 2px; font-size: 10px; color: var(--l3);">Complete · 14 completed tasks</div>
+                      </div>
+                      <span style="flex: none; padding-top: 2px; font-size: 11px; color: var(--l3);">↗</span>
+                    </div>
+                    <div style="display: flex; align-items: flex-start; gap: 8px; padding: 8px 8px; margin: 0 -8px; border-radius: 6px; cursor: pointer;" style-hover="background: var(--hov);">
+                      <span style="display: grid; place-items: center; width: 16px; height: 18px; flex: none;"><span style="display: grid; place-items: center; width: 9px; height: 9px; border-radius: 50%; background: var(--green);"><span style="width: 3px; height: 3px; border-radius: 50%; background: var(--solid);"></span></span></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 13px; font-weight: 500; line-height: 1.3;">SQLite migration runner</div>
+                        <div style="margin-top: 1px; font-size: 11px; color: var(--l2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">28.project-master · sqlite-migration-runner</div>
+                        <div style="margin-top: 2px; font-size: 10px; color: var(--l3);">Complete · 8 completed tasks</div>
+                      </div>
+                      <span style="flex: none; padding-top: 2px; font-size: 11px; color: var(--l3);">↗</span>
+                    </div>
+                  </div>
+                  </sc-if>
+                </div>
+
+                <div style="padding-bottom: 8px; font-size: 10px; line-height: 1.45; color: var(--l3);">The project list is truncated. Counts still include every project.</div>
+              </div>
+
+              <div style="height: 1px; background: var(--sep);"></div>
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 10px;">
+                <div style="padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 12px; color: var(--label);" style-hover="background: var(--hov);">Quit Pimpampum</div>
+                <div style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 12px; color: var(--label);" style-hover="background: var(--hov);">
+                  <svg width="12" height="12" viewBox="0 0 12 12" style="display: block;"><circle cx="6" cy="6" r="4.4" fill="none" stroke="currentColor" stroke-width="1.2"></circle><circle cx="6" cy="6" r="1.5" fill="none" stroke="currentColor" stroke-width="1.2"></circle><rect x="5.3" y="0.2" width="1.4" height="2" fill="currentColor"></rect><rect x="5.3" y="9.8" width="1.4" height="2" fill="currentColor"></rect><rect x="0.2" y="5.3" width="2" height="1.4" fill="currentColor"></rect><rect x="9.8" y="5.3" width="2" height="1.4" fill="currentColor"></rect></svg>
+                  <span>Settings…</span>
+                </div>
+              </div>
+            </div>
+            </sc-if>
+
+            <sc-if value="{{ is_pop_stale }}">
+            <div style="width: 360px; border-radius: 11px; background: var(--bg); backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%); box-shadow: 0 0 0 0.5px var(--ring), 0 18px 46px -12px rgba(0,0,0,0.5); color: var(--label); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; overflow: hidden;">
+              <div style="display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px 11px;">
+                <span class="pp-mark" style="color: var(--label); margin-top: 4px;">
+                  <span class="pp-mark-letter">p</span>
+                  <span style="position: absolute; right: -8px; top: -5px; width: 5px; height: 5px; box-sizing: border-box; border: 1.5px solid var(--red); transform: rotate(45deg);"></span>
+                </span>
+                <div style="flex: 1; min-width: 0; padding-left: 6px;">
+                  <div style="font-size: 13px; font-weight: 600; letter-spacing: -0.01em;">Pimpampum</div>
+                  <div style="margin-top: 1px; font-size: 11px; color: var(--redT);">Offline — stale data</div>
+                </div>
+                <span style="padding-top: 2px; font-size: 10px; color: var(--l3); white-space: nowrap;">Updated 3 minutes ago</span>
+              </div>
+              <div style="height: 1px; background: var(--sep);"></div>
+
+              <div style="max-height: 480px; overflow-y: auto; padding: 16px 16px 12px; display: grid; gap: 16px;">
+                <div style="display: flex; align-items: flex-start; gap: 8px; padding: 10px; border-radius: 8px; background: var(--tintR);">
+                  <span style="flex: none; margin-top: 2px; width: 10px; height: 10px; box-sizing: border-box; border: 1.5px solid var(--redT); transform: rotate(45deg);"></span>
+                  <div style="min-width: 0;">
+                    <div style="font-size: 12px; font-weight: 600; color: var(--redT);">Offline — showing stale data</div>
+                    <div style="margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--l2);">Could not reach the Pimpampum daemon on 127.0.0.1:7337. The last known overview is shown below.</div>
+                  </div>
+                </div>
+
+                <div>
+                  <div style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--l2);">Summary</div>
+                  <div style="margin-top: 6px; font-size: 12px; opacity: 0.6;">4 projects · 3 active · 7 available</div>
+                  <div style="margin-top: 2px; font-size: 10px; color: var(--l3);">Daemon 0.9.3 · last seen 14:29</div>
+                </div>
+
+                <div>
+                  <div style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--l2);">Active work</div>
+                  <div style="display: grid; gap: 6px; margin-top: 8px; opacity: 0.6;">
+                    <div style="padding: 10px; border-radius: 8px; background: var(--quat);">
+                      <div style="font-size: 13px; font-weight: 500; line-height: 1.3;">Ship the menu-bar status popover</div>
+                      <div style="margin-top: 2px; font-size: 11px; color: var(--l2);">Desktop status surfaces</div>
+                      <div style="display: flex; align-items: center; gap: 10px; margin-top: 7px; font-size: 11px; color: var(--l2);">
+                        <span style="display: inline-flex; align-items: center; gap: 4px;"><svg width="11" height="11" viewBox="0 0 11 11" style="display: block;"><circle cx="5.5" cy="3.4" r="2.1" fill="currentColor"></circle><path d="M1.4 10c0-2.2 1.8-3.4 4.1-3.4S9.6 7.8 9.6 10z" fill="currentColor"></path></svg>claude-code-01</span>
+                        <span style="display: inline-flex; align-items: center; gap: 4px;"><svg width="11" height="11" viewBox="0 0 11 11" style="display: block;"><circle cx="5.5" cy="5.5" r="4.2" fill="none" stroke="currentColor" stroke-width="1.2"></circle><path d="M5.5 3.1V5.7L7.4 6.9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg>&lt;1m remaining</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--l2);">Projects</div>
+                  <div style="display: grid; margin-top: 4px; opacity: 0.6;">
+                    <div style="display: flex; align-items: flex-start; gap: 8px; padding: 8px 8px; margin: 0 -8px; border-radius: 6px;">
+                      <span style="display: grid; place-items: center; width: 16px; height: 18px; flex: none;"><span style="width: 9px; height: 9px; border-radius: 50%; background: var(--blue);"></span></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 13px; font-weight: 500; line-height: 1.3;">Desktop status surfaces</div>
+                        <div style="margin-top: 1px; font-size: 11px; color: var(--l2);">28.project-master · desktop-status-surfaces</div>
+                        <div style="margin-top: 2px; font-size: 10px; color: var(--l3);">2 active · 3 available</div>
+                      </div>
+                      <span style="flex: none; padding-top: 2px; font-size: 11px; color: var(--l3);">↗</span>
+                    </div>
+                    <div style="display: flex; align-items: flex-start; gap: 8px; padding: 8px 8px; margin: 0 -8px; border-radius: 6px;">
+                      <span style="display: grid; place-items: center; width: 16px; height: 18px; flex: none;"><span style="width: 9px; height: 9px; box-sizing: border-box; border: 2px solid var(--amber); border-radius: 50%;"></span></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 13px; font-weight: 500; line-height: 1.3;">Quattro bar widget</div>
+                        <div style="margin-top: 1px; font-size: 11px; color: var(--l2);">omarchy-lab · quattro-bar-widget</div>
+                        <div style="margin-top: 2px; font-size: 10px; color: var(--l3);">2 available</div>
+                      </div>
+                      <span style="flex: none; padding-top: 2px; font-size: 11px; color: var(--l3);">↗</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display: flex; align-items: flex-start; gap: 8px; padding: 10px; border-radius: 8px; background: var(--tintR);">
+                  <span style="flex: none; margin-top: 2px; width: 10px; height: 10px; box-sizing: border-box; border: 1.5px solid var(--redT); transform: rotate(45deg);"></span>
+                  <div style="min-width: 0;">
+                    <div style="font-size: 12px; font-weight: 600; color: var(--redT);">Workspace could not be opened</div>
+                    <div style="margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--l2);">Quattro bar widget: the folder no longer exists at the registered workspace root.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div style="height: 1px; background: var(--sep);"></div>
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 10px;">
+                <div style="padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 12px;" style-hover="background: var(--hov);">Quit Pimpampum</div>
+                <div style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 12px;" style-hover="background: var(--hov);">
+                  <svg width="12" height="12" viewBox="0 0 12 12" style="display: block;"><circle cx="6" cy="6" r="4.4" fill="none" stroke="currentColor" stroke-width="1.2"></circle><circle cx="6" cy="6" r="1.5" fill="none" stroke="currentColor" stroke-width="1.2"></circle><rect x="5.3" y="0.2" width="1.4" height="2" fill="currentColor"></rect><rect x="5.3" y="9.8" width="1.4" height="2" fill="currentColor"></rect><rect x="0.2" y="5.3" width="2" height="1.4" fill="currentColor"></rect><rect x="9.8" y="5.3" width="2" height="1.4" fill="currentColor"></rect></svg>
+                  <span>Settings…</span>
+                </div>
+              </div>
+            </div>
+            </sc-if>
+
+            <sc-if value="{{ is_pop_unavailable }}">
+            <div style="width: 360px; border-radius: 11px; background: var(--bg); backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%); box-shadow: 0 0 0 0.5px var(--ring), 0 18px 46px -12px rgba(0,0,0,0.5); color: var(--label); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; overflow: hidden;">
+              <div style="display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px 11px;">
+                <span class="pp-mark" style="color: var(--label); margin-top: 4px;">
+                  <span class="pp-mark-letter">p</span>
+                  <span style="position: absolute; right: -8px; top: -5px; width: 5px; height: 5px; background: var(--red); transform: rotate(45deg);"></span>
+                </span>
+                <div style="flex: 1; min-width: 0; padding-left: 6px;">
+                  <div style="font-size: 13px; font-weight: 600; letter-spacing: -0.01em;">Pimpampum</div>
+                  <div style="margin-top: 1px; font-size: 11px; color: var(--redT);">Authentication error</div>
+                </div>
+              </div>
+              <div style="height: 1px; background: var(--sep);"></div>
+
+              <div style="padding: 16px; display: grid; gap: 14px;">
+                <div style="display: flex; align-items: flex-start; gap: 8px; padding: 10px; border-radius: 8px; background: var(--tintR);">
+                  <span style="flex: none; margin-top: 2px; width: 10px; height: 10px; background: var(--red); transform: rotate(45deg);"></span>
+                  <div style="min-width: 0;">
+                    <div style="font-size: 12px; font-weight: 600; color: var(--redT);">Authentication error</div>
+                    <div style="margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--l2);">Pimpampum rejected the local token. Run pimpampum install to reconcile it.</div>
+                  </div>
+                </div>
+
+                <div style="display: flex; align-items: flex-start; gap: 8px; padding: 10px; border-radius: 8px; background: var(--tintA);">
+                  <span style="flex: none; margin-top: 1px;"><svg width="12" height="12" viewBox="0 0 12 12" style="display: block; color: var(--amberT);"><rect x="1.4" y="5.2" width="9.2" height="6.4" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.2"></rect><path d="M3.7 5.2V3.6a2.3 2.3 0 0 1 4.6 0v1.6" fill="none" stroke="currentColor" stroke-width="1.2"></path></svg></span>
+                  <div style="min-width: 0;">
+                    <div style="font-size: 12px; font-weight: 600; color: var(--amberT);">Login approval required</div>
+                    <div style="margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--l2);">Allow Pimpampum in Login Items to start it automatically.</div>
+                    <div style="display: inline-flex; margin-top: 8px; padding: 4px 9px; border-radius: 5px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring), 0 1px 1px rgba(0,0,0,0.08); cursor: pointer; font-size: 11px; font-weight: 500;">Open Login Items Settings</div>
+                  </div>
+                </div>
+
+                <div style="padding: 6px 0 2px;">
+                  <div style="font-size: 13px; font-weight: 600;">Status unavailable</div>
+                  <div style="margin-top: 3px; font-size: 11px; line-height: 1.45; color: var(--l2);">No project data is shown until a compatible authenticated overview is available.</div>
+                </div>
+              </div>
+
+              <div style="height: 1px; background: var(--sep);"></div>
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 10px;">
+                <div style="padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 12px;" style-hover="background: var(--hov);">Quit Pimpampum</div>
+                <div style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 12px;" style-hover="background: var(--hov);">
+                  <svg width="12" height="12" viewBox="0 0 12 12" style="display: block;"><circle cx="6" cy="6" r="4.4" fill="none" stroke="currentColor" stroke-width="1.2"></circle><circle cx="6" cy="6" r="1.5" fill="none" stroke="currentColor" stroke-width="1.2"></circle><rect x="5.3" y="0.2" width="1.4" height="2" fill="currentColor"></rect><rect x="5.3" y="9.8" width="1.4" height="2" fill="currentColor"></rect><rect x="0.2" y="5.3" width="2" height="1.4" fill="currentColor"></rect><rect x="9.8" y="5.3" width="2" height="1.4" fill="currentColor"></rect></svg>
+                  <span>Settings…</span>
+                </div>
+              </div>
+            </div>
+            </sc-if>
+
+            <sc-if value="{{ is_pop_loading }}">
+            <div style="width: 360px; border-radius: 11px; background: var(--bg); backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%); box-shadow: 0 0 0 0.5px var(--ring), 0 18px 46px -12px rgba(0,0,0,0.5); color: var(--label); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; overflow: hidden;">
+              <div style="display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px 11px;">
+                <span class="pp-mark" style="color: var(--label); margin-top: 4px; opacity: 0.6;">
+                  <span class="pp-mark-letter">p</span>
+                  <span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; box-sizing: border-box; border: 1px dashed var(--neutral); border-radius: 50%;"></span>
+                </span>
+                <div style="flex: 1; min-width: 0; padding-left: 6px;">
+                  <div style="font-size: 13px; font-weight: 600; letter-spacing: -0.01em;">Pimpampum</div>
+                  <div style="margin-top: 1px; font-size: 11px; color: var(--l2);">Loading</div>
+                </div>
+              </div>
+              <div style="height: 1px; background: var(--sep);"></div>
+              <div style="padding: 16px;">
+                <div style="display: flex; align-items: center; gap: 8px; padding: 10px; border-radius: 8px; background: var(--tintN);">
+                  <span style="width: 12px; height: 12px; box-sizing: border-box; border: 1.5px solid var(--l3); border-top-color: transparent; border-radius: 50%;"></span>
+                  <span style="font-size: 12px; font-weight: 600;">Loading overview</span>
+                </div>
+              </div>
+              <div style="height: 1px; background: var(--sep);"></div>
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 7px 10px;">
+                <div style="padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 12px;" style-hover="background: var(--hov);">Quit Pimpampum</div>
+                <div style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 12px;" style-hover="background: var(--hov);">
+                  <svg width="12" height="12" viewBox="0 0 12 12" style="display: block;"><circle cx="6" cy="6" r="4.4" fill="none" stroke="currentColor" stroke-width="1.2"></circle><circle cx="6" cy="6" r="1.5" fill="none" stroke="currentColor" stroke-width="1.2"></circle><rect x="5.3" y="0.2" width="1.4" height="2" fill="currentColor"></rect><rect x="5.3" y="9.8" width="1.4" height="2" fill="currentColor"></rect><rect x="0.2" y="5.3" width="2" height="1.4" fill="currentColor"></rect><rect x="9.8" y="5.3" width="2" height="1.4" fill="currentColor"></rect></svg>
+                  <span>Settings…</span>
+                </div>
+              </div>
+            </div>
+            </sc-if>
+
+          </div>
+        </div>
+
+        <sc-if value="{{ showAnn }}" hint-placeholder-val="{{ true }}">
+        <div style="display: grid; gap: 16px; width: 292px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10.5px; line-height: 1.6; color: #5b5852;">
+          <div style="font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">annotations</div>
+          <div style="display: grid; gap: 8px;">
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">width</span><span>fixed 360 pt · long text wraps or elides, never widens</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">body</span><span>480 pt maximum with scrolling · header and footer always visible</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">padding</span><span>16 pt horizontal · 16 pt between sections · 10 pt inside rows</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">radii</span><span>11 pt system container · 8 pt rows and notices</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">material</span><span>regular material + vibrancy · divisores nativos de 1 px</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">tipos</span><span>headline 13 / subheadline 13 medium / caption 11 / caption2 10</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">order</span><span>header → notice → login → summary → active work → projects → completed → truncation → footer</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">hover</span><span>highlight the full row (quaternary) · third row demonstrates hover</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">click</span><span>opens the registered workspace root in Finder · never a guessed subdirectory</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">completed</span><span>collapsed on every launch · expansion lasts for the session only</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">active work</span><span>no row actions · unexpired claim = in progress, never “Doing”</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">stale</span><span>cached rows at 60% opacity + persistent red notice above</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">errors</span><span>inline, 3 visible lines maximum, no modals or alerts</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">a11y</span><span>«Open Desktop status surfaces in Finder» · hint «Opens workspace 28.project-master»</span></div>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+    </section>
+
+    <section>
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-bottom: 14px; margin-bottom: 24px; border-bottom: 1px solid rgb(22 22 20 / 14%); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #77746d;">
+        <span>04 · macos · settings window · backup</span><span>460 × 270 pt</span>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 32px;">
+        <div style="{{ cs_set_loading }}" onClick="{{ on_set_loading }}">cargando</div>
+        <div style="{{ cs_set_disabled }}" onClick="{{ on_set_disabled }}">disabled</div>
+        <div style="{{ cs_set_healthy }}" onClick="{{ on_set_healthy }}">healthy</div>
+        <div style="{{ cs_set_pending }}" onClick="{{ on_set_pending }}">en curso</div>
+        <div style="{{ cs_set_error }}" onClick="{{ on_set_error }}">backup error</div>
+        <div style="{{ cs_set_install }}" onClick="{{ on_set_install }}">installation error</div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 56px; align-items: start;">
+        <div data-pp="{{ theme }}" data-screen-label="macOS settings" style="padding: 40px; background: {{ desk }};">
+          <div style="width: 460px; border-radius: 10px; background: var(--solid); box-shadow: 0 0 0 0.5px var(--ring), 0 22px 50px -14px rgba(0,0,0,0.55); color: var(--label); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; overflow: hidden;">
+            <div style="position: relative; display: flex; align-items: center; height: 28px; padding: 0 10px; background: var(--bg); border-bottom: 1px solid var(--sep);">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="width: 12px; height: 12px; border-radius: 50%; background: #ff5f57;"></span>
+                <span style="width: 12px; height: 12px; border-radius: 50%; background: #febc2e;"></span>
+                <span style="width: 12px; height: 12px; border-radius: 50%; background: #28c840;"></span>
+              </div>
+              <span style="position: absolute; left: 0; right: 0; text-align: center; font-size: 13px; font-weight: 600;">Pimpampum Settings</span>
+            </div>
+
+            <div style="box-sizing: border-box; width: 460px; min-height: 270px; padding: 24px; display: grid; align-content: start; gap: 18px;">
+              <div style="display: flex; align-items: flex-start; gap: 12px;">
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 17px; font-weight: 600; letter-spacing: -0.015em;">Backup</div>
+                  <div style="margin-top: 3px; font-size: 12px; line-height: 1.4; color: var(--l2);">Keep one current snapshot after every change. The live database stays local.</div>
+                </div>
+                <div style="flex: none; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 5px; cursor: pointer; color: var(--l2);" style-hover="background: var(--hov);">
+                  <svg width="13" height="13" viewBox="0 0 13 13" style="display: block;"><path d="M11 6.5a4.5 4.5 0 1 1-1.6-3.45" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"></path><path d="M10.6 1.3v2.4H8.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"></path></svg>
+                </div>
+              </div>
+
+              <sc-if value="{{ is_set_loading }}">
+              <div style="display: flex; align-items: center; gap: 8px; padding: 2px 0;">
+                <span style="width: 13px; height: 13px; box-sizing: border-box; border: 1.5px solid var(--l3); border-top-color: transparent; border-radius: 50%;"></span>
+                <span style="font-size: 13px; color: var(--l2);">Loading backup settings…</span>
+              </div>
+              <div style="display: flex; gap: 8px; opacity: 0.4;">
+                <div style="padding: 5px 12px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring); font-size: 13px; font-weight: 500;">Back Up Now</div>
+                <div style="padding: 5px 12px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring); font-size: 13px;">Change…</div>
+              </div>
+              </sc-if>
+
+              <sc-if value="{{ is_set_disabled }}">
+              <div style="display: grid; gap: 16px; padding: 6px 0;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: var(--tintN);"><span style="width: 10px; height: 10px; box-sizing: border-box; border: 1.5px dashed var(--neutral); border-radius: 50%;"></span></span>
+                  <span style="font-size: 13px; color: var(--l2);">Automatic backup is off</span>
+                </div>
+                <div style="display: flex;">
+                  <div style="padding: 5px 13px; border-radius: 6px; background: var(--blue); color: #fff; cursor: pointer; font-size: 13px; font-weight: 500; box-shadow: 0 1px 1px rgba(0,0,0,0.12);">Choose Folder…</div>
+                </div>
+              </div>
+              </sc-if>
+
+              <sc-if value="{{ is_set_healthy }}" hint-placeholder-val="{{ true }}">
+              <div style="display: grid; gap: 14px;">
+                <div>
+                  <div style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--l2);">Folder</div>
+                  <div style="margin-top: 5px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px; line-height: 1.45; color: var(--label); word-break: break-all; user-select: text;">/Users/pim/Library/CloudStorage/Dropbox/Backups/Pimpampum snapshots/rolling</div>
+                  <div style="display: flex; gap: 8px; margin-top: 10px;">
+                    <div style="padding: 4px 11px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring), 0 1px 1px rgba(0,0,0,0.08); cursor: pointer; font-size: 12px;">Change…</div>
+                    <div style="padding: 4px 11px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring), 0 1px 1px rgba(0,0,0,0.08); cursor: pointer; font-size: 12px;">Open in Finder</div>
+                  </div>
+                </div>
+                <div style="height: 1px; background: var(--sep);"></div>
+                <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;">
+                  <div style="display: flex; align-items: flex-start; gap: 8px; min-width: 0;">
+                    <span style="flex: none; display: grid; place-items: center; margin-top: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--green);"><span style="width: 3.5px; height: 3.5px; border-radius: 50%; background: var(--solid);"></span></span>
+                    <div style="min-width: 0;">
+                      <div style="font-size: 13px; font-weight: 500; color: var(--greenT);">Up to date</div>
+                      <div style="margin-top: 1px; font-size: 11px; color: var(--l2);">Last successful backup 26 Aug 2026 at 14:31</div>
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 8px; flex: none;">
+                    <div style="padding: 5px 13px; border-radius: 6px; background: var(--blue); color: #fff; cursor: pointer; font-size: 13px; font-weight: 500; box-shadow: 0 1px 1px rgba(0,0,0,0.12);">Back Up Now</div>
+                    <div style="padding: 5px 11px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring), 0 1px 1px rgba(0,0,0,0.08); cursor: pointer; font-size: 13px; color: var(--redT);">Disable</div>
+                  </div>
+                </div>
+              </div>
+              </sc-if>
+
+              <sc-if value="{{ is_set_pending }}">
+              <div style="display: grid; gap: 14px;">
+                <div>
+                  <div style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--l2);">Folder</div>
+                  <div style="margin-top: 5px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px; line-height: 1.45; color: var(--label); word-break: break-all;">/Users/pim/Library/CloudStorage/Dropbox/Backups/Pimpampum snapshots/rolling</div>
+                  <div style="display: flex; gap: 8px; margin-top: 10px; opacity: 0.4;">
+                    <div style="padding: 4px 11px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring); font-size: 12px;">Change…</div>
+                    <div style="padding: 4px 11px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring); font-size: 12px;">Open in Finder</div>
+                  </div>
+                </div>
+                <div style="height: 1px; background: var(--sep);"></div>
+                <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;">
+                  <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                    <span style="flex: none; width: 12px; height: 12px; box-sizing: border-box; border: 1.5px solid var(--l3); border-top-color: transparent; border-radius: 50%;"></span>
+                    <div style="font-size: 13px; font-weight: 500; color: var(--l2);">Backing up…</div>
+                  </div>
+                  <div style="display: flex; gap: 8px; flex: none; opacity: 0.4;">
+                    <div style="padding: 5px 13px; border-radius: 6px; background: var(--blue); color: #fff; font-size: 13px; font-weight: 500;">Back Up Now</div>
+                    <div style="padding: 5px 11px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring); font-size: 13px; color: var(--redT);">Disable</div>
+                  </div>
+                </div>
+              </div>
+              </sc-if>
+
+              <sc-if value="{{ is_set_error }}">
+              <div style="display: grid; gap: 14px;">
+                <div>
+                  <div style="font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--l2);">Folder</div>
+                  <div style="margin-top: 5px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px; line-height: 1.45; color: var(--label); word-break: break-all; user-select: text;">/Volumes/Backups with spaces/Pimpampum/rolling</div>
+                  <div style="display: flex; gap: 8px; margin-top: 10px;">
+                    <div style="padding: 4px 11px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring), 0 1px 1px rgba(0,0,0,0.08); cursor: pointer; font-size: 12px;">Change…</div>
+                    <div style="padding: 4px 11px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring), 0 1px 1px rgba(0,0,0,0.08); cursor: pointer; font-size: 12px;">Open in Finder</div>
+                  </div>
+                </div>
+                <div style="height: 1px; background: var(--sep);"></div>
+                <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;">
+                  <div style="display: flex; align-items: flex-start; gap: 8px; min-width: 0;">
+                    <span style="flex: none; margin-top: 3px; width: 10px; height: 10px; box-sizing: border-box; border: 1.5px solid var(--red); transform: rotate(45deg);"></span>
+                    <div style="min-width: 0;">
+                      <div style="font-size: 13px; font-weight: 500; color: var(--redT);">Backup needs attention</div>
+                      <div style="margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--l2); user-select: text;">The destination volume is full. Free space or choose another folder.</div>
+                      <div style="margin-top: 2px; font-size: 11px; color: var(--l3);">Last successful backup 25 Aug 2026 at 22:04</div>
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 8px; flex: none;">
+                    <div style="padding: 5px 13px; border-radius: 6px; background: var(--blue); color: #fff; cursor: pointer; font-size: 13px; font-weight: 500; box-shadow: 0 1px 1px rgba(0,0,0,0.12);">Try Again</div>
+                    <div style="padding: 5px 11px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring), 0 1px 1px rgba(0,0,0,0.08); cursor: pointer; font-size: 13px; color: var(--redT);">Disable</div>
+                  </div>
+                </div>
+              </div>
+              </sc-if>
+
+              <sc-if value="{{ is_set_install }}">
+              <div style="display: grid; gap: 16px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: var(--tintN);"><span style="width: 10px; height: 10px; box-sizing: border-box; border: 1.5px dashed var(--neutral); border-radius: 50%;"></span></span>
+                  <span style="font-size: 13px; color: var(--l2);">Automatic backup is off</span>
+                </div>
+                <div style="display: flex;">
+                  <div style="padding: 5px 13px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring); font-size: 13px; font-weight: 500; opacity: 0.4;">Choose Folder…</div>
+                </div>
+                <div style="display: flex; align-items: flex-start; gap: 8px; padding-top: 2px;">
+                  <span style="flex: none; margin-top: 3px; width: 10px; height: 10px; background: var(--red); transform: rotate(45deg);"></span>
+                  <div style="font-size: 11.5px; line-height: 1.45; color: var(--redT); user-select: text;">Pimpampum's installation receipt could not be read. Run pimpampum install.</div>
+                </div>
+              </div>
+              </sc-if>
+            </div>
+          </div>
+        </div>
+
+        <sc-if value="{{ showAnn }}" hint-placeholder-val="{{ true }}">
+        <div style="display: grid; gap: 16px; width: 292px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10.5px; line-height: 1.6; color: #5b5852;">
+          <div style="font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">annotations</div>
+          <div style="display: grid; gap: 8px;">
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">window</span><span>460 × 270 pt without title-bar chrome · one instance; reopen focuses it</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">padding</span><span>24 pt · crecimiento vertical antes que recorte</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">page</span><span>Backup only · no sidebar, toolbar, or tabs in v1</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">refresh</span><span>borderless button, “Refresh backup status” tooltip · disabled during operations</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">path</span><span>monospaced, selectable, 2 lines maximum · supports spaces and Unicode</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">picker</span><span>one directory-only NSOpenPanel · Cancel changes nothing</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">pending</span><span>Change, Open, Back Up Now, Disable, and Refresh disabled · no percentage</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">disable</span><span>native destructive role · no confirmation: does not delete the existing snapshot</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">never</span><span>token, data-directory path, live-database path, or raw payloads</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">a11y</span><span>icono + texto = un elemento · no depender de rojo/verde · contraste aumentado</span></div>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+    </section>
+
+    <section>
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-bottom: 14px; margin-bottom: 24px; border-bottom: 1px solid rgb(22 22 20 / 14%); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #77746d;">
+        <span>05 · omarchy quattro · bar widget</span><span>horizontal and vertical</span>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 32px;">
+        <div style="{{ cs_qtheme_dark }}" onClick="{{ on_qtheme_dark }}">tema oscuro</div>
+        <div style="{{ cs_qtheme_light }}" onClick="{{ on_qtheme_light }}">tema claro</div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 56px; align-items: start;">
+        <div data-q="{{ qtheme }}" style="display: grid; gap: 2px; background: rgb(22 22 20 / 14%);">
+
+          <div style="display: grid; gap: 18px; padding: 28px; background: #f5f3ed;">
+            <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">horizontal bar · 34 px</span>
+            <div style="display: flex; align-items: center; gap: 20px; height: 34px; padding: 0 14px; background: var(--qbg); color: var(--qfg); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 12px;">
+              <span style="display: flex; gap: 10px;"><span style="opacity: 0.95;">1</span><span style="opacity: 0.45;">2</span><span style="opacity: 0.45;">3</span></span>
+              <span style="margin-right: auto; opacity: 0.55;">~/28.project-master</span>
+              <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 5px; background: var(--qhov); cursor: pointer;">
+                <span class="pp-mark">
+                  <span class="pp-mark-letter">p</span>
+                  <span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; border-radius: 50%; background: var(--qact);"></span>
+                </span>
+                <span style="margin-left: 3px; font-weight: 700; font-variant-numeric: tabular-nums;">3</span>
+              </span>
+              <span style="opacity: 0.55;">14:32</span>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 22px; padding-top: 4px;">
+              <div style="display: grid; gap: 9px; justify-items: center;">
+                <div style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 5px; background: var(--qbg); color: var(--qfg);">
+                  <span class="pp-mark"><span class="pp-mark-letter">p</span><span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; box-sizing: border-box; border: 1.5px solid var(--qwarn); border-radius: 50%;"></span></span>
+                </div>
+                <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">available</span>
+              </div>
+              <div style="display: grid; gap: 9px; justify-items: center;">
+                <div style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 5px; background: var(--qbg); color: var(--qfg);">
+                  <span class="pp-mark"><span class="pp-mark-letter">p</span><span style="position: absolute; right: -7px; top: -5px; display: grid; place-items: center; width: 5px; height: 5px; border-radius: 50%; background: var(--qok);"><span style="width: 1.5px; height: 1.5px; border-radius: 50%; background: var(--qbg);"></span></span></span>
+                </div>
+                <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">all complete</span>
+              </div>
+              <div style="display: grid; gap: 9px; justify-items: center;">
+                <div style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 5px; background: var(--qbg); color: var(--qfg);">
+                  <span class="pp-mark" style="opacity: 0.5;"><span class="pp-mark-letter">p</span><span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; box-sizing: border-box; border: 1.5px solid currentColor; border-radius: 50%;"></span></span>
+                </div>
+                <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">drafts only</span>
+              </div>
+              <div style="display: grid; gap: 9px; justify-items: center;">
+                <div style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 5px; background: var(--qbg); color: var(--qfg);">
+                  <span class="pp-mark"><span class="pp-mark-letter">p</span><span style="position: absolute; right: -8px; top: -5px; width: 5px; height: 5px; box-sizing: border-box; border: 1.5px solid var(--qurg); transform: rotate(45deg);"></span></span>
+                  <span style="margin-left: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 12px; font-weight: 700; opacity: 0.45;">3</span>
+                </div>
+                <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">stale</span>
+              </div>
+              <div style="display: grid; gap: 9px; justify-items: center;">
+                <div style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 5px; background: var(--qbg); color: var(--qfg);">
+                  <span class="pp-mark"><span class="pp-mark-letter">p</span><span style="position: absolute; right: -8px; top: -5px; width: 5px; height: 5px; background: var(--qurg); transform: rotate(45deg);"></span></span>
+                </div>
+                <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">credentials</span>
+              </div>
+              <div style="display: grid; gap: 9px; justify-items: center;">
+                <div style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 5px; background: var(--qbg); color: var(--qfg);">
+                  <span class="pp-mark"><span class="pp-mark-letter">p</span><span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; border-radius: 50%; background: var(--qact);"></span></span>
+                  <span style="margin-left: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 12px; font-weight: 700;">99+</span>
+                </div>
+                <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: #77746d;">count cap</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: grid; gap: 18px; padding: 28px; background: #f5f3ed;">
+            <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">vertical bar · 40 px wide</span>
+            <div style="display: flex; gap: 28px;">
+              <div style="display: flex; flex-direction: column; align-items: center; gap: 18px; width: 40px; height: 260px; padding: 12px 0; box-sizing: border-box; background: var(--qbg); color: var(--qfg); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">
+                <span style="opacity: 0.95;">1</span>
+                <span style="opacity: 0.45;">2</span>
+                <div style="margin-top: auto; display: grid; justify-items: center; gap: 4px; padding: 6px 0; width: 100%; background: var(--qhov); cursor: pointer;">
+                  <span class="pp-mark">
+                    <span class="pp-mark-letter">p</span>
+                    <span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; border-radius: 50%; background: var(--qact);"></span>
+                  </span>
+                  <span style="font-weight: 700; font-variant-numeric: tabular-nums;">3</span>
+                </div>
+                <span style="margin-top: 18px; opacity: 0.55;">32</span>
+              </div>
+              <div style="display: flex; flex-direction: column; align-items: center; gap: 18px; width: 40px; height: 260px; padding: 12px 0; box-sizing: border-box; background: var(--qbg); color: var(--qfg); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11px;">
+                <span style="opacity: 0.95;">1</span>
+                <div style="margin-top: auto; display: grid; justify-items: center; padding: 8px 0; width: 100%;">
+                  <span class="pp-mark">
+                    <span class="pp-mark-letter">p</span>
+                    <span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; box-sizing: border-box; border: 1.5px solid var(--qwarn); border-radius: 50%;"></span>
+                  </span>
+                </div>
+                <span style="margin-top: 18px; opacity: 0.55;">32</span>
+              </div>
+              <div style="align-self: flex-end; padding-bottom: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10.5px; line-height: 1.6; color: #77746d;">stacked mark and count<br>count hidden at zero<br>click = full widget area</div>
+            </div>
+          </div>
+        </div>
+
+        <sc-if value="{{ showAnn }}" hint-placeholder-val="{{ true }}">
+        <div style="display: grid; gap: 16px; width: 292px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10.5px; line-height: 1.6; color: #5b5852;">
+          <div style="font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">annotations</div>
+          <div style="display: grid; gap: 8px;">
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">inherits</span><span>bar.foreground · bar.background · bar.urgent · bar.fontFamily · bar.barSize · position</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">panel</span><span>no custom background except standard Quattro hover/active treatment</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">gap</span><span>Style.space(4) mark → count · ~Style.space(12) total breathing room</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">accents</span><span>blue/amber/green only when no equivalent theme token exists · verify in light and dark</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">tooltip</span><span>full label · with cache: “Stale · {last known status}”</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">click</span><span>toggles popout · pointer cursor · hot reload without duplicate popouts</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">a11y</span><span>“{N} active claims” · color always accompanied by shape or text</span></div>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+    </section>
+
+    <section>
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-bottom: 14px; margin-bottom: 24px; border-bottom: 1px solid rgb(22 22 20 / 14%); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #77746d;">
+        <span>06 · omarchy quattro · status popout</span><span>380 units · interactive</span>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 32px;">
+        <div style="display: grid; gap: 8px;">
+          <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">popout</span>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+            <div style="{{ cs_qpop_mixed }}" onClick="{{ on_qpop_mixed }}">mixed load</div>
+            <div style="{{ cs_qpop_long }}" onClick="{{ on_qpop_long }}">completados · texto largo</div>
+            <div style="{{ cs_qpop_offline }}" onClick="{{ on_qpop_offline }}">offline · stale</div>
+          </div>
+        </div>
+        <div style="display: grid; gap: 8px;">
+          <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">backup (in mixed load)</span>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+            <div style="{{ cs_bak_disabled }}" onClick="{{ on_bak_disabled }}">disabled</div>
+            <div style="{{ cs_bak_healthy }}" onClick="{{ on_bak_healthy }}">healthy</div>
+            <div style="{{ cs_bak_pending }}" onClick="{{ on_bak_pending }}">en curso</div>
+            <div style="{{ cs_bak_error }}" onClick="{{ on_bak_error }}">error</div>
+            <div style="{{ cs_bak_nodialog }}" onClick="{{ on_bak_nodialog }}">without FolderDialog</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 56px; align-items: start;">
+        <div data-q="{{ qtheme }}" data-screen-label="Quattro popout" style="padding: 0 0 40px; background: {{ desk }};">
+          <div style="display: flex; align-items: center; gap: 20px; height: 34px; padding: 0 14px; background: var(--qbg); color: var(--qfg); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 12px;">
+            <span style="display: flex; gap: 10px;"><span style="opacity: 0.95;">1</span><span style="opacity: 0.45;">2</span></span>
+            <span style="margin-right: auto; opacity: 0.55;">~/28.project-master</span>
+            <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 5px; background: var(--qhov);">
+              <span class="pp-mark">
+                <span class="pp-mark-letter">p</span>
+                <span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; border-radius: 50%; background: var(--qact);"></span>
+              </span>
+              <span style="margin-left: 3px; font-weight: 700; font-variant-numeric: tabular-nums;">3</span>
+            </span>
+            <span style="opacity: 0.55;">14:32</span>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; padding: 8px 12px 0;">
+            <div style="width: 380px; box-sizing: border-box; border-radius: 8px; border: 1px solid var(--qsep); background: var(--qbg); color: var(--qfg); box-shadow: 0 18px 44px -14px rgba(0,0,0,0.6); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; overflow: hidden;">
+
+              <sc-if value="{{ is_qpop_mixed }}" hint-placeholder-val="{{ true }}">
+              <div style="max-height: 520px; overflow-y: auto; padding: 14px; display: grid; gap: 16px;">
+                <div style="display: flex; align-items: baseline; gap: 8px;">
+                  <span style="font-size: 14px; font-weight: 700; letter-spacing: -0.01em;">Pimpampum</span>
+                  <span style="font-size: 11px; color: var(--qfg2);">online</span>
+                </div>
+
+                <div style="display: grid; gap: 7px;">
+                  <div style="font-size: 11px; color: var(--qfg2);">Active work (3)</div>
+                  <div style="display: grid; gap: 7px;">
+                    <div style="display: grid; gap: 2px;">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Desktop status surfaces — Ship the menu-bar status popover</div>
+                      <div style="font-size: 11px; color: var(--qfg2);">claude-code-01 · 24m</div>
+                    </div>
+                    <div style="display: grid; gap: 2px;">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Daemon core — Sweep expired claims on daemon boot</div>
+                      <div style="font-size: 11px; color: var(--qfg2);">codex-agent-02 · 1h 12m</div>
+                    </div>
+                    <div style="display: grid; gap: 2px;">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Quattro bar widget</div>
+                      <div style="font-size: 11px; color: var(--qfg2);">opencode-03 · 48s</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display: grid; gap: 7px;">
+                  <div style="font-size: 11px; color: var(--qfg2);">Projects (4)</div>
+                  <div style="display: grid;">
+                    <div style="display: grid; gap: 2px; padding: 6px 8px; margin: 0 -8px; border-radius: 4px; cursor: pointer;" style-hover="background: var(--qhov);">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Desktop status surfaces · <span style="color: var(--qact);">active</span></div>
+                      <div style="font-size: 11px; color: var(--qfg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">28.project-master / desktop-status-surfaces · 1 active · 3 available</div>
+                    </div>
+                    <div style="display: grid; gap: 2px; padding: 6px 8px; margin: 0 -8px; border-radius: 4px; background: var(--qhov); cursor: pointer;">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Daemon core · <span style="color: var(--qact);">active</span></div>
+                      <div style="font-size: 11px; color: var(--qfg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">28.project-master / daemon-core · 1 active · 2 available</div>
+                    </div>
+                    <div style="display: grid; gap: 2px; padding: 6px 8px; margin: 0 -8px; border-radius: 4px; cursor: pointer;" style-hover="background: var(--qhov);">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Quattro bar widget · <span style="color: var(--qwarn);">available</span></div>
+                      <div style="font-size: 11px; color: var(--qfg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">omarchy-lab / quattro-bar-widget · 0 active · 2 available</div>
+                    </div>
+                    <div style="display: grid; gap: 2px; padding: 6px 8px; margin: 0 -8px; border-radius: 4px; cursor: pointer;" style-hover="background: var(--qhov);">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Snapshot restore spike · <span style="color: var(--qfg2);">draft</span></div>
+                      <div style="font-size: 11px; color: var(--qfg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">omarchy-lab / snapshot-restore-spike</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--qfg2); cursor: pointer;" onClick="{{ toggleQdone }}">
+                  <sc-if value="{{ qdone }}"><span style="width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid currentColor;"></span></sc-if>
+                  <sc-if value="{{ notQdone }}" hint-placeholder-val="{{ true }}"><span style="width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 5px solid currentColor;"></span></sc-if>
+                  <span>Completed (2)</span>
+                </div>
+                <sc-if value="{{ qdone }}">
+                <div style="display: grid; margin-top: -8px;">
+                  <div style="padding: 6px 8px; margin: 0 -8px; border-radius: 4px; cursor: pointer; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" style-hover="background: var(--qhov);">CLI claim lifecycle · 28.project-master / cli-claim-lifecycle</div>
+                  <div style="padding: 6px 8px; margin: 0 -8px; border-radius: 4px; cursor: pointer; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" style-hover="background: var(--qhov);">SQLite migration runner · 28.project-master / sqlite-migration-runner</div>
+                </div>
+                </sc-if>
+
+                <div style="height: 1px; background: var(--qsep);"></div>
+
+                <div style="display: grid; gap: 12px;">
+                  <div style="display: flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer;" onClick="{{ toggleBak }}">
+                    <sc-if value="{{ bakOpen }}" hint-placeholder-val="{{ true }}"><span style="width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid currentColor;"></span></sc-if>
+                    <sc-if value="{{ bakShut }}"><span style="width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 5px solid currentColor;"></span></sc-if>
+                    <span>Backup</span>
+                  </div>
+
+                  <sc-if value="{{ bakOpen }}" hint-placeholder-val="{{ true }}">
+                  <div style="display: grid; gap: 11px;">
+
+                    <sc-if value="{{ is_bak_healthy }}" hint-placeholder-val="{{ true }}">
+                    <div style="display: grid; gap: 3px;">
+                      <div style="font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left;">/home/pim/Dropbox/Backups/Pimpampum snapshots/rolling</div>
+                      <div style="font-size: 11.5px; color: var(--qok);">Up to date · 14:31</div>
+                    </div>
+                    </sc-if>
+
+                    <sc-if value="{{ is_bak_disabled }}">
+                    <div style="font-size: 11.5px; color: var(--qfg2);">Automatic backup is off</div>
+                    </sc-if>
+
+                    <sc-if value="{{ is_bak_nodialog }}">
+                    <div style="font-size: 11.5px; color: var(--qfg2);">Automatic backup is off</div>
+                    </sc-if>
+
+                    <sc-if value="{{ is_bak_pending }}">
+                    <div style="display: grid; gap: 3px; opacity: 0.55;">
+                      <div style="font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left;">/home/pim/Dropbox/Backups/Pimpampum snapshots/rolling</div>
+                      <div style="font-size: 11.5px;">Updating…</div>
+                    </div>
+                    </sc-if>
+
+                    <sc-if value="{{ is_bak_error }}">
+                    <div style="display: grid; gap: 3px;">
+                      <div style="font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left;">/mnt/backups with spaces/Pimpampum/rolling</div>
+                      <div style="font-size: 11.5px; color: var(--qurg);">Backup needs attention</div>
+                      <div style="font-size: 11px; line-height: 1.45; color: var(--qurg); opacity: 0.85;">The destination volume is full. Free space or choose another folder.</div>
+                    </div>
+                    </sc-if>
+
+                    <div style="display: grid; gap: 5px;">
+                      <div style="font-size: 11px; color: var(--qfg2);">Backup folder (absolute path)</div>
+                      <sc-if value="{{ bakBusy }}">
+                      <div style="display: flex; align-items: center; height: 28px; padding: 0 9px; border-radius: 4px; border: 1px solid var(--qsep); background: var(--qfield); font-size: 11.5px; color: var(--qfg2); opacity: 0.5; white-space: nowrap; overflow: hidden;">/home/pim/Dropbox/Backups/Pimpampum snapshots/rolling</div>
+                      </sc-if>
+                      <sc-if value="{{ bakIdle }}" hint-placeholder-val="{{ true }}">
+                      <div style="display: flex; align-items: center; height: 28px; padding: 0 9px; border-radius: 4px; border: 1px solid var(--qsep); background: var(--qfield); font-size: 11.5px; white-space: nowrap; overflow: hidden;" style-hover="border-color: var(--qact);"><span style="color: var(--qfg2);">/home/you/Dropbox/Pimpampum</span></div>
+                      </sc-if>
+                    </div>
+
+                    <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                      <sc-if value="{{ bakDialog }}" hint-placeholder-val="{{ true }}">
+                      <div style="{{ qchipIdle }}">Choose…</div>
+                      </sc-if>
+                      <div style="{{ qchipSave }}">Save</div>
+                      <div style="{{ qchipOpen }}">Open</div>
+                      <div style="{{ qchipNow }}">Back Up Now</div>
+                      <div style="{{ qchipDisable }}">Disable</div>
+                    </div>
+
+                    <sc-if value="{{ is_bak_nodialog }}">
+                    <div style="font-size: 11px; color: var(--qfg2);">Folder picker unavailable; enter an absolute path above.</div>
+                    </sc-if>
+                  </div>
+                  </sc-if>
+                </div>
+              </div>
+              </sc-if>
+
+              <sc-if value="{{ is_qpop_long }}">
+              <div style="max-height: 520px; overflow-y: auto; padding: 14px; display: grid; gap: 16px;">
+                <div style="display: flex; align-items: baseline; gap: 8px;">
+                  <span style="font-size: 14px; font-weight: 700; letter-spacing: -0.01em;">Pimpampum</span>
+                  <span style="font-size: 11px; color: var(--qfg2);">online</span>
+                </div>
+                <div style="display: grid; gap: 7px;">
+                  <div style="font-size: 11px; color: var(--qfg2);">Active work (1)</div>
+                  <div style="display: grid; gap: 2px;">
+                    <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Desktop status surfaces — Reconcile the Quickshell popout with the macOS popover information order</div>
+                    <div style="font-size: 11px; color: var(--qfg2);">claude-code-01 · 6m</div>
+                  </div>
+                </div>
+                <div style="display: grid; gap: 7px;">
+                  <div style="font-size: 11px; color: var(--qfg2);">Projects (2)</div>
+                  <div style="display: grid;">
+                    <div style="display: grid; gap: 2px; padding: 6px 8px; margin: 0 -8px; border-radius: 4px; cursor: pointer;" style-hover="background: var(--qhov);">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Desktop status surfaces · <span style="color: var(--qact);">active</span></div>
+                      <div style="font-size: 11px; color: var(--qfg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">28.project-master / desktop-status-surfaces · 1 active · 0 available</div>
+                    </div>
+                    <div style="display: grid; gap: 2px; padding: 6px 8px; margin: 0 -8px; border-radius: 4px; cursor: pointer;" style-hover="background: var(--qhov);">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Desktop status surfaces · <span style="color: var(--qwarn);">available</span></div>
+                      <div style="font-size: 11px; color: var(--qfg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">omarchy-lab / desktop-status-surfaces · 0 active · 4 available</div>
+                    </div>
+                  </div>
+                  <div style="font-size: 11px; color: var(--qurg);">Project list truncated</div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--qfg2);">
+                  <span style="width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid currentColor;"></span>
+                  <span>Completed (3)</span>
+                </div>
+                <div style="display: grid; margin-top: -8px;">
+                  <div style="padding: 6px 8px; margin: 0 -8px; border-radius: 4px; cursor: pointer; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" style-hover="background: var(--qhov);">Rolling snapshot writer with post-change debounce · 28.project-master / rolling-snapshot-writer</div>
+                  <div style="padding: 6px 8px; margin: 0 -8px; border-radius: 4px; cursor: pointer; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" style-hover="background: var(--qhov);">CLI claim lifecycle · 28.project-master / cli-claim-lifecycle</div>
+                  <div style="padding: 6px 8px; margin: 0 -8px; border-radius: 4px; cursor: pointer; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" style-hover="background: var(--qhov);">SQLite migration runner · 28.project-master / sqlite-migration-runner</div>
+                </div>
+                <div style="font-size: 11px; color: var(--qurg);">Could not open the workspace directory</div>
+                <div style="height: 1px; background: var(--qsep);"></div>
+                <div style="display: flex; align-items: center; gap: 7px; font-size: 12px;">
+                  <span style="width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 5px solid currentColor;"></span>
+                  <span>Backup</span>
+                </div>
+              </div>
+              </sc-if>
+
+              <sc-if value="{{ is_qpop_offline }}">
+              <div style="max-height: 520px; overflow-y: auto; padding: 14px; display: grid; gap: 16px;">
+                <div style="display: grid; gap: 5px;">
+                  <div style="display: flex; align-items: baseline; gap: 8px;">
+                    <span style="font-size: 14px; font-weight: 700; letter-spacing: -0.01em;">Pimpampum</span>
+                    <span style="font-size: 11px; color: var(--qurg);">credentials</span>
+                    <span style="font-size: 11px; color: var(--qfg2);">· Stale</span>
+                  </div>
+                  <div style="font-size: 11.5px; line-height: 1.45; color: var(--qurg);">Local credentials were rejected. Run pimpampum install to repair them.</div>
+                </div>
+                <div style="display: grid; gap: 7px; opacity: 0.55;">
+                  <div style="font-size: 11px; color: var(--qfg2);">Active work (1)</div>
+                  <div style="display: grid; gap: 2px;">
+                    <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Daemon core — Sweep expired claims on daemon boot</div>
+                    <div style="font-size: 11px; color: var(--qfg2);">codex-agent-02 · 3s</div>
+                  </div>
+                  <div style="font-size: 11px; color: var(--qurg);">Active work list truncated</div>
+                </div>
+                <div style="display: grid; gap: 7px; opacity: 0.55;">
+                  <div style="font-size: 11px; color: var(--qfg2);">Projects (2)</div>
+                  <div style="display: grid;">
+                    <div style="display: grid; gap: 2px; padding: 6px 8px; margin: 0 -8px; border-radius: 4px;">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Daemon core · <span style="color: var(--qact);">active</span></div>
+                      <div style="font-size: 11px; color: var(--qfg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">28.project-master / daemon-core · 1 active · 2 available</div>
+                    </div>
+                    <div style="display: grid; gap: 2px; padding: 6px 8px; margin: 0 -8px; border-radius: 4px;">
+                      <div style="font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Quattro bar widget · <span style="color: var(--qwarn);">available</span></div>
+                      <div style="font-size: 11px; color: var(--qfg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">omarchy-lab / quattro-bar-widget · 0 active · 2 available</div>
+                    </div>
+                  </div>
+                </div>
+                <div style="height: 1px; background: var(--qsep);"></div>
+                <div style="display: flex; align-items: center; gap: 7px; font-size: 12px;">
+                  <span style="width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 5px solid currentColor;"></span>
+                  <span>Backup</span>
+                </div>
+              </div>
+              </sc-if>
+
+            </div>
+          </div>
+        </div>
+
+        <sc-if value="{{ showAnn }}" hint-placeholder-val="{{ true }}">
+        <div style="display: grid; gap: 16px; width: 292px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10.5px; line-height: 1.6; color: #5b5852;">
+          <div style="font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">annotations</div>
+          <div style="display: grid; gap: 8px;">
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">container</span><span>native PopupCard anchored to the widget · 380 units wide · 520 units high maximum</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">scroll</span><span>clipped and bounded · the bar coordinates popout switching</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">order</span><span>title+connection → error → empty → active work → projects → completed → backup</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">summary</span><span>version and uptime may be omitted when space is tight · nothing else</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">elision</span><span>primary text at the end · paths in the middle, preserving root and final folder</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">backup</span><span>collapsed by default · expansion refreshes daemon settings</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">field</span><span>28–30 units high · Enter saves only an absolute path · daemon validates</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">chips</span><span>fixed order: Choose… · Save · Open · Back Up Now · Disable</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">busy</span><span>everything disabled at 50% · “Updating…” · never two helper processes in parallel</span></div>
+            <div style="display: grid; grid-template-columns: 74px 1fr; gap: 10px;"><span style="color: #a09c93;">never</span><span>token, raw stderr, shell commands, or log area</span></div>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+    </section>
+
+    <section>
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-bottom: 14px; margin-bottom: 32px; border-bottom: 1px solid rgb(22 22 20 / 14%); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #77746d;">
+        <span>07 · content limits</span><span>titles, paths, counts, errors</span>
+      </div>
+
+      <div data-pp="{{ theme }}" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px; background: rgb(22 22 20 / 14%);">
+
+        <div style="display: grid; gap: 18px; padding: 32px; background: #f5f3ed;">
+          <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">long title · 2 lines maximum</span>
+          <div style="width: 328px; padding: 8px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring); color: var(--label); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;">
+            <div style="display: flex; align-items: flex-start; gap: 8px;">
+              <span style="display: grid; place-items: center; width: 16px; height: 18px; flex: none;"><span style="width: 9px; height: 9px; border-radius: 50%; background: var(--blue);"></span></span>
+              <div style="flex: 1; min-width: 0;">
+                <div style="font-size: 13px; font-weight: 500; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Reconcile the Quickshell popout information order with the macOS status popover before handoff</div>
+                <div style="margin-top: 1px; font-size: 11px; color: var(--l2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">28.project-master · reconcile-popout-information-order</div>
+                <div style="margin-top: 2px; font-size: 10px; color: var(--l3);">2 active · 11 available</div>
+              </div>
+              <span style="flex: none; padding-top: 2px; font-size: 11px; color: var(--l3);">↗</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="display: grid; gap: 18px; padding: 32px; background: #f5f3ed;">
+          <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">duplicate titles · disambiguation</span>
+          <div style="width: 328px; padding: 8px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring); color: var(--label); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;">
+            <div style="display: grid; gap: 8px;">
+              <div style="display: flex; align-items: flex-start; gap: 8px;">
+                <span style="display: grid; place-items: center; width: 16px; height: 18px; flex: none;"><span style="width: 9px; height: 9px; border-radius: 50%; background: var(--blue);"></span></span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 13px; font-weight: 500;">Desktop status surfaces</div>
+                  <div style="margin-top: 1px; font-size: 11px; color: var(--l2);">28.project-master · desktop-status-surfaces</div>
+                </div>
+              </div>
+              <div style="display: flex; align-items: flex-start; gap: 8px;">
+                <span style="display: grid; place-items: center; width: 16px; height: 18px; flex: none;"><span style="width: 9px; height: 9px; box-sizing: border-box; border: 2px solid var(--amber); border-radius: 50%;"></span></span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 13px; font-weight: 500;">Desktop status surfaces</div>
+                  <div style="margin-top: 1px; font-size: 11px; color: var(--l2);">omarchy-lab · desktop-status-surfaces</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display: grid; gap: 18px; padding: 32px; background: #f5f3ed;">
+          <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">long path · two treatments</span>
+          <div style="display: grid; gap: 14px; width: 328px; padding: 12px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring); color: var(--label);">
+            <div style="display: grid; gap: 4px;">
+              <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--l3);">macos · envuelve, seleccionable</span>
+              <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px; line-height: 1.45; word-break: break-all; user-select: text;">/Users/pim/Library/CloudStorage/Dropbox/Backups/Pimpampum "snapshots"/rolling</span>
+            </div>
+            <div style="display: grid; gap: 4px;">
+              <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--l3);">quattro · middle elision</span>
+              <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left;">/home/pim/Dropbox/Backups/Pimpampum snapshots/rolling</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="display: grid; gap: 18px; padding: 32px; background: #f5f3ed;">
+          <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: #77746d;">counts and 3-line error</span>
+          <div style="display: grid; gap: 14px; width: 328px;">
+            <div style="display: flex; align-items: center; gap: 20px; padding: 10px 12px; border-radius: 6px; background: var(--card); box-shadow: 0 0 0 0.5px var(--ring); color: var(--label); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;">
+              <span style="display: inline-flex; align-items: center; gap: 9px;"><span class="pp-mark"><span class="pp-mark-letter">p</span><span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; border-radius: 50%; background: var(--blue);"></span></span><span style="margin-left: 4px; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;">7</span></span>
+              <span style="display: inline-flex; align-items: center; gap: 9px;"><span class="pp-mark"><span class="pp-mark-letter">p</span><span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; border-radius: 50%; background: var(--blue);"></span></span><span style="margin-left: 4px; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;">42</span></span>
+              <span style="display: inline-flex; align-items: center; gap: 9px;"><span class="pp-mark"><span class="pp-mark-letter">p</span><span style="position: absolute; right: -7px; top: -5px; width: 5px; height: 5px; border-radius: 50%; background: var(--blue);"></span></span><span style="margin-left: 4px; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;">99+</span></span>
+            </div>
+            <div style="display: flex; align-items: flex-start; gap: 8px; padding: 10px; border-radius: 8px; background: var(--tintR); color: var(--label); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;">
+              <span style="flex: none; margin-top: 2px; width: 10px; height: 10px; box-sizing: border-box; border: 1.5px solid var(--redT); transform: rotate(45deg);"></span>
+              <div style="min-width: 0;">
+                <div style="font-size: 12px; font-weight: 600; color: var(--redT);">Incompatible overview version</div>
+                <div style="margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--l2); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;">The daemon returned overview schema 3, which this integration does not support. Update the Pimpampum menu-bar app to a build that understands schema 3 and reopen this popover.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 24px; padding-bottom: 14px; margin-bottom: 32px; border-bottom: 1px solid rgb(22 22 20 / 14%); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #77746d;">
+        <span>08 · state and value-provenance matrix</span><span>handoff</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px;">
+        <div style="display: grid; gap: 12px;">
+          <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">precedencia global</div>
+          <div style="display: grid; gap: 7px; font-size: 14px; line-height: 1.4; color: #3d3b37;">
+            <div style="display: grid; grid-template-columns: 18px 1fr; gap: 10px;"><span style="color: #a09c93;">1</span><span>connection, credentials, schema, or payload error</span></div>
+            <div style="display: grid; grid-template-columns: 18px 1fr; gap: 10px;"><span style="color: #a09c93;">2</span><span>one or more active claims</span></div>
+            <div style="display: grid; grid-template-columns: 18px 1fr; gap: 10px;"><span style="color: #a09c93;">3</span><span>available work without active claims</span></div>
+            <div style="display: grid; grid-template-columns: 18px 1fr; gap: 10px;"><span style="color: #a09c93;">4</span><span>drafts only</span></div>
+            <div style="display: grid; grid-template-columns: 18px 1fr; gap: 10px;"><span style="color: #a09c93;">5</span><span>all complete</span></div>
+            <div style="display: grid; grid-template-columns: 18px 1fr; gap: 10px;"><span style="color: #a09c93;">6</span><span>no projects</span></div>
+          </div>
+          <p style="margin: 6px 0 0; font-size: 13.5px; line-height: 1.55; color: #3d3b37; text-wrap: pretty;">The count is always the number of unexpired claims, never projects or tasks.</p>
+        </div>
+
+        <div style="display: grid; gap: 12px;">
+          <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">comes from the system</div>
+          <div style="display: grid; gap: 7px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10.5px; line-height: 1.6; color: #5b5852;">
+            <div>macOS · materiales y vibrancy</div>
+            <div>macOS · semantic text styles</div>
+            <div>macOS · primary/secondary/tertiary/quaternary</div>
+            <div>macOS · system red, orange, blue, and green</div>
+            <div>macOS · traffic lights, focus rings, hover</div>
+            <div>macOS · NSOpenPanel, spinner, disclosure</div>
+            <div>Quattro · bar.foreground / background / urgent</div>
+            <div>Quattro · bar.fontFamily / barSize / position</div>
+            <div>Quattro · Style.font.* y Style.space(*)</div>
+            <div>Quattro · theme PopupCard, radii, and hover</div>
+          </div>
+        </div>
+
+        <div style="display: grid; gap: 12px;">
+          <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #a09c93;">lo aporta pimpampum</div>
+          <div style="display: grid; gap: 7px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: 10.5px; line-height: 1.6; color: #5b5852;">
+            <div>16 pt compact mark and its treatments</div>
+            <div>badge grammar: disc, ring, donut, diamond</div>
+            <div>9 pt project markers</div>
+            <div>row hierarchy and section labels</div>
+            <div>exact copy from the specification</div>
+            <div>blue, amber, and green only when the theme does not supply them</div>
+          </div>
+          <p style="margin: 6px 0 0; font-size: 13.5px; line-height: 1.55; color: #3d3b37; text-wrap: pretty;">Out of scope in v1: creating or editing projects, PRDs, or tasks; claiming or completing work; a “Doing” state; daemon controls; backup history or restore; notifications; search, filters, or navigation.</p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;showAnnotations&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Handoff&quot;},&quot;defaultTheme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Handoff&quot;},&quot;deskTone&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;options&quot;:[&quot;#7c8790&quot;,&quot;#5c6470&quot;,&quot;#8d867c&quot;,&quot;#3b3f45&quot;],&quot;default&quot;:&quot;#7c8790&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Handoff&quot;}}">
+const CHIP = 'display:inline-flex;align-items:center;height:26px;padding:0 12px;border-radius:999px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,monospace;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;user-select:none;';
+const QCHIP = 'display:inline-flex;align-items:center;height:26px;padding:0 10px;border-radius:4px;font-family:inherit;font-size:11px;';
+
+class Component extends DCLogic {
+  state = {
+    theme: this.props.defaultTheme ?? 'light',
+    qtheme: 'dark',
+    pop: 'mixed',
+    set: 'healthy',
+    qpop: 'mixed',
+    bak: 'healthy',
+    done: false,
+    qdone: false,
+    bakOpen: true
+  };
+
+  groups = {
+    theme: ['light', 'dark'],
+    qtheme: ['dark', 'light'],
+    pop: ['mixed', 'stale', 'unavailable', 'loading'],
+    set: ['loading', 'disabled', 'healthy', 'pending', 'error', 'install'],
+    qpop: ['mixed', 'long', 'offline'],
+    bak: ['disabled', 'healthy', 'pending', 'error', 'nodialog']
+  };
+
+  qchip(enabled, urgent) {
+    if (!enabled) return QCHIP + 'border:1px solid var(--qsep);background:transparent;color:var(--qfg2);opacity:0.4;';
+    if (urgent) return QCHIP + 'border:1px solid var(--qurg);background:transparent;color:var(--qurg);cursor:pointer;';
+    return QCHIP + 'border:1px solid var(--qsep);background:var(--qfield);color:var(--qfg);cursor:pointer;';
+  }
+
+  renderVals() {
+    const s = this.state;
+    const out = {};
+    Object.keys(this.groups).forEach(g => this.groups[g].forEach(v => {
+      const on = s[g] === v;
+      out['on_' + g + '_' + v] = () => this.setState({ [g]: v });
+      out['cs_' + g + '_' + v] = CHIP + (on
+        ? 'background:#161614;color:#f5f3ed;'
+        : 'box-shadow:inset 0 0 0 1px rgb(22 22 20 / 25%);color:#3d3b37;');
+      out['is_' + g + '_' + v] = on;
+    }));
+
+    const configured = s.bak === 'healthy' || s.bak === 'pending' || s.bak === 'error';
+    const busy = s.bak === 'pending';
+
+    out.theme = s.theme;
+    out.qtheme = s.qtheme;
+    out.desk = this.props.deskTone ?? '#7c8790';
+    out.showAnn = this.props.showAnnotations ?? true;
+    out.done = s.done;
+    out.notDone = !s.done;
+    out.toggleDone = () => this.setState(p => ({ done: !p.done }));
+    out.qdone = s.qdone;
+    out.notQdone = !s.qdone;
+    out.toggleQdone = () => this.setState(p => ({ qdone: !p.qdone }));
+    out.bakOpen = s.bakOpen;
+    out.bakShut = !s.bakOpen;
+    out.toggleBak = () => this.setState(p => ({ bakOpen: !p.bakOpen }));
+    out.bakBusy = busy;
+    out.bakIdle = !busy;
+    out.bakDialog = s.bak !== 'nodialog';
+    out.qchipIdle = this.qchip(!busy, false);
+    out.qchipSave = this.qchip(!busy && s.bak !== 'healthy', false);
+    out.qchipOpen = this.qchip(!busy && configured, false);
+    out.qchipNow = this.qchip(!busy && configured, false);
+    out.qchipDisable = this.qchip(!busy && configured, true);
+    return out;
+  }
+}
+</script>
+</body>
+</html>

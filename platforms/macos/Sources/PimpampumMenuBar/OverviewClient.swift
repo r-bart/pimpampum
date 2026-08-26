@@ -105,53 +105,31 @@ struct OverviewClient: OverviewReading {
   }
 
   private func loadConfiguration() throws -> ClientConfiguration {
-    let receiptData: Data
     do {
-      receiptData = try fileReader.data(at: receiptURL)
-    } catch {
-      throw OverviewClientError.unreadableReceipt
+      let configuration = try AuthenticatedDaemonConfigurationLoader(
+        receiptURL: receiptURL,
+        tokenURL: tokenURL,
+        fileReader: fileReader
+      ).load()
+      return ClientConfiguration(
+        overviewURL: configuration.baseURL.appending(path: "api/v1/overview"),
+        token: configuration.token
+      )
+    } catch let error as AuthenticatedDaemonConfigurationError {
+      throw Self.mapConfigurationError(error)
     }
-
-    let receipt: InstallationReceipt
-    do {
-      receipt = try JSONDecoder().decode(InstallationReceipt.self, from: receiptData)
-    } catch {
-      throw OverviewClientError.unreadableReceipt
-    }
-    guard receipt.schemaVersion == Self.supportedSchemaVersion else {
-      throw OverviewClientError.incompatibleReceiptSchema(receipt.schemaVersion)
-    }
-    guard let baseURL = URL(string: receipt.baseURL), Self.isSafeLoopback(baseURL) else {
-      throw OverviewClientError.invalidBaseURL
-    }
-
-    let tokenData: Data
-    do {
-      tokenData = try fileReader.data(at: tokenURL)
-    } catch {
-      throw OverviewClientError.unreadableToken
-    }
-    var tokenBytes = Array(tokenData)
-    while tokenBytes.last == 10 || tokenBytes.last == 13 {
-      tokenBytes.removeLast()
-    }
-    guard tokenBytes.count >= 32, tokenBytes.allSatisfy({ (33...126).contains($0) }) else {
-      throw OverviewClientError.invalidToken
-    }
-
-    return ClientConfiguration(
-      overviewURL: baseURL.appending(path: "api/v1/overview"),
-      token: String(decoding: tokenBytes, as: UTF8.self)
-    )
   }
 
-  private static func isSafeLoopback(_ url: URL) -> Bool {
-    guard url.scheme == "http", url.user == nil, url.password == nil else { return false }
-    guard url.query == nil, url.fragment == nil, url.path.isEmpty || url.path == "/" else {
-      return false
+  private static func mapConfigurationError(_ error: AuthenticatedDaemonConfigurationError)
+    -> OverviewClientError
+  {
+    switch error {
+    case .unreadableReceipt: .unreadableReceipt
+    case .incompatibleReceiptSchema(let version): .incompatibleReceiptSchema(version)
+    case .invalidBaseURL: .invalidBaseURL
+    case .unreadableToken: .unreadableToken
+    case .invalidToken: .invalidToken
     }
-    guard let host = url.host?.lowercased() else { return false }
-    return host == "127.0.0.1" || host == "localhost" || host == "::1"
   }
 
   private static func isValid(_ overview: Overview) -> Bool {
@@ -194,16 +172,6 @@ struct OverviewClient: OverviewReading {
       )
     }
     return decoder
-  }
-}
-
-private struct InstallationReceipt: Decodable {
-  let schemaVersion: Int
-  let baseURL: String
-
-  enum CodingKeys: String, CodingKey {
-    case schemaVersion
-    case baseURL = "baseUrl"
   }
 }
 

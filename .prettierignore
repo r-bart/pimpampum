@@ -4,3 +4,7 @@ coverage
 package-lock.json
 .ai-template
 .claude
+test/backup-settings-ui.acceptance.test.ts
+thoughts/design/handoff-pimpampum-escritorio/*.dc.html
+thoughts/design/handoff-pimpampum-escritorio/doc-page.js
+thoughts/design/handoff-pimpampum-escritorio/support.js

@@ -348,6 +348,19 @@ describe('HTTP client adapter', () => {
           },
         });
       }
+      if (url.includes('/api/v1/settings/backup')) {
+        return Response.json({
+          data: {
+            enabled: true,
+            directory: '/tmp/backups',
+            snapshotPath: '/tmp/backups/pimpampum-latest.sqlite',
+            state: 'healthy',
+            lastAttemptAt: '2026-08-26T20:00:00.000Z',
+            lastSuccessAt: '2026-08-26T20:00:00.000Z',
+            error: null,
+          },
+        });
+      }
       if (url.endsWith('/api/v1/projects/project-1') && init.method === 'GET') {
         return Response.json({ data: { id: 'project-1' } });
       }
@@ -364,6 +377,10 @@ describe('HTTP client adapter', () => {
 
     await client.health();
     await client.getOverview();
+    await client.getAutomaticBackupStatus();
+    await client.configureAutomaticBackup('/tmp/backups');
+    await client.retryAutomaticBackup();
+    await client.disableAutomaticBackup();
     await client.listWorkspaces();
     await client.registerWorkspace({ id: 'ws', name: 'WS', rootPath: '/tmp/ws' });
     await client.resolveWorkspace('/tmp/ws/project');
@@ -455,7 +472,7 @@ describe('HTTP client adapter', () => {
     await client.backup('/tmp/backups');
     await client.exportPortable('/tmp/exports');
 
-    expect(calls).toHaveLength(34);
+    expect(calls).toHaveLength(38);
     expect(new Headers(calls[0]?.init.headers).has('authorization')).toBe(false);
     expect(new Headers(calls[1]?.init.headers).get('authorization')).toBe('Bearer secret');
     expect(calls[1]?.url).toBe('http://127.0.0.1:7337/api/v1/overview');

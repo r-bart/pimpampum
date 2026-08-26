@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { join, resolve } from 'node:path';
+import { AutomaticBackupController } from './automaticBackup.js';
 import { loadConfig, type RuntimeConfig } from './config.js';
 import { openDatabase } from './db.js';
 import { AppError } from './errors.js';
@@ -58,12 +59,20 @@ export async function startServer(config = loadConfig()): Promise<RunningServer>
   }
   const releaseInstanceLock = acquireInstanceLock(config.dataDirectory);
   let store: PimpampumStore | undefined;
+  let automaticBackup: AutomaticBackupController | undefined;
   let composition: ReturnType<typeof createHttpApp>;
   try {
     const database = openDatabase(config.databasePath);
-    store = new PimpampumStore(database);
-    composition = createHttpApp(store, config);
+    const composedStore = new PimpampumStore(database, () => automaticBackup?.markDirty());
+    store = composedStore;
+    automaticBackup = new AutomaticBackupController({
+      settingsPath: join(config.dataDirectory, 'settings.json'),
+      snapshotter: (destination) => composedStore.backupLatest(destination),
+    });
+    composition = createHttpApp(store, config, console, Date.now, automaticBackup);
+    automaticBackup.start();
   } catch (error) {
+    await automaticBackup?.close();
     store?.close();
     releaseInstanceLock();
     throw error;
@@ -80,6 +89,7 @@ export async function startServer(config = loadConfig()): Promise<RunningServer>
     try {
       await closeMcp();
     } finally {
+      await automaticBackup.close();
       store.close();
       releaseInstanceLock();
     }
@@ -111,6 +121,7 @@ export async function startServer(config = loadConfig()): Promise<RunningServer>
           );
         }
       } finally {
+        await automaticBackup.close();
         store.close();
         releaseInstanceLock();
       }

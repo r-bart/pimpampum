@@ -71,6 +71,7 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER create a project in `done`; call the completion operation so summary, artifacts, timestamps, revisions, and claims remain consistent.
 - NEVER add subtasks while their parent task is claimed.
 - ALWAYS create SQLite backups locally, run `integrity_check`, then copy and atomically rename them in the destination.
+- ALWAYS create backup/settings partial files with unique names and exclusive creation; never reuse a predictable partial path that could be a symlink.
 - NEVER flatten typed daemon errors in HTTP/MCP clients; preserve their stable error codes.
 - NEVER return PRDs, task bodies, context bodies, or artifact arrays from MCP list/work tools; return manifests and bounded reads.
 - ALWAYS enforce loopback binding and one instance lock inside runtime composition, not only environment parsing.

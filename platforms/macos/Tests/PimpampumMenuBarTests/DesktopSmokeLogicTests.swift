@@ -16,16 +16,21 @@ struct DesktopSmokeLogicTests {
       try DesktopSmokeLogic.request(from: ["--ui-smoke-snapshot", "/tmp/state.json", "/tmp/ui.png"])
     )
     #expect(minimal.seedURL == nil)
+    #expect(minimal.refreshAfterSeed)
     #expect(minimal.projectId == nil)
+    #expect(minimal.controlLabel == nil)
 
     let complete = try #require(
       try DesktopSmokeLogic.request(from: [
         "--ui-smoke-snapshot", "/tmp/state.json", "/tmp/ui.png",
-        "--seed-overview", "/tmp/seed.json", "--open-project", "project-1",
+        "--seed-overview", "/tmp/seed.json", "--retain-seed",
+        "--open-project", "project-1", "--activate-control", "Settings…",
       ])
     )
     #expect(complete.seedURL?.path == "/tmp/seed.json")
+    #expect(!complete.refreshAfterSeed)
     #expect(complete.projectId == "project-1")
+    #expect(complete.controlLabel == "Settings…")
 
     let dangling = try #require(
       try DesktopSmokeLogic.request(from: [
@@ -84,16 +89,41 @@ struct DesktopSmokeLogicTests {
       connectionState: .online,
       stale: false,
       png: Data("png".utf8),
+      markResourceSha256: String(repeating: "a", count: 64),
+      markIsTemplate: true,
       accessibilityLabels: ["Zulu", "Alpha"],
       activatedControlLabel: "Open active in Finder",
-      openedWorkspacePath: "/tmp/workspace"
+      openedWorkspacePath: "/tmp/workspace",
+      settingsWindowReused: true,
+      settingsWindowCount: 1,
+      settingsWindowWidth: 460,
+      settingsWindowHeight: 270,
+      settingsWindowFocused: true,
+      settingsBackupState: "healthy",
+      settingsConfiguredPath: "/tmp/backup",
+      settingsErrorPresent: false,
+      quitActionInvoked: false
     )
-    #expect(snapshot.schemaVersion == 1)
+    #expect(snapshot.schemaVersion == 2)
     #expect(snapshot.accessibilityLabel == "Pimpampum: Active, 2 active claims")
     #expect(snapshot.accessibilityLabels == ["Alpha", "Zulu"])
+    #expect(snapshot.markResource == "PimpampumCompact.pdf")
+    #expect(snapshot.markResourceSha256 == String(repeating: "a", count: 64))
+    #expect(snapshot.markIsTemplate)
+    #expect(snapshot.statusBadgeSystemImage == "circle.fill")
+    #expect(snapshot.displayedActiveCount == "2")
     #expect(snapshot.projectRows.map(\.id) == ["complete", "active"])
     #expect(snapshot.renderedPngSha256.count == 64)
     #expect(snapshot.activatedControlLabel == "Open active in Finder")
+    #expect(snapshot.settingsWindowReused == true)
+    #expect(snapshot.settingsWindowCount == 1)
+    #expect(snapshot.settingsWindowWidth == 460)
+    #expect(snapshot.settingsWindowHeight == 270)
+    #expect(snapshot.settingsWindowFocused == true)
+    #expect(snapshot.settingsBackupState == "healthy")
+    #expect(snapshot.settingsConfiguredPath == "/tmp/backup")
+    #expect(snapshot.settingsErrorPresent == false)
+    #expect(!snapshot.quitActionInvoked)
 
     let singular = DesktopSmokeLogic.snapshot(
       overview: nil,
@@ -102,11 +132,23 @@ struct DesktopSmokeLogicTests {
       connectionState: .online,
       stale: false,
       png: Data(),
+      markResourceSha256: "hash",
+      markIsTemplate: true,
       accessibilityLabels: [],
       activatedControlLabel: nil,
-      openedWorkspacePath: nil
+      openedWorkspacePath: nil,
+      settingsWindowReused: nil,
+      settingsWindowCount: nil,
+      settingsWindowWidth: nil,
+      settingsWindowHeight: nil,
+      settingsWindowFocused: nil,
+      settingsBackupState: nil,
+      settingsConfiguredPath: nil,
+      settingsErrorPresent: nil,
+      quitActionInvoked: true
     )
     #expect(singular.accessibilityLabel == "Pimpampum: Active, 1 active claim")
+    #expect(singular.quitActionInvoked)
 
     let empty = DesktopSmokeLogic.snapshot(
       overview: nil,
@@ -115,11 +157,47 @@ struct DesktopSmokeLogicTests {
       connectionState: .loading,
       stale: true,
       png: Data(),
+      markResourceSha256: "hash",
+      markIsTemplate: true,
       accessibilityLabels: [],
       activatedControlLabel: nil,
-      openedWorkspacePath: nil
+      openedWorkspacePath: nil,
+      settingsWindowReused: nil,
+      settingsWindowCount: nil,
+      settingsWindowWidth: nil,
+      settingsWindowHeight: nil,
+      settingsWindowFocused: nil,
+      settingsBackupState: nil,
+      settingsConfiguredPath: nil,
+      settingsErrorPresent: nil,
+      quitActionInvoked: false
     )
     #expect(empty.projectRows.isEmpty)
+
+    let capped = DesktopSmokeLogic.snapshot(
+      overview: nil,
+      visualState: .active,
+      activeCount: 100,
+      connectionState: .online,
+      stale: false,
+      png: Data(),
+      markResourceSha256: "hash",
+      markIsTemplate: true,
+      accessibilityLabels: [],
+      activatedControlLabel: nil,
+      openedWorkspacePath: nil,
+      settingsWindowReused: nil,
+      settingsWindowCount: nil,
+      settingsWindowWidth: nil,
+      settingsWindowHeight: nil,
+      settingsWindowFocused: nil,
+      settingsBackupState: nil,
+      settingsConfiguredPath: nil,
+      settingsErrorPresent: nil,
+      quitActionInvoked: false
+    )
+    #expect(capped.displayedActiveCount == "99+")
+    #expect(capped.accessibilityLabel == "Pimpampum: Active, 100 active claims")
   }
 
   @Test
@@ -130,6 +208,7 @@ struct DesktopSmokeLogicTests {
       .projectMissing("p"),
       .renderedControlMissing("button"),
       .renderedControlActivationFailed("button"),
+      .markResourceMissing,
       .renderFailed,
     ]
     #expect(errors.allSatisfy { !($0.errorDescription ?? "").isEmpty })

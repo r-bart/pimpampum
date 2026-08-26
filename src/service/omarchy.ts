@@ -112,6 +112,30 @@ exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cli
 `;
 }
 
+function renderBackupHelper(context: ServiceAdapterContext): string {
+  return `#!/bin/bash
+set -euo pipefail
+
+case \${1:-} in
+  status|retry|disable)
+    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-backup: invalid arguments' >&2; exit 64; }
+    ;;
+  configure)
+    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-backup: configure requires one directory' >&2; exit 64; }
+    ;;
+  *)
+    printf '%s\\n' 'pimpampum-backup: expected status, configure, retry, or disable' >&2
+    exit 64
+    ;;
+esac
+
+export PIMPAMPUM_DATA_DIR=${shellQuote(context.dataDirectory, 'Pimpampum data directory')}
+export PIMPAMPUM_HOST=${shellQuote(context.host, 'Pimpampum host')}
+export PIMPAMPUM_PORT=${shellQuote(String(context.port), 'Pimpampum port')}
+exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cliPath, 'Pimpampum CLI')} backup "$@"
+`;
+}
+
 function walkPluginSource(sourceRoot: string, directory = sourceRoot): string[] {
   const paths: string[] = [];
   for (const name of readdirSync(directory).sort()) {
@@ -130,11 +154,20 @@ function pluginArtifacts(sourceRoot: string, context: ServiceAdapterContext): Se
   const target = pluginTarget(context);
   return walkPluginSource(sourceRoot).map((sourcePath) => {
     const child = relative(sourceRoot, sourcePath);
-    const executable = ['install.sh', 'uninstall.sh', 'pimpampum-overview'].includes(child);
+    const executable = [
+      'install.sh',
+      'uninstall.sh',
+      'pimpampum-backup',
+      'pimpampum-overview',
+    ].includes(child);
     return {
       path: join(target, child),
       content:
-        child === 'pimpampum-overview' ? renderOverviewHelper(context) : readFileSync(sourcePath),
+        child === 'pimpampum-overview'
+          ? renderOverviewHelper(context)
+          : child === 'pimpampum-backup'
+            ? renderBackupHelper(context)
+            : readFileSync(sourcePath),
       mode: executable ? 0o755 : 0o644,
     };
   });

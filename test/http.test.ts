@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeConfig } from '../src/config.js';
+import { AutomaticBackupController } from '../src/automaticBackup.js';
 import { openDatabase } from '../src/db.js';
 import { createHttpApp } from '../src/http.js';
 import { PimpampumStore } from '../src/store.js';
@@ -11,6 +12,7 @@ import type { PimpampumHttpGateway } from '../src/types.js';
 
 describe('HTTP API', () => {
   let store: PimpampumStore;
+  let automaticBackup: AutomaticBackupController;
   let closeMcp: () => Promise<void>;
   let temporaryDirectory: string;
   let app: ReturnType<typeof request> extends never
@@ -20,7 +22,12 @@ describe('HTTP API', () => {
 
   beforeEach(() => {
     temporaryDirectory = mkdtempSync(join(tmpdir(), 'pimpampum-http-'));
-    store = new PimpampumStore(openDatabase(':memory:'));
+    const database = openDatabase(':memory:');
+    store = new PimpampumStore(database, () => automaticBackup.markDirty());
+    automaticBackup = new AutomaticBackupController({
+      settingsPath: join(temporaryDirectory, 'settings.json'),
+      snapshotter: (destination) => store.backupLatest(destination),
+    });
     const config: RuntimeConfig = {
       host: '127.0.0.1',
       port: 7337,
@@ -29,13 +36,14 @@ describe('HTTP API', () => {
       token,
       baseUrl: 'http://127.0.0.1:7337',
     };
-    const created = createHttpApp(store, config);
+    const created = createHttpApp(store, config, console, Date.now, automaticBackup);
     app = created.app;
     closeMcp = created.close;
   });
 
   afterEach(async () => {
     await closeMcp();
+    await automaticBackup.close();
     store.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });
   });
@@ -55,6 +63,77 @@ describe('HTTP API', () => {
       .get('/api/v1/workspaces')
       .set('authorization', 'Bearer wrong-toke')
       .expect(401);
+  });
+
+  it('configures, reports, retries and disables one automatic backup destination', async () => {
+    const authorization = { authorization: `Bearer ${token}` };
+    const backupDirectory = join(temporaryDirectory, 'iCloud Drive', 'Pimpampum');
+    mkdirSync(backupDirectory, { recursive: true });
+
+    await request(app).get('/api/v1/settings/backup').expect(401);
+    await request(app)
+      .get('/api/v1/settings/backup')
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ enabled: false, state: 'disabled' }));
+    await request(app)
+      .put('/api/v1/settings/backup')
+      .set(authorization)
+      .send({ directory: 'relative' })
+      .expect(400);
+    await request(app)
+      .put('/api/v1/settings/backup')
+      .set(authorization)
+      .send({ directory: backupDirectory, unexpected: true })
+      .expect(400);
+
+    await request(app)
+      .put('/api/v1/settings/backup')
+      .set(authorization)
+      .send({ directory: backupDirectory })
+      .expect(200)
+      .expect(({ body }) =>
+        expect(body.data).toMatchObject({
+          enabled: true,
+          directory: backupDirectory,
+          state: 'healthy',
+        }),
+      );
+    await request(app)
+      .post('/api/v1/settings/backup/retry')
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.state).toBe('healthy'));
+    await request(app)
+      .delete('/api/v1/settings/backup')
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ enabled: false, state: 'disabled' }));
+    await request(app).post('/api/v1/settings/backup/retry').set(authorization).expect(409);
+  });
+
+  it('omits automatic-backup routes when the HTTP capability is not composed', async () => {
+    const standalone = createHttpApp(store, {
+      host: '127.0.0.1',
+      port: 7337,
+      dataDirectory: temporaryDirectory,
+      databasePath: ':memory:',
+      token,
+      baseUrl: 'http://127.0.0.1:7337',
+    });
+    const authorization = { authorization: `Bearer ${token}` };
+    await request(standalone.app).get('/api/v1/settings/backup').set(authorization).expect(404);
+    await request(standalone.app)
+      .put('/api/v1/settings/backup')
+      .set(authorization)
+      .send({ directory: temporaryDirectory })
+      .expect(404);
+    await request(standalone.app)
+      .post('/api/v1/settings/backup/retry')
+      .set(authorization)
+      .expect(404);
+    await request(standalone.app).delete('/api/v1/settings/backup').set(authorization).expect(404);
+    await standalone.close();
   });
 
   it('adds stable daemon runtime metadata to the bounded overview envelope', async () => {

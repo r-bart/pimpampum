@@ -1,5 +1,29 @@
 import SwiftUI
 
+enum StatusBadgeKind: Equatable {
+  case loadingRing
+  case activeDot
+  case availableDiamond
+  case draftRing
+  case completionCheck
+  case emptyRing
+  case disconnected
+  case alert
+
+  var systemImageName: String {
+    switch self {
+    case .loadingRing: "clock"
+    case .activeDot: "circle.fill"
+    case .availableDiamond: "diamond.fill"
+    case .draftRing: "circle.dashed"
+    case .completionCheck: "checkmark.circle.fill"
+    case .emptyRing: "circle"
+    case .disconnected: "minus.circle.fill"
+    case .alert: "exclamationmark.triangle.fill"
+    }
+  }
+}
+
 enum StatusVisualState: Equatable {
   case loading
   case active
@@ -27,18 +51,16 @@ enum StatusVisualState: Equatable {
     }
   }
 
-  var symbolName: String {
+  var badgeKind: StatusBadgeKind {
     switch self {
-    case .loading: "ellipsis.circle"
-    case .active: "bolt.circle.fill"
-    case .available: "circle.fill"
-    case .draft: "circle.dashed"
-    case .complete: "checkmark.circle.fill"
-    case .empty: "circle"
-    case .stale: "wifi.slash"
-    case .offline: "wifi.slash"
-    case .authenticationError: "lock.trianglebadge.exclamationmark"
-    case .incompatible: "exclamationmark.triangle.fill"
+    case .loading: .loadingRing
+    case .active: .activeDot
+    case .available: .availableDiamond
+    case .draft: .draftRing
+    case .complete: .completionCheck
+    case .empty: .emptyRing
+    case .stale, .offline: .disconnected
+    case .authenticationError, .incompatible: .alert
     }
   }
 
@@ -53,7 +75,26 @@ enum StatusVisualState: Equatable {
   }
 }
 
+enum StatusIndicatorPresentation {
+  static func displayCount(_ activeCount: Int) -> String? {
+    guard activeCount > 0 else { return nil }
+    return activeCount >= 100 ? "99+" : String(activeCount)
+  }
+
+  static func accessibilityLabel(state: StatusVisualState, activeCount: Int) -> String {
+    let boundedCount = max(0, activeCount)
+    let claims =
+      boundedCount == 1 ? "1 active claim" : "\(boundedCount) active claims"
+    return "Pimpampum: \(state.label), \(claims)"
+  }
+}
+
 extension StatusPopover {
+  static let containerWidth: CGFloat = 360
+  static let bodyMaximumHeight: CGFloat = 480
+  static let contentTitleLineLimit = 2
+  static let metadataLineLimit = 1
+
   static func visualState(
     connectionState: OverviewConnectionState,
     overview: Overview?
@@ -137,6 +178,22 @@ extension StatusPopover {
 
   static func projectAccessibilityValue(_ project: OverviewProject) -> String {
     "\(project.status.rawValue), \(projectCountsText(project))"
+  }
+
+  static func projectMetadataText(_ project: OverviewProject) -> String {
+    "\(project.workspace.name) · \(project.slug)"
+  }
+
+  static func projectOpenAccessibilityLabel(_ project: OverviewProject) -> String {
+    "Open \(project.title) in Finder"
+  }
+
+  static func projectOpenAccessibilityHint(_ project: OverviewProject) -> String {
+    "Opens workspace \(project.workspace.name)"
+  }
+
+  static func workspaceRevealError(_ project: OverviewProject, description: String) -> String {
+    "\(project.title): \(description)"
   }
 
   static func projectSymbol(_ status: OverviewProjectStatus) -> String {

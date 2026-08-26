@@ -4,6 +4,7 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { z, type ZodType } from 'zod';
 import type { RuntimeConfig } from './config.js';
+import type { AutomaticBackupGateway } from './backupContract.js';
 import { AppError, asAppError } from './errors.js';
 import { MCP_HTTP_BODY_LIMIT } from './limits.js';
 import { createPimpampumMcpHandler } from './mcp.js';
@@ -100,6 +101,7 @@ export function createHttpApp(
   config: RuntimeConfig,
   logger: Pick<Console, 'error'> = console,
   clock: () => number = Date.now,
+  automaticBackup?: AutomaticBackupGateway,
 ) {
   if (config.host !== '127.0.0.1' && config.host !== 'localhost' && config.host !== '::1') {
     throw new AppError('bad_request', 'Pimpampum HTTP must bind to a loopback host', 400);
@@ -136,6 +138,27 @@ export function createHttpApp(
       generatedAt: new Date(generatedAtMilliseconds).toISOString(),
     });
   });
+
+  // HTTP capabilities are mounted only when runtime composition supplies their owner. Omitting
+  // automatic backup must not masquerade as a valid, daemon-owned disabled configuration.
+  if (automaticBackup) {
+    app.get('/api/v1/settings/backup', (_request, response) => {
+      responseData(response, automaticBackup.getStatus());
+    });
+
+    app.put('/api/v1/settings/backup', async (request, response) => {
+      const input = parse(z.object({ directory: absolutePathSchema }).strict(), request.body);
+      responseData(response, await automaticBackup.configure(input.directory));
+    });
+
+    app.post('/api/v1/settings/backup/retry', async (_request, response) => {
+      responseData(response, await automaticBackup.retry());
+    });
+
+    app.delete('/api/v1/settings/backup', async (_request, response) => {
+      responseData(response, await automaticBackup.disable());
+    });
+  }
 
   app.get('/api/v1/workspaces', (_request, response) => {
     responseData(response, store.listWorkspaces());

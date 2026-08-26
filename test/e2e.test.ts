@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -16,8 +17,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { MAX_AGENT_INPUT_BYTES } from '../src/cliProgram.js';
+import type { AutomaticBackupStatus } from '../src/backupContract.js';
 import type { Overview, Project, Task, WorkBundle, WorkItem, Workspace } from '../src/types.js';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -931,6 +934,80 @@ describe.sequential('compiled product end to end', () => {
     expect(await executeCli<Workspace[]>(environment, 'workspace:list')).toMatchObject([
       { id: 'e2e-workspace' },
     ]);
+  });
+
+  it('configures and recovers the rolling backup through the agent-first CLI', async () => {
+    const backupDirectory = join(temporaryDirectory, 'Dropbox', 'Pimpampum');
+    mkdirSync(backupDirectory, { recursive: true });
+    expect(
+      await executeCli<AutomaticBackupStatus>(
+        environment,
+        'backup',
+        'configure',
+        backupDirectory,
+        '--json',
+      ),
+    ).toMatchObject({ enabled: true, directory: backupDirectory, state: 'healthy' });
+
+    const backedUp = await executeCli<Project>(
+      environment,
+      'project:create',
+      'e2e-workspace',
+      'automatic-backup-e2e',
+      'Automatic backup E2E',
+    );
+    const snapshotPath = join(backupDirectory, 'pimpampum-latest.sqlite');
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (existsSync(snapshotPath)) {
+        const snapshot = new Database(snapshotPath, { readonly: true, fileMustExist: true });
+        const found = snapshot.prepare('SELECT id FROM projects WHERE id = ?').get(backedUp.id) as
+          { id: string } | undefined;
+        snapshot.close();
+        if (found?.id === backedUp.id) break;
+      }
+      await delay(20);
+    }
+    const current = new Database(snapshotPath, { readonly: true, fileMustExist: true });
+    expect(current.prepare('SELECT id FROM projects WHERE id = ?').get(backedUp.id)).toEqual({
+      id: backedUp.id,
+    });
+    current.close();
+
+    const offlineDirectory = `${backupDirectory}.offline`;
+    renameSync(backupDirectory, offlineDirectory);
+    const survivesFailure = await executeCli<Project>(
+      environment,
+      'project:create',
+      'e2e-workspace',
+      'backup-failure-survives',
+      'Backup failure survives',
+    );
+    let failedStatus: AutomaticBackupStatus | undefined;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      failedStatus = await executeCli<AutomaticBackupStatus>(
+        environment,
+        'backup',
+        'status',
+        '--json',
+      );
+      if (failedStatus.state === 'error') break;
+      await delay(20);
+    }
+    expect(failedStatus).toMatchObject({ enabled: true, state: 'error' });
+
+    renameSync(offlineDirectory, backupDirectory);
+    expect(
+      await executeCli<AutomaticBackupStatus>(environment, 'backup', 'retry', '--json'),
+    ).toMatchObject({ state: 'healthy', error: null });
+    const recovered = new Database(snapshotPath, { readonly: true, fileMustExist: true });
+    expect(
+      recovered.prepare('SELECT id FROM projects WHERE id = ?').get(survivesFailure.id),
+    ).toEqual({ id: survivesFailure.id });
+    recovered.close();
+
+    expect(
+      await executeCli<AutomaticBackupStatus>(environment, 'backup', 'disable', '--json'),
+    ).toMatchObject({ enabled: false, state: 'disabled' });
   });
 
   it('backs up, restores and exports a real persisted instance', async () => {

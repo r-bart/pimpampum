@@ -29,6 +29,28 @@ const SCREENSHOT_NAMES = [
   'recovered',
   'workspaceOpen',
 ];
+const TASK_3_3_CAPTURE_GUIDANCE = Object.freeze({
+  activePopout:
+    'Keep the fixed circle-p mark visible with the active treatment outside it. Use the horizontal bar, open the bounded popout, and exercise project hover, keyboard focus, and activation before capture.',
+  completedPopout:
+    'Switch through the supported Quattro UI to the vertical bar and alternate light/dark theme, then show completed work and exercise its disclosure plus the collapsed Backup disclosure. Do not edit shell.json or QML; restore the original layout and theme before continuing.',
+  offlineStale:
+    'Show stale cached content and the urgent external error treatment while the fixed circle-p identity remains unchanged; it must not become an x, exclamation mark, or Wi-Fi glyph.',
+  recovered:
+    'Show the same fixed identity after recovery, with live content restored and no stale or offline message.',
+  workspaceOpen:
+    'Exercise mouse and keyboard activation where Quickshell supports it, then use the project row in the Pimpampum QML popout to open the workspace.',
+});
+const TASK_3_3_REVIEW_MATRIX = Object.freeze([
+  'Fixed circle-p identity and theme-foreground tint in every state; status is carried only by the external accent and shape.',
+  'Horizontal side-by-side and vertical stacked bar layouts, using inherited Quattro geometry and theme tokens.',
+  'Counts 7, 42, and 99+ (for 100 or more); zero hidden and negative source values clamped to zero.',
+  'Light and dark themes.',
+  'Complete, available, active/draft, empty, offline, stale, credentials, and incompatible states.',
+  'Hover plus visible keyboard focus and activation where Quickshell supports them.',
+  'Bounded scrolling, long-content elision/disambiguation, completed disclosure, and safe workspace opening.',
+  'Backup collapsed, unconfigured, healthy, backing-up, and failed states; configure/retry/disable serialization and folder-dialog/manual-path behavior.',
+]);
 const COMMAND_TIMEOUT_MS = 30_000;
 
 function hash(contents) {
@@ -344,8 +366,18 @@ export default function createLiveRunner(dependencies) {
       const cli = (label, arguments_, allowDuringCleanup = false) =>
         execute(label, process.execPath, [activeCliPath, ...arguments_], [0], allowDuringCleanup);
       const captureState = async (name, context) => {
+        const matrixPrompt =
+          name === 'activePopout'
+            ? `Before taking the five canonical captures, directly exercise every item in this live matrix through supported Omarchy controls and Pimpampum's public CLI/API; do not infer a state from static validation: ${TASK_3_3_REVIEW_MATRIX.join(' ')}`
+            : '';
+        const guidedContext = {
+          ...context,
+          instruction: [matrixPrompt, context?.instruction, TASK_3_3_CAPTURE_GUIDANCE[name]]
+            .filter(Boolean)
+            .join(' '),
+        };
         if (!productionCandidate) {
-          screenshots[name] = await dependencies.captureScreenshot(name, context);
+          screenshots[name] = await dependencies.captureScreenshot(name, guidedContext);
         } else {
           if (
             typeof dependencies.prepareScreenshot !== 'function' ||
@@ -353,7 +385,7 @@ export default function createLiveRunner(dependencies) {
           ) {
             throw new Error('Production candidate capture requires transcript-aware screenshot IO');
           }
-          await dependencies.prepareScreenshot(name, context);
+          await dependencies.prepareScreenshot(name, guidedContext);
           const captured = await execute(`screenshot-${name}`, 'omarchy', [
             'capture',
             'screenshot',
@@ -598,10 +630,11 @@ export default function createLiveRunner(dependencies) {
         }
 
         await captureState('activePopout', {
-          instruction: 'Open the Pimpampum popout and show active work.',
+          instruction: 'Open the Pimpampum popout and show mixed active work.',
         });
         await captureState('completedPopout', {
-          instruction: 'Show the completed project collapsed in the Pimpampum popout.',
+          instruction:
+            'Show the completed project collapsed, expand it to inspect long content, then return it to the captured collapsed state.',
         });
         await execute('offline', 'systemctl', ['--user', 'stop', 'pimpampum.service']);
         await captureState('offlineStale', {
@@ -711,11 +744,16 @@ export default function createLiveRunner(dependencies) {
           ]),
         );
         const approvalBinding = hash(
-          json({ screenshots: screenshotEvidence, checks: visualChecks }),
+          json({
+            screenshots: screenshotEvidence,
+            checks: visualChecks,
+            reviewMatrix: TASK_3_3_REVIEW_MATRIX,
+          }),
         );
         const visualReview = await dependencies.requestVisualReview({
           screenshots: reviewScreenshots,
           checklist: visualChecks,
+          reviewMatrix: TASK_3_3_REVIEW_MATRIX,
           artifactSetHash: approvalBinding,
         });
         if (
@@ -1016,6 +1054,27 @@ export PIMPAMPUM_HOST=${quote(environment.PIMPAMPUM_HOST ?? '127.0.0.1')}
 export PIMPAMPUM_PORT=${quote(environment.PIMPAMPUM_PORT ?? '7337')}
 exec ${quote(process.execPath)} ${quote(cliPath)} overview
 `;
+      const backupHelper = `#!/bin/bash
+set -euo pipefail
+
+case \${1:-} in
+  status|retry|disable)
+    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-backup: invalid arguments' >&2; exit 64; }
+    ;;
+  configure)
+    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-backup: configure requires one directory' >&2; exit 64; }
+    ;;
+  *)
+    printf '%s\\n' 'pimpampum-backup: expected status, configure, retry, or disable' >&2
+    exit 64
+    ;;
+esac
+
+export PIMPAMPUM_DATA_DIR=${quote(dataDirectory)}
+export PIMPAMPUM_HOST=${quote(environment.PIMPAMPUM_HOST ?? '127.0.0.1')}
+export PIMPAMPUM_PORT=${quote(environment.PIMPAMPUM_PORT ?? '7337')}
+exec ${quote(process.execPath)} ${quote(cliPath)} backup "$@"
+`;
       const expected = [];
       const visit = (directory) => {
         for (const name of readdirSync(directory).sort()) {
@@ -1029,8 +1088,17 @@ exec ${quote(process.execPath)} ${quote(cliPath)} overview
               child,
               path: join(plugin, child),
               contents:
-                child === 'pimpampum-overview' ? Buffer.from(overviewHelper) : readFileSync(source),
-              mode: ['install.sh', 'uninstall.sh', 'pimpampum-overview'].includes(child)
+                child === 'pimpampum-overview'
+                  ? Buffer.from(overviewHelper)
+                  : child === 'pimpampum-backup'
+                    ? Buffer.from(backupHelper)
+                    : readFileSync(source),
+              mode: [
+                'install.sh',
+                'uninstall.sh',
+                'pimpampum-backup',
+                'pimpampum-overview',
+              ].includes(child)
                 ? 0o755
                 : 0o644,
             });
@@ -1147,7 +1215,12 @@ exec ${quote(process.execPath)} ${quote(cliPath)} overview
         ownedPaths: pathInventory(ownedPaths),
       };
     },
-    async requestVisualReview({ screenshots, checklist, artifactSetHash }) {
+    async requestVisualReview({
+      screenshots,
+      checklist,
+      reviewMatrix = TASK_3_3_REVIEW_MATRIX,
+      artifactSetHash,
+    }) {
       for (const [name, artifact] of Object.entries(screenshots)) {
         const shown = await rawExecute({
           executable: 'xdg-open',
@@ -1164,6 +1237,7 @@ exec ${quote(process.execPath)} ${quote(cliPath)} overview
           artifactSetHash,
           screenshots,
           checklist,
+          reviewMatrix,
         })}\nReview the exact staged files and hashes above.\n`,
       );
       const terminal = createInterface({ input: process.stdin, output: process.stdout });
@@ -1172,7 +1246,7 @@ exec ${quote(process.execPath)} ${quote(cliPath)} overview
           signal: promptAbortController.signal,
         });
         const approval = await terminal.question(
-          'Did all captured Quattro states visually match the Task 4.4 checklist? Type yes: ',
+          'Did you directly observe every Task 3.3 matrix item during this run, and do the bound captures match the screenshot checklist? Type yes: ',
           { signal: promptAbortController.signal },
         );
         return {
