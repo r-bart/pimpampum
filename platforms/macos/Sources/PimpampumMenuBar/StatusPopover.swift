@@ -40,6 +40,7 @@ struct StatusPopover: View {
   let quitApplication: () -> Void
 
   @State private var isCompletedExpanded = false
+  @State private var isHelpPresented = false
   @State private var revealError: String?
 
   init(
@@ -90,6 +91,7 @@ struct StatusPopover: View {
         .padding(16)
       }
       .frame(maxHeight: Self.bodyMaximumHeight)
+      .fixedSize(horizontal: false, vertical: true)
 
       Divider()
 
@@ -109,6 +111,9 @@ struct StatusPopover: View {
     }
     .frame(width: Self.containerWidth)
     .background(.regularMaterial)
+    .sheet(isPresented: $isHelpPresented) {
+      HelpDialog()
+    }
   }
 
   private var loginApprovalNotice: some View {
@@ -154,12 +159,17 @@ struct StatusPopover: View {
 
       Spacer(minLength: 8)
 
-      if let generatedAt = shouldShowOverview ? store.overview?.generatedAt : nil {
-        Text(generatedAt, style: .relative)
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-          .accessibilityLabel("Updated \(generatedAt.formatted(.relative(presentation: .named)))")
+      Button {
+        isHelpPresented = true
+      } label: {
+        Image(systemName: "questionmark.circle")
       }
+      .buttonStyle(.borderless)
+      .controlSize(.small)
+      .frame(width: 24, height: 24)
+      .contentShape(Rectangle())
+      .accessibilityLabel(HelpDialogCopy.buttonTitle)
+      .help(HelpDialogCopy.buttonTitle)
     }
   }
 
@@ -201,11 +211,6 @@ struct StatusPopover: View {
       sectionTitle("Summary")
       Text(Self.summaryText(overview.counts))
         .font(.subheadline)
-      Text(
-        "Daemon \(overview.daemon.version) · \(Self.uptimeText(overview.daemon.uptimeSeconds)) uptime"
-      )
-      .font(.caption)
-      .foregroundStyle(.secondary)
     }
     .accessibilityElement(children: .combine)
   }

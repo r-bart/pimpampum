@@ -1,0 +1,31 @@
+import Testing
+
+@testable import PimpampumMenuBar
+
+@Suite
+@MainActor
+struct HelpDialogTests {
+  @Test
+  func usesTheApprovedCompactEnglishCopy() {
+    #expect(HelpDialogCopy.buttonTitle == "How it works")
+    #expect(HelpDialogCopy.title == "How Pimpampum works")
+    #expect(HelpDialogCopy.introduction == "Pimpampum is a local, agent-first project manager.")
+    #expect(HelpDialogCopy.done == "Done")
+    #expect(
+      HelpDialogCopy.items.map(\.text) == [
+        "Pimpampum runs locally on this machine.",
+        "Projects contain a PRD, tasks, and optional subtasks.",
+        "Agents interact through MCP, the CLI, or the local API.",
+        "Claimed work appears under Active work and in the menu-bar count.",
+        "Clicking a project opens its workspace in Finder.",
+        "Automatic backups are configured in Settings.",
+      ])
+    #expect(Set(HelpDialogCopy.items.map(\.id)).count == HelpDialogCopy.items.count)
+    #expect(HelpDialogCopy.items.allSatisfy { !$0.systemImage.isEmpty })
+  }
+
+  @Test
+  func composesTheNativeDialog() {
+    _ = HelpDialog().body
+  }
+}

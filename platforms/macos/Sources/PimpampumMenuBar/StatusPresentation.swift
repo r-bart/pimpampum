@@ -152,14 +152,6 @@ extension StatusPopover {
     "\(counts.projects) projects · \(counts.activeClaims) active · \(counts.availableWork) available"
   }
 
-  static func uptimeText(_ seconds: Int) -> String {
-    if seconds < 60 { return "\(seconds)s" }
-    let hours = seconds / 3_600
-    let minutes = (seconds % 3_600) / 60
-    if hours == 0 { return "\(minutes)m" }
-    return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
-  }
-
   static func projectCountsText(_ project: OverviewProject) -> String {
     switch project.status {
     case .active:

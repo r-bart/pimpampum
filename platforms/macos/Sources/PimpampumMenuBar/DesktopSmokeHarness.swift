@@ -107,6 +107,7 @@ enum DesktopSmokeHarness {
         tokenURL: dataDirectory.appendingPathComponent("token")
       )
       let backupStore = BackupSettingsStore(client: backupClient)
+      let settingsWindowController = BackupSettingsWindowController(store: backupStore)
       if request.controlLabel == "Settings…" {
         await backupStore.load()
       }
@@ -115,6 +116,7 @@ enum DesktopSmokeHarness {
         store: store,
         opener: opener,
         backupStore: backupStore,
+        settingsWindowController: settingsWindowController,
         actionRecorder: actionRecorder,
         projectId: request.projectId,
         controlLabel: request.controlLabel
@@ -164,6 +166,7 @@ enum DesktopSmokeHarness {
     store: OverviewStore,
     opener: RecordingWorkspaceOpener,
     backupStore: BackupSettingsStore,
+    settingsWindowController: BackupSettingsWindowController,
     actionRecorder: SmokeActionRecorder,
     projectId: String?,
     controlLabel: String?
@@ -176,6 +179,7 @@ enum DesktopSmokeHarness {
     let content = NativeSettingsStatusPopover(
       store: store,
       workspaceOpener: opener,
+      settingsWindowOpener: settingsWindowController,
       quitApplication: actionRecorder.recordQuit
     )
       .frame(width: 360, height: 560)

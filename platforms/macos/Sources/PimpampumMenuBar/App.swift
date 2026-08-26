@@ -30,7 +30,7 @@ final class PimpampumApplicationDelegate: NSObject, NSApplicationDelegate {
 struct PimpampumMenuBarApp: App {
   @NSApplicationDelegateAdaptor(PimpampumApplicationDelegate.self) private var appDelegate
   @StateObject private var store: OverviewStore
-  @StateObject private var backupSettingsStore: BackupSettingsStore
+  @StateObject private var settingsWindowController: BackupSettingsWindowController
   private let workspaceOpener = WorkspaceOpener()
 
   init() {
@@ -45,7 +45,9 @@ struct PimpampumMenuBarApp: App {
     )
     let backupSettingsStore = BackupSettingsStore(client: backupClient)
     _store = StateObject(wrappedValue: OverviewStore(reader: client))
-    _backupSettingsStore = StateObject(wrappedValue: backupSettingsStore)
+    _settingsWindowController = StateObject(
+      wrappedValue: BackupSettingsWindowController(store: backupSettingsStore)
+    )
   }
 
   var body: some Scene {
@@ -53,6 +55,7 @@ struct PimpampumMenuBarApp: App {
       NativeSettingsStatusPopover(
         store: store,
         workspaceOpener: workspaceOpener,
+        settingsWindowOpener: settingsWindowController,
         quitApplication: { NSApplication.shared.terminate(nil) }
       )
         .onAppear {
@@ -78,13 +81,5 @@ struct PimpampumMenuBarApp: App {
       }
     }
     .menuBarExtraStyle(.window)
-
-    Settings {
-      BackupSettingsView(store: backupSettingsStore)
-        .background(SettingsWindowConfigurator())
-        .task {
-          await backupSettingsStore.load()
-        }
-    }
   }
 }

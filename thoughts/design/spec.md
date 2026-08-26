@@ -307,16 +307,20 @@ Do not add navigation, tabs, filters, or backup controls to this popover.
 Layout:
 
 ```text
-[fixed Pimpampum mark + state]  Pimpampum                  updated relative time
+[fixed Pimpampum mark + state]  Pimpampum                    [How it works]
                                 {global status label}
 ```
 
 - Mark/state and active count use the same component as the menu bar.
 - Product name: headline weight.
 - Status: caption, secondary color.
-- Relative update time: caption-2, secondary color, aligned trailing.
-- Hide update time until a valid overview exists.
-- Example accessibility label: `Updated 4 seconds ago`.
+- Show an icon-only native `questionmark.circle` button at the trailing edge of the header.
+  Its accessibility label and tooltip are `How it works`.
+- The button opens a compact native sheet. The sheet explains local operation, PRDs/tasks,
+  agent access through MCP/CLI/API, active claims, Finder opening, and backup configuration.
+- The sheet contains no onboarding flow or settings and closes with a default `Done` button.
+- Do not show a continuously changing data-age counter in the healthy state.
+- Freshness belongs in the connection notice only when data is stale or unavailable.
 
 ### 8.4 Connection notice
 
@@ -353,9 +357,8 @@ Show only when macOS requires explicit login-item approval.
 
 - Section label: `SUMMARY`, small uppercase semibold secondary text.
 - Primary line: `{projects} projects · {active claims} active · {available work} available`.
-- Secondary line: `Daemon {version} · {uptime} uptime`.
-- Uptime formats: seconds under one minute; minutes under one hour; `Nh` or `Nh Nm` thereafter.
-- Treat the two lines as one accessibility element.
+- Do not expose daemon version or uptime in the user-facing popover.
+- Treat the summary line as one accessibility element.
 
 ### 8.7 Active work section
 

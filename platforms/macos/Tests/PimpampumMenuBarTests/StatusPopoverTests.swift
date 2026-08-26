@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import Testing
@@ -169,14 +170,10 @@ struct StatusPopoverTests {
   }
 
   @Test
-  func formatsBoundedSummaryAndDaemonUptime() {
+  func formatsBoundedSummary() {
     let counts = makeOverview(status: .active).counts
 
     #expect(StatusPopover.summaryText(counts) == "4 projects · 1 active · 2 available")
-    #expect(StatusPopover.uptimeText(30) == "30s")
-    #expect(StatusPopover.uptimeText(120) == "2m")
-    #expect(StatusPopover.uptimeText(3_600) == "1h")
-    #expect(StatusPopover.uptimeText(3_720) == "1h 2m")
   }
 
   @Test
@@ -197,6 +194,17 @@ struct StatusPopoverTests {
     #expect(StatusPopover.bodyMaximumHeight == 480)
     #expect(StatusPopover.contentTitleLineLimit == 2)
     #expect(StatusPopover.metadataLineLimit == 1)
+  }
+
+  @Test
+  func emptyOverviewKeepsTheScrollableBodyVisibleAtItsIntrinsicHeight() async {
+    let store = OverviewStore(reader: StaticOverviewReader(overview: makeOverview(status: .empty)))
+    await store.refresh()
+    let view = NSHostingView(rootView: StatusPopover(store: store))
+
+    view.layoutSubtreeIfNeeded()
+
+    #expect(view.fittingSize.height > 200)
   }
 }
 
