@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case ${1:-} in
+  status)
+    [[ $# -eq 1 ]] || exit 64
+    ;;
+  start|stop|restart)
+    [[ $# -eq 1 ]] || exit 64
+    /usr/bin/systemctl --user "$1" pimpampum.service >/dev/null
+    ;;
+  *)
+    printf '%s\n' 'pimpampum-service: expected status, start, stop, or restart' >&2
+    exit 64
+    ;;
+esac
+
+if /usr/bin/systemctl --user is-active --quiet pimpampum.service; then
+  printf '%s\n' '{"running":true}'
+else
+  printf '%s\n' '{"running":false}'
+fi

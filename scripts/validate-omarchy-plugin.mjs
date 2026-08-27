@@ -146,6 +146,7 @@ for (const expected of [
   'PimpampumActionArea.qml',
   'PimpampumMark.qml',
   'PimpampumSettingsButton.qml',
+  'ServiceControl.qml',
   'StatusPopout.qml',
   'SyncService.qml',
   'assets/pimpampum-compact.svg',
@@ -155,6 +156,7 @@ for (const expected of [
   'manifest.json',
   'pimpampum-backup',
   'pimpampum-overview',
+  'pimpampum-service',
   'pimpampum-sync',
   'uninstall.sh',
 ]) {
@@ -222,6 +224,7 @@ const qml = [
   'PimpampumActionArea.qml',
   'PimpampumMark.qml',
   'PimpampumSettingsButton.qml',
+  'ServiceControl.qml',
   'StatusPopout.qml',
   'SyncService.qml',
 ]
@@ -232,6 +235,8 @@ const pimpampumActionArea = read(join(pluginRoot, 'PimpampumActionArea.qml'));
 const pimpampumMark = read(join(pluginRoot, 'PimpampumMark.qml'));
 const settingsButton = read(join(pluginRoot, 'PimpampumSettingsButton.qml'));
 const statusPopout = read(join(pluginRoot, 'StatusPopout.qml'));
+const serviceControl = read(join(pluginRoot, 'ServiceControl.qml'));
+const serviceHelper = read(join(pluginRoot, 'pimpampum-service'));
 const documentedBarMembers = new Set([
   'background',
   'barSize',
@@ -442,6 +447,16 @@ invariant(
     barWidget.includes('Keys.onReturnPressed: root.togglePanel()') &&
     barWidget.includes('Keys.onSpacePressed: root.togglePanel()'),
   'the compact bar widget must be keyboard focusable and activatable',
+);
+invariant(
+  barWidget.includes('ServiceControl {') &&
+    statusPopout.includes('text: "Pimpampum service"') &&
+    statusPopout.includes('"Stop Pimpampum…"') &&
+    statusPopout.includes('"Start Pimpampum"') &&
+    serviceControl.includes('serviceProcess.command = [helperPath, operation]') &&
+    serviceHelper.includes('/usr/bin/systemctl --user "$1" pimpampum.service') &&
+    !/(?:eval\b|sh\s+-c|bash\s+-c|bearer|token)/iu.test(serviceHelper),
+  'service controls must remain bounded, recoverable, and independent from the daemon',
 );
 invariant(
   barWidget.includes('displayStatus: service.effectiveStatus === "complete" && hasCancellations') &&

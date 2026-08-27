@@ -312,6 +312,26 @@ describe('Omarchy Quattro plugin', () => {
     expect(helper).not.toMatch(/eval\b|bearer|token/iu);
   });
 
+  it('keeps daemon lifecycle recovery inside a bounded installed helper', () => {
+    const widget = readFileSync(join(pluginSource, 'BarWidget.qml'), 'utf8');
+    const popout = readFileSync(join(pluginSource, 'StatusPopout.qml'), 'utf8');
+    const control = readFileSync(join(pluginSource, 'ServiceControl.qml'), 'utf8');
+    const helper = readFileSync(join(pluginSource, 'pimpampum-service'), 'utf8');
+
+    expect(widget).toContain('ServiceControl {');
+    expect(widget).toContain('serviceControl: serviceControl');
+    expect(popout).toContain('text: "Pimpampum service"');
+    expect(popout).toContain('"Restart service"');
+    expect(popout).toContain('"Stop Pimpampum…"');
+    expect(popout).toContain('"Start Pimpampum"');
+    expect(popout).toContain('visible: root.confirmingServiceStop');
+    expect(control).toContain('serviceProcess.command = [helperPath, operation]');
+    expect(control).toContain('typeof parsed.running !== "boolean"');
+    expect(helper).toContain('/usr/bin/systemctl --user "$1" pimpampum.service');
+    expect(helper).toContain('/usr/bin/systemctl --user is-active --quiet pimpampum.service');
+    expect(helper).not.toMatch(/eval\b|sh\s+-c|bash\s+-c|bearer|token/iu);
+  });
+
   it('delegates install and uninstall to the single Pimpampum lifecycle', () => {
     const fake = fakeLifecycle('wrappers');
     const before = readdirSync(fake.untouched);

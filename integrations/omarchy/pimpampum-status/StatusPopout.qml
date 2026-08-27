@@ -11,6 +11,7 @@ Item {
   required property var service
   required property var backupService
   required property var syncService
+  required property var serviceControl
   property bool opened: false
   property bool settingsView: false
   property bool helpView: false
@@ -24,6 +25,7 @@ Item {
   property bool confirmingBackupEnable: false
   property bool syncManageOpen: false
   property bool backupManageOpen: false
+  property bool confirmingServiceStop: false
   property string pendingFolderTarget: ""
   property string folderPickerOutput: ""
   property string revealError: ""
@@ -164,6 +166,16 @@ Item {
     else if (action === "cancel-disable") confirmingBackupDisable = false
   }
 
+  function runServiceAction(action) {
+    if (action === "stop") confirmingServiceStop = true
+    else if (action === "cancel-stop") confirmingServiceStop = false
+    else if (action === "confirm-stop") {
+      confirmingServiceStop = false
+      serviceControl.stop()
+    } else if (action === "start") serviceControl.start()
+    else if (action === "restart") serviceControl.restart()
+  }
+
   function close() {
     if (!opened) return
     showSettings(false)
@@ -179,6 +191,7 @@ Item {
     confirmingBackupDisable = false
     syncManageOpen = false
     backupManageOpen = false
+    confirmingServiceStop = false
     scroller.contentY = 0
     if (value) {
       manualSyncDirectory = syncService.directory
@@ -1147,6 +1160,109 @@ Item {
                   onTriggered: root.runBackupAction(root.confirmingBackupEnable ? "confirm-enable"
                     : root.confirmingBackupDisable ? "confirm-disable"
                     : root.backupService.enabled ? "retry" : "choose")
+                }
+              }
+            }
+          }
+
+          Rectangle {
+            width: parent.width
+            height: serviceCardContent.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+            Column {
+              id: serviceCardContent
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(14)
+              spacing: Style.space(8)
+
+              Row {
+                width: parent.width
+                Text {
+                  width: parent.width - serviceState.width
+                  text: "Pimpampum service"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+                Text {
+                  id: serviceState
+                  text: root.serviceControl.busy ? "Updating…"
+                    : root.serviceControl.running ? "Running" : "Stopped"
+                  color: root.serviceControl.running ? "#22c55e" : root.foreground
+                  opacity: root.serviceControl.running ? 1 : 0.62
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: root.serviceControl.running
+                  ? "Keeps agents, synchronization, and automatic backups available in the background."
+                  : "Agents and automatic background tasks are unavailable. Your local data is safe."
+                color: root.foreground
+                opacity: 0.68
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Text {
+                visible: root.confirmingServiceStop
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Stop Pimpampum? Agents, synchronization, and automatic backups will stop working."
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Text {
+                visible: root.serviceControl.operationError !== ""
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: root.serviceControl.operationError
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(6)
+                PimpampumSettingsButton {
+                  id: serviceSecondaryAction
+                  visible: root.serviceControl.running || root.confirmingServiceStop
+                  width: visible ? Math.max(implicitWidth, parent.width / 2 - parent.spacing / 2) : 0
+                  height: implicitHeight
+                  label: root.confirmingServiceStop ? "Cancel" : "Restart service"
+                  foreground: root.foreground; background: root.background
+                  accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                  actionEnabled: !root.serviceControl.busy
+                  onTriggered: root.runServiceAction(root.confirmingServiceStop
+                    ? "cancel-stop" : "restart")
+                }
+                PimpampumSettingsButton {
+                  id: servicePrimaryAction
+                  width: Math.max(implicitWidth, parent.width - serviceSecondaryAction.width
+                    - (serviceSecondaryAction.visible ? parent.spacing : 0))
+                  height: implicitHeight
+                  primary: !root.serviceControl.running
+                  destructive: root.serviceControl.running
+                  label: root.confirmingServiceStop ? "Stop Pimpampum"
+                    : root.serviceControl.running ? "Stop Pimpampum…" : "Start Pimpampum"
+                  foreground: root.foreground; background: root.background
+                  accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                  actionEnabled: !root.serviceControl.busy
+                  onTriggered: root.runServiceAction(root.confirmingServiceStop
+                    ? "confirm-stop" : root.serviceControl.running ? "stop" : "start")
                 }
               }
             }

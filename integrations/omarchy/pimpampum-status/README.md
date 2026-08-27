@@ -38,6 +38,10 @@ vertical bars stack them. Project rows open the exact registered workspace root.
   selected directory as one process argument. No token enters QML.
 - Synchronization actions use the bounded `pimpampum-sync` helper. It derives a safe device ID from
   the hostname and accepts only status, configure, sync-now, pause, resume, conflict-list, and forget.
+- Service actions use the bounded `pimpampum-service` helper. It accepts only status, start, stop,
+  and restart for the fixed `pimpampum.service` systemd user unit; it accepts no user-controlled
+  service name or shell input. Stopping the daemon leaves the Quickshell widget installed so the
+  user can start it again without a terminal.
 - Workspace paths are accepted only when absolute and are passed to `xdg-open`
   as one argument. They are never evaluated as shell source.
 - The UI exposes no project, task, claim, or service mutation. Its writes are limited to daemon-owned
@@ -96,6 +100,14 @@ Conflicts remain visible and require inspection outside the compact widget befor
 Synchronization and backup are deliberately separate. Synchronization exchanges path-neutral JSON
 portfolio snapshots between computers. Automatic backup writes `pimpampum-latest.sqlite` for local
 recovery and never acts as a merge transport.
+
+## Service controls
+
+The final card in **Settings** shows whether the Pimpampum daemon is running. **Restart service**
+restarts only the background daemon. **Stop Pimpampum…** requires confirmation and stops agents,
+synchronization, and automatic backups without deleting local data or removing the widget. While
+stopped, the same card exposes **Start Pimpampum**, so no launcher entry or terminal command is
+required to recover.
 
 ## Remove
 
