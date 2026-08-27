@@ -422,6 +422,14 @@ describe('HTTP client adapter', () => {
     await client.configureAutomaticBackup('/tmp/backups');
     await client.retryAutomaticBackup();
     await client.disableAutomaticBackup();
+    await client.getSyncStatus();
+    await client.configureSync('/tmp/shared', 'linux');
+    await client.reconcileSync();
+    await client.pauseSync();
+    await client.resumeSync();
+    await client.forgetSync();
+    await client.listSyncConflicts();
+    await client.resolveSyncConflict('a'.repeat(64), 'remote');
     await client.listWorkspaces();
     await client.registerWorkspace({ id: 'ws', name: 'WS', rootPath: '/tmp/ws' });
     await client.resolveWorkspace('/tmp/ws/project');
@@ -572,7 +580,7 @@ describe('HTTP client adapter', () => {
     await client.backup('/tmp/backups');
     await client.exportPortable('/tmp/exports');
 
-    expect(calls).toHaveLength(49);
+    expect(calls).toHaveLength(57);
     expect(new Headers(calls[0]?.init.headers).has('authorization')).toBe(false);
     expect(new Headers(calls[1]?.init.headers).get('authorization')).toBe('Bearer secret');
     expect(calls[1]?.url).toBe('http://127.0.0.1:7337/api/v1/overview');

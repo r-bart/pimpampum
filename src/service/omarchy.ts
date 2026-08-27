@@ -82,6 +82,15 @@ async function runRequired(
   return result;
 }
 
+async function readOmarchyVersion(
+  context: ServiceAdapterContext,
+  executable: string,
+): Promise<CommandResult> {
+  const current = await context.runCommand(executable, ['version']);
+  if (current.exitCode === 0) return current;
+  return runRequired(context, executable, ['--version'], 'omarchy version');
+}
+
 function pluginTarget(context: ServiceAdapterContext): string {
   return join(context.homeDirectory, '.config', 'omarchy', 'plugins', OMARCHY_PLUGIN_ID);
 }
@@ -136,6 +145,37 @@ exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cli
 `;
 }
 
+function renderSyncHelper(context: ServiceAdapterContext): string {
+  return `#!/bin/bash
+set -euo pipefail
+
+case \${1:-} in
+  status|now|pause|resume|conflicts|forget)
+    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-sync: invalid arguments' >&2; exit 64; }
+    ;;
+  configure)
+    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-sync: configure requires one directory' >&2; exit 64; }
+    ;;
+  *)
+    printf '%s\\n' 'pimpampum-sync: expected status, configure, now, pause, resume, conflicts, or forget' >&2
+    exit 64
+    ;;
+esac
+
+export PIMPAMPUM_DATA_DIR=${shellQuote(context.dataDirectory, 'Pimpampum data directory')}
+export PIMPAMPUM_HOST=${shellQuote(context.host, 'Pimpampum host')}
+export PIMPAMPUM_PORT=${shellQuote(String(context.port), 'Pimpampum port')}
+
+if [[ $1 == configure ]]; then
+  device_id=$(hostname | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-63)
+  [[ -n $device_id ]] || device_id=linux
+  exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cliPath, 'Pimpampum CLI')} sync configure "$2" --device "$device_id" --json
+fi
+
+exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cliPath, 'Pimpampum CLI')} sync "$1" --json
+`;
+}
+
 function walkPluginSource(sourceRoot: string, directory = sourceRoot): string[] {
   const paths: string[] = [];
   for (const name of readdirSync(directory).sort()) {
@@ -158,7 +198,9 @@ function pluginArtifacts(sourceRoot: string, context: ServiceAdapterContext): Se
       'install.sh',
       'uninstall.sh',
       'pimpampum-backup',
+      'pimpampum-folder-picker',
       'pimpampum-overview',
+      'pimpampum-sync',
     ].includes(child);
     return {
       path: join(target, child),
@@ -167,7 +209,9 @@ function pluginArtifacts(sourceRoot: string, context: ServiceAdapterContext): Se
           ? renderOverviewHelper(context)
           : child === 'pimpampum-backup'
             ? renderBackupHelper(context)
-            : readFileSync(sourcePath),
+            : child === 'pimpampum-sync'
+              ? renderSyncHelper(context)
+              : readFileSync(sourcePath),
       mode: executable ? 0o755 : 0o644,
     };
   });
@@ -597,7 +641,7 @@ export function createOmarchyAdapter(options: OmarchyAdapterOptions): PlatformSe
     async preflight(context, artifacts, operation) {
       await options.daemonAdapter.preflight?.(context, artifacts, operation);
       validateOwnedDestination(context);
-      const version = await runRequired(context, omarchyPath, ['--version'], 'omarchy --version');
+      const version = await readOmarchyVersion(context, omarchyPath);
       if (!isCompatibleOmarchyVersion(version.stdout)) {
         throw new Error(`Unsupported Omarchy build: ${version.stdout.trim() || 'unknown'}`);
       }

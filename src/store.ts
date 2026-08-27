@@ -13,6 +13,8 @@ import {
   isTerminalTaskState,
 } from './domainRules.js';
 import { AppError } from './errors.js';
+import type { SyncEntityKind, SyncState } from './syncContract.js';
+import { activityFingerprint, normalizedSyncState } from './syncState.js';
 import {
   boundOverview,
   sortOverviewProjects,
@@ -217,7 +219,12 @@ export class PimpampumStore {
   constructor(
     private readonly database: Database.Database,
     private readonly onMutation: () => void = () => undefined,
+    private syncConflictGuard: (entityType: SyncEntityKind, entityId: string) => boolean = () =>
+      false,
   ) {}
+  setSyncConflictGuard(guard: (entityType: SyncEntityKind, entityId: string) => boolean): void {
+    this.syncConflictGuard = guard;
+  }
   close(): void {
     this.database.close();
   }
@@ -228,6 +235,7 @@ export class PimpampumStore {
     rootPath: string;
     actor: string | null;
   }): Workspace {
+    this.syncWritable('workspace', input.id);
     if (!isAbsolute(input.rootPath))
       throw new AppError('bad_request', 'Workspace root must be an absolute path', 400);
     let rootPath: string;
@@ -238,6 +246,16 @@ export class PimpampumStore {
     }
     if (!statSync(rootPath).isDirectory())
       throw new AppError('bad_request', 'Workspace root must be a directory', 400);
+    const existing = this.database.prepare('SELECT * FROM workspaces WHERE id=?').get(input.id) as
+      WorkspaceRow | undefined;
+    if (existing?.root_path.startsWith('/__pimpampum_unresolved__/')) {
+      return this.runImmediate(() => {
+        this.database
+          .prepare('UPDATE workspaces SET name=?,root_path=?,updated_at=? WHERE id=?')
+          .run(input.name, rootPath, now(), input.id);
+        return this.getWorkspace(input.id);
+      });
+    }
     try {
       return this.runImmediate(() => {
         const at = now();
@@ -293,6 +311,7 @@ export class PimpampumStore {
   }
 
   createProject(input: CreateProjectInput): Project {
+    this.syncWritable('workspace', input.workspaceId);
     try {
       return this.runImmediate(() => {
         this.getWorkspace(input.workspaceId);
@@ -377,6 +396,7 @@ export class PimpampumStore {
     expectedRevision: number;
     actor: string | null;
   }): Project {
+    this.syncWritable('project', input.projectId);
     return this.runImmediate(() => {
       const current = this.getProject(input.projectId);
       this.revision(current.revision, input.expectedRevision);
@@ -404,6 +424,7 @@ export class PimpampumStore {
     artifacts: ArtifactReference[];
     actor: string | null;
   }): Project {
+    this.syncWritable('project', input.projectId);
     return this.runImmediate(() => {
       const current = this.getProject(input.projectId);
       this.revision(current.revision, input.expectedRevision);
@@ -437,6 +458,7 @@ export class PimpampumStore {
     reason: string;
     actor: string | null;
   }): Project {
+    this.syncWritable('project', input.projectId);
     return this.runImmediate(() => {
       const p = this.getProject(input.projectId);
       this.revision(p.revision, input.expectedRevision);
@@ -490,6 +512,7 @@ export class PimpampumStore {
   }
 
   createSpec(input: CreateSpecInput): Spec {
+    this.syncWritable('project', input.projectId);
     try {
       return this.runImmediate(() => {
         const p = this.getProject(input.projectId);
@@ -576,6 +599,7 @@ export class PimpampumStore {
     expectedRevision: number;
     actor: string | null;
   }): Spec {
+    this.syncWritable('spec', input.specId);
     return this.runImmediate(() => {
       const s = this.getSpec(input.specId);
       this.revision(s.revision, input.expectedRevision);
@@ -608,6 +632,7 @@ export class PimpampumStore {
     reason: string;
     actor: string | null;
   }): Spec {
+    this.syncWritable('spec', input.specId);
     return this.runImmediate(() => {
       const s = this.getSpec(input.specId);
       this.revision(s.revision, input.expectedRevision);
@@ -714,12 +739,14 @@ export class PimpampumStore {
     expectedRevision: number | null;
     actor: string | null;
   }): ContextDocument {
+    this.syncWritable(input.ownerType, input.ownerId);
     return this.runImmediate(() => {
       this.assertOwnerMutable(input.ownerType, input.ownerId);
       const col = ownerColumn(input.ownerType);
       const existing = this.database
         .prepare(`SELECT * FROM context_documents WHERE ${col}=? AND name=?`)
         .get(input.ownerId, input.name) as ContextRow | undefined;
+      if (existing) this.syncWritable('context', existing.id);
       const at = now();
       if (existing) {
         if (input.expectedRevision === null)
@@ -767,6 +794,8 @@ export class PimpampumStore {
   }
 
   createTask(input: CreateTaskInput): Task {
+    this.syncWritable('spec', input.specId);
+    if (input.parentId) this.syncWritable('task', input.parentId);
     return this.runImmediate(() => {
       const s = this.getSpec(input.specId),
         p = this.getProject(s.projectId);
@@ -858,6 +887,7 @@ export class PimpampumStore {
     expectedRevision: number;
     actor: string | null;
   }): Task {
+    this.syncWritable('task', input.taskId);
     return this.runImmediate(() => {
       const t = this.getTask(input.taskId);
       this.revision(t.revision, input.expectedRevision);
@@ -887,6 +917,7 @@ export class PimpampumStore {
     reason: string;
     actor: string | null;
   }): Task {
+    this.syncWritable('task', input.taskId);
     return this.runImmediate(() => {
       const t = this.getTask(input.taskId);
       this.revision(t.revision, input.expectedRevision);
@@ -980,6 +1011,7 @@ export class PimpampumStore {
     agentId: string;
     leaseSeconds: number;
   }): WorkBundle {
+    this.syncWritable(input.targetType, input.targetId);
     const changed = this.database
       .transaction(() => {
         const at = now();
@@ -1015,6 +1047,7 @@ export class PimpampumStore {
     agentId: string;
     leaseSeconds: number;
   }): Claim {
+    this.syncWritable(input.targetType, input.targetId);
     return this.runImmediate(() => {
       const at = now(),
         claim = this.ownedClaim(input.targetType, input.targetId, input.agentId, at),
@@ -1067,6 +1100,7 @@ export class PimpampumStore {
     });
   }
   completeWork(input: CompleteWorkInput): Spec | Task {
+    this.syncWritable(input.targetType, input.targetId);
     this.runImmediate(() => {
       this.ownedClaim(input.targetType, input.targetId, input.agentId, now());
       const at = now();
@@ -1306,6 +1340,264 @@ export class PimpampumStore {
     return exportPortable(this, directory);
   }
 
+  exportSyncState(): SyncState {
+    const workspaces = (
+      this.database.prepare('SELECT * FROM workspaces ORDER BY id').all() as WorkspaceRow[]
+    ).map((row) => ({
+      id: row.id,
+      name: row.name,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+    const projects = (
+      this.database.prepare('SELECT * FROM projects ORDER BY id').all() as ProjectRow[]
+    ).map((row) => this.mapProject(row));
+    const specs = (this.database.prepare('SELECT * FROM specs ORDER BY id').all() as SpecRow[]).map(
+      (row) => {
+        const { claim: _claim, ...spec } = this.mapSpec(row);
+        return spec;
+      },
+    );
+    const contexts = (
+      this.database.prepare('SELECT * FROM context_documents ORDER BY id').all() as ContextRow[]
+    ).map((row) => this.mapContext(row));
+    const tasks = (this.database.prepare('SELECT * FROM tasks ORDER BY id').all() as TaskRow[]).map(
+      (row) => {
+        const { claim: _claim, ...task } = this.mapTask(row);
+        return task;
+      },
+    );
+    const activity = (
+      this.database.prepare('SELECT * FROM activity_events ORDER BY id').all() as ActivityRow[]
+    ).map((row) => {
+      const eventWithoutFingerprint = {
+        workspaceId: row.workspace_id,
+        projectId: row.project_id,
+        specId: row.spec_id,
+        targetType: row.target_type,
+        targetId: row.target_id,
+        eventType: row.event_type,
+        actor: row.actor,
+        data: parseObject(row.data_json),
+        createdAt: row.created_at,
+      };
+      return {
+        fingerprint: activityFingerprint(eventWithoutFingerprint),
+        ...eventWithoutFingerprint,
+      };
+    });
+    return normalizedSyncState({ workspaces, projects, specs, contexts, tasks, activity });
+  }
+
+  applySyncState(state: SyncState): void {
+    this.validateSyncState(state);
+    this.runImmediate(() => {
+      this.deleteMissingSyncRows(
+        'tasks',
+        state.tasks.map((item) => item.id),
+      );
+      this.deleteMissingSyncRows(
+        'context_documents',
+        state.contexts.map((item) => item.id),
+      );
+      this.deleteMissingSyncRows(
+        'specs',
+        state.specs.map((item) => item.id),
+      );
+      this.deleteMissingSyncRows(
+        'projects',
+        state.projects.map((item) => item.id),
+      );
+      this.deleteMissingSyncRows(
+        'workspaces',
+        state.workspaces.map((item) => item.id),
+      );
+      for (const workspace of state.workspaces) {
+        const existing = this.database
+          .prepare('SELECT root_path FROM workspaces WHERE id=?')
+          .get(workspace.id) as { root_path: string } | undefined;
+        const rootPath = existing?.root_path ?? `/__pimpampum_unresolved__/${workspace.id}`;
+        this.database
+          .prepare(
+            `INSERT INTO workspaces (id,name,root_path,created_at,updated_at) VALUES (?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at`,
+          )
+          .run(workspace.id, workspace.name, rootPath, workspace.createdAt, workspace.updatedAt);
+      }
+      for (const project of state.projects) {
+        this.database
+          .prepare(
+            `INSERT INTO projects (id,workspace_id,slug,title,state,revision,completion_summary,artifacts_json,completed_at,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,slug=excluded.slug,title=excluded.title,state=excluded.state,revision=excluded.revision,completion_summary=excluded.completion_summary,artifacts_json=excluded.artifacts_json,completed_at=excluded.completed_at,updated_at=excluded.updated_at`,
+          )
+          .run(
+            project.id,
+            project.workspaceId,
+            project.slug,
+            project.title,
+            project.state,
+            project.revision,
+            project.completionSummary,
+            JSON.stringify(project.artifacts),
+            project.completedAt,
+            project.createdAt,
+            project.updatedAt,
+          );
+      }
+      for (const spec of state.specs) {
+        this.database
+          .prepare(
+            `INSERT INTO specs (id,project_id,slug,title,body,state,revision,completion_summary,artifacts_json,completed_at,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id,slug=excluded.slug,title=excluded.title,body=excluded.body,state=excluded.state,revision=excluded.revision,completion_summary=excluded.completion_summary,artifacts_json=excluded.artifacts_json,completed_at=excluded.completed_at,updated_at=excluded.updated_at`,
+          )
+          .run(
+            spec.id,
+            spec.projectId,
+            spec.slug,
+            spec.title,
+            spec.body,
+            spec.state,
+            spec.revision,
+            spec.completionSummary,
+            JSON.stringify(spec.artifacts),
+            spec.completedAt,
+            spec.createdAt,
+            spec.updatedAt,
+          );
+      }
+      for (const context of state.contexts) {
+        this.database
+          .prepare(
+            `INSERT INTO context_documents (id,workspace_id,project_id,name,body,revision,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,project_id=excluded.project_id,name=excluded.name,body=excluded.body,revision=excluded.revision,updated_at=excluded.updated_at`,
+          )
+          .run(
+            context.id,
+            context.ownerType === 'workspace' ? context.ownerId : null,
+            context.ownerType === 'project' ? context.ownerId : null,
+            context.name,
+            context.body,
+            context.revision,
+            context.createdAt,
+            context.updatedAt,
+          );
+      }
+      for (const task of state.tasks.filter((candidate) => candidate.parentId === null)) {
+        this.upsertSyncTask(task);
+      }
+      for (const task of state.tasks.filter((candidate) => candidate.parentId !== null)) {
+        this.upsertSyncTask(task);
+      }
+      const existingFingerprints = new Set(
+        this.exportSyncState().activity.map((event) => event.fingerprint),
+      );
+      for (const event of state.activity) {
+        if (existingFingerprints.has(event.fingerprint)) continue;
+        this.database
+          .prepare(
+            'INSERT INTO activity_events (workspace_id,project_id,spec_id,target_type,target_id,event_type,actor,data_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+          )
+          .run(
+            event.workspaceId,
+            event.projectId,
+            event.specId,
+            event.targetType,
+            event.targetId,
+            event.eventType,
+            event.actor,
+            JSON.stringify(event.data),
+            event.createdAt,
+          );
+      }
+    });
+  }
+
+  private deleteMissingSyncRows(
+    table: 'tasks' | 'context_documents' | 'specs' | 'projects' | 'workspaces',
+    ids: string[],
+  ): void {
+    if (ids.length === 0) {
+      this.database.prepare(`DELETE FROM ${table}`).run();
+      return;
+    }
+    this.database
+      .prepare(`DELETE FROM ${table} WHERE id NOT IN (${ids.map(() => '?').join(',')})`)
+      .run(...ids);
+  }
+
+  private validateSyncState(state: SyncState): void {
+    const fail = (message: string): never => {
+      throw new AppError('bad_request', `Shared snapshot is invalid: ${message}`, 400);
+    };
+    const unique = <T>(items: T[], key: (item: T) => string, label: string): Set<string> => {
+      const values = new Set<string>();
+      for (const item of items) {
+        const value = key(item);
+        if (values.has(value)) fail(`duplicate ${label} ${value}`);
+        values.add(value);
+      }
+      return values;
+    };
+    const workspaceIds = unique(state.workspaces, (item) => item.id, 'Workspace ID');
+    const projectIds = unique(state.projects, (item) => item.id, 'Project ID');
+    const specIds = unique(state.specs, (item) => item.id, 'Spec ID');
+    const taskIds = unique(state.tasks, (item) => item.id, 'Task ID');
+    unique(state.contexts, (item) => item.id, 'Context ID');
+    unique(state.projects, (item) => `${item.workspaceId}:${item.slug}`, 'Project slug');
+    unique(state.specs, (item) => `${item.projectId}:${item.slug}`, 'Spec slug');
+    unique(
+      state.contexts,
+      (item) => `${item.ownerType}:${item.ownerId}:${item.name}`,
+      'Context name',
+    );
+    for (const project of state.projects) {
+      if (!workspaceIds.has(project.workspaceId)) fail(`Project ${project.id} has no Workspace`);
+    }
+    for (const spec of state.specs) {
+      if (!projectIds.has(spec.projectId)) fail(`Spec ${spec.id} has no Project`);
+    }
+    for (const context of state.contexts) {
+      const owners = context.ownerType === 'workspace' ? workspaceIds : projectIds;
+      if (!owners.has(context.ownerId)) fail(`Context ${context.id} has no owner`);
+    }
+    const tasks = new Map(state.tasks.map((task) => [task.id, task]));
+    for (const task of state.tasks) {
+      if (!specIds.has(task.specId)) fail(`Task ${task.id} has no Spec`);
+      if (task.parentId === null) continue;
+      if (!taskIds.has(task.parentId)) fail(`Task ${task.id} has no parent`);
+      const parent = tasks.get(task.parentId);
+      if (!parent || parent.specId !== task.specId || parent.parentId !== null) {
+        fail(`Task ${task.id} has an invalid parent`);
+      }
+    }
+  }
+
+  private upsertSyncTask(task: SyncState['tasks'][number]): void {
+    this.database
+      .prepare(
+        `INSERT INTO tasks (id,spec_id,parent_id,title,body,state,revision,completion_summary,artifacts_json,completed_at,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET spec_id=excluded.spec_id,parent_id=excluded.parent_id,title=excluded.title,body=excluded.body,state=excluded.state,revision=excluded.revision,completion_summary=excluded.completion_summary,artifacts_json=excluded.artifacts_json,completed_at=excluded.completed_at,updated_at=excluded.updated_at`,
+      )
+      .run(
+        task.id,
+        task.specId,
+        task.parentId,
+        task.title,
+        task.body,
+        task.state,
+        task.revision,
+        task.completionSummary,
+        JSON.stringify(task.artifacts),
+        task.completedAt,
+        task.createdAt,
+        task.updatedAt,
+      );
+  }
+
   private projectFilter(
     workspaceId: string | null,
     state: ProjectState | null,
@@ -1487,6 +1779,15 @@ export class PimpampumStore {
     this.onMutation();
     return result;
   }
+  private syncWritable(entityType: SyncEntityKind, entityId: string): void {
+    if (this.syncConflictGuard(entityType, entityId)) {
+      throw new AppError(
+        'conflict',
+        `Synchronization conflict blocks changes to ${entityType} ${entityId}`,
+        409,
+      );
+    }
+  }
   private allowed(reason: string | null): void {
     if (reason !== null) throw new AppError('invalid_state', reason, 409);
   }
@@ -1586,7 +1887,7 @@ export class PimpampumStore {
     return {
       id: r.id,
       name: r.name,
-      rootPath: r.root_path,
+      rootPath: r.root_path.startsWith('/__pimpampum_unresolved__/') ? '' : r.root_path,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };

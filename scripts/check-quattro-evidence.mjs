@@ -594,7 +594,7 @@ for (let index = 0; index < transcript.length; index += 1) {
 const commands = Object.fromEntries(transcript.map((command) => [command.label, command]));
 const loadedCommands = transcript.slice(loadedStart, loadedStart + loadedCount);
 
-argumentsEqual(commands.version, ['--version'], 'version');
+argumentsEqual(commands.version, ['version'], 'version');
 if (commands.version.executable !== 'omarchy' || !commands.version.stdout.includes(version)) {
   fail('version output does not prove omarchyVersion');
 }

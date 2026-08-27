@@ -122,7 +122,6 @@ Item {
       return
     }
     if (directoryOpener.running) {
-      operationError = "The file explorer is already opening the backup directory"
       return
     }
     var arguments = ["xdg-open", directory]

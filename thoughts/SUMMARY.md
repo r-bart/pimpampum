@@ -33,7 +33,9 @@ development mechanics Pimpampum controls without introducing network- or model-d
 
 ## What's Pending
 
-- Nothing — implementation and post-review are complete.
+- The real development-session eval feature is complete.
+- Provider-neutral shared-folder synchronization and its Omarchy/macOS controls remain as local,
+  uncommitted work pending final review and validation.
 
 ## Files Modified
 
@@ -55,4 +57,8 @@ development mechanics Pimpampum controls without introducing network- or model-d
 
 ## Next Steps
 
-1. Commit or open a PR when the broader existing macOS working-tree changes are ready to be grouped.
+1. Finish reviewing and validating shared-folder synchronization and the Omarchy plugin controls.
+2. Commit or open a PR when the broader working-tree changes are ready to be grouped.
+
+See `thoughts/summaries/2026-08-26_shared-folder-sync.md` for the synchronization implementation
+summary.

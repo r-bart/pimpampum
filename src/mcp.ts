@@ -6,6 +6,7 @@ import {
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { createAgentErrorEnvelope, createAgentSuccessEnvelope } from './agentProtocol.js';
+import { AppError } from './errors.js';
 import {
   absolutePathSchema,
   artifactSchema,
@@ -19,6 +20,7 @@ import {
   writableSpecStateSchema,
 } from './schemas.js';
 import type { PimpampumGateway, Spec, Task } from './types.js';
+import type { SyncGateway } from './syncContract.js';
 
 const readOnly = {
   readOnlyHint: true,
@@ -139,7 +141,7 @@ async function completedManifest(gateway: PimpampumGateway, completed: Spec | Ta
     : gateway.getTaskManifest(completed.id);
 }
 
-export function buildMcpServer(gateway: PimpampumGateway): McpServer {
+export function buildMcpServer(gateway: PimpampumGateway, sync?: SyncGateway): McpServer {
   const server = new McpServer({ name: 'pimpampum', version: '0.1.0' });
 
   server.registerTool(
@@ -152,6 +154,99 @@ export function buildMcpServer(gateway: PimpampumGateway): McpServer {
     },
     () => run(() => gateway.listWorkspaces()),
   );
+
+  if (sync) {
+    server.registerTool(
+      'sync_status',
+      {
+        title: 'Read synchronization status',
+        description:
+          'Call during session orientation. Reports shared-folder health and conflicts. Normal domain writes export automatically; never edit snapshot files or change sync settings yourself.',
+        annotations: readOnly,
+      },
+      () => run(() => sync.getStatus()),
+    );
+    server.registerTool(
+      'sync_now',
+      {
+        title: 'Synchronize now',
+        description:
+          'Reconcile pending immutable snapshots and publish current state when the user asks for an immediate handoff. Do not call after every write; export is automatic.',
+        annotations: update,
+      },
+      () => run(() => sync.reconcile()),
+    );
+    server.registerTool(
+      'sync_conflict_list',
+      {
+        title: 'List synchronization conflicts',
+        description:
+          'List bounded conflict manifests that need user attention without candidate bodies. Do not choose a winner autonomously; continue only unrelated work.',
+        annotations: readOnly,
+      },
+      () =>
+        run(async () => {
+          const conflicts = await sync.listConflicts();
+          return conflicts.map(({ id, entityType, entityId, createdAt }) => ({
+            id,
+            entityType,
+            entityId,
+            createdAt,
+          }));
+        }),
+    );
+    server.registerTool(
+      'sync_conflict_read',
+      {
+        title: 'Read synchronization conflict',
+        description:
+          'Read bounded JSON pages from both candidates of one conflict for explanation to the user. This is read-only and never resolves or edits either candidate.',
+        annotations: readOnly,
+        inputSchema: z.strictObject({
+          conflictId: z.string().min(1).max(128).describe('Stable ID from sync_conflict_list.'),
+          offsetCodeUnits: z
+            .number()
+            .int()
+            .min(0)
+            .default(0)
+            .describe('UTF-16 offset applied independently to both candidates.'),
+          limitCodeUnits: z
+            .number()
+            .int()
+            .min(1)
+            .max(16_000)
+            .default(4_000)
+            .describe('Maximum UTF-16 code units returned for each candidate.'),
+        }),
+      },
+      ({ conflictId, offsetCodeUnits, limitCodeUnits }) =>
+        run(async () => {
+          const conflicts = await sync.listConflicts();
+          const conflict = conflicts.find((candidate) => candidate.id === conflictId);
+          if (!conflict)
+            throw new AppError('not_found', `Sync conflict ${conflictId} was not found`, 404);
+          const page = (candidate: unknown) => {
+            const content = JSON.stringify(candidate);
+            const value = content.slice(offsetCodeUnits, offsetCodeUnits + limitCodeUnits);
+            return {
+              content: value,
+              offsetCodeUnits,
+              returnedCodeUnits: value.length,
+              totalCodeUnits: content.length,
+              hasMore: offsetCodeUnits + value.length < content.length,
+            };
+          };
+          return {
+            id: conflict.id,
+            entityType: conflict.entityType,
+            entityId: conflict.entityId,
+            createdAt: conflict.createdAt,
+            local: page(conflict.local),
+            remote: page(conflict.remote),
+          };
+        }),
+    );
+  }
 
   server.registerTool(
     'workspace_resolve',
@@ -864,8 +959,11 @@ export function buildMcpServer(gateway: PimpampumGateway): McpServer {
   return server;
 }
 
-export function createPimpampumMcpHandler(gateway: PimpampumGateway): McpHttpHandler {
-  return createMcpHandler(() => buildMcpServer(gateway), {
+export function createPimpampumMcpHandler(
+  gateway: PimpampumGateway,
+  sync?: SyncGateway,
+): McpHttpHandler {
+  return createMcpHandler(() => buildMcpServer(gateway, sync), {
     legacy: 'stateless',
     responseMode: 'json',
   });

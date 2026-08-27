@@ -18,7 +18,8 @@ struct HelpDialogTests {
         "Agents interact through MCP, the CLI, or the local API.",
         "Claimed work appears under Active work and in the menu-bar count.",
         "Clicking a project opens its workspace in Finder.",
-        "Automatic backups are configured in Settings.",
+        "Synchronization shares portfolio changes through a folder managed by your sync provider.",
+        "Backup keeps a separate recovery copy; it does not synchronize other computers.",
       ])
     #expect(Set(HelpDialogCopy.items.map(\.id)).count == HelpDialogCopy.items.count)
     #expect(HelpDialogCopy.items.allSatisfy { !$0.systemImage.isEmpty })

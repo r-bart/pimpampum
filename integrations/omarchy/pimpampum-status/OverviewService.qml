@@ -80,10 +80,13 @@ Item {
   }
 
   function validateEnvelope(envelope) {
-    if (!isObject(envelope) || !isObject(envelope.meta) || !isObject(envelope.data)) return "invalid"
-    if (envelope.meta.schemaVersion !== 2) return "incompatible"
-
-    var data = envelope.data
+    if (!isObject(envelope)) return "invalid"
+    var data = envelope
+    if (isObject(envelope.meta) || isObject(envelope.data)) {
+      if (!isObject(envelope.meta) || !isObject(envelope.data)) return "invalid"
+      if (envelope.meta.schemaVersion !== 2) return "incompatible"
+      data = envelope.data
+    }
     if (["active", "available", "complete", "draft", "paused", "empty"].indexOf(data.status) === -1) return "invalid"
     if (!isObject(data.daemon) || !isString(data.daemon.version) || !isTimestamp(data.daemon.startedAt)) return "invalid"
     if (!isCount(data.daemon.uptimeSeconds) || !isTimestamp(data.generatedAt)) return "invalid"
@@ -119,7 +122,7 @@ Item {
       return
     }
 
-    overview = parsed.data
+    overview = isObject(parsed.meta) && isObject(parsed.data) ? parsed.data : parsed
     connectionState = "online"
     errorMessage = ""
     lastSuccessMs = Date.now()

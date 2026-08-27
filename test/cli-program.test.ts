@@ -35,6 +35,19 @@ function fixture() {
     })),
     retryAutomaticBackup: vi.fn(async () => ({ state: 'healthy', enabled: true })),
     disableAutomaticBackup: vi.fn(async () => ({ state: 'disabled', enabled: false })),
+    getSyncStatus: vi.fn(async () => ({ state: 'disabled', enabled: false })),
+    configureSync: vi.fn(async (directory: string, deviceId: string) => ({
+      state: 'healthy',
+      enabled: true,
+      directory,
+      deviceId,
+    })),
+    reconcileSync: vi.fn(async () => ({ state: 'healthy', enabled: true })),
+    pauseSync: vi.fn(async () => ({ state: 'paused', enabled: true })),
+    resumeSync: vi.fn(async () => ({ state: 'healthy', enabled: true })),
+    listSyncConflicts: vi.fn(async () => []),
+    resolveSyncConflict: vi.fn(async () => ({ state: 'healthy', enabled: true })),
+    forgetSync: vi.fn(async () => ({ state: 'disabled', enabled: false })),
     exportPortable: vi.fn(async (directory: string) => ({ path: directory })),
   } as unknown as PimpampumHttpClient;
   const output: string[] = [];
@@ -131,6 +144,14 @@ describe('CLI program', () => {
       ['backup', 'configure', 'cloud backup', '--json'],
       ['backup', 'retry', '--json'],
       ['backup', 'disable', '--json'],
+      ['sync', 'status', '--json'],
+      ['sync', 'configure', 'shared folder', '--device', 'linux-test', '--json'],
+      ['sync', 'now', '--json'],
+      ['sync', 'pause', '--json'],
+      ['sync', 'resume', '--json'],
+      ['sync', 'conflicts', '--json'],
+      ['sync', 'resolve', 'a'.repeat(64), 'local', '--json'],
+      ['sync', 'forget', '--json'],
       ['export', 'exports'],
     ];
     for (const command of commands) await runCli(command, state.runtime);
@@ -202,6 +223,21 @@ describe('CLI program', () => {
     expect(state.client.configureAutomaticBackup).not.toHaveBeenCalled();
     expect(state.client.disableAutomaticBackup).not.toHaveBeenCalled();
     expect(state.errors.join('\n')).toContain('Only the optional --json flag is accepted');
+  });
+
+  it('rejects malformed and unknown synchronization commands before transport', async () => {
+    const state = fixture();
+    state.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+    await expect(runCli(['sync', 'configure', '/shared'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(runCli(['sync', 'resolve', 'conflict', 'either'], state.runtime)).rejects.toThrow(
+      'exit:1',
+    );
+    await expect(runCli(['sync', 'wat'], state.runtime)).rejects.toThrow('exit:1');
+    expect(state.client.configureSync).not.toHaveBeenCalled();
+    expect(state.errors.join('\n')).toContain('sync configure');
+    expect(state.errors.join('\n')).toContain('Unknown sync action');
   });
 
   it('starts the server and closes it through either signal', async () => {

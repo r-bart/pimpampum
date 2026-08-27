@@ -4,14 +4,14 @@
   "name": "Pimpampum Status",
   "version": "0.1.0",
   "author": "Pimpampum",
-  "description": "Project status and automatic backup settings for Pimpampum",
+  "description": "Project status, synchronization, and backup settings for Pimpampum",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
     "displayName": "Pimpampum",
-    "description": "Project health, active work, and backup settings",
+    "description": "Project health, active work, synchronization, and backup settings",
     "category": "Info",
     "allowMultiple": false,
     "defaultSection": "right"

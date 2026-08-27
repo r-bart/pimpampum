@@ -39,9 +39,14 @@ enum HelpDialogCopy {
       text: "Clicking a project opens its workspace in Finder."
     ),
     HelpDialogItem(
+      id: "sync",
+      systemImage: "arrow.triangle.2.circlepath",
+      text: "Synchronization shares portfolio changes through a folder managed by your sync provider."
+    ),
+    HelpDialogItem(
       id: "backup",
       systemImage: "externaldrive",
-      text: "Automatic backups are configured in Settings."
+      text: "Backup keeps a separate recovery copy; it does not synchronize other computers."
     ),
   ]
 }

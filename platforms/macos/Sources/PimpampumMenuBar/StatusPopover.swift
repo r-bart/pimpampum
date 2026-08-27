@@ -5,21 +5,26 @@ import SwiftUI
 struct StatusIndicator: View {
   let state: StatusVisualState
   let activeCount: Int
+  var showsActiveCount = true
 
   var body: some View {
     HStack(spacing: 4) {
       ZStack(alignment: .bottomTrailing) {
         PimpampumMark()
           .foregroundStyle(.primary)
-        PimpampumStatusBadge(kind: state.badgeKind, color: state.color)
-          .offset(x: 3, y: 2)
+        if !showsActiveCount || StatusIndicatorPresentation.displayCount(activeCount) == nil {
+          PimpampumStatusBadge(kind: state.badgeKind, color: state.color)
+            .offset(x: 3, y: 2)
+        }
       }
       .frame(width: 17, height: 16, alignment: .leading)
 
-      if let displayCount = StatusIndicatorPresentation.displayCount(activeCount) {
+      if showsActiveCount,
+        let displayCount = StatusIndicatorPresentation.displayCount(activeCount)
+      {
         Text(displayCount)
           .monospacedDigit()
-          .foregroundStyle(.secondary)
+          .foregroundStyle(state.color)
       }
     }
     .accessibilityElement(children: .ignore)
@@ -148,7 +153,11 @@ struct StatusPopover: View {
 
   private var header: some View {
     HStack(spacing: 10) {
-      StatusIndicator(state: visualState, activeCount: visibleActiveCount)
+      StatusIndicator(
+        state: visualState,
+        activeCount: visibleActiveCount,
+        showsActiveCount: false
+      )
 
       VStack(alignment: .leading, spacing: 2) {
         Text("Pimpampum")

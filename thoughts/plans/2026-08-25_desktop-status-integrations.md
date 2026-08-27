@@ -279,7 +279,7 @@ Run `devtronic:generate-tests` for the desktop status specification. Freeze ever
 - Record the local macOS/Swift/Xcode versions.
 - Capture representative overview fixtures shared by TypeScript, Swift, and QML.
 - Freeze the current official Quattro schema, commands, and plugin behavior from primary sources.
-- Defer exact installed `omarchy --version`, command presence, and candidate validation to the mandatory real-machine Task 4.4 gate; the current Mac has no Omarchy executable.
+- Defer exact installed `omarchy version`, command presence, and candidate validation to the mandatory real-machine Task 4.4 gate; the current Mac has no Omarchy executable.
 - Do not mutate the live Omarchy bar during preflight.
 
 ### Phase 1: Shared Overview Contract
@@ -481,7 +481,7 @@ Use argument-array execution for `systemctl --user daemon-reload`, `enable --now
 - Record the tested Omarchy build in the implementation notes.
 - Write `thoughts/evidence/quattro-live.json` using the versioned evidence schema and verify it with `npm run check:quattro-evidence`.
 - Run the opt-in transactional live runner to produce schema-v2 evidence: exact command transcripts, pre/post shell/plugin/systemd/owned-path snapshots, distinct hashed PNG captures, and an explicit human visual review. Evidence is written atomically only after uninstall restores the exact baseline.
-- Compute `candidateHash` from the exact local plugin candidate using the repository checker's canonical sorted path/length/content algorithm; record successful `omarchy --version` and `omarchy plugin validate <candidate>` executable/argument arrays and results. Evidence older than 30 days, future-dated evidence, whitespace-only versions, arbitrary hashes, and mismatched candidates are rejected.
+- Compute `candidateHash` from the exact local plugin candidate using the repository checker's canonical sorted path/length/content algorithm; record successful `omarchy version` and `omarchy plugin validate <candidate>` executable/argument arrays and results. Evidence older than 30 days, future-dated evidence, whitespace-only versions, arbitrary hashes, and mismatched candidates are rejected.
 - Do not mark this task complete from fixtures alone.
 
 ### Phase 5: Cross-Platform Release Gate

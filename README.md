@@ -32,15 +32,16 @@ formats are excellent colleagues.
 
 ## The useful bits
 
-| You need to…                         | Pimpampum gives you…                                    | Use…                                          |
-| ------------------------------------ | ------------------------------------------------------- | --------------------------------------------- |
-| See the state of every product       | One portfolio overview and native status indicator      | `pimpampum overview` or the desktop menu      |
-| Preserve product intent              | Specs and scoped Context documents in Markdown          | `spec_read`, `context_list`, `context_read`   |
-| Break work down, but not into dust   | Tasks and one optional level of Subtasks                | `task_create`, `task_list`, `task_read`       |
-| Stop agents doing the same job twice | Atomic, expiring Claims                                 | `work_list`, `work_start`, `work_renew`       |
-| Hand work to the next agent          | Completion summaries, releases, and artifact references | `work_complete` or `work_release`             |
-| Use whichever agent you like         | MCP, a JSON-first CLI, and a documented local API       | `pimpampum tools`, `pimpampum call`, OpenAPI  |
-| Keep a current off-machine copy      | Automatic snapshots to any synchronized folder          | **Settings…** or `pimpampum backup configure` |
+| You need to…                                    | Pimpampum gives you…                                      | Use…                                         |
+| ----------------------------------------------- | --------------------------------------------------------- | -------------------------------------------- |
+| See the state of every product                  | One portfolio overview and native status indicator        | `pimpampum overview` or the desktop menu     |
+| Preserve product intent                         | Specs and scoped Context documents in Markdown            | `spec_read`, `context_list`, `context_read`  |
+| Break work down, but not into dust              | Tasks and one optional level of Subtasks                  | `task_create`, `task_list`, `task_read`      |
+| Stop agents doing the same job twice            | Atomic, expiring Claims                                   | `work_list`, `work_start`, `work_renew`      |
+| Hand work to the next agent                     | Completion summaries, releases, and artifact references   | `work_complete` or `work_release`            |
+| Use whichever agent you like                    | MCP, a JSON-first CLI, and a documented local API         | `pimpampum tools`, `pimpampum call`, OpenAPI |
+| Work on the same portfolio on several computers | Immutable JSON snapshots through any shared folder        | **Settings…** or `pimpampum sync configure`  |
+| Keep a recovery copy                            | Automatic SQLite backup to a local or synchronized folder | `pimpampum backup configure`                 |
 
 ## The deliberately small model
 
@@ -416,6 +417,14 @@ pimpampum backup status [--json]
 pimpampum backup configure <absolute-directory> [--json]
 pimpampum backup retry [--json]
 pimpampum backup disable [--json]
+pimpampum sync status [--json]
+pimpampum sync configure <absolute-parent-directory> --device <device-id> [--json]
+pimpampum sync now [--json]
+pimpampum sync pause [--json]
+pimpampum sync resume [--json]
+pimpampum sync conflicts [--json]
+pimpampum sync resolve <conflict-id> <local|remote> [--json]
+pimpampum sync forget [--json]
 pimpampum export <directory>
 ```
 
@@ -441,10 +450,38 @@ The bar shows the same portfolio state and Claim count. Its popout lists current
 opens Workspaces with `xdg-open`, and exposes the same backup controls. Other Linux desktops receive
 the background service without the Quattro widget.
 
-Both status clients are read-only apart from backup settings. Agents do the work; the status bar
+Both status clients are read-only apart from synchronization and backup settings. Agents do the work; the status bar
 simply tells you whether they are doing it.
 
 ## Persistence, backup, and export
+
+### Synchronization between computers
+
+Choose a folder that is already synchronized by Google Drive, Dropbox, iCloud Drive, Syncthing,
+rclone, or an equivalent provider. Pimpampum creates a `Pimpampum/devices/<device>` namespace and
+writes immutable, complete JSON snapshots there; every computer keeps its live SQLite database,
+token, Claims, settings, and Workspace paths locally.
+
+```bash
+pimpampum sync configure "/path/to/your/shared/folder" --device linux-desktop --json
+pimpampum sync status --json
+```
+
+After configuration, import runs at startup, on polling, and with `sync now`; export is automatic
+after committed changes. The Settings toggle pauses/resumes an existing configuration. It is off
+until the user chooses a folder, and automatic thereafter. If the provider is offline, local work
+continues and is exported after recovery. Concurrent edits to unrelated entities merge; divergent
+edits to the same base are preserved as visible conflicts without a timestamp winner.
+
+Resolve one explicitly with `pimpampum sync resolve <id> local` to keep this machine's candidate,
+or `remote` to keep the other candidate. The decision is published to every device. MCP agents may
+explain the preserved candidates but never choose one autonomously.
+
+Google does not provide an official Google Drive desktop client for Linux. A mounted/synchronized
+folder from rclone or another Linux client works because Pimpampum integrates with the filesystem,
+not a provider API. Do not place `pimpampum.sqlite` itself in a cloud-synchronized directory.
+
+### Backup and portable export
 
 The live SQLite database must remain in Pimpampum's local data directory. **Do not place it inside
 Dropbox, Google Drive, or iCloud.** Synchronized databases are an exciting way to discover file

@@ -32,10 +32,16 @@ describe.skipIf(process.platform !== 'darwin')('packaged macOS artifact gate', (
     expect(check(app, true).status).toBe(0);
     const metadata = JSON.parse(
       readFileSync(join(app, 'Contents/Resources/artifact-metadata.json'), 'utf8'),
-    ) as { binarySha256?: unknown; plistSha256?: unknown; architecture?: unknown };
+    ) as {
+      sourceInputSha256?: unknown;
+      binarySha256?: unknown;
+      plistSha256?: unknown;
+      architecture?: unknown;
+    };
     expect(metadata).toMatchObject({ architecture: 'arm64' });
     expect(metadata.binarySha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(metadata.plistSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(metadata.sourceInputSha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(check(app).status).toBe(0);
   });
 

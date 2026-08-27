@@ -96,10 +96,13 @@ async function main(): Promise<void> {
   const serviceLifecycleRequested = new Set(['install', 'status', 'uninstall']).has(
     process.argv[2] ?? '',
   );
-  const omarchyVersion =
-    serviceLifecycleRequested && omarchyPath && omarchyShellPath
-      ? await runServiceCommand(omarchyPath, ['--version']).catch(() => null)
-      : null;
+  let omarchyVersion = null;
+  if (serviceLifecycleRequested && omarchyPath && omarchyShellPath) {
+    omarchyVersion = await runServiceCommand(omarchyPath, ['version']).catch(() => null);
+    if (omarchyVersion && omarchyVersion.exitCode !== 0) {
+      omarchyVersion = await runServiceCommand(omarchyPath, ['--version']).catch(() => null);
+    }
+  }
   const useOmarchy =
     omarchyVersion?.exitCode === 0 && isCompatibleOmarchyVersion(omarchyVersion.stdout);
   const linuxSystemdAdapter = hostPlatform === 'linux' ? createSystemdAdapter() : null;

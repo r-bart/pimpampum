@@ -145,13 +145,17 @@ for (const expected of [
   'OverviewService.qml',
   'PimpampumActionArea.qml',
   'PimpampumMark.qml',
+  'PimpampumSettingsButton.qml',
   'StatusPopout.qml',
+  'SyncService.qml',
   'assets/pimpampum-compact.svg',
+  'assets/pimpampum-compact-white.svg',
   'README.md',
   'install.sh',
   'manifest.json',
   'pimpampum-backup',
   'pimpampum-overview',
+  'pimpampum-sync',
   'uninstall.sh',
 ]) {
   invariant(relativeFiles.has(expected), `missing plugin file: ${expected}`);
@@ -167,11 +171,16 @@ invariant(
 );
 const canonicalCompactMark = read(canonicalCompactMarkPath);
 const pluginCompactMark = read(join(pluginRoot, 'assets/pimpampum-compact.svg'));
+const pluginCompactMarkWhite = read(join(pluginRoot, 'assets/pimpampum-compact-white.svg'));
 validateCompactSVG(canonicalCompactMark, 'canonical compact-mark SVG');
 validateCompactSVG(pluginCompactMark, 'plugin compact-mark SVG');
 invariant(
   pluginCompactMark === canonicalCompactMark,
   'plugin compact-mark SVG differs from the reviewed canonical master',
+);
+invariant(
+  pluginCompactMarkWhite === canonicalCompactMark.replace('#000000', '#ffffff'),
+  'white compact-mark SVG must differ from the canonical master only by fill color',
 );
 
 const manifest = JSON.parse(read(join(pluginRoot, 'manifest.json')));
@@ -212,17 +221,21 @@ const qml = [
   'OverviewService.qml',
   'PimpampumActionArea.qml',
   'PimpampumMark.qml',
+  'PimpampumSettingsButton.qml',
   'StatusPopout.qml',
+  'SyncService.qml',
 ]
   .map((name) => read(join(pluginRoot, name)))
   .join('\n');
 const barWidget = read(join(pluginRoot, 'BarWidget.qml'));
 const pimpampumActionArea = read(join(pluginRoot, 'PimpampumActionArea.qml'));
 const pimpampumMark = read(join(pluginRoot, 'PimpampumMark.qml'));
+const settingsButton = read(join(pluginRoot, 'PimpampumSettingsButton.qml'));
 const statusPopout = read(join(pluginRoot, 'StatusPopout.qml'));
 const documentedBarMembers = new Set([
   'background',
   'barSize',
+  'barForeground',
   'fontFamily',
   'foreground',
   'hideTooltip',
@@ -239,7 +252,7 @@ for (const match of qml.matchAll(/(?:^|[^.\w])bar\.([A-Za-z_]\w*)/gmu)) {
 invariant(qml.includes('bar.requestPopout'), 'native popout request is missing');
 invariant(qml.includes('bar.releasePopout'), 'native popout release is missing');
 for (const member of [
-  'foreground',
+  'barForeground',
   'background',
   'urgent',
   'fontFamily',
@@ -261,8 +274,14 @@ invariant(
   qml.includes('var arguments = ["xdg-open", path]'),
   'xdg-open must receive one path argument',
 );
-invariant(qml.includes('FolderDialog'), 'optional Qt folder dialog is missing');
-invariant(qml.includes('absolute path'), 'manual absolute-path fallback is missing');
+invariant(
+  qml.includes('pimpampum-folder-picker') && !qml.includes('QtQuick.Dialogs'),
+  'isolated folder picker is missing or unsafe in-process dialog is present',
+);
+invariant(
+  qml.includes('Folder picker unavailable. Configure') && !qml.includes('Enter path manually'),
+  'folder picker failure must direct users to the bounded CLI without a duplicate path form',
+);
 invariant(qml.includes('command: [root.helperPath, "status"]'), 'backup helper command is missing');
 invariant(
   qml.includes('var arguments = [helperPath, operation]') && qml.includes('arguments.push(path)'),
@@ -290,17 +309,11 @@ invariant(
   'bar widget must use the fixed Pimpampum mark instead of status identity glyphs',
 );
 invariant(
-  (pimpampumMark.match(/assets\/pimpampum-compact\.svg/gu) ?? []).length === 1,
-  'fixed mark must reference one status-independent compact SVG',
-);
-invariant(
-  pimpampumMark.includes('import QtQuick.Effects') &&
-    pimpampumMark.includes('MultiEffect {') &&
-    pimpampumMark.includes('colorizationColor: root.foreground') &&
-    pimpampumMark.includes('colorization: 1') &&
-    /id:\s*markSource[\s\S]*?visible:\s*false/u.test(pimpampumMark) &&
-    !pimpampumMark.includes('#000000'),
-  'fixed mark must be theme-tinted with the Qt 6 native effect',
+  pimpampumMark.includes('assets/pimpampum-compact-white.svg') &&
+    pimpampumMark.includes('assets/pimpampum-compact.svg') &&
+    pimpampumMark.includes('root.useLightAsset') &&
+    pimpampumMark.includes('contrastBackground.r'),
+  'fixed mark must select an explicit high-contrast light or dark asset',
 );
 invariant(
   pimpampumMark.includes('id: badge') &&
@@ -311,7 +324,8 @@ invariant(
 invariant(
   pimpampumMark.includes('Math.max(0, activeClaims)') &&
     pimpampumMark.includes('safeActiveClaims >= 100 ? "99+" : String(safeActiveClaims)') &&
-    pimpampumMark.includes('visible: root.safeActiveClaims > 0'),
+    pimpampumMark.includes('visible: root.showActiveCount && root.safeActiveClaims > 0') &&
+    pimpampumMark.includes('visible: !root.showActiveCount || root.safeActiveClaims === 0'),
   'active-claim count must clamp negatives, hide zero, and cap three digits at 99+',
 );
 invariant(
@@ -350,19 +364,35 @@ invariant(
   'popout must remain native, bounded, clipped, and scrollable',
 );
 const popoutOrder = [
-  'text: "Pimpampum"',
-  'visible: root.service.connectionState !== "online"',
+  'text: root.helpView ? "Help" : root.settingsView ? "Settings" : "Pimpampum"',
+  'visible: !root.settingsView && root.service.connectionState !== "online"',
   'No workspaces. Run: pimpampum workspace:add',
   'text: "Active work ("',
   'text: "Projects ("',
   '+ "Completed ("',
   '+ "Cancelled ("',
-  '+ "Backup"',
+  'text: "Backup"',
 ].map((fragment) => statusPopout.indexOf(fragment));
 invariant(
   popoutOrder.every((index) => index >= 0) &&
     popoutOrder.every((index, position) => position === 0 || index > popoutOrder[position - 1]),
-  'popout information order must be header, errors, empty, active, projects, completed, cancelled, backup',
+  'popout must preserve portfolio order before the dedicated settings controls',
+);
+invariant(
+  statusPopout.includes('PimpampumHeaderIcon {') &&
+    statusPopout.includes('back: root.settingsView') &&
+    statusPopout.includes('width: Style.space(44)') &&
+    statusPopout.includes('property bool helpView: false') &&
+    statusPopout.includes('id: helpAction') &&
+    statusPopout.includes('Accessible.name: "Open synchronization and backup help"') &&
+    statusPopout.includes('Accessible.name: root.helpView ? "Back to settings"') &&
+    statusPopout.includes('id: helpPage') &&
+    statusPopout.includes('pimpampum sync conflicts') &&
+    statusPopout.includes('text: "Synchronization"') &&
+    statusPopout.includes('text: "Backup"') &&
+    !statusPopout.includes('syncExpanded') &&
+    !statusPopout.includes('backupExpanded'),
+  'synchronization and backup must live in one navigable settings view',
 );
 invariant(
   statusPopout.includes('elide: Text.ElideRight') &&
@@ -376,13 +406,14 @@ for (const control of [
   'completedRowAction',
   'cancelledAction',
   'cancelledRowAction',
-  'backupAction',
-  'actionArea',
+  'headerActionArea',
+  'syncPrimaryAction',
+  'backupPrimaryAction',
 ]) {
   invariant(statusPopout.includes(`id: ${control}`), `missing interactive control: ${control}`);
 }
 invariant(
-  (statusPopout.match(/PimpampumActionArea\s*\{/gu) ?? []).length >= 7 &&
+  (statusPopout.match(/PimpampumActionArea\s*\{/gu) ?? []).length >= 6 &&
     pimpampumActionArea.includes('hoverEnabled: true') &&
     pimpampumActionArea.includes('activeFocusOnTab: focusOnTab') &&
     pimpampumActionArea.includes('Keys.onPressed:') &&
@@ -395,10 +426,22 @@ invariant(
 invariant(
   statusPopout.includes('property bool completedExpanded: false') &&
     statusPopout.includes('property bool cancelledExpanded: false') &&
-    statusPopout.includes('property bool backupExpanded: false') &&
-    statusPopout.includes('enabled: modelData.enabled && !root.backupService.busy') &&
-    statusPopout.includes('enabled: !root.backupService.busy'),
-  'disclosures must start collapsed and backup controls must serialize while busy',
+    statusPopout.includes('visible: root.settingsView') &&
+    statusPopout.includes('actionEnabled: !root.backupService.busy') &&
+    settingsButton.includes('implicitHeight: Style.space(44)') &&
+    settingsButton.includes('Style.selectedFillFor(root.foreground, root.accent, root.urgent)') &&
+    settingsButton.includes('Accessible.name: root.label') &&
+    settingsButton.includes('property color accent: Color.accent') &&
+    statusPopout.includes('readonly property color accent: Color.accent') &&
+    statusPopout.includes('parent.width - syncSecondaryAction.width') &&
+    statusPopout.includes('parent.width - backupSecondaryAction.width'),
+  'project disclosures must start collapsed and settings controls must serialize while busy',
+);
+invariant(
+  barWidget.includes('activeFocusOnTab: true') &&
+    barWidget.includes('Keys.onReturnPressed: root.togglePanel()') &&
+    barWidget.includes('Keys.onSpacePressed: root.togglePanel()'),
+  'the compact bar widget must be keyboard focusable and activatable',
 );
 invariant(
   barWidget.includes('displayStatus: service.effectiveStatus === "complete" && hasCancellations') &&

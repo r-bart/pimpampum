@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -95,16 +96,15 @@ describe('Omarchy Quattro plugin', () => {
     expect(widget).toContain('completedGreen');
     expect(widget).toContain('root.themeForeground');
     expect(widget).toContain('Accessible.name: indicator.accessibleLabel');
-    expect(mark.match(/assets\/pimpampum-compact\.svg/gu)).toHaveLength(1);
-    expect(mark).toContain('import QtQuick.Effects');
-    expect(mark).toContain('MultiEffect {');
-    expect(mark).toContain('colorizationColor: root.foreground');
-    expect(mark).toMatch(/id:\s*markSource[\s\S]*?visible:\s*false/u);
-    expect(mark).not.toContain('#000000');
+    expect(mark).toContain('assets/pimpampum-compact.svg');
+    expect(mark).toContain('assets/pimpampum-compact-white.svg');
+    expect(mark).toContain('root.useLightAsset');
+    expect(mark).toContain('contrastBackground.r');
     expect(mark).toContain('id: badge');
     expect(mark).toContain('Math.max(0, activeClaims)');
     expect(mark).toContain('safeActiveClaims >= 100 ? "99+" : String(safeActiveClaims)');
-    expect(mark).toContain('visible: root.safeActiveClaims > 0');
+    expect(mark).toContain('visible: root.showActiveCount && root.safeActiveClaims > 0');
+    expect(mark).toContain('visible: !root.showActiveCount || root.safeActiveClaims === 0');
     expect(widget).toContain('activeBlue: "#3b82f6"');
     expect(widget).toContain('availableAmber: "#f59e0b"');
     expect(mark).toContain('status === "active" ? activeColor');
@@ -127,6 +127,7 @@ describe('Omarchy Quattro plugin', () => {
   it('keeps the popout bounded, ordered, readable, and keyboard accessible', () => {
     const popout = readFileSync(join(pluginSource, 'StatusPopout.qml'), 'utf8');
     const actionArea = readFileSync(join(pluginSource, 'PimpampumActionArea.qml'), 'utf8');
+    const settingsButton = readFileSync(join(pluginSource, 'PimpampumSettingsButton.qml'), 'utf8');
 
     expect(popout).toContain('contentWidth: fittedContentWidth(Style.space(380))');
     expect(popout).toContain(
@@ -136,14 +137,15 @@ describe('Omarchy Quattro plugin', () => {
     expect(popout).toContain('clip: true');
 
     const ordered = [
-      'text: "Pimpampum"',
-      'visible: root.service.connectionState !== "online"',
+      'text: root.helpView ? "Help" : root.settingsView ? "Settings" : "Pimpampum"',
+      'visible: !root.settingsView && root.service.connectionState !== "online"',
       'No workspaces. Run: pimpampum workspace:add',
       'text: "Active work ("',
       'text: "Projects ("',
       '+ "Completed ("',
       '+ "Cancelled ("',
-      '+ "Backup"',
+      'text: "Synchronization"',
+      'text: "Backup"',
     ].map((fragment) => popout.indexOf(fragment));
     expect(ordered.every((index) => index >= 0)).toBe(true);
     expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
@@ -160,12 +162,13 @@ describe('Omarchy Quattro plugin', () => {
       'completedRowAction',
       'cancelledAction',
       'cancelledRowAction',
-      'backupAction',
-      'actionArea',
+      'headerActionArea',
+      'syncPrimaryAction',
+      'backupPrimaryAction',
     ]) {
       expect(popout).toContain(`id: ${control}`);
     }
-    expect(popout.match(/PimpampumActionArea\s*\{/gu)?.length).toBeGreaterThanOrEqual(7);
+    expect(popout.match(/PimpampumActionArea\s*\{/gu)?.length).toBeGreaterThanOrEqual(6);
     expect(actionArea).toContain('hoverEnabled: true');
     expect(actionArea).toContain('activeFocusOnTab: focusOnTab');
     expect(actionArea).toContain('cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor');
@@ -183,8 +186,37 @@ describe('Omarchy Quattro plugin', () => {
     expect(popout).toContain('return project.lifecycleState === "done"');
     expect(popout).toContain('return project.lifecycleState === "cancelled"');
     expect(popout).toContain('modelData.title + " · Cancelled · "');
-    expect(popout).toContain('property bool backupExpanded: false');
-    expect(popout).toContain('enabled: modelData.enabled && !root.backupService.busy');
+    expect(popout).toContain('property bool settingsView: false');
+    expect(popout).toContain('PimpampumHeaderIcon {');
+    expect(popout).toContain('back: root.settingsView');
+    expect(popout).toContain('id: headerAction');
+    expect(popout).toContain('width: Style.space(44)');
+    expect(popout).toContain('property bool helpView: false');
+    expect(popout).toContain('id: helpAction');
+    expect(popout).toContain('Accessible.name: "Open synchronization and backup help"');
+    expect(popout).toContain('Accessible.name: root.helpView ? "Back to settings"');
+    expect(popout).toContain('id: helpPage');
+    expect(popout).toContain('visible: root.settingsView && root.helpView');
+    expect(popout).toContain('pimpampum sync conflicts');
+    expect(popout).toContain('text: "Synchronization"');
+    expect(popout).toContain('text: "Backup"');
+    expect(popout).not.toContain('syncExpanded');
+    expect(popout).not.toContain('backupExpanded');
+    expect(popout).toContain('model: root.settingsView ? [] : root.activeWork');
+    expect(popout).toContain('showSettings(false)');
+    expect(popout).toContain('actionEnabled: !root.backupService.busy');
+    expect(settingsButton).toContain('implicitHeight: Style.space(44)');
+    expect(settingsButton).toContain('minimumWidth: compact ? Style.space(44)');
+    expect(settingsButton).toContain('Accessible.name: root.label');
+    expect(settingsButton).toContain('property color accent: Color.accent');
+    expect(settingsButton).toContain(
+      'Style.selectedFillFor(root.foreground, root.accent, root.urgent)',
+    );
+    expect(popout).toContain('!root.syncService.paused');
+    expect(popout).toContain('text: "How Pimpampum works"');
+    expect(popout).toContain('readonly property color accent: Color.accent');
+    expect(popout).toContain('parent.width - syncSecondaryAction.width');
+    expect(popout).toContain('parent.width - backupSecondaryAction.width');
     expect(popout).toContain('var arguments = ["xdg-open", path]');
     expect(popout).not.toMatch(/sh\s+-c|bash\s+-c|xdg-open.*\+/u);
   });
@@ -213,9 +245,70 @@ describe('Omarchy Quattro plugin', () => {
     expect(service).toContain('processError.length > 4096');
     expect(service).toContain('message.length > 500');
     expect(service).not.toMatch(/sh\s+-c|bash\s+-c|shellQuote|\+\s*(?:directory|path)/u);
-    expect(popout).toContain('FolderDialog');
-    expect(popout).toContain('absolute path');
+    expect(popout).toContain('pimpampum-folder-picker');
+    expect(popout).not.toContain('QtQuick.Dialogs');
+    expect(popout).toContain('triggerMode: root.folderDialogOpen ? "hover" : "click"');
+    expect(popout).toContain('readonly property bool folderDialogOpen: folderPicker.running');
+    expect(popout).toContain('if (workspaceOpener.running) return');
+    expect(popout).not.toContain('already opening a workspace');
+    expect(popout).toContain('Folder picker unavailable. Configure');
+    expect(popout).not.toContain('Enter path manually');
+    expect(statSync(join(pluginSource, 'pimpampum-folder-picker')).mode & 0o111).not.toBe(0);
     expect(helper).toContain('backup "$@"');
+    expect(helper).not.toMatch(/eval\b|bearer|token/iu);
+  });
+
+  it('exposes automatic shared-folder synchronization without shell interpolation', () => {
+    const widget = readFileSync(join(pluginSource, 'BarWidget.qml'), 'utf8');
+    const service = readFileSync(join(pluginSource, 'SyncService.qml'), 'utf8');
+    const popout = readFileSync(join(pluginSource, 'StatusPopout.qml'), 'utf8');
+    const helper = readFileSync(join(pluginSource, 'pimpampum-sync'), 'utf8');
+    expect(widget).toContain('SyncService {');
+    expect(popout).toContain('Synchronization');
+    expect(popout).toContain('Sync now');
+    expect(popout).toContain('root.syncService.paused ? "Resume" : "Pause"');
+    expect(popout).toContain('visible: root.syncService.enabled && !root.confirmingSyncForget');
+    expect(popout).toContain('visible: root.confirmingSyncForget');
+    expect(popout).toContain('id: settingsSummary');
+    expect(popout).toContain('id: syncManageButton');
+    expect(popout).toContain('label: root.syncManageOpen ? "Close" : "Manage"');
+    expect(popout).toContain('label: "Change location"');
+    expect(popout).toContain('id: syncPrimaryAction');
+    expect(popout).toContain('id: backupPrimaryAction');
+    expect(popout).not.toContain('opacity: modelData.enabled && !root.backupService.busy');
+    expect(popout).toContain('local changes are safe');
+    expect(popout).toContain('Synchronization shares work between computers.');
+    expect(popout).toContain('root.effectiveSyncDirectory(root.manualSyncDirectory)');
+    expect(popout).toContain('Existing snapshots may be imported before');
+    expect(popout).toContain('"Enable sync"');
+    expect(popout).toContain('visible: root.confirmingSyncEnable');
+    expect(popout).toContain('root.folderDialogAvailable');
+    expect(popout).toContain('text: root.syncService.deviceId');
+    expect(popout).toContain('root.syncService.pendingCount');
+    expect(popout).toContain('syncService.lastImportAt');
+    expect(popout).toContain('syncService.lastExportAt');
+    expect(popout).toContain('onTriggered: root.runSyncAction("open")');
+    expect(popout).toContain('pimpampum sync conflicts');
+    expect(popout).toContain('Shared snapshots and local portfolio data will not be deleted.');
+    expect(popout).toContain('"Enable backup"');
+    expect(popout).toContain('Backup keeps a separate recovery copy.');
+    expect(popout).toContain('"Confirm disable"');
+    expect(popout).not.toContain('TextInput {');
+    const pickerAcceptance = popout.slice(
+      popout.indexOf('function acceptFolderPicker'),
+      popout.indexOf('function syncStatusText'),
+    );
+    expect(pickerAcceptance).not.toContain('syncService.configure');
+    expect(pickerAcceptance).not.toContain('backupService.configure');
+    expect(service).toContain('deviceId = parsed.deviceId || ""');
+    expect(service).toContain('directoryOpener.command = ["xdg-open", directory]');
+    expect(service).toContain('actionableProcessError("Synchronization operation failed")');
+    expect(service).toContain('processError.length > 4096');
+    expect(service).toContain('message.length > 500');
+    expect(service).toContain('var arguments = [helperPath, operation]');
+    expect(service).toContain('arguments.push(path)');
+    expect(service).not.toMatch(/sh\s+-c|bash\s+-c|shellQuote|\+\s*(?:directory|path)/u);
+    expect(helper).toContain('sync configure "$2" --device "$device_id" --json');
     expect(helper).not.toMatch(/eval\b|bearer|token/iu);
   });
 

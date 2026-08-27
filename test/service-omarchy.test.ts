@@ -136,7 +136,7 @@ function fakeQuattro(root: Fixture): FakeQuattro {
         : ok(stdout);
     }
     if (state.fail === key) return { exitCode: 72, stdout: '', stderr: 'simulated failure' };
-    if (key === '--version') return ok('Omarchy 4.0.0 Quattro\n');
+    if (key === 'version' || key === '--version') return ok('Omarchy 4.0.0 Quattro\n');
     if (key === 'shell ping') return ok('ok\n');
     if (key === 'shell rescanPlugins') {
       if (state.ignoredRescans > 0) {
@@ -383,11 +383,25 @@ describe('Omarchy Quattro composite service adapter', () => {
 
     expect(targetObservations.slice(0, 5)).toEqual([false, false, false, false, false]);
     expect(quattro.commands.slice(0, 5).map(([, arguments_]) => arguments_.join(' '))).toEqual([
-      '--version',
+      'version',
       'shell ping',
       'plugin list --json',
       `plugin validate ${realpathSync(root.source)}`,
       'plugin enable --help',
+    ]);
+  });
+
+  it('falls back to the legacy Omarchy version flag', async () => {
+    const root = fixture('legacy-version');
+    const quattro = fakeQuattro(root);
+    quattro.state.fail = 'version';
+    const composite = adapter(root, daemon(root, []));
+
+    await createPlatformServiceManager(managerInput(root, quattro.runCommand, composite)).install();
+
+    expect(quattro.commands.slice(0, 2).map(([, arguments_]) => arguments_.join(' '))).toEqual([
+      'version',
+      '--version',
     ]);
   });
 

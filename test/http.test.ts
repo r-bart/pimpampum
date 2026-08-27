@@ -9,10 +9,12 @@ import { openDatabase } from '../src/db.js';
 import { createHttpApp } from '../src/http.js';
 import { PimpampumStore } from '../src/store.js';
 import type { PimpampumHttpGateway } from '../src/types.js';
+import { SyncController } from '../src/syncController.js';
 
 describe('HTTP API', () => {
   let store: PimpampumStore;
   let automaticBackup: AutomaticBackupController;
+  let sync: SyncController;
   let closeMcp: () => Promise<void>;
   let temporaryDirectory: string;
   let app: ReturnType<typeof request> extends never
@@ -23,10 +25,18 @@ describe('HTTP API', () => {
   beforeEach(() => {
     temporaryDirectory = mkdtempSync(join(tmpdir(), 'pimpampum-http-'));
     const database = openDatabase(':memory:');
-    store = new PimpampumStore(database, () => automaticBackup.markDirty());
+    store = new PimpampumStore(database, () => {
+      automaticBackup.markDirty();
+      sync.markDirty();
+    });
     automaticBackup = new AutomaticBackupController({
       settingsPath: join(temporaryDirectory, 'settings.json'),
       snapshotter: (destination) => store.backupLatest(destination),
+    });
+    sync = new SyncController({
+      settingsPath: join(temporaryDirectory, 'sync.json'),
+      snapshotter: () => store.exportSyncState(),
+      importer: (state) => store.applySyncState(state),
     });
     const config: RuntimeConfig = {
       host: '127.0.0.1',
@@ -36,7 +46,7 @@ describe('HTTP API', () => {
       token,
       baseUrl: 'http://127.0.0.1:7337',
     };
-    const created = createHttpApp(store, config, console, Date.now, automaticBackup);
+    const created = createHttpApp(store, config, console, Date.now, automaticBackup, sync);
     app = created.app;
     closeMcp = created.close;
   });
@@ -44,6 +54,7 @@ describe('HTTP API', () => {
   afterEach(async () => {
     await closeMcp();
     await automaticBackup.close();
+    await sync.close();
     store.close();
     rmSync(temporaryDirectory, { recursive: true, force: true });
   });
@@ -110,6 +121,82 @@ describe('HTTP API', () => {
       .expect(200)
       .expect(({ body }) => expect(body.data).toMatchObject({ enabled: false, state: 'disabled' }));
     await request(app).post('/api/v1/settings/backup/retry').set(authorization).expect(409);
+  });
+
+  it('configures, reconciles, pauses, resumes and forgets shared-folder synchronization', async () => {
+    const authorization = { authorization: `Bearer ${token}` };
+    const shared = join(temporaryDirectory, 'Drive');
+    mkdirSync(shared);
+    await request(app).get('/api/v1/settings/sync').expect(401);
+    await request(app)
+      .get('/api/v1/settings/sync')
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ enabled: false, state: 'disabled' }));
+    await request(app)
+      .put('/api/v1/settings/sync')
+      .set(authorization)
+      .send({ directory: shared, deviceId: 'linux-test' })
+      .expect(200)
+      .expect(({ body }) =>
+        expect(body.data).toMatchObject({
+          enabled: true,
+          deviceId: 'linux-test',
+          state: 'healthy',
+        }),
+      );
+    await request(app).post('/api/v1/settings/sync/reconcile').set(authorization).expect(200);
+    await request(app)
+      .post('/api/v1/settings/sync/pause')
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.state).toBe('paused'));
+    await request(app)
+      .post('/api/v1/settings/sync/resume')
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.state).toBe('healthy'));
+    await request(app)
+      .get('/api/v1/settings/sync/conflicts')
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toEqual([]));
+    vi.spyOn(sync, 'listConflicts').mockReturnValueOnce([
+      {
+        id: 'a'.repeat(64),
+        entityType: 'project',
+        entityId: 'project-id',
+        local: { large: 'candidate' },
+        remote: null,
+        createdAt: '2026-08-26T00:00:00.000Z',
+      },
+    ]);
+    await request(app)
+      .get('/api/v1/settings/sync/conflicts')
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) =>
+        expect(body.data).toEqual([
+          {
+            id: 'a'.repeat(64),
+            entityType: 'project',
+            entityId: 'project-id',
+            createdAt: '2026-08-26T00:00:00.000Z',
+          },
+        ]),
+      );
+    const resolve = vi.spyOn(sync, 'resolveConflict').mockResolvedValue(sync.getStatus());
+    await request(app)
+      .post(`/api/v1/settings/sync/conflicts/${'a'.repeat(64)}/resolve`)
+      .set(authorization)
+      .send({ choice: 'remote' })
+      .expect(200);
+    expect(resolve).toHaveBeenCalledWith('a'.repeat(64), 'remote');
+    await request(app)
+      .delete('/api/v1/settings/sync')
+      .set(authorization)
+      .expect(200)
+      .expect(({ body }) => expect(body.data).toMatchObject({ enabled: false, state: 'disabled' }));
   });
 
   it('omits automatic-backup routes when the HTTP capability is not composed', async () => {

@@ -7,12 +7,14 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeConfig } from '../src/config.js';
 import { startServer, type RunningServer } from '../src/server.js';
+import { canonicalJson, syncHash } from '../src/syncState.js';
 
 describe('server composition', () => {
   let running: RunningServer | null = null;
@@ -40,6 +42,17 @@ describe('server composition', () => {
     const address = running.server.address() as AddressInfo;
     const response = await fetch(`http://127.0.0.1:${address.port}/health`);
     expect(await response.json()).toEqual({ status: 'ok', version: '0.1.0' });
+    const shared = join(directory, 'shared');
+    mkdirSync(shared);
+    const syncResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/settings/sync`, {
+      method: 'PUT',
+      headers: {
+        authorization: `Bearer ${running.config.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ directory: shared, deviceId: 'server' }),
+    });
+    expect(syncResponse.status).toBe(200);
     const workspaceResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/workspaces`, {
       method: 'POST',
       headers: {
@@ -49,6 +62,35 @@ describe('server composition', () => {
       body: JSON.stringify({ id: 'server-test', name: 'Server test', rootPath: directory }),
     });
     expect(workspaceResponse.status).toBe(201);
+    const state = {
+      workspaces: [],
+      projects: [],
+      specs: [],
+      contexts: [],
+      tasks: [],
+      activity: [],
+    };
+    const remoteDirectory = join(shared, 'Pimpampum/devices/remote');
+    mkdirSync(remoteDirectory, { recursive: true });
+    const snapshot = {
+      schemaVersion: 1 as const,
+      snapshotId: randomUUID(),
+      deviceId: 'remote',
+      sequence: 1,
+      createdAt: new Date().toISOString(),
+      parentSnapshots: [],
+      stateHash: syncHash(state),
+      state,
+    };
+    writeFileSync(
+      join(remoteDirectory, `000000000001-${snapshot.snapshotId}.json`),
+      canonicalJson(snapshot),
+    );
+    const reconcile = await fetch(
+      `http://127.0.0.1:${address.port}/api/v1/settings/sync/reconcile`,
+      { method: 'POST', headers: { authorization: `Bearer ${running.config.token}` } },
+    );
+    expect(reconcile.status).toBe(200);
     await running.close();
     await running.close();
     running = null;

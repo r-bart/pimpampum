@@ -12,8 +12,12 @@ BarWidget {
   readonly property string backupHelperPath: decodeURIComponent(
     Qt.resolvedUrl("pimpampum-backup").toString().replace(/^file:\/\//, "")
   )
+  readonly property string syncHelperPath: decodeURIComponent(
+    Qt.resolvedUrl("pimpampum-sync").toString().replace(/^file:\/\//, "")
+  )
   readonly property bool isVertical: bar ? bar.vertical : false
-  readonly property color themeForeground: bar ? bar.foreground : "white"
+  // Contrast-aware for transparent bars and changing wallpapers/themes.
+  readonly property color themeForeground: bar ? bar.barForeground : "white"
   readonly property color themeBackground: bar ? bar.background : "#202020"
   readonly property color themeUrgent: bar ? bar.urgent : "#ff5f57"
   readonly property color activeBlue: "#3b82f6"
@@ -67,12 +71,19 @@ BarWidget {
     popoutOpen: popout.opened
   }
 
+  SyncService {
+    id: syncService
+    helperPath: root.syncHelperPath
+    popoutOpen: popout.opened
+  }
+
   StatusPopout {
     id: popout
     bar: root.bar
     anchorItem: root
     service: service
     backupService: backupService
+    syncService: syncService
   }
 
   PimpampumMark {
@@ -83,7 +94,9 @@ BarWidget {
     stale: service.stale
     vertical: root.isVertical
     activeClaims: service.activeClaims
+    showActiveCount: false
     foreground: root.themeForeground
+    contrastBackground: root.themeBackground
     urgent: root.themeUrgent
     activeColor: root.activeBlue
     availableColor: root.availableAmber
@@ -95,12 +108,18 @@ BarWidget {
   }
 
   MouseArea {
+    id: widgetAction
     anchors.fill: parent
     hoverEnabled: true
+    activeFocusOnTab: true
     cursorShape: Qt.PointingHandCursor
     Accessible.role: Accessible.Button
     Accessible.name: indicator.accessibleLabel
     Accessible.onPressAction: root.togglePanel()
+    Keys.onReturnPressed: root.togglePanel()
+    Keys.onEnterPressed: root.togglePanel()
+    Keys.onSpacePressed: root.togglePanel()
+    onPressed: forceActiveFocus()
     onEntered: if (root.bar) root.bar.showTooltip(root, root.statusLabel)
     onExited: if (root.bar) root.bar.hideTooltip(root)
     onClicked: root.togglePanel()

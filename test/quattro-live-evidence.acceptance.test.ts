@@ -108,7 +108,7 @@ function fixture() {
   const specBody = '/opt/pimpampum/README.md';
   const emptyShell = JSON.stringify({ bar: { left: [], center: [], right: [] } });
   const transcript = [
-    command('version', 'omarchy', ['--version'], 'Omarchy 4.0.0\n'),
+    command('version', 'omarchy', ['version'], 'Omarchy 4.0.0\n'),
     command('validation', 'omarchy', ['plugin', 'validate', candidate], 'valid\n'),
     command('baseline-before-shell', 'omarchy-shell', ['shell', 'listShellConfig'], emptyShell),
     command('baseline-before-plugins', 'omarchy', ['plugin', 'list', '--json'], '{"plugins":[]}\n'),
@@ -482,7 +482,7 @@ describe('Task 4.4: reproducible live Quattro evidence', () => {
       candidateHash: state.evidence.candidateHash,
       validatedCandidatePath: state.candidate,
       commands: {
-        version: command('version', 'omarchy', ['--version'], 'Omarchy 4.0.0\n'),
+        version: command('version', 'omarchy', ['version'], 'Omarchy 4.0.0\n'),
         validation: {
           ...command('validation', 'omarchy', ['plugin', 'validate', state.candidate], 'valid\n'),
           passed: true,

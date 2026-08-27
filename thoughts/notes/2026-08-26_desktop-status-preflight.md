@@ -35,7 +35,7 @@ The current build host does not provide `omarchy` or `systemctl`. Static contrac
 This is an explicit environment gate, not missing local preflight work:
 
 - Phase 0 freezes the current official schema/command contract and representative shared fixtures.
-- Task 4.4 records `omarchy --version`, verifies `omarchy plugin validate --help`, validates the staged candidate, and performs the live UI smoke on Quattro.
+- Task 4.4 records `omarchy version`, verifies `omarchy plugin validate --help`, validates the staged candidate, and performs the live UI smoke on Quattro.
 - Phase 5 cannot pass without that Task 4.4 evidence. `npm run check:quattro-evidence` validates the machine-readable evidence and `loop.manifest.yaml` stops at the human-owned `live-quattro` phase until it passes. No version or live result may be inferred from documentation.
 
 ## Frozen shared fixtures

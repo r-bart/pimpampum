@@ -30,7 +30,7 @@ final class PimpampumApplicationDelegate: NSObject, NSApplicationDelegate {
 struct PimpampumMenuBarApp: App {
   @NSApplicationDelegateAdaptor(PimpampumApplicationDelegate.self) private var appDelegate
   @StateObject private var store: OverviewStore
-  @StateObject private var settingsWindowController: BackupSettingsWindowController
+  @StateObject private var settingsWindowController: SyncSettingsWindowController
   private let workspaceOpener = WorkspaceOpener()
 
   init() {
@@ -39,6 +39,11 @@ struct PimpampumMenuBarApp: App {
       receiptURL: dataDirectory.appendingPathComponent("install-receipt.json"),
       tokenURL: dataDirectory.appendingPathComponent("token")
     )
+    let syncClient = SyncSettingsClient(
+      receiptURL: dataDirectory.appendingPathComponent("install-receipt.json"),
+      tokenURL: dataDirectory.appendingPathComponent("token")
+    )
+    let syncSettingsStore = SyncSettingsStore(client: syncClient)
     let backupClient = BackupSettingsClient(
       receiptURL: dataDirectory.appendingPathComponent("install-receipt.json"),
       tokenURL: dataDirectory.appendingPathComponent("token")
@@ -46,7 +51,10 @@ struct PimpampumMenuBarApp: App {
     let backupSettingsStore = BackupSettingsStore(client: backupClient)
     _store = StateObject(wrappedValue: OverviewStore(reader: client))
     _settingsWindowController = StateObject(
-      wrappedValue: BackupSettingsWindowController(store: backupSettingsStore)
+      wrappedValue: SyncSettingsWindowController(
+        syncStore: syncSettingsStore,
+        backupStore: backupSettingsStore
+      )
     )
   }
 
@@ -74,7 +82,8 @@ struct PimpampumMenuBarApp: App {
         activeCount: StatusPopover.visibleActiveCount(
           connectionState: store.connectionState,
           overview: store.overview
-        )
+        ),
+        showsActiveCount: false
       )
       .task {
         store.start()

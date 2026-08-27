@@ -2,8 +2,8 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -21,6 +21,33 @@ function invariant(condition, message) {
 
 function sha256(content) {
   return createHash('sha256').update(content).digest('hex');
+}
+
+function macosSourceHash() {
+  const roots = [
+    join(repositoryRoot, 'platforms/macos/Package.swift'),
+    join(repositoryRoot, 'platforms/macos/Sources'),
+    join(repositoryRoot, 'platforms/macos/Resources'),
+    join(repositoryRoot, 'scripts/build-macos-app.sh'),
+  ];
+  const files = [];
+  const visit = (path) => {
+    const metadata = lstatSync(path);
+    invariant(!metadata.isSymbolicLink(), `macOS build input must not be a symlink: ${path}`);
+    if (metadata.isDirectory()) {
+      for (const entry of readdirSync(path).sort()) visit(join(path, entry));
+    } else if (metadata.isFile()) files.push(path);
+    else invariant(false, `macOS build input must be a regular file: ${path}`);
+  };
+  for (const root of roots) visit(root);
+  const hash = createHash('sha256');
+  for (const path of files.sort()) {
+    hash.update(relative(repositoryRoot, path));
+    hash.update('\0');
+    hash.update(readFileSync(path));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
 }
 
 function packedVersion(value) {
@@ -167,7 +194,8 @@ invariant(
   'The packaged compact mark differs from the reviewed source vector.',
 );
 const metadata = {
-  schemaVersion: 1,
+  schemaVersion: 2,
+  sourceInputSha256: macosSourceHash(),
   binarySha256: sha256(binary),
   plistSha256: sha256(plistBytes),
   compactMarkSha256: sha256(packagedCompactMarkBytes),

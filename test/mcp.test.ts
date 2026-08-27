@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../src/db.js';
 import { createPimpampumMcpHandler } from '../src/mcp.js';
 import { PimpampumStore } from '../src/store.js';
+import { SyncController } from '../src/syncController.js';
 
 const canonicalTools = [
   'workspace_list',
@@ -91,6 +92,75 @@ describe('MCP endpoint v2', () => {
       }
     } finally {
       await client.close();
+    }
+  });
+
+  it('teaches agents synchronization status and conflict handling without configuration authority', async () => {
+    const sync = new SyncController({
+      settingsPath: join(temporaryDirectory, 'sync.json'),
+      snapshotter: () => store.exportSyncState(),
+      importer: (state) => store.applySyncState(state),
+    });
+    const handler = createPimpampumMcpHandler(store, sync);
+    const client = new Client(
+      { name: 'sync-test', version: '0.1.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+    const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {
+      fetch: (url, init) => handler.fetch(new Request(url, init)),
+    });
+    await client.connect(transport);
+    try {
+      const tools = await client.listTools();
+      const syncTools = tools.tools.filter((tool) => tool.name.startsWith('sync_'));
+      expect(syncTools.map((tool) => tool.name)).toEqual([
+        'sync_status',
+        'sync_now',
+        'sync_conflict_list',
+        'sync_conflict_read',
+      ]);
+      expect(syncTools.map((tool) => tool.name)).not.toContain('sync_configure');
+      expect(syncTools.find((tool) => tool.name === 'sync_status')?.description).toContain(
+        'never edit snapshot files',
+      );
+      const status = await client.callTool({ name: 'sync_status', arguments: {} });
+      expect(JSON.stringify(status.content)).toContain('disabled');
+      await sync.configure(temporaryDirectory, 'test-device');
+      expect((await client.callTool({ name: 'sync_now', arguments: {} })).isError).not.toBe(true);
+      const emptyConflicts = await client.callTool({ name: 'sync_conflict_list', arguments: {} });
+      expect(emptyConflicts.isError).not.toBe(true);
+      (sync as unknown as { settings: { conflicts: unknown[] } }).settings.conflicts.push({
+        id: 'known',
+        entityType: 'project',
+        entityId: 'project',
+        local: {},
+        remote: {},
+        createdAt: '2026-08-26T00:00:00.000Z',
+      });
+      const manifests = await client.callTool({ name: 'sync_conflict_list', arguments: {} });
+      expect(JSON.stringify(manifests.content)).not.toContain('"local"');
+      const known = await client.callTool({
+        name: 'sync_conflict_read',
+        arguments: { conflictId: 'known' },
+      });
+      expect(known.isError).not.toBe(true);
+      expect(JSON.stringify(known.content)).toContain('hasMore');
+      expect(
+        (
+          await client.callTool({
+            name: 'sync_conflict_read',
+            arguments: { conflictId: 'known', limitCodeUnits: 1, offsetCodeUnits: 0 },
+          })
+        ).isError,
+      ).not.toBe(true);
+      const missing = await client.callTool({
+        name: 'sync_conflict_read',
+        arguments: { conflictId: 'missing' },
+      });
+      expect(missing.isError).toBe(true);
+    } finally {
+      await client.close();
+      await sync.close();
     }
   });
 

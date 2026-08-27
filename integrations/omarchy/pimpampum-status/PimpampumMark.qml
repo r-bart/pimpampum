@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Effects
 
 Item {
   id: root
@@ -10,6 +9,7 @@ Item {
   required property bool vertical
   required property int activeClaims
   required property color foreground
+  required property color contrastBackground
   required property color urgent
   required property color activeColor
   required property color availableColor
@@ -18,6 +18,7 @@ Item {
   property real markSize: 16
   property real badgeSize: 5
   property real itemSpacing: 4
+  property bool showActiveCount: true
 
   readonly property int safeActiveClaims: Math.max(0, activeClaims)
   readonly property string countLabel: safeActiveClaims >= 100 ? "99+" : String(safeActiveClaims)
@@ -44,6 +45,9 @@ Item {
     : status === "complete" ? completeColor
     : ["offline", "credentials", "invalid", "incompatible"].indexOf(status) !== -1
       ? urgent : foreground
+  readonly property bool useLightAsset:
+    (contrastBackground.r * 0.2126 + contrastBackground.g * 0.7152
+      + contrastBackground.b * 0.0722) < 0.5
 
   implicitWidth: indicator.implicitWidth
   implicitHeight: indicator.implicitHeight
@@ -58,7 +62,7 @@ Item {
 
     Item {
       id: identity
-      width: root.markSize + root.itemSpacing + root.badgeSize
+      width: root.markSize + (badge.visible ? root.itemSpacing + root.badgeSize : 0)
       height: Math.max(root.markSize, root.badgeSize)
       Accessible.ignored: true
 
@@ -68,24 +72,18 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         width: root.markSize
         height: root.markSize
-        source: Qt.resolvedUrl("assets/pimpampum-compact.svg")
+        source: Qt.resolvedUrl(root.useLightAsset
+          ? "assets/pimpampum-compact-white.svg"
+          : "assets/pimpampum-compact.svg")
         sourceSize.width: root.markSize
         sourceSize.height: root.markSize
         fillMode: Image.PreserveAspectFit
         smooth: true
-        visible: false
-      }
-
-      MultiEffect {
-        anchors.fill: markSource
-        source: markSource
-        autoPaddingEnabled: false
-        colorization: 1
-        colorizationColor: root.foreground
       }
 
       Item {
         id: badge
+        visible: !root.showActiveCount || root.safeActiveClaims === 0
         anchors.left: markSource.right
         anchors.leftMargin: root.itemSpacing
         anchors.verticalCenter: parent.verticalCenter
@@ -109,9 +107,9 @@ Item {
     }
 
     Text {
-      visible: root.safeActiveClaims > 0
+      visible: root.showActiveCount && root.safeActiveClaims > 0
       text: root.countLabel
-      color: root.foreground
+      color: root.activeColor
       font.family: root.fontFamily
       font.pixelSize: Math.max(9, root.markSize * 0.72)
       font.bold: true

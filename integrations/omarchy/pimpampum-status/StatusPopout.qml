@@ -10,20 +10,34 @@ Item {
   required property var anchorItem
   required property var service
   required property var backupService
+  required property var syncService
   property bool opened: false
+  property bool settingsView: false
+  property bool helpView: false
   property bool completedExpanded: false
   property bool cancelledExpanded: false
-  property bool backupExpanded: false
   property string manualBackupDirectory: ""
-  property var backupFolderDialog: null
-  property bool folderDialogChecked: false
-  property bool folderDialogAvailable: false
+  property string manualSyncDirectory: ""
+  property bool confirmingSyncForget: false
+  property bool confirmingBackupDisable: false
+  property bool confirmingSyncEnable: false
+  property bool confirmingBackupEnable: false
+  property bool syncManageOpen: false
+  property bool backupManageOpen: false
+  property string pendingFolderTarget: ""
+  property string folderPickerOutput: ""
   property string revealError: ""
   property string pendingWorkspacePath: ""
+  readonly property string pickerHelperPath: decodeURIComponent(
+    Qt.resolvedUrl("pimpampum-folder-picker").toString().replace(/^file:\/\//, "")
+  )
+  readonly property bool folderDialogOpen: folderPicker.running
+  readonly property bool folderDialogAvailable: pickerHelperPath.charAt(0) === "/"
 
-  readonly property color foreground: bar ? bar.foreground : "white"
+  readonly property color foreground: bar ? bar.barForeground : "white"
   readonly property color background: bar ? bar.background : "#202020"
   readonly property color urgent: bar ? bar.urgent : "#ff5f57"
+  readonly property color accent: Color.accent
   readonly property string fontFamily: bar ? bar.fontFamily : "monospace"
   readonly property var projects: service.overview ? service.overview.projects : []
   readonly property var activeWork: service.overview ? service.overview.activeWork : []
@@ -42,45 +56,88 @@ Item {
     opened = true
     service.refresh()
     backupService.refresh()
+    syncService.refresh()
   }
 
-  function localPath(fileUrl) {
-    var encoded = String(fileUrl)
-    if (encoded.indexOf("file://") !== 0) return ""
-    var path = decodeURIComponent(encoded.slice(7))
-    return backupService.isAbsolutePath(path) ? path : ""
+  function chooseDirectory(target) {
+    if (folderPicker.running || !folderDialogAvailable) return
+    pendingFolderTarget = target
+    folderPickerOutput = ""
+    folderPicker.command = [pickerHelperPath,
+      target === "backup" ? "Choose a backup destination" : "Choose a provider-synced location"]
+    folderPicker.running = true
   }
 
-  function ensureFolderDialog() {
-    if (folderDialogChecked) return folderDialogAvailable
-    folderDialogChecked = true
-    try {
-      var source = 'import QtQuick; import QtQuick.Dialogs; '
-        + 'FolderDialog { title: "Choose a backup folder" }'
-      backupFolderDialog = Qt.createQmlObject(source, root, "PimpampumBackupFolderDialog")
-      backupFolderDialog.accepted.connect(function() {
-        var path = root.localPath(backupFolderDialog.selectedFolder)
-        if (path === "") {
-          backupService.operationError = "The selected backup folder is unavailable"
-          return
-        }
-        root.manualBackupDirectory = path
-        backupService.configure(path)
-      })
-      folderDialogAvailable = true
-    } catch (error) {
-      backupFolderDialog = null
-      folderDialogAvailable = false
+  function acceptFolderPicker(exitCode) {
+    if (exitCode === 1) return
+    var path = folderPickerOutput.trim()
+    if (exitCode !== 0 || !backupService.isAbsolutePath(path)) {
+      if (pendingFolderTarget === "backup") backupService.operationError = "Folder picker unavailable; configure backup from the Pimpampum CLI"
+      else syncService.operationError = "Folder picker unavailable; configure synchronization from the Pimpampum CLI"
+      return
     }
-    return folderDialogAvailable
+    if (pendingFolderTarget === "backup") {
+      manualBackupDirectory = path
+      confirmingBackupEnable = true
+    } else {
+      manualSyncDirectory = path
+      confirmingSyncEnable = true
+    }
   }
 
-  function chooseBackupDirectory() {
-    if (ensureFolderDialog()) backupFolderDialog.open()
+  function syncStatusText() {
+    if (syncService.busy) return ({
+      "configure": "Enabling synchronization…", "now": "Synchronizing…",
+      "pause": "Pausing synchronization…", "resume": "Resuming synchronization…",
+      "forget": "Forgetting shared folder…", "status": "Checking synchronization…"
+    })[syncService.pendingOperation] || "Updating synchronization…"
+    return ({
+      "disabled": "Not configured", "paused": "Synchronization paused",
+      "pending": "Changes pending", "importing": "Importing changes…",
+      "exporting": "Exporting changes…", "healthy": "Up to date",
+      "unavailable": "Shared folder unavailable; local changes are safe",
+      "error": "Synchronization needs attention", "conflict": "Conflict requires attention"
+    })[syncService.syncState] || "Synchronization unavailable"
+  }
+
+  function effectiveSyncDirectory(path) {
+    if (!syncService.isAbsolutePath(path)) return ""
+    var trimmed = path.replace(/\/+$/, "")
+    var parts = trimmed.split("/")
+    return parts[parts.length - 1].toLowerCase() === "pimpampum"
+      ? trimmed : trimmed + "/Pimpampum"
+  }
+
+  function formatSyncTime(value) {
+    return value === "" ? "Never" : new Date(value).toLocaleString()
+  }
+
+  function formatLastSync() {
+    var imported = Date.parse(syncService.lastImportAt)
+    var exported = Date.parse(syncService.lastExportAt)
+    if (isNaN(imported) && isNaN(exported)) return "Never"
+    return formatSyncTime(imported > exported ? syncService.lastImportAt : syncService.lastExportAt)
+  }
+
+  function runSyncAction(action) {
+    if (action === "choose") chooseDirectory("sync")
+    else if (action === "confirm-enable") { confirmingSyncEnable = false; syncService.configure(manualSyncDirectory) }
+    else if (action === "cancel-enable") { confirmingSyncEnable = false; if (!syncService.enabled) manualSyncDirectory = "" }
+    else if (action === "now") syncService.syncNow()
+    else if (action === "open") syncService.openDirectory()
+    else if (action === "toggle") syncService.setPaused(!syncService.paused)
+    else if (action === "forget") confirmingSyncForget = true
+    else if (action === "confirm-forget") {
+      confirmingSyncForget = false
+      syncService.forget()
+    } else if (action === "cancel-forget") confirmingSyncForget = false
   }
 
   function backupStatusText() {
-    if (backupService.busy) return "Updating…"
+    if (backupService.busy) return ({
+      "configure": "Enabling automatic backup…", "retry": "Creating backup…",
+      "disable": "Disabling automatic backup…", "status": "Checking backup…"
+    })[backupService.pendingOperation] || "Updating backup…"
     if (backupService.backupState === "disabled") return "Automatic backup is off"
     if (backupService.backupState === "pending") return "Backup pending"
     if (backupService.backupState === "error") return "Backup needs attention"
@@ -96,25 +153,44 @@ Item {
     cancelledExpanded = !cancelledExpanded
   }
 
-  function toggleBackup() {
-    backupExpanded = !backupExpanded
-    if (!backupExpanded) return
-    manualBackupDirectory = backupService.directory
-    ensureFolderDialog()
-    backupService.refresh()
-  }
-
   function runBackupAction(action) {
-    if (action === "choose") chooseBackupDirectory()
-    else if (action === "save") backupService.configure(manualBackupDirectory)
+    if (action === "choose") chooseDirectory("backup")
+    else if (action === "confirm-enable") { confirmingBackupEnable = false; backupService.configure(manualBackupDirectory) }
+    else if (action === "cancel-enable") { confirmingBackupEnable = false; if (!backupService.enabled) manualBackupDirectory = "" }
     else if (action === "open") backupService.openDirectory()
     else if (action === "retry") backupService.retry()
-    else if (action === "disable") backupService.disable()
+    else if (action === "disable") confirmingBackupDisable = true
+    else if (action === "confirm-disable") { confirmingBackupDisable = false; backupService.disable() }
+    else if (action === "cancel-disable") confirmingBackupDisable = false
   }
 
   function close() {
     if (!opened) return
+    showSettings(false)
     opened = false
+  }
+
+  function showSettings(value) {
+    settingsView = value
+    helpView = false
+    confirmingSyncEnable = false
+    confirmingBackupEnable = false
+    confirmingSyncForget = false
+    confirmingBackupDisable = false
+    syncManageOpen = false
+    backupManageOpen = false
+    scroller.contentY = 0
+    if (value) {
+      manualSyncDirectory = syncService.directory
+      manualBackupDirectory = backupService.directory
+      syncService.refresh()
+      backupService.refresh()
+    }
+  }
+
+  function showHelp(value) {
+    helpView = value
+    scroller.contentY = 0
   }
 
   function toggle() {
@@ -134,7 +210,8 @@ Item {
   function openWorkspace(path) {
     revealError = ""
     if (!isSafeWorkspacePath(path)) return void (revealError = "Workspace path is unavailable")
-    if (workspaceOpener.running) return void (revealError = "The file explorer is already opening a workspace")
+    // Repeated activation while the launcher is busy is not a user-facing error.
+    if (workspaceOpener.running) return
     pendingWorkspacePath = path
     var arguments = ["xdg-open", path]
     workspaceOpener.command = arguments
@@ -148,20 +225,19 @@ Item {
   }
 
   Process {
+    id: folderPicker
+    command: [root.pickerHelperPath, "Choose a folder"]
+    stdout: StdioCollector { onStreamFinished: root.folderPickerOutput = text }
+    onExited: function(exitCode) {
+      Qt.callLater(function() { root.acceptFolderPicker(exitCode) })
+    }
+  }
+
+  Process {
     id: workspaceOpener
     command: ["xdg-open", root.pendingWorkspacePath]
     onExited: function(exitCode) {
       if (exitCode !== 0) root.revealError = "Could not open the workspace directory"
-    }
-  }
-
-  Connections {
-    target: root.backupService
-    ignoreUnknownSignals: true
-    function onDirectoryChanged() {
-      if (!manualPath.activeFocus) {
-        root.manualBackupDirectory = root.backupService.directory
-      }
     }
   }
 
@@ -170,6 +246,8 @@ Item {
     anchorItem: root.anchorItem
     bar: root.bar
     owner: root
+    // A native folder dialog must be allowed to take focus without dismissing us.
+    triggerMode: root.folderDialogOpen ? "hover" : "click"
     // PopupCard maps this state to bar.requestPopout(owner) and
     // bar.releasePopout(owner), avoiding competing popup windows.
     open: root.opened
@@ -177,6 +255,7 @@ Item {
     contentHeight: fittedContentHeight(Math.min(content.implicitHeight, Style.space(520)))
 
     Flickable {
+      id: scroller
       anchors.fill: parent
       contentWidth: width
       contentHeight: content.implicitHeight
@@ -188,28 +267,137 @@ Item {
         width: parent.width
         spacing: Style.space(10)
 
-        Row {
+        Item {
           width: parent.width
-          spacing: Style.space(8)
+          height: Math.max(headerMark.implicitHeight, headerAction.height)
 
-          Text {
-            text: "Pimpampum"
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.subtitle
-            font.bold: true
+          PimpampumMark {
+            id: headerMark
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            status: root.service.effectiveStatus
+            statusLabel: root.service.stale ? "Stale" : root.service.connectionState
+            stale: root.service.stale
+            vertical: false
+            activeClaims: root.service.activeClaims
+            showActiveCount: false
+            foreground: root.foreground
+            contrastBackground: root.background
+            urgent: root.urgent
+            activeColor: "#3b82f6"
+            availableColor: "#f59e0b"
+            completeColor: "#22c55e"
+            fontFamily: root.fontFamily
           }
 
-          Text {
-            text: root.service.stale ? "Stale" : root.service.connectionState
-            color: root.service.connectionState === "online" ? root.foreground : root.urgent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+          Column {
+            id: headerCopy
+            anchors.left: headerMark.right
+            anchors.leftMargin: Style.space(10)
+            anchors.right: helpAction.visible ? helpAction.left : headerAction.left
+            anchors.rightMargin: Style.space(10)
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(1)
+
+            Text {
+              text: root.helpView ? "Help" : root.settingsView ? "Settings" : "Pimpampum"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
+
+            Text {
+              text: root.helpView ? "Synchronization and backup explained"
+                : root.settingsView ? "Synchronization and backup"
+                : root.service.stale ? "Stale" : root.service.connectionState
+              color: root.service.connectionState === "online" ? root.foreground : root.urgent
+              opacity: root.service.connectionState === "online" ? 0.72 : 1
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          Item {
+            id: helpAction
+            visible: root.settingsView && !root.helpView
+            anchors.right: headerAction.left
+            anchors.rightMargin: Style.space(4)
+            anchors.verticalCenter: parent.verticalCenter
+            width: visible ? Style.space(44) : 0
+            height: Style.space(44)
+
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.space(4)
+              color: root.foreground
+              opacity: helpActionArea.activeFocus ? 0.13
+                : helpActionArea.containsMouse ? 0.07 : 0
+              border.width: helpActionArea.activeFocus ? 1 : 0
+              border.color: root.foreground
+            }
+            Text {
+              anchors.centerIn: parent
+              text: "?"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+            PimpampumActionArea {
+              id: helpActionArea
+              anchors.fill: parent
+              focusOnTab: parent.visible
+              Accessible.name: "Open synchronization and backup help"
+              onTriggered: root.showHelp(true)
+            }
+          }
+
+          Item {
+            id: headerAction
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            width: Style.space(44)
+            height: Style.space(44)
+
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.space(4)
+              color: root.foreground
+              opacity: headerActionArea.activeFocus ? 0.13
+                : headerActionArea.containsMouse ? 0.07 : 0
+              border.width: headerActionArea.activeFocus ? 1 : 0
+              border.color: root.foreground
+            }
+            PimpampumHeaderIcon {
+              anchors.centerIn: parent
+              width: Style.space(24)
+              height: Style.space(24)
+              iconColor: root.foreground
+              back: root.settingsView
+            }
+            PimpampumActionArea {
+              id: headerActionArea
+              anchors.fill: parent
+              Accessible.name: root.helpView ? "Back to settings"
+                : root.settingsView ? "Back to portfolio" : "Open settings"
+              onTriggered: {
+                if (root.helpView) root.showHelp(false)
+                else root.showSettings(!root.settingsView)
+              }
+            }
           }
         }
 
+        Rectangle {
+          width: parent.width
+          height: 1
+          color: root.foreground
+          opacity: 0.14
+        }
+
         Text {
-          visible: root.service.connectionState !== "online"
+          visible: !root.settingsView && root.service.connectionState !== "online"
           width: parent.width
           wrapMode: Text.Wrap
           maximumLineCount: 3
@@ -221,7 +409,7 @@ Item {
         }
 
         Text {
-          visible: root.revealError !== ""
+          visible: !root.settingsView && root.revealError !== ""
           width: parent.width
           wrapMode: Text.Wrap
           maximumLineCount: 3
@@ -233,7 +421,7 @@ Item {
         }
 
         Text {
-          visible: root.service.overview && root.service.overview.counts.projects === 0
+          visible: !root.settingsView && root.service.overview && root.service.overview.counts.projects === 0
           text: root.service.overview && root.service.overview.counts.workspaces === 0
             ? "No workspaces. Run: pimpampum workspace:add"
             : "No projects"
@@ -243,7 +431,7 @@ Item {
         }
 
         Text {
-          visible: root.activeWork.length > 0
+          visible: !root.settingsView && root.activeWork.length > 0
           text: "Active work (" + root.activeWork.length + ")"
           color: root.foreground
           font.family: root.fontFamily
@@ -252,7 +440,7 @@ Item {
         }
 
         Repeater {
-          model: root.activeWork
+          model: root.settingsView ? [] : root.activeWork
 
           delegate: Column {
             required property var modelData
@@ -283,7 +471,7 @@ Item {
         }
 
         Text {
-          visible: root.service.overview && root.service.overview.activeWorkTruncated
+          visible: !root.settingsView && root.service.overview && root.service.overview.activeWorkTruncated
           text: "Active work list truncated"
           color: root.urgent
           font.family: root.fontFamily
@@ -291,7 +479,7 @@ Item {
         }
 
         Text {
-          visible: root.incompleteProjects.length > 0
+          visible: !root.settingsView && root.incompleteProjects.length > 0
           text: "Projects (" + root.incompleteProjects.length + ")"
           color: root.foreground
           font.family: root.fontFamily
@@ -300,7 +488,7 @@ Item {
         }
 
         Repeater {
-          model: root.incompleteProjects
+          model: root.settingsView ? [] : root.incompleteProjects
 
           delegate: Item {
             required property var modelData
@@ -358,7 +546,7 @@ Item {
         }
 
         Text {
-          visible: root.service.overview && root.service.overview.projectsTruncated
+          visible: !root.settingsView && root.service.overview && root.service.overview.projectsTruncated
           text: "Project list truncated"
           color: root.urgent
           font.family: root.fontFamily
@@ -366,7 +554,7 @@ Item {
         }
 
         Item {
-          visible: root.completedProjects.length > 0
+          visible: !root.settingsView && root.completedProjects.length > 0
           width: parent.width
           height: completedTitle.implicitHeight + Style.space(8)
 
@@ -402,7 +590,7 @@ Item {
         }
 
         Repeater {
-          model: root.completedExpanded ? root.completedProjects : []
+          model: !root.settingsView && root.completedExpanded ? root.completedProjects : []
 
           delegate: Item {
             required property var modelData
@@ -440,7 +628,7 @@ Item {
         }
 
         Item {
-          visible: root.cancelledProjects.length > 0
+          visible: !root.settingsView && root.cancelledProjects.length > 0
           width: parent.width
           height: cancelledTitle.implicitHeight + Style.space(8)
 
@@ -476,7 +664,7 @@ Item {
         }
 
         Repeater {
-          model: root.cancelledExpanded ? root.cancelledProjects : []
+          model: !root.settingsView && root.cancelledExpanded ? root.cancelledProjects : []
 
           delegate: Item {
             required property var modelData
@@ -516,192 +704,641 @@ Item {
           }
         }
 
-        Item {
-          width: parent.width
-          height: backupTitle.implicitHeight + Style.space(8)
-
-          Rectangle {
-            anchors.fill: parent
-            radius: Style.space(4)
-            color: root.foreground
-            opacity: backupAction.activeFocus ? 0.13
-              : backupAction.containsMouse ? 0.07 : 0
-            border.width: backupAction.activeFocus ? 1 : 0
-            border.color: root.foreground
-          }
-
-          Text {
-            id: backupTitle
-            anchors.verticalCenter: parent.verticalCenter
-            text: (root.backupExpanded ? "▾ " : "▸ ") + "Backup"
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            font.bold: true
-          }
-
-          PimpampumActionArea {
-            id: backupAction
-            anchors.fill: parent
-            Accessible.name: backupTitle.text
-            Accessible.description: root.backupExpanded ? "Expanded" : "Collapsed"
-            onTriggered: root.toggleBackup()
-          }
-        }
-
         Column {
-          visible: root.backupExpanded
+          id: settingsSummary
+          visible: root.settingsView && !root.helpView
           width: parent.width
-          spacing: Style.space(7)
-
-          Text {
-            visible: root.backupService.enabled
-            width: parent.width
-            elide: Text.ElideMiddle
-            text: root.backupService.directory
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-          }
-
-          Text {
-            width: parent.width
-            wrapMode: Text.Wrap
-            text: root.backupStatusText()
-            color: root.backupService.backupState === "error" ? root.urgent
-              : root.backupService.backupState === "healthy" ? "#22c55e"
-              : root.foreground
-            opacity: root.backupService.backupState === "disabled" ? 0.72 : 1
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          Text {
-            visible: root.backupService.statusError !== ""
-              || root.backupService.operationError !== ""
-            width: parent.width
-            wrapMode: Text.Wrap
-            text: root.backupService.operationError !== ""
-              ? root.backupService.operationError : root.backupService.statusError
-            color: root.urgent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          Text {
-            text: "Backup folder (absolute path)"
-            color: root.foreground
-            opacity: 0.72
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
+          spacing: Style.space(10)
 
           Rectangle {
             width: parent.width
-            height: Style.space(30)
-            radius: Style.space(4)
-            color: "transparent"
-            border.width: manualPath.activeFocus ? 2 : 1
-            border.color: root.foreground
-            opacity: root.backupService.busy ? 0.55 : 0.85
+            height: syncCardContent.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
 
-            Text {
+            Column {
+              id: syncCardContent
               anchors.left: parent.left
-              anchors.leftMargin: Style.space(8)
-              anchors.verticalCenter: parent.verticalCenter
-              visible: manualPath.text === "" && !manualPath.activeFocus
-              text: "/home/you/Dropbox/Pimpampum"
-              color: root.foreground
-              opacity: 0.45
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(14)
+              spacing: Style.space(8)
 
-            TextInput {
-              id: manualPath
-              anchors.fill: parent
-              anchors.leftMargin: Style.space(8)
-              anchors.rightMargin: Style.space(8)
-              verticalAlignment: TextInput.AlignVCenter
-              clip: true
-              selectByMouse: true
-              enabled: !root.backupService.busy
-              text: root.manualBackupDirectory
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              onTextEdited: root.manualBackupDirectory = text
-              onAccepted: {
-                if (root.backupService.isAbsolutePath(text)) {
-                  root.backupService.configure(text)
-                }
-              }
-            }
-          }
-
-          Flow {
-            width: parent.width
-            spacing: Style.space(6)
-
-            Repeater {
-              model: [
-                { label: "Choose…", action: "choose", enabled: root.folderDialogAvailable },
-                {
-                  label: "Save",
-                  action: "save",
-                  enabled: root.backupService.isAbsolutePath(root.manualBackupDirectory)
-                },
-                { label: "Open", action: "open", enabled: root.backupService.enabled },
-                { label: "Back Up Now", action: "retry", enabled: root.backupService.enabled },
-                { label: "Disable", action: "disable", enabled: root.backupService.enabled }
-              ]
-
-              delegate: Rectangle {
-                required property var modelData
-                visible: modelData.action !== "choose" || root.folderDialogAvailable
-                width: actionLabel.implicitWidth + Style.space(16)
-                height: Style.space(28)
-                radius: Style.space(4)
-                color: modelData.action === "disable" ? root.urgent : root.foreground
-                opacity: modelData.enabled && !root.backupService.busy
-                  ? actionArea.activeFocus ? 0.22 : actionArea.containsMouse ? 0.17 : 0.11
-                  : 0.05
-                border.width: actionArea.activeFocus ? 1 : 0
-                border.color: modelData.action === "disable" ? root.urgent : root.foreground
-
+              Row {
+                width: parent.width
+                spacing: Style.space(8)
                 Text {
-                  id: actionLabel
-                  anchors.centerIn: parent
-                  text: modelData.label
-                  color: modelData.action === "disable" ? root.urgent : root.foreground
-                  opacity: modelData.enabled && !root.backupService.busy ? 1 : 0.45
+                  width: parent.width - syncStateLabel.width - parent.spacing
+                  text: "Synchronization"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+                Text {
+                  id: syncStateLabel
+                  text: "● " + root.syncStatusText()
+                  color: root.syncService.syncState === "conflict"
+                    || root.syncService.syncState === "error" ? root.urgent
+                    : root.syncService.syncState === "healthy" ? "#22c55e" : root.foreground
+                  opacity: root.syncService.syncState === "disabled" ? 0.58 : 1
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
+              }
 
-                PimpampumActionArea {
-                  id: actionArea
-                  anchors.fill: parent
-                  enabled: modelData.enabled && !root.backupService.busy
-                  focusOnTab: enabled && root.backupExpanded && parent.visible
-                  Accessible.name: modelData.label
-                  onTriggered: root.runBackupAction(modelData.action)
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: root.syncService.enabled
+                  ? "Keeps changes available on your other computers."
+                  : "Share changes across computers using a provider-synced folder."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Row {
+                visible: root.syncService.enabled && !root.confirmingSyncForget
+                  && !root.confirmingSyncEnable
+                width: parent.width
+                spacing: Style.space(6)
+                Text {
+                  width: Math.max(0, parent.width - syncOpenButton.width
+                    - syncManageButton.width - parent.spacing * 2)
+                  anchors.verticalCenter: parent.verticalCenter
+                  elide: Text.ElideMiddle
+                  text: root.syncService.directory
+                  color: root.foreground
+                  opacity: 0.72
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+                PimpampumSettingsButton {
+                  id: syncOpenButton
+                  width: implicitWidth
+                  height: implicitHeight
+                  label: "Open"
+                  compact: true
+                  minimumWidth: Style.space(48)
+                  foreground: root.foreground
+                  background: root.background
+                  accent: root.accent
+                  urgent: root.urgent
+                  fontFamily: root.fontFamily
+                  actionEnabled: !root.syncService.busy
+                  onTriggered: root.runSyncAction("open")
+                }
+                PimpampumSettingsButton {
+                  id: syncManageButton
+                  width: implicitWidth
+                  height: implicitHeight
+                  label: root.syncManageOpen ? "Close" : "Manage"
+                  compact: true
+                  minimumWidth: Style.space(64)
+                  foreground: root.foreground
+                  background: root.background
+                  accent: root.accent
+                  urgent: root.urgent
+                  fontFamily: root.fontFamily
+                  onTriggered: root.syncManageOpen = !root.syncManageOpen
+                }
+              }
+
+              Rectangle {
+                visible: root.syncManageOpen && root.syncService.enabled
+                  && !root.confirmingSyncForget && !root.confirmingSyncEnable
+                width: parent.width
+                height: syncManageActions.implicitHeight + Style.space(16)
+                radius: Style.space(4)
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+                border.width: 1
+                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
+                Row {
+                  id: syncManageActions
+                  anchors.centerIn: parent
+                  spacing: Style.space(6)
+                  PimpampumSettingsButton {
+                    width: implicitWidth; height: implicitHeight
+                    label: "Change location"
+                    foreground: root.foreground; background: root.background
+                    accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                    actionEnabled: root.folderDialogAvailable && !root.syncService.busy
+                    onTriggered: { root.syncManageOpen = false; root.runSyncAction("choose") }
+                  }
+                  PimpampumSettingsButton {
+                    width: implicitWidth; height: implicitHeight
+                    label: "Forget…"
+                    destructive: true
+                    foreground: root.foreground; background: root.background
+                    accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                    actionEnabled: !root.syncService.busy
+                    onTriggered: { root.syncManageOpen = false; root.runSyncAction("forget") }
+                  }
+                }
+              }
+
+              Grid {
+                visible: root.syncService.enabled && !root.confirmingSyncForget
+                  && !root.confirmingSyncEnable
+                width: parent.width
+                columns: 2
+                columnSpacing: Style.space(12)
+                rowSpacing: Style.space(4)
+                Text { text: "This device"; color: root.foreground; opacity: 0.55; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                Text { width: syncCardContent.width - Style.space(92); horizontalAlignment: Text.AlignRight; elide: Text.ElideRight; text: root.syncService.deviceId; color: root.foreground; opacity: 0.72; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                Text { text: "Pending"; color: root.foreground; opacity: 0.55; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                Text { width: syncCardContent.width - Style.space(92); horizontalAlignment: Text.AlignRight; text: root.syncService.pendingCount + " snapshots"; color: root.foreground; opacity: 0.72; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                Text { text: "Last sync"; color: root.foreground; opacity: 0.55; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                Text { width: syncCardContent.width - Style.space(92); horizontalAlignment: Text.AlignRight; elide: Text.ElideLeft; text: root.formatLastSync(); color: root.foreground; opacity: 0.72; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+              }
+
+              Text {
+                visible: root.syncService.conflictCount > 0
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: root.syncService.conflictCount + " conflict(s) need attention. Run ‘pimpampum sync conflicts’ to review them."
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                visible: root.syncService.statusError !== "" || root.syncService.operationError !== ""
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: root.syncService.operationError !== "" ? root.syncService.operationError : root.syncService.statusError
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                visible: root.confirmingSyncEnable
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Use “" + root.effectiveSyncDirectory(root.manualSyncDirectory)
+                  + "”? Existing snapshots may be imported before this computer publishes its portfolio."
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                visible: root.confirmingSyncForget
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Stop using this shared folder? Shared snapshots and local portfolio data will not be deleted."
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(6)
+                PimpampumSettingsButton {
+                  id: syncSecondaryAction
+                  visible: root.syncService.enabled || root.confirmingSyncEnable
+                    || root.confirmingSyncForget
+                  width: visible ? implicitWidth : 0
+                  height: implicitHeight
+                  label: root.confirmingSyncEnable || root.confirmingSyncForget ? "Cancel"
+                    : root.syncService.paused ? "Resume" : "Pause"
+                  foreground: root.foreground; background: root.background
+                  accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                  actionEnabled: !root.syncService.busy
+                  onTriggered: root.runSyncAction(root.confirmingSyncEnable ? "cancel-enable"
+                    : root.confirmingSyncForget ? "cancel-forget" : "toggle")
+                }
+                PimpampumSettingsButton {
+                  id: syncPrimaryAction
+                  width: Math.max(implicitWidth, parent.width - syncSecondaryAction.width
+                    - (syncSecondaryAction.visible ? parent.spacing : 0))
+                  height: implicitHeight
+                  primary: !root.confirmingSyncForget
+                  destructive: root.confirmingSyncForget
+                  label: root.confirmingSyncEnable ? "Enable sync"
+                    : root.confirmingSyncForget ? "Confirm forget"
+                    : root.syncService.busy ? root.syncStatusText()
+                    : root.syncService.enabled ? "Sync now" : "Set up sync"
+                  foreground: root.foreground; background: root.background
+                  accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                  actionEnabled: !root.syncService.busy && !root.syncService.paused
+                    && (root.syncService.enabled || root.folderDialogAvailable)
+                  onTriggered: root.runSyncAction(root.confirmingSyncEnable ? "confirm-enable"
+                    : root.confirmingSyncForget ? "confirm-forget"
+                    : root.syncService.enabled ? "now" : "choose")
+                }
+              }
+            }
+          }
+
+          Rectangle {
+            width: parent.width
+            height: helpProduct.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            Column {
+              id: helpProduct
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(14)
+              spacing: Style.space(6)
+              Text {
+                text: "How Pimpampum works"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Pimpampum is a local, agent-first project manager. Projects contain Specs and tasks; agents work through MCP, the CLI, or the local API. Claimed work appears under Active work, and selecting a project opens its local workspace."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
+          Rectangle {
+            width: parent.width
+            height: backupCardContent.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+            Column {
+              id: backupCardContent
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(14)
+              spacing: Style.space(8)
+
+              Row {
+                width: parent.width
+                spacing: Style.space(8)
+                Text {
+                  width: parent.width - backupStateLabel.width - parent.spacing
+                  text: "Backup"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+                Text {
+                  id: backupStateLabel
+                  text: "● " + root.backupStatusText()
+                  color: root.backupService.backupState === "error" ? root.urgent
+                    : root.backupService.backupState === "healthy" ? "#22c55e" : root.foreground
+                  opacity: root.backupService.backupState === "disabled" ? 0.58 : 1
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Creates a recovery copy after every local change."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Row {
+                visible: root.backupService.enabled && !root.confirmingBackupEnable
+                  && !root.confirmingBackupDisable
+                width: parent.width
+                spacing: Style.space(6)
+                Text {
+                  width: Math.max(0, parent.width - backupOpenButton.width
+                    - backupManageButton.width - parent.spacing * 2)
+                  anchors.verticalCenter: parent.verticalCenter
+                  elide: Text.ElideMiddle
+                  text: root.backupService.directory
+                  color: root.foreground
+                  opacity: 0.72
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+                PimpampumSettingsButton {
+                  id: backupOpenButton
+                  width: implicitWidth; height: implicitHeight; label: "Open"; compact: true
+                  minimumWidth: Style.space(48)
+                  foreground: root.foreground; background: root.background
+                  accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                  actionEnabled: !root.backupService.busy
+                  onTriggered: root.runBackupAction("open")
+                }
+                PimpampumSettingsButton {
+                  id: backupManageButton
+                  width: implicitWidth; height: implicitHeight
+                  label: root.backupManageOpen ? "Close" : "Manage"; compact: true
+                  minimumWidth: Style.space(64)
+                  foreground: root.foreground; background: root.background
+                  accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                  onTriggered: root.backupManageOpen = !root.backupManageOpen
+                }
+              }
+              Text {
+                visible: !root.backupService.enabled && !root.confirmingBackupEnable
+                width: parent.width
+                text: "No destination chosen"
+                color: root.foreground
+                opacity: 0.55
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Rectangle {
+                visible: root.backupManageOpen && root.backupService.enabled
+                  && !root.confirmingBackupEnable && !root.confirmingBackupDisable
+                width: parent.width
+                height: backupManageActions.implicitHeight + Style.space(16)
+                radius: Style.space(4)
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+                border.width: 1
+                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
+                Row {
+                  id: backupManageActions
+                  anchors.centerIn: parent
+                  spacing: Style.space(6)
+                  PimpampumSettingsButton {
+                    width: implicitWidth; height: implicitHeight; label: "Change destination"
+                    foreground: root.foreground; background: root.background
+                    accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                    actionEnabled: root.folderDialogAvailable && !root.backupService.busy
+                    onTriggered: { root.backupManageOpen = false; root.runBackupAction("choose") }
+                  }
+                  PimpampumSettingsButton {
+                    width: implicitWidth; height: implicitHeight; label: "Disable…"
+                    destructive: true
+                    foreground: root.foreground; background: root.background
+                    accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                    actionEnabled: !root.backupService.busy
+                    onTriggered: { root.backupManageOpen = false; root.runBackupAction("disable") }
+                  }
+                }
+              }
+              Text {
+                visible: root.backupService.statusError !== "" || root.backupService.operationError !== ""
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: root.backupService.operationError !== "" ? root.backupService.operationError : root.backupService.statusError
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                visible: root.confirmingBackupEnable
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Keep the latest recovery copy at “"
+                  + root.manualBackupDirectory.replace(/\/+$/, "") + "/pimpampum-latest.sqlite”?"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                visible: root.confirmingBackupDisable
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Stop automatic backups? The existing backup file will not be deleted."
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Row {
+                width: parent.width
+                spacing: Style.space(6)
+                PimpampumSettingsButton {
+                  id: backupSecondaryAction
+                  visible: root.confirmingBackupEnable || root.confirmingBackupDisable
+                  width: visible ? implicitWidth : 0
+                  height: implicitHeight
+                  label: "Cancel"
+                  foreground: root.foreground; background: root.background
+                  accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                  actionEnabled: !root.backupService.busy
+                  onTriggered: root.runBackupAction(root.confirmingBackupEnable
+                    ? "cancel-enable" : "cancel-disable")
+                }
+                PimpampumSettingsButton {
+                  id: backupPrimaryAction
+                  width: Math.max(implicitWidth, parent.width - backupSecondaryAction.width
+                    - (backupSecondaryAction.visible ? parent.spacing : 0))
+                  height: implicitHeight
+                  primary: !root.confirmingBackupDisable
+                  destructive: root.confirmingBackupDisable
+                  label: root.confirmingBackupEnable ? "Enable backup"
+                    : root.confirmingBackupDisable ? "Confirm disable"
+                    : root.backupService.enabled ? "Back up now" : "Set up backup"
+                  foreground: root.foreground; background: root.background
+                  accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                  actionEnabled: !root.backupService.busy
+                    && (root.backupService.enabled || root.folderDialogAvailable)
+                  onTriggered: root.runBackupAction(root.confirmingBackupEnable ? "confirm-enable"
+                    : root.confirmingBackupDisable ? "confirm-disable"
+                    : root.backupService.enabled ? "retry" : "choose")
                 }
               }
             }
           }
 
           Text {
-            visible: !root.folderDialogAvailable
             width: parent.width
             wrapMode: Text.Wrap
-            text: "Folder picker unavailable; enter an absolute path above."
+            text: "Synchronization shares work between computers. Backup keeps a separate recovery copy."
+            color: root.foreground
+            opacity: 0.52
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            visible: !root.folderDialogAvailable && !root.syncService.enabled
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: "Folder picker unavailable. Configure synchronization from the Pimpampum CLI."
+            color: root.foreground
+            opacity: 0.58
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+          Text {
+            visible: !root.folderDialogAvailable && !root.backupService.enabled
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: "Folder picker unavailable. Configure backup from the Pimpampum CLI."
             color: root.foreground
             opacity: 0.58
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
           }
         }
+
+        Column {
+          id: helpPage
+          visible: root.settingsView && root.helpView
+          width: parent.width
+          spacing: Style.space(10)
+
+          Rectangle {
+            width: parent.width
+            height: helpIntro.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            Column {
+              id: helpIntro
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(14)
+              spacing: Style.space(6)
+              Text {
+                text: "What is the difference?"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Synchronization exchanges portfolio changes between your computers. Backup keeps a separate recovery copy of this computer’s local database."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
+          Rectangle {
+            width: parent.width
+            height: helpFolders.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            Column {
+              id: helpFolders
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(14)
+              spacing: Style.space(6)
+              Text {
+                text: "Why choose a shared folder?"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Choose a location already managed by Dropbox, Syncthing, Drive, or a similar provider. Pimpampum creates a Pimpampum folder there and exchanges snapshots through it; Pimpampum does not upload files itself."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
+          Rectangle {
+            width: parent.width
+            height: helpSafety.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            Column {
+              id: helpSafety
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(14)
+              spacing: Style.space(6)
+              Text {
+                text: "Safe controls"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Pause stops synchronization temporarily. Forget disconnects this computer without deleting shared snapshots or local data. Disabling backup stops new copies without deleting the existing backup file."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
+          Rectangle {
+            width: parent.width
+            height: helpRecovery.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            Column {
+              id: helpRecovery
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(14)
+              spacing: Style.space(6)
+              Text {
+                text: "Conflicts and recovery"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Inspect both candidates before resolving a conflict:"
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "pimpampum sync conflicts"
+                color: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "The recovery file is named pimpampum-latest.sqlite in your chosen backup destination."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+        }
+
       }
     }
   }

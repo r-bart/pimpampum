@@ -440,6 +440,35 @@ export PIMPAMPUM_PORT='7337'
 exec '${process.execPath}' '${cliPath}' backup "$@"
 `;
     writeFileSync(join(plugin, 'pimpampum-backup'), backupHelper);
+    const syncHelper = `#!/bin/bash
+set -euo pipefail
+
+case \${1:-} in
+  status|now|pause|resume|conflicts|forget)
+    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-sync: invalid arguments' >&2; exit 64; }
+    ;;
+  configure)
+    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-sync: configure requires one directory' >&2; exit 64; }
+    ;;
+  *)
+    printf '%s\\n' 'pimpampum-sync: expected status, configure, now, pause, resume, conflicts, or forget' >&2
+    exit 64
+    ;;
+esac
+
+export PIMPAMPUM_DATA_DIR='${join(root, 'data')}'
+export PIMPAMPUM_HOST='127.0.0.1'
+export PIMPAMPUM_PORT='7337'
+
+if [[ $1 == configure ]]; then
+  device_id=$(hostname | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-63)
+  [[ -n $device_id ]] || device_id=linux
+  exec '${process.execPath}' '${cliPath}' sync configure "$2" --device "$device_id" --json
+fi
+
+exec '${process.execPath}' '${cliPath}' sync "$1" --json
+`;
+    writeFileSync(join(plugin, 'pimpampum-sync'), syncHelper);
     const artifacts: Array<{ path: string; sha256: string; mode: number }> = [];
     const visit = (directory: string) => {
       for (const name of readdirSync(directory)) {
@@ -451,7 +480,9 @@ exec '${process.execPath}' '${cliPath}' backup "$@"
             'install.sh',
             'uninstall.sh',
             'pimpampum-backup',
+            'pimpampum-folder-picker',
             'pimpampum-overview',
+            'pimpampum-sync',
           ].includes(child)
             ? 0o755
             : 0o644;

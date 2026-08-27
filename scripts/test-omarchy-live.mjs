@@ -49,7 +49,9 @@ const TASK_3_3_REVIEW_MATRIX = Object.freeze([
   'Complete, available, active/draft, empty, offline, stale, credentials, and incompatible states.',
   'Hover plus visible keyboard focus and activation where Quickshell supports them.',
   'Bounded scrolling, long-content elision/disambiguation, completed disclosure, and safe workspace opening.',
-  'Backup collapsed, unconfigured, healthy, backing-up, and failed states; configure/retry/disable serialization and folder-dialog/manual-path behavior.',
+  'Portfolio-to-Settings navigation inside the same bounded popout, keyboard-accessible back navigation, and no competing Quattro popout.',
+  'Backup settings shown directly without nested disclosure; unconfigured, healthy, backing-up, and failed states; exact destination preview; explicit enable/disable confirmation; configure/retry/disable serialization and native folder-dialog behavior.',
+  'Synchronization settings shown directly without nested disclosure; unconfigured, healthy, pending, importing, exporting, paused, unavailable, failed, and conflicted states; provider-location selection; effective Pimpampum destination preview; explicit enable/forget confirmation; device identity, timestamps, pending count, open-folder, sync-now, and pause/resume behavior.',
 ]);
 const COMMAND_TIMEOUT_MS = 30_000;
 
@@ -482,7 +484,7 @@ export default function createLiveRunner(dependencies) {
       }
 
       try {
-        const version = await execute('version', 'omarchy', ['--version']);
+        const version = await execute('version', 'omarchy', ['version']);
         if (!/\b(?:Quattro|4(?:\.|\b))/iu.test(version.stdout)) {
           throw new Error(`Unsupported Omarchy build: ${version.stdout.trim() || 'unknown'}`);
         }
@@ -1092,7 +1094,15 @@ export function createRealDependencies(repositoryRoot, homeDirectory, options = 
         installedReceipt.dataDirectory !== dataDirectory ||
         !Array.isArray(installedReceipt.artifacts)
       ) {
-        throw new Error('Install receipt does not describe the expected Omarchy installation');
+        throw new Error(
+          `Install receipt does not describe the expected Omarchy installation: ${JSON.stringify({
+            schemaVersion: installedReceipt.schemaVersion,
+            adapter: installedReceipt.adapter,
+            dataDirectory: installedReceipt.dataDirectory,
+            expectedDataDirectory: dataDirectory,
+            artifactsIsArray: Array.isArray(installedReceipt.artifacts),
+          })}`,
+        );
       }
       const quote = (value) => `'${value.replaceAll("'", `'"'"'`)}'`;
       const overviewHelper = `#!/bin/bash
@@ -1124,6 +1134,34 @@ export PIMPAMPUM_HOST=${quote(environment.PIMPAMPUM_HOST ?? '127.0.0.1')}
 export PIMPAMPUM_PORT=${quote(environment.PIMPAMPUM_PORT ?? '7337')}
 exec ${quote(process.execPath)} ${quote(cliPath)} backup "$@"
 `;
+      const syncHelper = `#!/bin/bash
+set -euo pipefail
+
+case \${1:-} in
+  status|now|pause|resume|conflicts|forget)
+    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-sync: invalid arguments' >&2; exit 64; }
+    ;;
+  configure)
+    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-sync: configure requires one directory' >&2; exit 64; }
+    ;;
+  *)
+    printf '%s\\n' 'pimpampum-sync: expected status, configure, now, pause, resume, conflicts, or forget' >&2
+    exit 64
+    ;;
+esac
+
+export PIMPAMPUM_DATA_DIR=${quote(dataDirectory)}
+export PIMPAMPUM_HOST=${quote(environment.PIMPAMPUM_HOST ?? '127.0.0.1')}
+export PIMPAMPUM_PORT=${quote(environment.PIMPAMPUM_PORT ?? '7337')}
+
+if [[ $1 == configure ]]; then
+  device_id=$(hostname | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-63)
+  [[ -n $device_id ]] || device_id=linux
+  exec ${quote(process.execPath)} ${quote(cliPath)} sync configure "$2" --device "$device_id" --json
+fi
+
+exec ${quote(process.execPath)} ${quote(cliPath)} sync "$1" --json
+`;
       const expected = [];
       const visit = (directory) => {
         for (const name of readdirSync(directory).sort()) {
@@ -1141,12 +1179,16 @@ exec ${quote(process.execPath)} ${quote(cliPath)} backup "$@"
                   ? Buffer.from(overviewHelper)
                   : child === 'pimpampum-backup'
                     ? Buffer.from(backupHelper)
-                    : readFileSync(source),
+                    : child === 'pimpampum-sync'
+                      ? Buffer.from(syncHelper)
+                      : readFileSync(source),
               mode: [
                 'install.sh',
                 'uninstall.sh',
                 'pimpampum-backup',
+                'pimpampum-folder-picker',
                 'pimpampum-overview',
+                'pimpampum-sync',
               ].includes(child)
                 ? 0o755
                 : 0o644,

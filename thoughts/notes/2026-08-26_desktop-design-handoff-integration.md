@@ -55,7 +55,7 @@ only connection clue is the ambiguous SSH alias `factory`. Confirm the target be
 then run on that machine from a full checkout:
 
 ```bash
-omarchy --version
+omarchy version
 omarchy plugin validate ./integrations/omarchy/pimpampum-status
 npm run build
 PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live

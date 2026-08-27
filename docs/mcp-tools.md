@@ -1,6 +1,6 @@
 # MCP tools
 
-Pimpampum exposes 32 agent-oriented tools through one local daemon. MCP `tools/list` is the
+Pimpampum exposes 32 domain tools plus four synchronization tools through one local daemon. MCP `tools/list` is the
 canonical machine-readable contract: every tool declares a title, precise description, strict JSON
 Schema, defaults, bounds, and effect annotations.
 
@@ -93,7 +93,8 @@ Continue from `nextOffset` while `hasMore` is true. `work_list` is a live queue 
 ## Recommended agent workflow
 
 ```text
-workspace_resolve
+sync_status
+  → workspace_resolve
   → work_list
   → work_start
   → spec_read and/or task_read
@@ -105,7 +106,26 @@ Use one stable `agentId` for Claim start, renewal, release, and completion. Rene
 `expiresAt`. Before an update, cancellation, or completion, read the bounded manifest and pass its
 current `revision` as `expectedRevision`.
 
+If synchronization is configured, call `sync_status` once during session orientation. Ordinary
+domain writes are exported automatically, so do not call `sync_now` after every write. A temporarily
+unavailable shared folder never invalidates local committed work. Never read, edit, rename, or delete
+snapshot files directly, and never configure, pause, resume, or forget synchronization unless the
+user explicitly asks for that administrative change.
+
 ## Canonical catalog
+
+### Synchronization
+
+| Tool                 | Purpose                                                           |
+| -------------------- | ----------------------------------------------------------------- |
+| `sync_status`        | Read health, pending work, and conflict count during orientation. |
+| `sync_now`           | Reconcile immediately when the user requests a machine handoff.   |
+| `sync_conflict_list` | List conflicts without choosing a winner.                         |
+| `sync_conflict_read` | Read one preserved pair of conflicting entity candidates.         |
+
+Conflicts do not select a timestamp winner. Continue only unrelated work and explain the conflict
+to the user. These tools deliberately cannot select folders, pause processing, or resolve a
+candidate autonomously.
 
 ### Workspace
 

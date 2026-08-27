@@ -2,6 +2,7 @@ import type { RuntimeConfig } from './config.js';
 import { parseAutomaticBackupStatus, type AutomaticBackupStatus } from './backupContract.js';
 import { AppError, type ErrorCode } from './errors.js';
 import { parseOverview } from './overviewContract.js';
+import type { SyncConflictManifest, SyncStatus } from './syncContract.js';
 import type {
   ActivityEvent,
   Claim,
@@ -112,6 +113,55 @@ export class PimpampumHttpClient implements PimpampumGateway {
   async disableAutomaticBackup(): Promise<AutomaticBackupStatus> {
     return parseAutomaticBackupStatus(
       await this.request<unknown>('/api/v1/settings/backup', { method: 'DELETE' }),
+    );
+  }
+
+  getSyncStatus(): Promise<SyncStatus> {
+    return this.request('/api/v1/settings/sync');
+  }
+
+  configureSync(directory: string, deviceId: string): Promise<SyncStatus> {
+    return this.request('/api/v1/settings/sync', {
+      method: 'PUT',
+      body: { directory, deviceId },
+      timeoutMilliseconds: 300_000,
+    });
+  }
+
+  reconcileSync(): Promise<SyncStatus> {
+    return this.request('/api/v1/settings/sync/reconcile', {
+      method: 'POST',
+      timeoutMilliseconds: 300_000,
+    });
+  }
+
+  pauseSync(): Promise<SyncStatus> {
+    return this.request('/api/v1/settings/sync/pause', { method: 'POST' });
+  }
+
+  resumeSync(): Promise<SyncStatus> {
+    return this.request('/api/v1/settings/sync/resume', {
+      method: 'POST',
+      timeoutMilliseconds: 300_000,
+    });
+  }
+
+  forgetSync(): Promise<SyncStatus> {
+    return this.request('/api/v1/settings/sync', { method: 'DELETE' });
+  }
+
+  listSyncConflicts(): Promise<SyncConflictManifest[]> {
+    return this.request('/api/v1/settings/sync/conflicts');
+  }
+
+  resolveSyncConflict(conflictId: string, choice: 'local' | 'remote'): Promise<SyncStatus> {
+    return this.request(
+      `/api/v1/settings/sync/conflicts/${encodeURIComponent(conflictId)}/resolve`,
+      {
+        method: 'POST',
+        body: { choice },
+        timeoutMilliseconds: 300_000,
+      },
     );
   }
 

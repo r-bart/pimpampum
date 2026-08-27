@@ -43,6 +43,70 @@ describe('PimpampumStore v2', () => {
     throw new Error(`Expected ${code}`);
   }
 
+  it('rejects structurally valid sync state whose domain relationships are invalid', () => {
+    const state = store.exportSyncState();
+    state.contexts.push({
+      id: 'orphan-context',
+      ownerType: 'project',
+      ownerId: 'missing-project',
+      name: 'brief',
+      body: '',
+      revision: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    error(() => store.applySyncState(state), 'bad_request', /has no owner/);
+    expect(store.exportSyncState().contexts).toEqual([]);
+
+    const duplicate = store.exportSyncState();
+    duplicate.workspaces.push({ ...duplicate.workspaces[0]! });
+    error(() => store.applySyncState(duplicate), 'bad_request', /duplicate Workspace ID/);
+
+    const createdProject = project();
+    const createdSpec = spec(createdProject.id);
+    const invalidProject = store.exportSyncState();
+    invalidProject.projects[0]!.workspaceId = 'missing-workspace';
+    error(() => store.applySyncState(invalidProject), 'bad_request', /has no Workspace/);
+    const invalidSpec = store.exportSyncState();
+    invalidSpec.specs[0]!.projectId = 'missing-project';
+    error(() => store.applySyncState(invalidSpec), 'bad_request', /has no Project/);
+
+    const ready = store.updateSpec({
+      specId: createdSpec.id,
+      title: null,
+      body: null,
+      state: 'ready',
+      expectedRevision: createdSpec.revision,
+      actor: 'test',
+    });
+    const createdTask = task(ready.id);
+    const invalidTaskSpec = store.exportSyncState();
+    invalidTaskSpec.tasks[0]!.specId = 'missing-spec';
+    error(() => store.applySyncState(invalidTaskSpec), 'bad_request', /has no Spec/);
+    const missingParent = store.exportSyncState();
+    missingParent.tasks[0]!.parentId = 'missing-task';
+    error(() => store.applySyncState(missingParent), 'bad_request', /has no parent/);
+    const invalidParent = store.exportSyncState();
+    invalidParent.tasks[0]!.parentId = createdTask.id;
+    error(() => store.applySyncState(invalidParent), 'bad_request', /invalid parent/);
+  });
+
+  it('applies synchronized deletions in dependency order', () => {
+    const createdProject = project();
+    spec(createdProject.id);
+    const state = store.exportSyncState();
+    state.projects = [];
+    state.specs = [];
+    store.applySyncState(state);
+    expect(
+      store.listProjects({ workspaceId: 'workspace', state: null, limit: 50, offset: 0 }),
+    ).toEqual([]);
+    error(() => store.getProject(createdProject.id), 'not_found');
+    expect(
+      (database.prepare('SELECT COUNT(*) count FROM specs').get() as { count: number }).count,
+    ).toBe(0);
+  });
+
   function project(): Project {
     sequence++;
     return store.createProject({

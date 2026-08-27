@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+import sys
+
+try:
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+except (ImportError, ValueError):
+    raise SystemExit(70)
+
+title = sys.argv[1] if len(sys.argv) == 2 else "Choose a folder"
+dialog = Gtk.FileChooserNative.new(
+    title, None, Gtk.FileChooserAction.SELECT_FOLDER, "Choose", "Cancel"
+)
+response = dialog.run()
+if response != Gtk.ResponseType.ACCEPT:
+    raise SystemExit(1)
+path = dialog.get_filename()
+if not path or not path.startswith("/") or "\x00" in path:
+    raise SystemExit(70)
+print(path)

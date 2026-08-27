@@ -7,6 +7,7 @@ import { openDatabase } from './db.js';
 import { AppError } from './errors.js';
 import { createHttpApp } from './http.js';
 import { PimpampumStore } from './store.js';
+import { SyncController } from './syncController.js';
 
 export interface RunningServer {
   server: Server;
@@ -60,18 +61,33 @@ export async function startServer(config = loadConfig()): Promise<RunningServer>
   const releaseInstanceLock = acquireInstanceLock(config.dataDirectory);
   let store: PimpampumStore | undefined;
   let automaticBackup: AutomaticBackupController | undefined;
+  let syncController: SyncController | undefined;
   let composition: ReturnType<typeof createHttpApp>;
   try {
     const database = openDatabase(config.databasePath);
-    const composedStore = new PimpampumStore(database, () => automaticBackup?.markDirty());
+    const composedStore = new PimpampumStore(database, () => {
+      automaticBackup?.markDirty();
+      syncController?.markDirty();
+    });
     store = composedStore;
     automaticBackup = new AutomaticBackupController({
       settingsPath: join(config.dataDirectory, 'settings.json'),
       snapshotter: (destination) => composedStore.backupLatest(destination),
     });
-    composition = createHttpApp(store, config, console, Date.now, automaticBackup);
+    const composedSyncController = new SyncController({
+      settingsPath: join(config.dataDirectory, 'sync.json'),
+      snapshotter: () => composedStore.exportSyncState(),
+      importer: (state) => composedStore.applySyncState(state),
+    });
+    syncController = composedSyncController;
+    composedStore.setSyncConflictGuard((entityType, entityId) =>
+      composedSyncController.hasConflict(entityType, entityId),
+    );
+    composition = createHttpApp(store, config, console, Date.now, automaticBackup, syncController);
     automaticBackup.start();
+    await syncController.start();
   } catch (error) {
+    await syncController?.close();
     await automaticBackup?.close();
     store?.close();
     releaseInstanceLock();
@@ -121,6 +137,7 @@ export async function startServer(config = loadConfig()): Promise<RunningServer>
           );
         }
       } finally {
+        await syncController.close();
         await automaticBackup.close();
         store.close();
         releaseInstanceLock();

@@ -4,9 +4,8 @@ This native `bar-widget` gives Omarchy Quattro a compact view of the single
 Pimpampum instance running for the current user. It shows semantic
 project health, active-claim count, active work, available work, and a collapsed
 completed-project group. Selecting a project opens its registered workspace
-root with `xdg-open`. Its Backup disclosure configures the daemon's one
-automatic backup destination, so macOS, Quattro, the CLI, and the API all see
-the same setting.
+root with `xdg-open`. Settings contains separate Synchronization and Backup
+cards plus an internal Help page.
 
 The integration targets the Quattro plugin contract pinned at Omarchy commit
 `0ae1694830b6bd9511042fe1b89a0062d8c083cb`. Waybar is not supported.
@@ -17,9 +16,14 @@ The compact identity is always the same theme-tinted circle containing a lowerca
 external through badge shape/accent, tooltip, popout copy, and an optional active-claim count. Zero
 is hidden and values above 99 display as `99+`; offline and error states never replace the mark.
 
-Clicking opens one bounded 380-unit native `PopupCard`, ordered as connection state, Active work,
-Projects, Completed, then the collapsed Backup disclosure. Horizontal bars place mark and count
-side by side; vertical bars stack them. Project rows open the exact registered workspace root.
+Clicking opens one bounded 380-unit native `PopupCard`. Its Portfolio view is ordered as connection
+state, Active work, Projects, and Completed. **Settings** switches the same card to a dedicated
+second view showing Synchronization and Backup controls directly, without nested disclosures.
+Help is available from Settings and explains the product model and the difference between both
+storage features. A 44-unit vector header icon opens Settings and changes to a back arrow there,
+without opening a competing Quattro popout.
+Horizontal bars place mark and count side by side;
+vertical bars stack them. Project rows open the exact registered workspace root.
 
 ## Security boundary
 
@@ -32,10 +36,12 @@ side by side; vertical bars stack them. Project rows open the exact registered w
   It accepts only `status`, `configure <absolute-directory>`, `retry`, and
   `disable`, delegates to the canonical JSON CLI contract, and passes the
   selected directory as one process argument. No token enters QML.
+- Synchronization actions use the bounded `pimpampum-sync` helper. It derives a safe device ID from
+  the hostname and accepts only status, configure, sync-now, pause, resume, conflict-list, and forget.
 - Workspace paths are accepted only when absolute and are passed to `xdg-open`
   as one argument. They are never evaluated as shell source.
-- The UI exposes no project, task, claim, or service mutation. Its only write is
-  the daemon-owned automatic backup preference.
+- The UI exposes no project, task, claim, or service mutation. Its writes are limited to daemon-owned
+  synchronization and automatic-backup preferences.
 - Plugin installation, ownership checks, lifecycle locking, rollback, status,
   and removal are owned by the same `pimpampum` CLI lifecycle.
 
@@ -61,9 +67,9 @@ installed overview and backup helpers do not depend on the graphical session's
 
 ## Backup settings
 
-Open the Pimpampum popout and expand **Backup**. When the Qt folder dialog is
-available, **Choose…** opens it. The absolute-path field and **Save** remain as
-a portable fallback. **Open** launches the configured directory through
+Open **Settings** in the Pimpampum popout and use the **Backup** card. **Choose backup
+destination…** opens the native GTK directory picker. If the picker is unavailable, the card points
+to the bounded Pimpampum CLI instead of exposing a second path-entry implementation. **Open** launches the configured directory through
 `xdg-open`, **Back Up Now** retries immediately, and **Disable** stops future
 automatic refreshes without deleting the existing snapshot.
 
@@ -72,6 +78,24 @@ written to the selected directory, which may be inside Dropbox, Google Drive,
 or another synchronized folder. Configuration errors and backup health are
 reported inline; a failed backup never invalidates the project mutation that
 triggered it.
+
+## Synchronization settings
+
+Open **Settings** and use the **Synchronization** card to exchange portfolio state with other computers.
+Choose a location already synchronized by Dropbox, Syncthing, Google Drive through a mounted
+filesystem, or a similar provider. Selection alone does not enable synchronization: the widget
+previews the effective destination and explains that existing snapshots may be imported before the
+user confirms **Enable synchronization**.
+
+Pimpampum creates or reuses a `Pimpampum` child inside the selected location, unless that location
+is already named `Pimpampum`. It shows the effective path and derived device identity after setup.
+**Sync now**, pause/resume, shared-folder opening, and forgetting remain explicit actions. Forgetting
+removes only this computer's setting; it does not delete local portfolio data or shared snapshots.
+Conflicts remain visible and require inspection outside the compact widget before resolution.
+
+Synchronization and backup are deliberately separate. Synchronization exchanges path-neutral JSON
+portfolio snapshots between computers. Automatic backup writes `pimpampum-latest.sqlite` for local
+recovery and never acts as a merge transport.
 
 ## Remove
 
@@ -101,7 +125,7 @@ The following release workflow requires a full source checkout and is intentiona
 in the published runtime tarball. On the target machine, run:
 
 ```bash
-omarchy --version
+omarchy version
 omarchy plugin validate ./integrations/omarchy/pimpampum-status
 npm run build
 PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live
@@ -122,9 +146,14 @@ come from the real machine. The reviewer must directly observe this matrix:
 - Hover, visible keyboard focus, and activation where Quickshell supports them;
   bounded scrolling, long-name disambiguation, completed expansion/collapse,
   and safe workspace opening.
-- Backup collapsed, unconfigured, healthy, backing-up, and failed presentations;
-  folder-dialog and manual absolute-path selection; and serialized configure,
-  retry, and disable actions.
+- Backup unconfigured, healthy, backing-up, and failed presentations; native folder selection;
+  destination preview; explicit enable/disable confirmation; and serialized configure, retry, and
+  disable actions.
+- Synchronization unconfigured, healthy, pending, importing, exporting, paused,
+  unavailable, failed, and conflicted presentations; provider-location selection and effective
+  `Pimpampum` destination preview; explicit enable/forget confirmation; device identity, timestamps,
+  pending count, open-folder, sync-now, and pause/resume actions. If the native picker dependency is
+  unavailable, the UI points to the bounded CLI instead of exposing a duplicate path form.
 
 Use only supported Omarchy controls to change bar position or theme, and restore
 the original selection before the runner continues. Do not edit `shell.json` or
@@ -144,7 +173,6 @@ argument-array transcripts, and emits no passing evidence unless uninstall
 restores the captured baseline. The visual phase remains human-owned; the named
 reviewer inspects the staged captures and directly exercises the matrix above.
 
-No real `quattro-live.json` currently exists. The only external-host clue is an SSH alias named
-`factory`, and it is ambiguous whether that alias is the intended Quattro machine. Confirm the
-target, then run the exact opt-in workflow above from a full checkout. Fixtures, static validation,
-and `quattro-live.example.json` are not live evidence.
+`quattro-live.json` must be generated by the exact opt-in workflow above from a full checkout on the
+target machine. Fixtures, static validation, failure transcripts, and `quattro-live.example.json`
+are not live evidence.

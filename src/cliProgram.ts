@@ -84,6 +84,14 @@ Usage:
   pimpampum backup configure <absolute-directory> [--json]
   pimpampum backup retry [--json]
   pimpampum backup disable [--json]
+  pimpampum sync status [--json]
+  pimpampum sync configure <absolute-parent-directory> --device <device-id> [--json]
+  pimpampum sync now [--json]
+  pimpampum sync pause [--json]
+  pimpampum sync resume [--json]
+  pimpampum sync conflicts [--json]
+  pimpampum sync resolve <conflict-id> <local|remote> [--json]
+  pimpampum sync forget [--json]
   pimpampum export <directory>
 `;
 
@@ -512,6 +520,51 @@ async function executeCli(
         await client.exportPortable(runtime.resolvePath(required(args[0], 'export directory'))),
       );
       return null;
+    case 'sync': {
+      const action = required(args[0], 'sync action');
+      if (action === 'status') {
+        acceptOptionalJsonFlag(args, 1);
+        print(runtime, await client.getSyncStatus());
+        return null;
+      }
+      if (action === 'configure') {
+        const directory = runtime.resolvePath(required(args[1], 'shared folder'));
+        const deviceIndex = args.indexOf('--device');
+        if (deviceIndex !== 2 || !args[3] || args.slice(4).some((value) => value !== '--json')) {
+          throw new AppError(
+            'bad_request',
+            'Use sync configure <directory> --device <device-id> [--json]',
+            400,
+          );
+        }
+        print(runtime, await client.configureSync(directory, args[3]));
+        return null;
+      }
+      if (action === 'resolve') {
+        const conflictId = required(args[1], 'conflict id');
+        const choice = required(args[2], 'conflict choice');
+        if (
+          (choice !== 'local' && choice !== 'remote') ||
+          args.slice(3).some((value) => value !== '--json')
+        ) {
+          throw new AppError(
+            'bad_request',
+            'Use sync resolve <conflict-id> <local|remote> [--json]',
+            400,
+          );
+        }
+        print(runtime, await client.resolveSyncConflict(conflictId, choice));
+        return null;
+      }
+      acceptOptionalJsonFlag(args, 1);
+      if (action === 'now') print(runtime, await client.reconcileSync());
+      else if (action === 'pause') print(runtime, await client.pauseSync());
+      else if (action === 'resume') print(runtime, await client.resumeSync());
+      else if (action === 'conflicts') print(runtime, await client.listSyncConflicts());
+      else if (action === 'forget') print(runtime, await client.forgetSync());
+      else throw new AppError('bad_request', `Unknown sync action: ${action}`, 400);
+      return null;
+    }
     default:
       throw new AppError('bad_request', `Unknown command: ${command}`, 400, false, {
         usage: CLI_USAGE,

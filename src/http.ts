@@ -29,6 +29,7 @@ import {
   updateTaskSchema,
 } from './schemas.js';
 import type { PimpampumHttpGateway } from './types.js';
+import type { SyncGateway } from './syncContract.js';
 
 const DAEMON_VERSION = '0.1.0';
 
@@ -113,13 +114,14 @@ export function createHttpApp(
   logger: Pick<Console, 'error'> = console,
   clock: () => number = Date.now,
   automaticBackup?: AutomaticBackupGateway,
+  sync?: SyncGateway,
 ) {
   if (config.host !== '127.0.0.1' && config.host !== 'localhost' && config.host !== '::1') {
     throw new AppError('bad_request', 'Pimpampum HTTP must bind to a loopback host', 400);
   }
   const app = createMcpExpressApp({ host: config.host, jsonLimit: MCP_HTTP_BODY_LIMIT });
   const requireAuth = bearerAuth(config.token);
-  const mcpHandler = createPimpampumMcpHandler(store);
+  const mcpHandler = createPimpampumMcpHandler(store, sync);
   const nodeMcpHandler = toNodeHandler(mcpHandler);
   const startedAtMilliseconds = clock();
   const startedAt = new Date(startedAtMilliseconds).toISOString();
@@ -173,6 +175,47 @@ export function createHttpApp(
 
     app.delete('/api/v1/settings/backup', async (_request, response) => {
       responseData(response, await automaticBackup.disable());
+    });
+  }
+
+  if (sync) {
+    app.get('/api/v1/settings/sync', (_request, response) => {
+      responseData(response, sync.getStatus());
+    });
+    app.put('/api/v1/settings/sync', async (request, response) => {
+      const input = parse(
+        z.strictObject({ directory: absolutePathSchema, deviceId: z.string().min(1).max(63) }),
+        request.body,
+      );
+      responseData(response, await sync.configure(input.directory, input.deviceId));
+    });
+    app.post('/api/v1/settings/sync/reconcile', async (_request, response) => {
+      responseData(response, await sync.reconcile());
+    });
+    app.post('/api/v1/settings/sync/pause', async (_request, response) => {
+      responseData(response, await sync.pause());
+    });
+    app.post('/api/v1/settings/sync/resume', async (_request, response) => {
+      responseData(response, await sync.resume());
+    });
+    app.delete('/api/v1/settings/sync', async (_request, response) => {
+      responseData(response, await sync.forget());
+    });
+    app.get('/api/v1/settings/sync/conflicts', async (_request, response) => {
+      const conflicts = await sync.listConflicts();
+      responseData(
+        response,
+        conflicts.map(({ id, entityType, entityId, createdAt }) => ({
+          id,
+          entityType,
+          entityId,
+          createdAt,
+        })),
+      );
+    });
+    app.post('/api/v1/settings/sync/conflicts/:conflictId/resolve', async (request, response) => {
+      const input = parse(z.strictObject({ choice: z.enum(['local', 'remote']) }), request.body);
+      responseData(response, await sync.resolveConflict(request.params.conflictId, input.choice));
     });
   }
 

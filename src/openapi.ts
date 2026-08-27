@@ -267,6 +267,79 @@ export const openApiDocument: OpenApiDocument = {
         ref('AutomaticBackupStatus'),
       ),
     },
+    '/api/v1/settings/sync': {
+      get: operation(
+        'getSyncStatus',
+        'Read shared-folder synchronization status',
+        'Administration',
+        ref('SyncStatus'),
+      ),
+      put: operation(
+        'configureSync',
+        'Choose a shared folder and enable automatic synchronization',
+        'Administration',
+        ref('SyncStatus'),
+        { requestBody: body(ref('SyncConfigurationInput')) },
+      ),
+      delete: operation(
+        'forgetSync',
+        'Forget shared-folder synchronization settings',
+        'Administration',
+        ref('SyncStatus'),
+      ),
+    },
+    '/api/v1/settings/sync/reconcile': {
+      post: operation(
+        'reconcileSync',
+        'Import pending snapshots and publish current state',
+        'Administration',
+        ref('SyncStatus'),
+      ),
+    },
+    '/api/v1/settings/sync/pause': {
+      post: operation(
+        'pauseSync',
+        'Pause automatic synchronization',
+        'Administration',
+        ref('SyncStatus'),
+      ),
+    },
+    '/api/v1/settings/sync/resume': {
+      post: operation(
+        'resumeSync',
+        'Resume automatic synchronization',
+        'Administration',
+        ref('SyncStatus'),
+      ),
+    },
+    '/api/v1/settings/sync/conflicts': {
+      get: operation(
+        'listSyncConflicts',
+        'List synchronization conflicts requiring user attention',
+        'Administration',
+        arrayOf(ref('SyncConflictManifest')),
+      ),
+    },
+    '/api/v1/settings/sync/conflicts/{conflictId}/resolve': {
+      post: operation(
+        'resolveSyncConflict',
+        'Resolve a synchronization conflict using one preserved candidate',
+        'Administration',
+        ref('SyncStatus'),
+        {
+          parameters: [
+            {
+              name: 'conflictId',
+              in: 'path',
+              required: true,
+              description: 'Synchronization conflict identifier.',
+              schema: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+            },
+          ],
+          requestBody: body(ref('ResolveSyncConflictInput')),
+        },
+      ),
+    },
     '/api/v1/workspaces': {
       get: operation(
         'listWorkspaces',
@@ -1097,6 +1170,68 @@ export const openApiDocument: OpenApiDocument = {
       }),
       Released: objectSchema(['released'], { released: { type: 'boolean', const: true } }),
       DirectoryInput: objectSchema(['directory'], { directory: ref('AbsolutePath') }),
+      SyncConfigurationInput: objectSchema(['directory', 'deviceId'], {
+        directory: ref('AbsolutePath'),
+        deviceId: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,62}$' },
+      }),
+      ResolveSyncConflictInput: objectSchema(['choice'], {
+        choice: { type: 'string', enum: ['local', 'remote'] },
+      }),
+      SyncStatus: objectSchema(
+        [
+          'enabled',
+          'paused',
+          'state',
+          'directory',
+          'deviceId',
+          'lastAttemptAt',
+          'lastImportAt',
+          'lastExportAt',
+          'pendingSnapshotCount',
+          'conflictCount',
+          'error',
+        ],
+        {
+          enabled: { type: 'boolean' },
+          paused: { type: 'boolean' },
+          state: {
+            type: 'string',
+            enum: [
+              'disabled',
+              'paused',
+              'pending',
+              'importing',
+              'exporting',
+              'healthy',
+              'unavailable',
+              'error',
+              'conflict',
+            ],
+          },
+          directory: nullable(ref('AbsolutePath')),
+          deviceId: nullable({ type: 'string' }),
+          lastAttemptAt: nullable(ref('Timestamp')),
+          lastImportAt: nullable(ref('Timestamp')),
+          lastExportAt: nullable(ref('Timestamp')),
+          pendingSnapshotCount: { type: 'integer', minimum: 0 },
+          conflictCount: { type: 'integer', minimum: 0 },
+          error: nullable({ type: 'string' }),
+        },
+      ),
+      SyncConflict: objectSchema(['id', 'entityType', 'entityId', 'local', 'remote', 'createdAt'], {
+        id: { type: 'string' },
+        entityType: { type: 'string', enum: ['workspace', 'project', 'spec', 'context', 'task'] },
+        entityId: { type: 'string' },
+        local: {},
+        remote: {},
+        createdAt: ref('Timestamp'),
+      }),
+      SyncConflictManifest: objectSchema(['id', 'entityType', 'entityId', 'createdAt'], {
+        id: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+        entityType: { type: 'string', enum: ['workspace', 'project', 'spec', 'context', 'task'] },
+        entityId: { type: 'string' },
+        createdAt: ref('Timestamp'),
+      }),
       PathResult: objectSchema(['path'], { path: ref('AbsolutePath') }),
       AutomaticBackupStatus: objectSchema(
         [
