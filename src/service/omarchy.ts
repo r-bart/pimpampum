@@ -176,6 +176,32 @@ exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cli
 `;
 }
 
+function renderServiceHelper(): string {
+  return `#!/bin/bash
+set -euo pipefail
+
+case \${1:-} in
+  status)
+    [[ $# -eq 1 ]] || exit 64
+    ;;
+  start|stop|restart)
+    [[ $# -eq 1 ]] || exit 64
+    /usr/bin/systemctl --user "$1" pimpampum.service >/dev/null
+    ;;
+  *)
+    printf '%s\\n' 'pimpampum-service: expected status, start, stop, or restart' >&2
+    exit 64
+    ;;
+esac
+
+if /usr/bin/systemctl --user is-active --quiet pimpampum.service; then
+  printf '%s\\n' '{"running":true}'
+else
+  printf '%s\\n' '{"running":false}'
+fi
+`;
+}
+
 function walkPluginSource(sourceRoot: string, directory = sourceRoot): string[] {
   const paths: string[] = [];
   for (const name of readdirSync(directory).sort()) {
@@ -200,6 +226,7 @@ function pluginArtifacts(sourceRoot: string, context: ServiceAdapterContext): Se
       'pimpampum-backup',
       'pimpampum-folder-picker',
       'pimpampum-overview',
+      'pimpampum-service',
       'pimpampum-sync',
     ].includes(child);
     return {
@@ -209,9 +236,11 @@ function pluginArtifacts(sourceRoot: string, context: ServiceAdapterContext): Se
           ? renderOverviewHelper(context)
           : child === 'pimpampum-backup'
             ? renderBackupHelper(context)
-            : child === 'pimpampum-sync'
-              ? renderSyncHelper(context)
-              : readFileSync(sourcePath),
+            : child === 'pimpampum-service'
+              ? renderServiceHelper()
+              : child === 'pimpampum-sync'
+                ? renderSyncHelper(context)
+                : readFileSync(sourcePath),
       mode: executable ? 0o755 : 0o644,
     };
   });

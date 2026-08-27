@@ -15,6 +15,9 @@ BarWidget {
   readonly property string syncHelperPath: decodeURIComponent(
     Qt.resolvedUrl("pimpampum-sync").toString().replace(/^file:\/\//, "")
   )
+  readonly property string serviceHelperPath: decodeURIComponent(
+    Qt.resolvedUrl("pimpampum-service").toString().replace(/^file:\/\//, "")
+  )
   readonly property bool isVertical: bar ? bar.vertical : false
   // Contrast-aware for transparent bars and changing wallpapers/themes.
   readonly property color themeForeground: bar ? bar.barForeground : "white"
@@ -77,6 +80,12 @@ BarWidget {
     popoutOpen: popout.opened
   }
 
+  ServiceControl {
+    id: serviceControl
+    helperPath: root.serviceHelperPath
+    popoutOpen: popout.opened
+  }
+
   StatusPopout {
     id: popout
     bar: root.bar
@@ -84,6 +93,7 @@ BarWidget {
     service: service
     backupService: backupService
     syncService: syncService
+    serviceControl: serviceControl
   }
 
   PimpampumMark {
