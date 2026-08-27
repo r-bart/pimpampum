@@ -42,6 +42,7 @@ struct StatusPopover: View {
   let loginItemState: LoginItemRegistrationState
   let openLoginSettings: () -> Void
   let settingsWindowOpener: any SettingsWindowOpening
+  let setupAssistant: SetupAssistant
   let quitApplication: () -> Void
 
   @State private var isCompletedExpanded = false
@@ -57,6 +58,7 @@ struct StatusPopover: View {
       LoginApprovalSettings.open()
     },
     settingsWindowOpener: any SettingsWindowOpening = SettingsWindowOpener(),
+    setupAssistant: SetupAssistant = SetupAssistant(),
     quitApplication: @escaping () -> Void = { NSApplication.shared.terminate(nil) }
   ) {
     self.store = store
@@ -64,6 +66,7 @@ struct StatusPopover: View {
     self.loginItemState = loginItemState
     self.openLoginSettings = openLoginSettings
     self.settingsWindowOpener = settingsWindowOpener
+    self.setupAssistant = setupAssistant
     self.quitApplication = quitApplication
   }
 
@@ -74,43 +77,59 @@ struct StatusPopover: View {
 
       Divider()
 
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 16) {
-          connectionNotice
-
-          if loginItemState == .requiresApproval {
-            loginApprovalNotice
+      if isSetupRequired {
+        SetupOnboardingView(
+          assistant: setupAssistant,
+          onCheckAgain: {
+            setupAssistant.prepareApp()
+            Task { await store.refresh() }
           }
+        )
+        .padding(20)
+      } else {
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 16) {
+            connectionNotice
 
-          if shouldShowOverview, let overview = store.overview {
-            summary(for: overview)
-            activeWorkSection(overview: overview)
-            projectsSection(overview: overview)
-          } else {
-            unavailableContent()
-          }
+            if loginItemState != .enabled {
+              loginApprovalNotice
+            }
 
-          if let revealError {
-            inlineError(revealError)
+            if shouldShowOverview, let overview = store.overview {
+              summary(for: overview)
+              activeWorkSection(overview: overview)
+              projectsSection(overview: overview)
+            } else {
+              unavailableContent()
+            }
+
+            if let revealError {
+              inlineError(revealError)
+            }
           }
+          .padding(16)
         }
-        .padding(16)
+        .frame(maxHeight: Self.bodyMaximumHeight)
+        .fixedSize(horizontal: false, vertical: true)
       }
-      .frame(maxHeight: Self.bodyMaximumHeight)
-      .fixedSize(horizontal: false, vertical: true)
 
       Divider()
 
       HStack {
-        Button("Quit Pimpampum", action: quitApplication)
+        Button(PimpampumBrand.quitTitle, action: quitApplication)
           .buttonStyle(.plain)
         Spacer()
-        Button {
-          settingsWindowOpener.openSettings()
-        } label: {
-          Label("Settings…", systemImage: "gearshape")
+        if isSetupRequired {
+          Text(PimpampumBrand.versionText())
+            .foregroundStyle(.secondary)
+        } else {
+          Button {
+            settingsWindowOpener.openSettings()
+          } label: {
+            Label("Settings…", systemImage: "gearshape")
+          }
+          .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
       }
       .padding(.horizontal, 16)
       .padding(.vertical, 10)
@@ -124,12 +143,23 @@ struct StatusPopover: View {
 
   private var loginApprovalNotice: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Label("Login approval required", systemImage: "person.badge.key")
+      Label(
+        loginItemState == .requiresApproval ? "Login approval required" : "Start at login",
+        systemImage: "person.badge.key"
+      )
         .font(.subheadline.weight(.semibold))
-      Text("Allow Pimpampum in Login Items to start it automatically.")
+      Text(
+        loginItemState == .requiresApproval
+          ? "Allow \(PimpampumBrand.displayName) in Login Items to start it automatically."
+          : "Add \(PimpampumBrand.displayName) to Login Items so the menu stays available after a restart."
+      )
         .font(.caption)
         .foregroundStyle(.secondary)
-      Button("Open Login Items Settings", action: openLoginSettings)
+      if loginItemState == .requiresApproval {
+        Button("Open Login Items Settings", action: openLoginSettings)
+      } else {
+        Button("Start at Login", action: setupAssistant.prepareApp)
+      }
     }
     .padding(10)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -142,6 +172,11 @@ struct StatusPopover: View {
 
   private var shouldShowOverview: Bool {
     Self.shouldShowOverview(connectionState: store.connectionState, overview: store.overview)
+  }
+
+  private var isSetupRequired: Bool {
+    if case .setupRequired = store.connectionState { return true }
+    return false
   }
 
   private var visibleActiveCount: Int {
@@ -160,7 +195,7 @@ struct StatusPopover: View {
       )
 
       VStack(alignment: .leading, spacing: 2) {
-        Text("Pimpampum")
+        Text(PimpampumBrand.displayName)
           .font(.headline)
         Text(visualState.label)
           .font(.caption)
@@ -192,10 +227,13 @@ struct StatusPopover: View {
       }
     case .online:
       EmptyView()
+    case .setupRequired:
+      EmptyView()
     case .offline(let message):
       notice(
         symbol: "wifi.slash",
-        title: store.overview == nil ? "Pimpampum is offline" : "Offline — showing stale data",
+        title: store.overview == nil
+          ? "\(PimpampumBrand.displayName) is offline" : "Offline — showing stale data",
         detail: message,
         color: .red
       )

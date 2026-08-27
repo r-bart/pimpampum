@@ -28,7 +28,7 @@ Item {
     if (!isObject(value) || typeof value.enabled !== "boolean" || typeof value.paused !== "boolean") return false
     if (["disabled", "paused", "pending", "importing", "exporting", "healthy", "unavailable", "error", "conflict"].indexOf(value.state) === -1) return false
     if (value.directory !== null && !isAbsolutePath(value.directory)) return false
-    if (value.deviceId !== null && (typeof value.deviceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(value.deviceId))) return false
+    if (value.deviceId !== null && (typeof value.deviceId !== "string" || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value.deviceId))) return false
     if (typeof value.pendingSnapshotCount !== "number" || typeof value.conflictCount !== "number") return false
     return value.enabled === (value.directory !== null)
   }

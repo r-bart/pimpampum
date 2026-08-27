@@ -40,7 +40,7 @@ interface AgentCliClientFactories {
 const defaultFactories: AgentCliClientFactories = {
   createClient: () =>
     new Client(
-      { name: 'pimpampum-agent-cli', version: '0.1.0' },
+      { name: 'pimpampum-agent-cli', version: '1.0.0' },
       { versionNegotiation: { mode: 'auto' } },
     ),
   createTransport: (url, options) => new StreamableHTTPClientTransport(url, options),

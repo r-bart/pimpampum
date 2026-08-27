@@ -22,25 +22,25 @@ enum BackupSettingsClientError: Error, Equatable, LocalizedError, Sendable {
   var errorDescription: String? {
     switch self {
     case .unreadableReceipt:
-      "Pimpampum's installation receipt could not be read. Run pimpampum install."
+      "\(PimpampumBrand.displayName)'s installation receipt could not be read. Run pimpampum install."
     case .incompatibleReceiptSchema(let version):
-      "The installed Pimpampum receipt uses unsupported schema version \(version)."
+      "The installed \(PimpampumBrand.displayName) receipt uses unsupported schema version \(version)."
     case .invalidBaseURL:
-      "Pimpampum's configured URL must be an authenticated loopback HTTP endpoint."
+      "\(PimpampumBrand.displayName)'s configured URL must be an authenticated loopback HTTP endpoint."
     case .unreadableToken:
-      "Pimpampum's local token file could not be read. Run pimpampum install."
+      "\(PimpampumBrand.displayName)'s local token file could not be read. Run pimpampum install."
     case .invalidToken:
-      "Pimpampum's local token is invalid. Run pimpampum install to repair it."
+      "\(PimpampumBrand.displayName)'s local token is invalid. Run pimpampum install to repair it."
     case .unauthorized:
-      "Pimpampum rejected the local token. Run pimpampum install to reconcile it."
+      "\(PimpampumBrand.displayName) rejected the local token. Run pimpampum install to reconcile it."
     case .incompatibleResponseSchema(let version):
-      "Pimpampum returned unsupported backup settings schema version \(version)."
+      "\(PimpampumBrand.displayName) returned unsupported backup settings schema version \(version)."
     case .serverStatus(let status, let message):
-      message ?? "Pimpampum returned HTTP status \(status)."
+      message ?? "\(PimpampumBrand.displayName) returned HTTP status \(status)."
     case .invalidPayload:
-      "Pimpampum returned an invalid backup settings response."
+      "\(PimpampumBrand.displayName) returned an invalid backup settings response."
     case .transportFailure:
-      "Pimpampum could not be reached. Check that the daemon is running."
+      "\(PimpampumBrand.displayName) could not be reached. Check that the daemon is running."
     }
   }
 }

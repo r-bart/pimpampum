@@ -112,6 +112,23 @@ struct OverviewStoreTests {
   }
 
   @Test
+  func treatsAMissingInstallationReceiptAsFirstRunSetup() async {
+    let store = OverviewStore(
+      reader: SequenceOverviewReader([.clientFailure(.unreadableReceipt)])
+    )
+
+    await store.refresh()
+
+    if case .setupRequired(let message) = store.connectionState {
+      #expect(message.contains("installation receipt"))
+    } else {
+      Issue.record("Expected setup-required state")
+    }
+    #expect(store.overview == nil)
+    #expect(!store.isStale)
+  }
+
+  @Test
   func pollsImmediatelyThenAtClosedAndOpenIntervalsAndRefreshesOnOpen() async {
     let reader = SequenceOverviewReader(Array(repeating: .success(testOverview()), count: 4))
     let clock = RecordingOverviewClock(date: Date())

@@ -5,7 +5,7 @@ import { AppError } from '../src/errors.js';
 
 function fixture() {
   const client = {
-    health: vi.fn(async () => ({ status: 'ok', version: '0.1.0' })),
+    health: vi.fn(async () => ({ status: 'ok', version: '1.0.0' })),
     getOverview: vi.fn(async () => ({ status: 'empty' })),
     listWorkspaces: vi.fn(async () => []),
     registerWorkspace: vi.fn(async (input: unknown) => input),
@@ -86,7 +86,21 @@ function fixture() {
         installed: true,
         running: true,
         adapter: 'test',
-        version: '0.1.0',
+        version: '1.0.0',
+      })),
+      uninstall: vi.fn(async () => ({ uninstalled: true, dataPreserved: true as const })),
+    },
+    serviceOnlyManager: {
+      install: vi.fn(async () => ({
+        installed: true as const,
+        reconciled: false,
+        receiptPath: '/service-only-receipt',
+      })),
+      status: vi.fn(async () => ({
+        installed: true,
+        running: true,
+        adapter: 'launchd',
+        version: '1.0.0',
       })),
       uninstall: vi.fn(async () => ({ uninstalled: true, dataPreserved: true as const })),
     },
@@ -202,6 +216,44 @@ describe('CLI program', () => {
     });
     await expect(runCli(['backup', 'retry'], withoutMessage.runtime)).rejects.toThrow('exit:1');
     expect(withoutMessage.errors.join('\n')).toContain('Automatic backup retry failed');
+  });
+
+  it('routes the macOS onboarding install flag to the service-only manager', async () => {
+    const state = fixture();
+
+    await runCli(['install', '--service-only'], state.runtime);
+
+    expect(state.runtime.serviceOnlyManager?.install).toHaveBeenCalledOnce();
+    expect(state.runtime.serviceManager.install).not.toHaveBeenCalled();
+    expect(JSON.parse(state.output[0] ?? '')).toMatchObject({
+      installed: true,
+      receiptPath: '/service-only-receipt',
+    });
+  });
+
+  it('treats service-only as the ordinary service install when no platform UI manager exists', async () => {
+    const state = fixture();
+    delete state.runtime.serviceOnlyManager;
+
+    await runCli(['install', '--service-only'], state.runtime);
+
+    expect(state.runtime.serviceManager.install).toHaveBeenCalledOnce();
+  });
+
+  it('rejects unsupported install flags before changing service state', async () => {
+    const state = fixture();
+    state.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+
+    await expect(runCli(['install', '--unknown'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(
+      runCli(['install', '--service-only', '--service-only'], state.runtime),
+    ).rejects.toThrow('exit:1');
+
+    expect(state.runtime.serviceManager.install).not.toHaveBeenCalled();
+    expect(state.runtime.serviceOnlyManager?.install).not.toHaveBeenCalled();
+    expect(state.errors.join('\n')).toContain('optional --service-only flag');
   });
 
   it('rejects ambiguous automatic backup subcommand arguments before transport', async () => {

@@ -1,64 +1,47 @@
 # Session Summary
 
 **Date**: 2026-08-27
-**Feature**: Real development-session evals
-**Type**: Feature
+**Feature**: Quiet macOS npm onboarding
+**Type**: Feature / Bug Fix
 **Branch**: `develop`
 
 ## What Was Done
 
-- Added two deterministic compiled E2E scenarios using independent child processes, a temporary Git
-  repository, synthetic source code, a real Node test runner, real commits, and verified artifacts.
-- Proved competing Claim rejection, explicit handoff to another agent identity, and same-agent
-  continuation from a new process after daemon restart.
-- Added a bounded test-only session executable and dependency-free synthetic repository fixture.
-- Expanded `test:evals`/`test:e2e` from four to six scenarios and excluded every E2E from focused
-  unit/coverage runs.
-- Rewrote the eval rubric and README so they describe the executable gate exactly and keep native
-  live workflows separate.
+- Added a native Quiet onboarding screen that appears only when the macOS app cannot find a valid installation receipt.
+- Added `pimpampum install --service-only` so the onboarding can install the daemon without trying to install a second copy of the app.
+- Made the primary onboarding action copy the command and open Terminal; it never executes the command without the user.
+- Matched the secondary “I’ve installed it — check again” control to the primary button geometry with a quieter visual treatment.
+- Registered downloaded app bundles with macOS Login Items during setup and exposed recovery guidance when registration needs approval.
+- Changed the launchd process type from `Background` to `Interactive`, removing the minute-long cold start observed under macOS scheduling pressure.
+- Rebuilt and approved the macOS artifact, then exercised the complete local install, onboarding, service, health, and restart flow.
 
 ## Why
 
-The previous E2E suite validated coordination but did not prove real repository work across session
-processes, and `docs/evals.md` claimed scenarios outside the actual command. The new gate covers the
-development mechanics Pimpampum controls without introducing network- or model-dependent flakiness.
+The downloaded menu-bar app needed a clear bridge to the npm-installed CLI/MCP service. Live testing also exposed a launchd scheduling choice that made a healthy install appear hung, so startup responsiveness was corrected before release.
 
 ## Key Decisions
 
-- “Real session” means a separate OS process using compiled MCP HTTP plus real filesystem, test, and
-  Git operations; invoking an LLM is intentionally outside the deterministic release gate.
-- All development content and Git identity live in a temporary synthetic repository.
-- Artifact references are independently resolved by the E2E orchestrator because the domain store
-  intentionally treats them as opaque references.
+- npm remains the canonical CLI/MCP distribution channel; the macOS app guides users into that installation.
+- Onboarding is receipt-driven rather than shown on every launch.
+- The app may copy and explain the install command, but Terminal remains the explicit execution boundary.
+- The HTTP daemon uses launchd's `Interactive` process type because the menu-bar UI directly depends on its response time.
 
 ## What's Pending
 
-- The real development-session eval feature is complete.
-- Provider-neutral shared-folder synchronization and its Omarchy/macOS controls remain as local,
-  uncommitted work pending final review and validation.
+- Publish `pimpampum@1.0.0` to npm; until then the registry command returns `E404` and only the local tarball can exercise the flow.
+- Complete the existing release gates: Omarchy Quattro live evidence, Apple signing/notarization credentials, and the final `v1.0.0` tag.
 
 ## Files Modified
 
-| Area          | Files                                          | Change                                                    |
-| ------------- | ---------------------------------------------- | --------------------------------------------------------- |
-| E2E           | `test/development-sessions.e2e.test.ts`        | Added frozen handoff and restart scenarios                |
-| Fixture       | `test/fixtures/development-session/*`          | Added bounded runner and synthetic Git project            |
-| Commands      | `package.json`                                 | Six-test eval gate and correct E2E exclusions             |
-| Documentation | `docs/evals.md`, `README.md`                   | Corrected literal rubric and live-gate boundaries         |
-| Workflow      | spec, plan, and test manifest dated 2026-08-27 | Recorded requirements, execution, and immutable test hash |
-
-## Quality Status
-
-- `npm run typecheck`: pass
-- `npm run lint`: pass
-- `npm run format:check`: pass
-- `npm test`: pass — 378 focused tests, 100% coverage, 6 compiled E2E
-- Flake check: new 2-test development-session suite passed twice consecutively
+| Area         | Files                                                              | Change                                                                               |
+| ------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| macOS UI     | `platforms/macos/Sources/PimpampumMenuBar/*`, tests                | Quiet onboarding, login-item registration, status recovery, secondary button styling |
+| CLI/service  | `src/cli.ts`, `src/cliProgram.ts`, `src/service/launchd.ts`, tests | Service-only installation and responsive launchd scheduling                          |
+| Distribution | `platforms/macos/dist/*`                                           | Rebuilt and approved app artifact                                                    |
+| Docs         | `README.md`, `thoughts/notes/2026-08-27_macos-npm-onboarding.md`   | Installation contract and decision record                                            |
 
 ## Next Steps
 
-1. Finish reviewing and validating shared-folder synchronization and the Omarchy plugin controls.
-2. Commit or open a PR when the broader working-tree changes are ready to be grouped.
-
-See `thoughts/summaries/2026-08-26_shared-folder-sync.md` for the synchronization implementation
-summary.
+1. Publish the npm package after configuring trusted publishing.
+2. Re-run the copied registry command from a clean machine/profile.
+3. Finish the remaining release gates and create `v1.0.0`.

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,10 +11,7 @@ const binaryPath = join(
   root,
   'platforms/macos/dist/PimpampumMenuBar.app/Contents/MacOS/PimpampumMenuBar',
 );
-const metadataPath = join(
-  root,
-  'platforms/macos/dist/PimpampumMenuBar.app/Contents/Resources/artifact-metadata.json',
-);
+const metadataPath = join(root, 'platforms/macos/dist/PimpampumMenuBar.artifact.json');
 
 let evidence;
 try {
@@ -40,10 +36,6 @@ try {
     cause: error,
   });
 }
-const gitCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-  cwd: root,
-  encoding: 'utf8',
-}).trim();
 const expectedChecks = [
   'empty',
   'activeClaim',
@@ -64,7 +56,9 @@ if (
   evidence.schemaVersion !== 2 ||
   evidence.platform !== 'macOS' ||
   evidence.architecture !== 'arm64' ||
-  evidence.gitCommit !== gitCommit ||
+  typeof evidence.gitCommit !== 'string' ||
+  !/^[a-f0-9]{40}$/u.test(evidence.gitCommit) ||
+  evidence.gitCommit !== metadata.sourceGitCommit ||
   metadata.schemaVersion !== 2 ||
   evidence.sourceInputSha256 !== metadata.sourceInputSha256 ||
   !validHash(evidence.sourceInputSha256) ||

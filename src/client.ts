@@ -150,8 +150,13 @@ export class PimpampumHttpClient implements PimpampumGateway {
     return this.request('/api/v1/settings/sync', { method: 'DELETE' });
   }
 
-  listSyncConflicts(): Promise<SyncConflictManifest[]> {
-    return this.request('/api/v1/settings/sync/conflicts');
+  async listSyncConflicts(limit = 50, offset = 0): Promise<SyncConflictManifest[]> {
+    const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    return (
+      await this.request<ApiPage<SyncConflictManifest>>(
+        `/api/v1/settings/sync/conflicts?${query.toString()}`,
+      )
+    ).items;
   }
 
   resolveSyncConflict(conflictId: string, choice: 'local' | 'remote'): Promise<SyncStatus> {

@@ -48,7 +48,7 @@ final class BackupSettingsStore: ObservableObject {
       errorMessage = error.localizedDescription
     } catch {
       guard !Task.isCancelled else { return }
-      errorMessage = "Pimpampum could not update backup settings. Try again."
+      errorMessage = "\(PimpampumBrand.displayName) could not update backup settings. Try again."
     }
   }
 }

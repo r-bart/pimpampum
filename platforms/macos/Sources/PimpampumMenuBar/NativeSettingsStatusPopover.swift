@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -11,7 +12,18 @@ struct NativeSettingsStatusPopover: View {
     StatusPopover(
       store: store,
       workspaceOpener: workspaceOpener,
-      settingsWindowOpener: settingsWindowOpener,
+      settingsWindowOpener: PopoverDismissingSettingsWindowOpener(
+        settingsWindowOpener: settingsWindowOpener,
+        dismissPopover: {
+          let application = NSApplication.shared
+          let popoverWindow = application.keyWindow.flatMap { window in
+            window.styleMask.contains(.titled) ? nil : window
+          } ?? application.orderedWindows.first { window in
+            window.isVisible && !window.styleMask.contains(.titled)
+          }
+          popoverWindow?.orderOut(nil)
+        }
+      ),
       quitApplication: quitApplication
     )
   }

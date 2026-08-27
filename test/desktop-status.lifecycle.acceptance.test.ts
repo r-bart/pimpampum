@@ -73,7 +73,7 @@ function managerInput(
     dataDirectory: fixture.dataDirectory,
     nodePath: '/opt/Pimpampum Runtime/bin/node',
     cliPath: '/opt/Pimpampum Runtime/dist/cli.js',
-    version: '0.1.0',
+    version: '1.0.0',
     runCommand,
   };
 }

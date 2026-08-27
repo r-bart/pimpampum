@@ -10,6 +10,10 @@ import Testing
 struct StatusPopoverTests {
   @Test
   func everyVisualStateHasCompletePresentationMetadata() {
+    #expect(PimpampumBrand.displayName == "pim • pam • pum")
+    #expect(PimpampumBrand.settingsTitle == "pim • pam • pum Settings")
+    #expect(PimpampumBrand.quitTitle == "Quit")
+
     let states: [StatusVisualState] = [
       .loading,
       .active,
@@ -19,6 +23,7 @@ struct StatusPopoverTests {
       .complete,
       .cancelled,
       .empty,
+      .setupRequired,
       .stale,
       .offline,
       .authenticationError,
@@ -66,6 +71,10 @@ struct StatusPopoverTests {
 
     #expect(StatusPopover.visualState(connectionState: .loading, overview: nil) == .loading)
     #expect(StatusPopover.visualState(connectionState: .online, overview: nil) == .loading)
+    #expect(
+      StatusPopover.visualState(connectionState: .setupRequired("missing"), overview: nil)
+        == .setupRequired
+    )
     #expect(StatusPopover.visualState(connectionState: .loading, overview: overview) == .stale)
     #expect(
       StatusPopover.visualState(connectionState: .offline("offline"), overview: nil)
@@ -94,6 +103,12 @@ struct StatusPopoverTests {
     #expect(
       StatusPopover.shouldShowOverview(connectionState: .offline("offline"), overview: overview))
     #expect(!StatusPopover.shouldShowOverview(connectionState: .online, overview: nil))
+    #expect(
+      !StatusPopover.shouldShowOverview(
+        connectionState: .setupRequired("missing"),
+        overview: overview
+      )
+    )
     #expect(
       !StatusPopover.shouldShowOverview(
         connectionState: .invalidToken("denied"),
@@ -226,6 +241,27 @@ struct StatusPopoverTests {
     #expect(StatusPopover.bodyMaximumHeight == 480)
     #expect(StatusPopover.contentTitleLineLimit == 2)
     #expect(StatusPopover.metadataLineLimit == 1)
+    #expect(PimpampumBrand.versionText() == "Version 1.0.0")
+  }
+
+  @Test
+  func setupAssistantCopiesTheExactCommandBeforeOpeningTerminal() {
+    var events: [String] = []
+    let assistant = SetupAssistant(
+      registerLoginItem: { events.append("register") },
+      copyCommand: { events.append("copy:\($0)") },
+      openTerminal: {
+        events.append("open")
+        return true
+      }
+    )
+
+    #expect(assistant.begin())
+    #expect(events == ["register", "copy:\(SetupOnboardingCopy.command)", "open"])
+    #expect(SetupOnboardingCopy.command.contains("--service-only"))
+    assistant.prepareApp()
+    #expect(events.last == "register")
+    _ = SetupOnboardingView(assistant: assistant, onCheckAgain: {})
   }
 
   @Test
@@ -238,6 +274,20 @@ struct StatusPopoverTests {
 
     #expect(view.fittingSize.height > 200)
   }
+
+  @Test
+  func setupRequiredRendersTheCompleteQuietOnboardingAtTheFixedWidth() async {
+    let store = OverviewStore(
+      reader: SequenceOverviewReader([.clientFailure(.unreadableReceipt)])
+    )
+    await store.refresh()
+    let view = NSHostingView(rootView: StatusPopover(store: store))
+
+    view.layoutSubtreeIfNeeded()
+
+    #expect(view.fittingSize.width == StatusPopover.containerWidth)
+    #expect(view.fittingSize.height > 350)
+  }
 }
 
 private struct StaticOverviewReader: OverviewReading {
@@ -249,7 +299,7 @@ private struct StaticOverviewReader: OverviewReading {
 private func makeOverview(status: OverviewStatus, cancelledProjects: Int = 0) -> Overview {
   Overview(
     daemon: OverviewDaemon(
-      version: "0.1.0",
+      version: "1.0.0",
       startedAt: Date(timeIntervalSince1970: 0),
       uptimeSeconds: 120
     ),

@@ -178,7 +178,7 @@ struct BackupDirectoryPickerTests {
         ))
 
     let installationError =
-      "Pimpampum's installation receipt could not be read. Run pimpampum install."
+      "pim • pam • pum's installation receipt could not be read. Run pimpampum install."
     #expect(
       presentation(settings: nil, operationError: installationError)
         == BackupSettingsViewPresentation(

@@ -89,7 +89,7 @@ struct BackupSettingsStoreTests {
     let store = BackupSettingsStore(client: SequenceBackupSettingsReader([.otherFailure]))
     await store.load()
     #expect(store.settings == nil)
-    #expect(store.errorMessage == "Pimpampum could not update backup settings. Try again.")
+    #expect(store.errorMessage == "pim • pam • pum could not update backup settings. Try again.")
   }
 
   @Test

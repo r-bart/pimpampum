@@ -1,24 +1,29 @@
 import { randomUUID } from 'node:crypto';
 import {
   accessSync,
-  chmodSync,
+  closeSync,
   constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { z } from 'zod';
 import { AppError } from './errors.js';
+import { assertNoSymlinkTraversal } from './service/receipt.js';
 import {
   parseSyncSnapshot,
   syncConflictSchema,
+  syncDeviceIdSchema,
   syncStateSchema,
   type SyncConflict,
   type SyncGateway,
@@ -36,6 +41,8 @@ import {
 } from './syncState.js';
 
 const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
+const SNAPSHOT_FILE_PATTERN =
+  /^(\d{12})-([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.json$/u;
 const EMPTY_STATE: SyncState = {
   workspaces: [],
   projects: [],
@@ -48,7 +55,7 @@ const EMPTY_STATE: SyncState = {
 const settingsSchema = z.strictObject({
   schemaVersion: z.literal(1),
   directory: z.string().nullable(),
-  deviceId: z.string().nullable(),
+  deviceId: syncDeviceIdSchema.nullable(),
   paused: z.boolean(),
   sequence: z.number().int().nonnegative(),
   appliedSnapshotIds: z.array(z.string().uuid()),
@@ -160,7 +167,7 @@ export class SyncController implements SyncGateway {
     if (!isAbsolute(parentDirectory)) {
       throw new AppError('bad_request', 'Shared folder must be an absolute path', 400);
     }
-    if (!/^[a-z0-9][a-z0-9-]{0,62}$/u.test(deviceId)) {
+    if (!syncDeviceIdSchema.safeParse(deviceId).success) {
       throw new AppError(
         'bad_request',
         'Device ID must use lowercase letters, numbers, and hyphens',
@@ -168,8 +175,10 @@ export class SyncController implements SyncGateway {
       );
     }
     try {
-      if (!statSync(parentDirectory).isDirectory()) throw new Error('not a directory');
-      accessSync(parentDirectory, constants.W_OK);
+      const canonicalParent = realpathSync(parentDirectory);
+      if (!lstatSync(canonicalParent).isDirectory()) throw new Error('not a directory');
+      accessSync(canonicalParent, constants.W_OK);
+      parentDirectory = canonicalParent;
     } catch {
       throw new AppError(
         'bad_request',
@@ -182,11 +191,15 @@ export class SyncController implements SyncGateway {
         ? parentDirectory
         : join(parentDirectory, 'Pimpampum');
     const deviceDirectory = join(directory, 'devices', deviceId);
+    assertNoSymlinkTraversal(directory, 'Shared synchronization directory', parentDirectory);
     mkdirSync(deviceDirectory, { recursive: true, mode: 0o700 });
+    this.assertSafeDirectory(directory, directory);
+    this.assertSafeDirectory(join(directory, 'devices'), directory);
+    this.assertSafeDirectory(deviceDirectory, directory);
     const existingSequence = readdirSync(deviceDirectory, { withFileTypes: true }).reduce(
       (maximum, file) => {
         if (!file.isFile()) return maximum;
-        const match = /^(\d{12})-[0-9a-f-]{36}\.json$/u.exec(file.name);
+        const match = SNAPSHOT_FILE_PATTERN.exec(file.name);
         return match ? Math.max(maximum, Number(match[1])) : maximum;
       },
       0,
@@ -252,8 +265,15 @@ export class SyncController implements SyncGateway {
     return this.getStatus();
   }
 
-  listConflicts(): SyncConflict[] {
-    return structuredClone(this.settings.conflicts);
+  listConflicts(
+    input: { limit: number; offset: number } = { limit: 200, offset: 0 },
+  ): SyncConflict[] {
+    return structuredClone(this.settings.conflicts.slice(input.offset, input.offset + input.limit));
+  }
+
+  getConflict(conflictId: string): SyncConflict | null {
+    const conflict = this.settings.conflicts.find((candidate) => candidate.id === conflictId);
+    return conflict ? structuredClone(conflict) : null;
   }
 
   hasConflict(entityType: SyncConflict['entityType'], entityId: string): boolean {
@@ -347,15 +367,27 @@ export class SyncController implements SyncGateway {
     const applied = new Set(this.settings.appliedSnapshotIds);
     const paths: Array<{ path: string; deviceId: string; sequence: number; snapshotId: string }> =
       [];
-    for (const device of readdirSync(join(directory, 'devices'), { withFileTypes: true })) {
+    const devicesDirectory = join(directory, 'devices');
+    this.assertSafeDirectory(directory, directory);
+    this.assertSafeDirectory(devicesDirectory, directory);
+    for (const device of readdirSync(devicesDirectory, { withFileTypes: true })) {
+      if (device.isSymbolicLink()) {
+        throw new AppError('bad_request', 'Shared device directory must not be a symlink', 400);
+      }
       if (!device.isDirectory()) continue;
-      for (const file of readdirSync(join(directory, 'devices', device.name), {
+      if (!syncDeviceIdSchema.safeParse(device.name).success) continue;
+      const deviceDirectory = join(devicesDirectory, device.name);
+      this.assertSafeDirectory(deviceDirectory, directory);
+      for (const file of readdirSync(deviceDirectory, {
         withFileTypes: true,
       })) {
-        const match = /^(\d{12})-([0-9a-f-]{36})\.json$/u.exec(file.name);
+        if (file.isSymbolicLink()) {
+          throw new AppError('bad_request', 'Shared snapshot must not be a symlink', 400);
+        }
+        const match = SNAPSHOT_FILE_PATTERN.exec(file.name);
         if (file.isFile() && match) {
           paths.push({
-            path: join(directory, 'devices', device.name, file.name),
+            path: join(deviceDirectory, file.name),
             deviceId: device.name,
             sequence: Number(match[1]),
             snapshotId: match[2] as string,
@@ -363,13 +395,16 @@ export class SyncController implements SyncGateway {
         }
       }
     }
+    if (new Set(paths.map((entry) => entry.snapshotId)).size !== paths.length) {
+      throw new AppError('bad_request', 'Shared snapshot ID is duplicated', 400);
+    }
     const pathBySnapshotId = new Map(paths.map((entry) => [entry.snapshotId, entry]));
     const snapshots = paths
       .filter(
         ({ deviceId, sequence, snapshotId }) =>
           !applied.has(snapshotId) && sequence > (this.settings.deviceSequences[deviceId] ?? 0),
       )
-      .map(({ path, deviceId }) => this.readSnapshot(path, deviceId));
+      .map((entry) => this.readSnapshot(entry.path, entry));
     const sequenceOwners = new Set<string>();
     for (const snapshot of snapshots) {
       const key = `${snapshot.deviceId}:${snapshot.sequence}`;
@@ -386,7 +421,7 @@ export class SyncController implements SyncGateway {
       if (known) return known;
       const entry = pathBySnapshotId.get(snapshotId);
       if (!entry) return undefined;
-      const snapshot = this.readSnapshot(entry.path, entry.deviceId);
+      const snapshot = this.readSnapshot(entry.path, entry);
       loaded.set(snapshotId, snapshot);
       return snapshot;
     };
@@ -475,6 +510,9 @@ export class SyncController implements SyncGateway {
     this.state = 'exporting';
     const deviceDirectory = join(directory, 'devices', deviceId);
     mkdirSync(deviceDirectory, { recursive: true, mode: 0o700 });
+    this.assertSafeDirectory(directory, directory);
+    this.assertSafeDirectory(join(directory, 'devices'), directory);
+    this.assertSafeDirectory(deviceDirectory, directory);
     const finalPath = join(
       deviceDirectory,
       `${String(sequence).padStart(12, '0')}-${snapshot.snapshotId}.json`,
@@ -486,7 +524,8 @@ export class SyncController implements SyncGateway {
         mode: 0o600,
         flag: 'wx',
       });
-      chmodSync(partialPath, 0o600);
+      assertNoSymlinkTraversal(partialPath, 'Shared snapshot staging file', directory);
+      assertNoSymlinkTraversal(finalPath, 'Shared snapshot file', directory);
       renameSync(partialPath, finalPath);
     } finally {
       rmSync(partialPath, { force: true });
@@ -501,14 +540,37 @@ export class SyncController implements SyncGateway {
     this.writeSettings();
   }
 
-  private readSnapshot(path: string, expectedDeviceId?: string): SyncSnapshot {
-    const stats = lstatSync(path);
-    if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_SNAPSHOT_BYTES) {
-      throw new AppError('bad_request', 'Shared snapshot is not a bounded regular file', 400);
+  private readSnapshot(
+    path: string,
+    expected: { deviceId: string; sequence: number; snapshotId: string },
+  ): SyncSnapshot {
+    const directory = this.requiredDirectory();
+    assertNoSymlinkTraversal(path, 'Shared snapshot file', directory);
+    let descriptor: number | null = null;
+    let content: string;
+    try {
+      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const stats = fstatSync(descriptor);
+      if (!stats.isFile() || stats.size > MAX_SNAPSHOT_BYTES) {
+        throw new AppError('bad_request', 'Shared snapshot is not a bounded regular file', 400);
+      }
+      const bytes = Buffer.allocUnsafe(stats.size + 1);
+      const bytesRead = readSync(descriptor, bytes, 0, bytes.length, 0);
+      /* v8 ignore next -- this branch requires an OS-level concurrent file mutation. */
+      if (bytesRead !== stats.size) {
+        throw new AppError('bad_request', 'Shared snapshot changed while it was being read', 400);
+      }
+      content = bytes.subarray(0, bytesRead).toString('utf8');
+    } finally {
+      if (descriptor !== null) closeSync(descriptor);
     }
-    const snapshot = parseSyncSnapshot(JSON.parse(readFileSync(path, 'utf8')) as unknown);
-    if (expectedDeviceId !== undefined && snapshot.deviceId !== expectedDeviceId) {
-      throw new AppError('bad_request', 'Shared snapshot is outside its device namespace', 400);
+    const snapshot = parseSyncSnapshot(JSON.parse(content) as unknown);
+    if (
+      snapshot.deviceId !== expected.deviceId ||
+      snapshot.sequence !== expected.sequence ||
+      snapshot.snapshotId !== expected.snapshotId
+    ) {
+      throw new AppError('bad_request', 'Shared snapshot does not match its filename tuple', 400);
     }
     if (snapshot.stateHash !== syncHash(snapshot.state)) {
       throw new AppError('bad_request', 'Shared snapshot hash does not match its state', 400);
@@ -609,7 +671,9 @@ export class SyncController implements SyncGateway {
 
   private sharedDirectoryAvailable(): boolean {
     try {
-      return statSync(this.requiredDirectory()).isDirectory();
+      const directory = this.requiredDirectory();
+      this.assertSafeDirectory(directory, directory);
+      return true;
     } catch {
       return false;
     }
@@ -619,6 +683,19 @@ export class SyncController implements SyncGateway {
     if (!this.settings.directory)
       throw new AppError('invalid_state', 'Synchronization is not configured', 409);
     return this.settings.directory;
+  }
+
+  private assertSafeDirectory(path: string, trustedRoot: string): void {
+    try {
+      assertNoSymlinkTraversal(path, 'Shared synchronization directory', trustedRoot);
+      if (!lstatSync(path).isDirectory()) throw new Error('not a directory');
+    } catch {
+      throw new AppError(
+        'bad_request',
+        'Shared synchronization path must contain only regular directories',
+        400,
+      );
+    }
   }
 
   private assertConfigured(): void {

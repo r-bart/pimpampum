@@ -1573,6 +1573,82 @@ export class PimpampumStore {
         fail(`Task ${task.id} has an invalid parent`);
       }
     }
+    const specsByProject = new Map(
+      state.projects.map((project) => [project.id, [] as SyncState['specs']]),
+    );
+    for (const spec of state.specs) specsByProject.get(spec.projectId)!.push(spec);
+    const tasksBySpec = new Map(state.specs.map((spec) => [spec.id, [] as SyncState['tasks']]));
+    const nonTerminalChildren = new Set<string>();
+    for (const task of state.tasks) {
+      tasksBySpec.get(task.specId)!.push(task);
+      if (task.parentId !== null && !isTerminalTaskState(task.state)) {
+        nonTerminalChildren.add(task.parentId);
+      }
+    }
+
+    const hasCompletion = (entity: {
+      completionSummary: string | null;
+      artifacts: unknown[];
+      completedAt: string | null;
+    }): boolean =>
+      entity.completionSummary !== null ||
+      entity.artifacts.length > 0 ||
+      entity.completedAt !== null;
+    const assertCompletion = (
+      entity: {
+        completionSummary: string | null;
+        artifacts: unknown[];
+        completedAt: string | null;
+      },
+      stateValue: string,
+      label: string,
+    ): void => {
+      if (stateValue === 'done') {
+        if (entity.completionSummary === null || entity.completedAt === null) {
+          fail(`${label} is done without completion metadata`);
+        }
+      } else if (hasCompletion(entity)) {
+        fail(`${label} has completion metadata while ${stateValue}`);
+      }
+    };
+
+    for (const project of state.projects) {
+      const specs = specsByProject.get(project.id)!;
+      if (project.state === 'open' && specs.length === 0) {
+        fail(`Project ${project.id} is open without a Spec`);
+      }
+      if (
+        project.state === 'done' &&
+        (specs.length === 0 || specs.some((spec) => !isTerminalSpecState(spec.state)))
+      ) {
+        fail(`Project ${project.id} is done before every Spec is terminal`);
+      }
+      if (project.state === 'cancelled' && specs.some((spec) => !isTerminalSpecState(spec.state))) {
+        fail(`Project ${project.id} is cancelled with a non-terminal Spec`);
+      }
+      assertCompletion(project, project.state, `Project ${project.id}`);
+    }
+
+    for (const spec of state.specs) {
+      const specTasks = tasksBySpec.get(spec.id)!;
+      if (spec.state === 'ready' && spec.body.trim().length === 0) {
+        fail(`Spec ${spec.id} is ready without Markdown`);
+      }
+      if (
+        isTerminalSpecState(spec.state) &&
+        specTasks.some((task) => !isTerminalTaskState(task.state))
+      ) {
+        fail(`Spec ${spec.id} is terminal with a non-terminal Task`);
+      }
+      assertCompletion(spec, spec.state, `Spec ${spec.id}`);
+    }
+
+    for (const task of state.tasks) {
+      if (isTerminalTaskState(task.state) && nonTerminalChildren.has(task.id)) {
+        fail(`Task ${task.id} is terminal with a non-terminal Subtask`);
+      }
+      assertCompletion(task, task.state, `Task ${task.id}`);
+    }
   }
 
   private upsertSyncTask(task: SyncState['tasks'][number]): void {

@@ -12,7 +12,7 @@ const frozen = new Map([
   ],
   [
     'test/desktop-status.lifecycle.acceptance.test.ts',
-    '50040208e18e5e99d0247b40a20aedbd42d9cf62fe2fd6f808ef74fcbf80735a',
+    '3fd3289e06b2651d9d0902a026900657c461db0ba780e6d566e21be5a785564d',
   ],
   [
     'test/quattro-live-evidence.acceptance.test.ts',
@@ -20,11 +20,11 @@ const frozen = new Map([
   ],
   [
     'test/fixtures/overview/complete.json',
-    'f4769337822cbee1f80f332e6fd27911822d68f6cd829dbacb429eb1d2ce47c1',
+    'd577a304a26269eb7be4c480159a06290b4ba763befa04e8bb03761f45ebaade',
   ],
   [
     'test/fixtures/overview/empty.json',
-    'b4d8d773ad7c3ffedb6807b2cae888b0e8d25f2eeca06dbcb2c75cca8115d66c',
+    'ae6022769c756946be2304ddc678bedffc4ca1e657e7abec5abe07221b9f7d33',
   ],
   [
     'test/fixtures/overview/invalid.json',
@@ -32,7 +32,7 @@ const frozen = new Map([
   ],
   [
     'test/fixtures/overview/mixed.json',
-    '62ce2eaf98cd34ced77cda10a45f68375fd0a2ca9d00c6b62bd3f742c277a9cb',
+    'ad560079b063e78df957a28758a7b86f8c59fc0d7f331b6763283cd95c1a47c8',
   ],
 ]);
 

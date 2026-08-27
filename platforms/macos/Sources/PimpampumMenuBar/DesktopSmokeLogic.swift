@@ -88,6 +88,7 @@ enum DesktopSmokeLogic {
     switch state {
     case .loading: "loading"
     case .online: "online"
+    case .setupRequired: "setup-required"
     case .offline: "offline"
     case .invalidToken: "credentials"
     case .incompatible: "incompatible"
@@ -171,6 +172,7 @@ enum DesktopSmokeError: LocalizedError, Equatable {
   case projectMissing(String)
   case renderedControlMissing(String)
   case renderedControlActivationFailed(String)
+  case popoverDismissalFailed
   case markResourceMissing
   case renderFailed
 
@@ -182,6 +184,7 @@ enum DesktopSmokeError: LocalizedError, Equatable {
     case .renderedControlMissing(let label): "The rendered control is missing: \(label)"
     case .renderedControlActivationFailed(let label):
       "The rendered control could not be activated: \(label)"
+    case .popoverDismissalFailed: "The native popover remained visible after opening Settings."
     case .markResourceMissing: "PimpampumCompact.pdf is missing or invalid."
     case .renderFailed: "The native popover could not be rendered."
     }

@@ -25,7 +25,7 @@ extension BackupDirectoryPicker {
       let panel = NSOpenPanel()
       panel.title = "Choose Backup Folder"
       panel.prompt = "Choose"
-      panel.message = "Choose a folder for Pimpampum's current backup snapshot."
+      panel.message = "Choose a folder for \(PimpampumBrand.displayName)'s current backup snapshot."
       panel.canChooseDirectories = true
       panel.canChooseFiles = false
       panel.allowsMultipleSelection = false

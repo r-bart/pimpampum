@@ -355,13 +355,13 @@ describe('HTTP client adapter', () => {
       const url = String(input);
       calls.push({ url, init });
       if (url.endsWith('/health')) {
-        return Response.json({ status: 'ok', version: '0.1.0' });
+        return Response.json({ status: 'ok', version: '1.0.0' });
       }
       if (url.endsWith('/api/v1/overview')) {
         return Response.json({
           data: {
             daemon: {
-              version: '0.1.0',
+              version: '1.0.0',
               startedAt: '2026-08-26T20:00:00.000Z',
               uptimeSeconds: 1,
             },
@@ -691,7 +691,7 @@ describe('HTTP client adapter', () => {
     const invalidHealthResponses = [
       new Response('', { status: 200 }),
       Response.json(null),
-      Response.json({ status: 1, version: '0.1.0' }),
+      Response.json({ status: 1, version: '1.0.0' }),
       Response.json({ status: 'ok', version: 1 }),
     ];
     vi.stubGlobal('fetch', async () => invalidHealthResponses.shift() as Response);

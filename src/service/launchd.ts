@@ -96,7 +96,7 @@ export function renderLaunchAgent(input: LaunchAgentInput): string {
   <key>ThrottleInterval</key>
   <integer>5</integer>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
   <key>StandardOutPath</key>
   <string>${xml(standardOutputPath)}</string>
   <key>StandardErrorPath</key>

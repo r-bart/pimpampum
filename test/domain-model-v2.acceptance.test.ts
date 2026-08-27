@@ -371,7 +371,7 @@ describe('Domain Model v2 acceptance', () => {
     // Spec: FR-9, AC-9
     const handler = createPimpampumMcpHandler(store);
     const client = new Client(
-      { name: 'domain-model-v2-acceptance', version: '0.1.0' },
+      { name: 'domain-model-v2-acceptance', version: '1.0.0' },
       { versionNegotiation: { mode: 'auto' } },
     );
     const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {

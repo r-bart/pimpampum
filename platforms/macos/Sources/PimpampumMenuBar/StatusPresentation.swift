@@ -35,6 +35,7 @@ enum StatusVisualState: Equatable {
   case complete
   case cancelled
   case empty
+  case setupRequired
   case stale
   case offline
   case authenticationError
@@ -50,6 +51,7 @@ enum StatusVisualState: Equatable {
     case .complete: "All complete"
     case .cancelled: "Finished with cancellations"
     case .empty: "No projects"
+    case .setupRequired: "Setup required"
     case .stale: "Offline — stale data"
     case .offline: "Offline"
     case .authenticationError: "Authentication error"
@@ -66,6 +68,7 @@ enum StatusVisualState: Equatable {
     case .complete: .completionCheck
     case .cancelled: .cancellationX
     case .empty: .emptyRing
+    case .setupRequired: .activeDot
     case .stale, .offline: .disconnected
     case .authenticationError, .incompatible: .alert
     }
@@ -76,7 +79,7 @@ enum StatusVisualState: Equatable {
     case .active: .blue
     case .available: .orange
     case .complete: .green
-    case .stale, .offline, .authenticationError, .incompatible: .red
+    case .setupRequired, .stale, .offline, .authenticationError, .incompatible: .red
     case .loading, .draft, .paused, .cancelled, .empty: .secondary
     }
   }
@@ -92,7 +95,7 @@ enum StatusIndicatorPresentation {
     let boundedCount = max(0, activeCount)
     let claims =
       boundedCount == 1 ? "1 active claim" : "\(boundedCount) active claims"
-    return "Pimpampum: \(state.label), \(claims)"
+    return "\(PimpampumBrand.displayName): \(state.label), \(claims)"
   }
 }
 
@@ -112,6 +115,8 @@ extension StatusPopover {
     case .online:
       guard let overview else { return .loading }
       return visualState(for: overview)
+    case .setupRequired:
+      return .setupRequired
     case .offline:
       return overview == nil ? .offline : .stale
     case .invalidToken:
@@ -129,7 +134,7 @@ extension StatusPopover {
     switch connectionState {
     case .loading, .online, .offline:
       return true
-    case .invalidToken, .incompatible:
+    case .setupRequired, .invalidToken, .incompatible:
       return false
     }
   }

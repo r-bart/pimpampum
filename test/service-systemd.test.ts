@@ -42,7 +42,7 @@ function context(runCommand: RunCommand): ServiceAdapterContext {
     dataDirectory: '/home/dev Space ü/Pimpampum Data',
     nodePath: '/opt/Pimpampum Runtime/bin/node',
     cliPath: '/opt/Pimpampum Runtime/dist/cli.js',
-    version: '0.1.0',
+    version: '1.0.0',
     host: '127.0.0.1',
     port: 7337,
     logDirectory: '/home/dev Space ü/Pimpampum Data/logs',
@@ -441,7 +441,7 @@ describe('systemd user service', () => {
       dataDirectory,
       nodePath: '/opt/Pimpampum Runtime/bin/node',
       cliPath: '/opt/Pimpampum Runtime/dist/cli.js',
-      version: '0.1.0',
+      version: '1.0.0',
       runCommand,
       adapters: { linux: adapter },
     });
@@ -513,7 +513,7 @@ describe('systemd user service', () => {
       dataDirectory,
       nodePath: '/opt/Pimpampum Runtime/bin/node',
       cliPath: '/opt/Pimpampum Runtime/dist/cli.js',
-      version: '0.1.0',
+      version: '1.0.0',
       runCommand,
       adapters: { linux: createSystemdAdapter() },
     });
@@ -583,7 +583,7 @@ describe('systemd user service', () => {
       homeDirectory,
       dataDirectory,
       nodePath: '/opt/Pimpampum Runtime/bin/node',
-      version: '0.1.0',
+      version: '1.0.0',
       runCommand,
       adapters: { linux: adapter },
     };

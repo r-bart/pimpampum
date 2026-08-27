@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -125,8 +125,8 @@ describe('shared-folder synchronization acceptance', () => {
     });
     await b.controller.drain();
     await a.controller.reconcile();
-    expect(a.store.getWorkspace('product').rootPath).toBe(workspaceA);
-    expect(b.store.getWorkspace('product').rootPath).toBe(workspaceB);
+    expect(a.store.getWorkspace('product').rootPath).toBe(realpathSync(workspaceA));
+    expect(b.store.getWorkspace('product').rootPath).toBe(realpathSync(workspaceB));
 
     a.store.createProject({
       workspaceId: 'product',

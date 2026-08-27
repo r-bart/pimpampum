@@ -115,6 +115,59 @@ async function main(): Promise<void> {
           omarchyShellPath,
         })
       : null;
+  const macOSLaunchdAdapter = hostPlatform === 'darwin' ? createLaunchdAdapter() : null;
+  const macOSDesktopAdapter =
+    hostPlatform === 'darwin' && macOSLaunchdAdapter
+      ? createMacOSDesktopAdapter({
+          appBundlePath: bundledMacOSApp,
+          daemonAdapter: macOSLaunchdAdapter,
+        })
+      : null;
+
+  const managerInput = {
+    platform: hostPlatform,
+    homeDirectory: homedir(),
+    dataDirectory: config.dataDirectory,
+    nodePath: process.execPath,
+    cliPath: compiledCliPath,
+    version: '1.0.0',
+    host: config.host,
+    port: config.port,
+    runCommand: runServiceCommand,
+  };
+  const serviceManager = createPlatformServiceManager({
+    ...managerInput,
+    ...(macOSLaunchdAdapter && macOSDesktopAdapter
+      ? {
+          adapters: { darwin: macOSDesktopAdapter },
+          receiptAdapters: {
+            [macOSLaunchdAdapter.id]: macOSLaunchdAdapter,
+            [macOSDesktopAdapter.id]: macOSDesktopAdapter,
+          },
+        }
+      : hostPlatform === 'linux' && linuxSystemdAdapter
+        ? {
+            adapters: {
+              linux: useOmarchy && linuxOmarchyAdapter ? linuxOmarchyAdapter : linuxSystemdAdapter,
+            },
+            receiptAdapters: {
+              [linuxSystemdAdapter.id]: linuxSystemdAdapter,
+              ...(linuxOmarchyAdapter ? { [linuxOmarchyAdapter.id]: linuxOmarchyAdapter } : {}),
+            },
+          }
+        : {}),
+  });
+  const serviceOnlyManager =
+    macOSLaunchdAdapter && macOSDesktopAdapter
+      ? createPlatformServiceManager({
+          ...managerInput,
+          adapters: { darwin: macOSLaunchdAdapter },
+          receiptAdapters: {
+            [macOSLaunchdAdapter.id]: macOSLaunchdAdapter,
+            [macOSDesktopAdapter.id]: macOSDesktopAdapter,
+          },
+        })
+      : null;
 
   await runCli(process.argv.slice(2), {
     createClient: () => createHttpClient(config),
@@ -134,38 +187,8 @@ async function main(): Promise<void> {
         },
       },
     }),
-    serviceManager: createPlatformServiceManager({
-      platform: hostPlatform,
-      homeDirectory: homedir(),
-      dataDirectory: config.dataDirectory,
-      nodePath: process.execPath,
-      cliPath: compiledCliPath,
-      version: '0.1.0',
-      host: config.host,
-      port: config.port,
-      runCommand: runServiceCommand,
-      ...(hostPlatform === 'darwin'
-        ? {
-            adapters: {
-              darwin: createMacOSDesktopAdapter({
-                appBundlePath: bundledMacOSApp,
-                daemonAdapter: createLaunchdAdapter(),
-              }),
-            },
-          }
-        : hostPlatform === 'linux' && linuxSystemdAdapter
-          ? {
-              adapters: {
-                linux:
-                  useOmarchy && linuxOmarchyAdapter ? linuxOmarchyAdapter : linuxSystemdAdapter,
-              },
-              receiptAdapters: {
-                [linuxSystemdAdapter.id]: linuxSystemdAdapter,
-                ...(linuxOmarchyAdapter ? { [linuxOmarchyAdapter.id]: linuxOmarchyAdapter } : {}),
-              },
-            }
-          : {}),
-    }),
+    serviceManager,
+    ...(serviceOnlyManager ? { serviceOnlyManager } : {}),
     startServer: () => startServer(config),
     readFile: (path, maxBytes) =>
       maxBytes === undefined ? readFileSync(path, 'utf8') : readBoundedUtf8File(path, maxBytes),

@@ -36,7 +36,7 @@ struct SettingsWindowConfigurator: NSViewRepresentable {
   private func configure(_ window: NSWindow, coordinator: Coordinator) {
     guard coordinator.configuredWindow !== window else { return }
     coordinator.configuredWindow = window
-    window.title = "Pimpampum Settings"
+    window.title = PimpampumBrand.settingsTitle
     window.toolbar = nil
     window.contentMinSize = NSSize(
       width: BackupSettingsView.contentWidth,

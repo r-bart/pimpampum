@@ -212,7 +212,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
   });
 
   it('executes the complete multi-Spec portfolio workflow through the compiled daemon', async () => {
-    expect(await executeCli(environment, 'health')).toEqual({ status: 'ok', version: '0.1.0' });
+    expect(await executeCli(environment, 'health')).toEqual({ status: 'ok', version: '1.0.0' });
     const workspace = await executeCli<Workspace>(
       environment,
       'workspace:add',

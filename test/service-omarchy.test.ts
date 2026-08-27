@@ -269,7 +269,7 @@ function context(root: Fixture, runCommand: RunCommand): ServiceAdapterContext {
     dataDirectory: root.data,
     nodePath: '/usr/bin/node',
     cliPath: '/opt/pimpampum/dist/cli.js',
-    version: '0.1.0',
+    version: '1.0.0',
     host: '127.0.0.1',
     port: 7337,
     logDirectory: join(root.data, 'logs'),
@@ -288,7 +288,7 @@ function managerInput(
     dataDirectory: root.data,
     nodePath: '/usr/bin/node',
     cliPath: '/opt/pimpampum/dist/cli.js',
-    version: '0.1.0',
+    version: '1.0.0',
     runCommand,
     adapters: { linux: adapter },
   };

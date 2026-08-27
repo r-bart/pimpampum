@@ -41,7 +41,7 @@ describe('server composition', () => {
     running = await startServer({ ...config(), databasePath: ':memory:' });
     const address = running.server.address() as AddressInfo;
     const response = await fetch(`http://127.0.0.1:${address.port}/health`);
-    expect(await response.json()).toEqual({ status: 'ok', version: '0.1.0' });
+    expect(await response.json()).toEqual({ status: 'ok', version: '1.0.0' });
     const shared = join(directory, 'shared');
     mkdirSync(shared);
     const syncResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/settings/sync`, {

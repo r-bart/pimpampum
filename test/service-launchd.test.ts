@@ -37,7 +37,7 @@ function context(runCommand: RunCommand): ServiceAdapterContext {
     dataDirectory: '/Users/example/Pimpampum Data ñ',
     nodePath: '/opt/Pimpampum Runtime/bin/node',
     cliPath: '/opt/Pimpampum Runtime/dist/cli.js',
-    version: '0.1.0',
+    version: '1.0.0',
     host: '127.0.0.1',
     port: 7337,
     logDirectory: '/Users/example/Pimpampum Data ñ/logs',
@@ -63,6 +63,8 @@ describe('LaunchAgent rendering', () => {
     expect(plist).toMatch(
       /<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>\s*<\/dict>/,
     );
+    expect(plist).toMatch(/<key>ProcessType<\/key>\s*<string>Interactive<\/string>/);
+    expect(plist).not.toContain('<string>Background</string>');
     expect(plist).not.toMatch(/\/bin\/(?:ba)?sh|sh -c|PIMPAMPUM_TOKEN|Bearer/);
     if (process.platform === 'darwin') {
       expect(() =>

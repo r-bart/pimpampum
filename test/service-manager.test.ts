@@ -70,7 +70,7 @@ function managerInput(
     dataDirectory: root.dataDirectory,
     nodePath: '/opt/Pimpampum & Runtime/bin/node',
     cliPath: '/opt/Pimpampum Runtime/dist/<cli>.js',
-    version: '0.1.0',
+    version: '1.0.0',
     runCommand,
     ...overrides,
   };
@@ -153,7 +153,7 @@ describe('platform-neutral service manager', () => {
       installed: true,
       running: true,
       adapter: 'launchd',
-      version: '0.1.0',
+      version: '1.0.0',
     });
     await expect(manager.uninstall()).resolves.toEqual({
       uninstalled: true,
@@ -915,7 +915,7 @@ describe('platform-neutral service manager', () => {
       dataDirectory: root.dataDirectory,
       nodePath: '/node',
       cliPath: '/cli',
-      version: '0.1.0',
+      version: '1.0.0',
       host: '127.0.0.1',
       port: 7337,
       logDirectory: join(root.dataDirectory, 'logs'),

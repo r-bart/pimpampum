@@ -1,9 +1,11 @@
 {
-  "schemaVersion": 1,
-  "testedAt": "2026-08-26T16:03:34.491Z",
+  "schemaVersion": 2,
+  "testedAt": "2026-08-27T11:32:20.764Z",
   "platform": "macOS",
   "architecture": "arm64",
-  "appSha256": "a92ed7116e18bf9c0f5c3aa501ed8f46b79aca9481670d599343aa7c1095aece",
+  "gitCommit": "da7e0eb212b12d02f2b2fcff2a85f92d16bc2887",
+  "sourceInputSha256": "3a989ccd788fedfe92b9580869c11af3d50fb8397690f5a7ded7d542d1cc92ef",
+  "appSha256": "1a1d06382ac66dffc96b5be325b1fd67c75d5687587697899204df1c63561b67",
   "compactMarkSha256": "5d9f558de031b9a3c4ed1052e093fb235f9a077d077c9a027286975d4a84f463",
   "loginItem": "enabled",
   "checks": {
@@ -34,19 +36,19 @@
     "uninstallCleanup": true
   },
   "renderings": {
-    "empty": "af9430ebd2f8223668b1df32d7f8e1a335763f35315cc3c951121ba2a9f7fa65",
-    "active": "5860861af2025b273d78db5c26b1bec1ac7b8e75dea172e3881f38f8f1e4961d",
-    "cappedCount": "f3931a20f62e58d2a6ff10ad2765fab702799767b0858e7503b5e43703f42789",
-    "longContent": "9115e30fa667ae012987d63ce4a1b843b1eef7f76912f7befcdd82d1a9efa079",
-    "quitBoundary": "5860861af2025b273d78db5c26b1bec1ac7b8e75dea172e3881f38f8f1e4961d",
-    "complete": "30c9bf5e00abb6149bd56e48babb27418847dd9db0872ea187ea101275e1f077",
-    "settingsDisabled": "af9430ebd2f8223668b1df32d7f8e1a335763f35315cc3c951121ba2a9f7fa65",
-    "settingsHealthy": "30c9bf5e00abb6149bd56e48babb27418847dd9db0872ea187ea101275e1f077",
-    "settingsError": "30c9bf5e00abb6149bd56e48babb27418847dd9db0872ea187ea101275e1f077",
-    "offline": "f86edfb5c09d580c8b6f0bbb387f6128f421fc83e55480f395e9ba616afc186d",
-    "stale": "a12e6eab1e4ef5b6202d2c63c9ebc4a30d92f4d3de1b40eb2342accda556981d",
-    "recovered": "30c9bf5e00abb6149bd56e48babb27418847dd9db0872ea187ea101275e1f077",
-    "authenticationError": "b513fe61990c36a314faf0c24514393d6a0c7874e26ac8cdca12cb91556960ec"
+    "empty": "3e6ef687ea237af0a8baadae409ee037f0bf8fcc381dc0dca6590df4980110c1",
+    "active": "68b69d5a98ba629ee316e2cd13498752b2b120aafff60f64288e1ad999ea4d62",
+    "cappedCount": "68b69d5a98ba629ee316e2cd13498752b2b120aafff60f64288e1ad999ea4d62",
+    "longContent": "8db74b5aa3b4fecc8bb9c7076b107cf8ad0e7174f6d522ac3e8343d15f1567b4",
+    "quitBoundary": "68b69d5a98ba629ee316e2cd13498752b2b120aafff60f64288e1ad999ea4d62",
+    "complete": "e04b0505c5f72432f383e60cb0d86fcbe19dfc2220b80954513104a9714c7a42",
+    "settingsDisabled": "3e6ef687ea237af0a8baadae409ee037f0bf8fcc381dc0dca6590df4980110c1",
+    "settingsHealthy": "e04b0505c5f72432f383e60cb0d86fcbe19dfc2220b80954513104a9714c7a42",
+    "settingsError": "e04b0505c5f72432f383e60cb0d86fcbe19dfc2220b80954513104a9714c7a42",
+    "offline": "c511fecf1604cc43cf94b9239f1143a9781e0a89c44a75f3e218093e41367d55",
+    "stale": "3261245d7b055769a66bc1751cb6dc08f2a27b6ef0b0b8e1c7351971eac66c13",
+    "recovered": "e04b0505c5f72432f383e60cb0d86fcbe19dfc2220b80954513104a9714c7a42",
+    "authenticationError": "c23dd59f163d9beaba395cf8aaecaa5456f451f855a820e18e3d4d81a3a00058"
   },
   "manualBoundaries": [
     "Native NSOpenPanel selection and cancellation require user interaction.",
