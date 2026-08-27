@@ -77,6 +77,7 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - ALWAYS enforce loopback binding and one instance lock inside runtime composition, not only environment parsing.
 - NEVER start a portable export while claims are active; it is a synchronous maintenance operation.
 - ALWAYS validate bearer tokens as printable non-space ASCII before constructing HTTP headers.
+- ALWAYS isolate Git-driven evals: strip inherited `GIT_*`, disable system config/attributes, and use temporary empty global config and template paths.
 
 ## Self-Improvement
 

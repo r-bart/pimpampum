@@ -1,11 +1,58 @@
-# Current project summary
+# Session Summary
 
-Pimpampum v0.1 is a local, agent-first coordinator for workspaces, PRDs, context, tasks, subtasks,
-claims, activity, backup, and portable export.
+**Date**: 2026-08-27
+**Feature**: Real development-session evals
+**Type**: Feature
+**Branch**: `develop`
 
-The latest completed feature is daemon-owned automatic backup settings. A user or agent can choose
-one synchronized destination from the macOS menu app, Omarchy Quattro, CLI, or authenticated API;
-every committed mutation coalesces into an integrity-checked rolling SQLite snapshot while the live
-database stays local.
+## What Was Done
 
-See `thoughts/summaries/2026-08-26_automatic-backup-settings.md` for the implementation summary.
+- Added two deterministic compiled E2E scenarios using independent child processes, a temporary Git
+  repository, synthetic source code, a real Node test runner, real commits, and verified artifacts.
+- Proved competing Claim rejection, explicit handoff to another agent identity, and same-agent
+  continuation from a new process after daemon restart.
+- Added a bounded test-only session executable and dependency-free synthetic repository fixture.
+- Expanded `test:evals`/`test:e2e` from four to six scenarios and excluded every E2E from focused
+  unit/coverage runs.
+- Rewrote the eval rubric and README so they describe the executable gate exactly and keep native
+  live workflows separate.
+
+## Why
+
+The previous E2E suite validated coordination but did not prove real repository work across session
+processes, and `docs/evals.md` claimed scenarios outside the actual command. The new gate covers the
+development mechanics Pimpampum controls without introducing network- or model-dependent flakiness.
+
+## Key Decisions
+
+- “Real session” means a separate OS process using compiled MCP HTTP plus real filesystem, test, and
+  Git operations; invoking an LLM is intentionally outside the deterministic release gate.
+- All development content and Git identity live in a temporary synthetic repository.
+- Artifact references are independently resolved by the E2E orchestrator because the domain store
+  intentionally treats them as opaque references.
+
+## What's Pending
+
+- Nothing — implementation and post-review are complete.
+
+## Files Modified
+
+| Area          | Files                                          | Change                                                    |
+| ------------- | ---------------------------------------------- | --------------------------------------------------------- |
+| E2E           | `test/development-sessions.e2e.test.ts`        | Added frozen handoff and restart scenarios                |
+| Fixture       | `test/fixtures/development-session/*`          | Added bounded runner and synthetic Git project            |
+| Commands      | `package.json`                                 | Six-test eval gate and correct E2E exclusions             |
+| Documentation | `docs/evals.md`, `README.md`                   | Corrected literal rubric and live-gate boundaries         |
+| Workflow      | spec, plan, and test manifest dated 2026-08-27 | Recorded requirements, execution, and immutable test hash |
+
+## Quality Status
+
+- `npm run typecheck`: pass
+- `npm run lint`: pass
+- `npm run format:check`: pass
+- `npm test`: pass — 378 focused tests, 100% coverage, 6 compiled E2E
+- Flake check: new 2-test development-session suite passed twice consecutively
+
+## Next Steps
+
+1. Commit or open a PR when the broader existing macOS working-tree changes are ready to be grouped.

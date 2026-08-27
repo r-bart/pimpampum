@@ -534,14 +534,23 @@ npm run build
 ```
 
 `npm test` builds from a clean `dist/`, enforces 100% statement, branch, function, and line
-coverage, and exercises the compiled daemon, CLI, HTTP, and MCP boundaries. The deterministic agent
-evaluation rubric lives in [docs/evals.md](docs/evals.md).
+coverage, and runs the six compiled E2E scenarios. `npm run test:evals` runs only that deterministic
+E2E gate: four product workflows plus two synthetic Git development sessions that test handoff,
+restart, repository tests, commits, and artifact verification. It does not launch or evaluate an
+LLM. The exact boundaries and rubric live in [docs/evals.md](docs/evals.md).
 
-Quattro live validation is intentionally opt-in because it temporarily touches the real shell and
-requires human visual review:
+Native live validation remains separate and explicitly opt-in because it depends on the target
+desktop and may touch the current user's installed integration:
 
 ```bash
+PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
 PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live
+```
+
+The similarly named Quattro command below only validates the plugin and previously captured
+evidence; it does not run the live workflow:
+
+```bash
 npm run test:e2e:omarchy
 ```
 

@@ -1,0 +1,12 @@
+{
+  "name": "pimpampum-synthetic-development-session-fixture",
+  "version": "0.0.0-synthetic",
+  "private": true,
+  "description": "Synthetic test-only repository for Pimpampum development-session evals.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "author": "Pimpampum synthetic eval fixture (test data only)",
+  "license": "UNLICENSED"
+}

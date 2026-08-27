@@ -1,88 +1,110 @@
 # Agent workflow evals
 
-Pimpampum keeps one small deterministic evaluation suite for the workflows that matter to agents.
-It runs the compiled daemon, CLI, HTTP API, MCP HTTP transport, and MCP stdio bridge against real
-temporary SQLite databases. The suite requires a full source checkout and is not part of the
-published runtime tarball.
-
-Run it with:
+Pimpampum has one portable, deterministic end-to-end gate for its compiled coordination contract
+and local development-session mechanics. Run it from a full source checkout with:
 
 ```bash
 npm run test:evals
 ```
 
-## Rubric
+The command builds the TypeScript product once, then runs exactly these six tests:
 
-A release passes only when every workflow passes. There is no partial score and no retry that
-quietly converts a first failure into a motivational anecdote.
+- Four compiled product scenarios from `test/e2e.test.ts`.
+- Two synthetic development-session scenarios from `test/development-sessions.e2e.test.ts`.
 
-| Evaluation         | Product behavior under evaluation                                                                    | Pass condition                                                                 |
-| ------------------ | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Hierarchy delivery | Workspace, scoped Context, Project, multiple Specs, Tasks, Subtasks, completion, and export          | Every compiled interface preserves ownership, revisions, and schema-v2 export  |
-| Agent-first CLI    | Offline config, live discovery, JSON inputs, and every canonical MCP tool through the shell fallback | A shell-only agent uses the full 32-tool contract with stable envelopes        |
-| MCP Markdown       | Spec, Task, and both Context scopes through the MCP bridge                                           | Exact bounded pages round-trip through the shared daemon                       |
-| Competing agents   | Direct Spec work, Task leaves, Claim idempotency, expiry, renewal, release, and handoff              | Only eligible work is offered and concurrent ownership remains safe            |
-| Lifecycle safety   | Project pause/reopen, terminal completion, cascade cancellation, and history                         | Invalid transitions fail; cancellation is atomic and releases Claims           |
-| Contract safety    | Authentication, optimistic concurrency, payload bounds, canonical names, and no-delete boundary      | Unauthorized, stale, old-contract, and intentionally unsupported calls fail    |
-| Process continuity | Daemon restart, v1 database migration, and single-instance ownership                                 | State survives upgrade/restart and a second daemon cannot own the same data    |
-| Data recovery      | SQLite backup, restore, automatic snapshots, and portable export                                     | Restored state remains usable; backup failures never invalidate committed work |
-| Local lifecycle    | Install, status, reconciliation, native integration, uninstall, and persistence                      | Per-user artifacts are exact; repeat install is idempotent; user data remains  |
+Every scenario must pass. The gate does not retry failures or assign a partial score.
 
-The end-to-end scenarios include:
+## Compiled product scenarios
 
-1. Register a Workspace and create same-named Workspace and Project Context documents.
-2. Create one Project with multiple Specs.
-3. Execute one Spec directly and another through Task and Subtask Claims.
-4. Pause and reopen the Project while verifying work visibility.
-5. Exercise competing Claims, idempotent restart, expiry, renewal, release, and handoff.
-6. Cancel Task, Spec, and Project trees while verifying atomic history and Claim cleanup.
-7. Complete the Project only after its Specs are terminal.
-8. Restart the daemon and verify persistence.
-9. Migrate a populated schema-v1 database and continue through the new HTTP, CLI, and MCP
-   contracts.
-10. Refresh automatic backup after each mutation, restore it, and export schema version 2.
-11. Reject obsolete technical routes, tool names, Claim targets, and overview schemas.
+The original four scenarios exercise the shared daemon and SQLite store through public compiled
+boundaries:
 
-## Evaluation boundaries
+1. A complete multi-Spec portfolio workflow, including independently scoped Context, direct Spec
+   work, Task and Subtask Claims, competing ownership, renewal, release notes, pause/reopen, and
+   terminal completion.
+2. Atomic cancellation of Task, Spec, and Project trees, including descendant state, activity, and
+   Claim cleanup.
+3. State continuity across daemon restart, rolling SQLite backup and restore, and portable schema-v2
+   export.
+4. Authentication and the canonical v2 HTTP, MCP, Claim-target, and overview contracts, including
+   rejection of obsolete routes and tool names.
 
-- Tests execute `dist/cli.js` and `dist/mcpStdio.js`, never TypeScript-only shortcuts.
-- Network calls use an authenticated loopback daemon on an ephemeral port.
-- MCP calls use the published live tool metadata and schemas.
-- Persistent scenarios use real temporary files and SQLite databases.
-- Portable export must declare `schemaVersion: 2` and reproduce
-  `Workspace → Project → Spec → Task → Subtask` without Claims or bearer tokens.
-- Every run starts from clean temporary state and removes it afterward.
-- A PRD may appear only as example Spec content; it has no separate storage or API contract.
+These tests start the compiled daemon on loopback, use the compiled administrative CLI and
+authenticated HTTP API for setup and lifecycle operations, and exercise the compiled MCP stdio
+bridge for its published agent contract. They use real temporary SQLite files rather than an
+in-memory domain substitute.
 
-## Native status gates
+## Synthetic development sessions
 
-The macOS menu-bar app and Omarchy Quattro widget consume the strict overview schema version 2.
-Both must show Project grouping, current Spec/Task work, active Claim counts, terminal state, stale or
-offline behavior, and filesystem opening without loading Markdown bodies.
+The two development-session scenarios add repository work around that coordination protocol:
 
-The macOS build and Swift tests run locally with:
+1. One independent child process claims a Task, makes a partial source edit and checkpoint commit,
+   defeats a competing Claim, then releases with a handoff note. A second process claims the same
+   Task, finishes the source change, runs the repository tests, commits, and completes the work.
+2. A child process claims work and creates a tested checkpoint, the compiled daemon restarts against
+   the same SQLite data, a competitor remains excluded, and a new process with the original stable
+   `agentId` resumes idempotently and completes the Spec.
+
+Each session is a separate operating-system process. It calls the compiled `dist/cli.js call`
+command, which negotiates with the daemon's authenticated MCP HTTP endpoint. The orchestrator does
+not call `PimpampumStore` directly.
+
+Every development workspace is a disposable Git repository containing only checked-in synthetic
+fixture content. The sessions perform real file edits, run a real Node test command, and create real
+Git commits with repository-local test identity. Before accepting completion, the orchestrator
+independently verifies final source bytes, passing tests, a clean worktree, changed paths, and every
+reported `git:<commit>` artifact against that temporary repository.
+
+## Deterministic boundaries
+
+- Daemons bind to authenticated loopback ports selected for the test run.
+- Product state, repositories, Git configuration, and generated artifacts stay under temporary
+  directories and are removed afterward.
+- The suite requires local Node.js and Git, but no network, credentials, package installation, or
+  external repository.
+- It exercises compiled public interfaces; TypeScript-only shortcuts and direct database access are
+  outside the session contract.
+- It validates Claim ownership, handoff, restart, testing, commits, and artifact mechanics. It does
+  not launch Codex or another LLM, generate code with a model, or score model reasoning quality.
+
+## Complementary automated suites
+
+The regular unit, acceptance, integration, migration, OpenAPI, packaging, desktop-contract, and
+platform-service tests provide broader focused coverage under `npm test` and the platform-specific
+commands. They are complementary evidence, not additional scenarios hidden inside
+`npm run test:evals`.
+
+In particular, focused suites cover edge cases such as Claim expiry, populated v1 migration,
+automatic-backup failure and recovery, exhaustive CLI/MCP schemas, and native contract fixtures.
+Their presence must not be interpreted as membership in the six-test eval gate.
+
+## Opt-in native live gates
+
+Native live tests are intentionally separate because they depend on a target desktop and may mutate
+the current user's installed integration.
+
+Build and test the macOS app locally, then explicitly opt into its live install/recovery/uninstall
+flow:
 
 ```bash
 npm run build:macos
 npm run test:macos
-npm run test:e2e:macos
+PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
 ```
 
-The Quattro live gate is opt-in and target-specific because it temporarily mutates the real
-per-user shell and requires visual review:
+Run the Omarchy Quattro live workflow only on its target environment:
 
 ```bash
 npm run build
 PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live
+```
+
+`npm run test:e2e:omarchy` is not the live workflow. It validates the plugin and checks previously
+captured lifecycle, restoration, and screenshot evidence without performing the live installation:
+
+```bash
 npm run test:e2e:omarchy
 ```
 
-Schema-v2 evidence binds the exact candidate to lifecycle transcripts, baseline restoration, and
-reviewed screenshots. The published package ships the non-mutating checker:
-
-```bash
-npm run check:quattro-evidence -- <evidence-path> <candidate-path>
-```
-
-These evals judge Pimpampum's coordination contract, not the literary merit of any model's plans.
-Model-specific evals can be layered on later without weakening this deterministic release gate.
+The portable six-test eval gate and these opt-in native gates answer different questions and do not
+invoke one another.
