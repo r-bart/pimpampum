@@ -11,6 +11,11 @@ enum SetupOnboardingCopy {
 
 @MainActor
 struct SetupAssistant {
+  var registerLoginItem: () -> Void = {
+    let service = MainAppLoginItemService()
+    guard service.state == .error else { return }
+    try? service.register()
+  }
   var copyCommand: (String) -> Void = { command in
     let pasteboard = NSPasteboard.general
     pasteboard.clearContents()
@@ -28,7 +33,12 @@ struct SetupAssistant {
     return workspace.open(URL(fileURLWithPath: path))
   }
 
+  func prepareApp() {
+    registerLoginItem()
+  }
+
   func begin() -> Bool {
+    prepareApp()
     copyCommand(SetupOnboardingCopy.command)
     return openTerminal()
   }
@@ -91,7 +101,7 @@ struct SetupOnboardingView: View {
       }
 
       Label(
-        "Requires Node.js 22 or newer. Data stays in ~/.pimpampum.",
+        "Requires Node.js 22 or newer. Data stays in ~/.pimpampum. The app is added to Login Items.",
         systemImage: "lock.shield"
       )
       .font(.caption)

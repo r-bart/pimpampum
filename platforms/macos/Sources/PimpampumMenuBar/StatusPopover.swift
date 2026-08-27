@@ -80,7 +80,10 @@ struct StatusPopover: View {
       if isSetupRequired {
         SetupOnboardingView(
           assistant: setupAssistant,
-          onCheckAgain: { Task { await store.refresh() } }
+          onCheckAgain: {
+            setupAssistant.prepareApp()
+            Task { await store.refresh() }
+          }
         )
         .padding(20)
       } else {
@@ -88,7 +91,7 @@ struct StatusPopover: View {
           LazyVStack(alignment: .leading, spacing: 16) {
             connectionNotice
 
-            if loginItemState == .requiresApproval {
+            if loginItemState != .enabled {
               loginApprovalNotice
             }
 
@@ -140,12 +143,23 @@ struct StatusPopover: View {
 
   private var loginApprovalNotice: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Label("Login approval required", systemImage: "person.badge.key")
+      Label(
+        loginItemState == .requiresApproval ? "Login approval required" : "Start at login",
+        systemImage: "person.badge.key"
+      )
         .font(.subheadline.weight(.semibold))
-      Text("Allow \(PimpampumBrand.displayName) in Login Items to start it automatically.")
+      Text(
+        loginItemState == .requiresApproval
+          ? "Allow \(PimpampumBrand.displayName) in Login Items to start it automatically."
+          : "Add \(PimpampumBrand.displayName) to Login Items so the menu stays available after a restart."
+      )
         .font(.caption)
         .foregroundStyle(.secondary)
-      Button("Open Login Items Settings", action: openLoginSettings)
+      if loginItemState == .requiresApproval {
+        Button("Open Login Items Settings", action: openLoginSettings)
+      } else {
+        Button("Start at Login", action: setupAssistant.prepareApp)
+      }
     }
     .padding(10)
     .frame(maxWidth: .infinity, alignment: .leading)

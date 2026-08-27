@@ -248,6 +248,7 @@ struct StatusPopoverTests {
   func setupAssistantCopiesTheExactCommandBeforeOpeningTerminal() {
     var events: [String] = []
     let assistant = SetupAssistant(
+      registerLoginItem: { events.append("register") },
       copyCommand: { events.append("copy:\($0)") },
       openTerminal: {
         events.append("open")
@@ -256,8 +257,10 @@ struct StatusPopoverTests {
     )
 
     #expect(assistant.begin())
-    #expect(events == ["copy:\(SetupOnboardingCopy.command)", "open"])
+    #expect(events == ["register", "copy:\(SetupOnboardingCopy.command)", "open"])
     #expect(SetupOnboardingCopy.command.contains("--service-only"))
+    assistant.prepareApp()
+    #expect(events.last == "register")
     _ = SetupOnboardingView(assistant: assistant, onCheckAgain: {})
   }
 

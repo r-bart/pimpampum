@@ -13,8 +13,10 @@ npm install --global pimpampum && pimpampum install --service-only
 ```
 
 The primary action copies the command and opens Terminal. It never types or executes the command
-for the user. The secondary action refreshes the local overview immediately, while the existing
-five-second open-popover poll moves the app into its normal status view as soon as setup succeeds.
+for the user. Both setup actions also register the downloaded app with macOS Login Items; approval
+or registration failures remain recoverable from a visible notice in the normal status view. The
+secondary action refreshes the local overview immediately, while the existing five-second
+open-popover poll moves the app into its normal status view as soon as setup succeeds.
 
 The setup surface is reserved for a missing installation receipt. Temporary network or daemon
 failures continue to use the existing offline presentation, so users are not sent through setup
