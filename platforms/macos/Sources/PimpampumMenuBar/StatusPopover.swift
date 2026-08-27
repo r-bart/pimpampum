@@ -42,6 +42,7 @@ struct StatusPopover: View {
   let loginItemState: LoginItemRegistrationState
   let openLoginSettings: () -> Void
   let settingsWindowOpener: any SettingsWindowOpening
+  let setupAssistant: SetupAssistant
   let quitApplication: () -> Void
 
   @State private var isCompletedExpanded = false
@@ -57,6 +58,7 @@ struct StatusPopover: View {
       LoginApprovalSettings.open()
     },
     settingsWindowOpener: any SettingsWindowOpening = SettingsWindowOpener(),
+    setupAssistant: SetupAssistant = SetupAssistant(),
     quitApplication: @escaping () -> Void = { NSApplication.shared.terminate(nil) }
   ) {
     self.store = store
@@ -64,6 +66,7 @@ struct StatusPopover: View {
     self.loginItemState = loginItemState
     self.openLoginSettings = openLoginSettings
     self.settingsWindowOpener = settingsWindowOpener
+    self.setupAssistant = setupAssistant
     self.quitApplication = quitApplication
   }
 
@@ -74,30 +77,38 @@ struct StatusPopover: View {
 
       Divider()
 
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 16) {
-          connectionNotice
+      if isSetupRequired {
+        SetupOnboardingView(
+          assistant: setupAssistant,
+          onCheckAgain: { Task { await store.refresh() } }
+        )
+        .padding(20)
+      } else {
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 16) {
+            connectionNotice
 
-          if loginItemState == .requiresApproval {
-            loginApprovalNotice
-          }
+            if loginItemState == .requiresApproval {
+              loginApprovalNotice
+            }
 
-          if shouldShowOverview, let overview = store.overview {
-            summary(for: overview)
-            activeWorkSection(overview: overview)
-            projectsSection(overview: overview)
-          } else {
-            unavailableContent()
-          }
+            if shouldShowOverview, let overview = store.overview {
+              summary(for: overview)
+              activeWorkSection(overview: overview)
+              projectsSection(overview: overview)
+            } else {
+              unavailableContent()
+            }
 
-          if let revealError {
-            inlineError(revealError)
+            if let revealError {
+              inlineError(revealError)
+            }
           }
+          .padding(16)
         }
-        .padding(16)
+        .frame(maxHeight: Self.bodyMaximumHeight)
+        .fixedSize(horizontal: false, vertical: true)
       }
-      .frame(maxHeight: Self.bodyMaximumHeight)
-      .fixedSize(horizontal: false, vertical: true)
 
       Divider()
 
@@ -105,12 +116,17 @@ struct StatusPopover: View {
         Button(PimpampumBrand.quitTitle, action: quitApplication)
           .buttonStyle(.plain)
         Spacer()
-        Button {
-          settingsWindowOpener.openSettings()
-        } label: {
-          Label("Settings…", systemImage: "gearshape")
+        if isSetupRequired {
+          Text(PimpampumBrand.versionText())
+            .foregroundStyle(.secondary)
+        } else {
+          Button {
+            settingsWindowOpener.openSettings()
+          } label: {
+            Label("Settings…", systemImage: "gearshape")
+          }
+          .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
       }
       .padding(.horizontal, 16)
       .padding(.vertical, 10)
@@ -142,6 +158,11 @@ struct StatusPopover: View {
 
   private var shouldShowOverview: Bool {
     Self.shouldShowOverview(connectionState: store.connectionState, overview: store.overview)
+  }
+
+  private var isSetupRequired: Bool {
+    if case .setupRequired = store.connectionState { return true }
+    return false
   }
 
   private var visibleActiveCount: Int {
@@ -191,6 +212,8 @@ struct StatusPopover: View {
         notice(symbol: "hourglass", title: "Loading overview", detail: nil, color: .secondary)
       }
     case .online:
+      EmptyView()
+    case .setupRequired:
       EmptyView()
     case .offline(let message):
       notice(

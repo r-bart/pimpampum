@@ -32,6 +32,7 @@ export interface CliRuntime {
   createAgentClient(): Promise<AgentCliClient>;
   describeConfig(): AgentCliConfiguration;
   serviceManager: ServiceManager;
+  serviceOnlyManager?: ServiceManager;
   startServer(): Promise<{ config: { baseUrl: string }; close(): Promise<void> }>;
   readFile(path: string, maxBytes?: number): string;
   readStdin(maxBytes?: number): string | Promise<string>;
@@ -54,7 +55,7 @@ Usage:
   pimpampum config
   pimpampum tools
   pimpampum call <tool-name> [--input <json> | --stdin | --input-file <path>]
-  pimpampum install
+  pimpampum install [--service-only]
   pimpampum status
   pimpampum uninstall
   pimpampum workspace:list
@@ -264,7 +265,18 @@ async function executeCli(
   }
 
   if (command === 'install') {
-    print(runtime, await runtime.serviceManager.install());
+    if (args.length > 1 || (args.length === 1 && args[0] !== '--service-only')) {
+      throw new AppError(
+        'bad_request',
+        'Install accepts only the optional --service-only flag',
+        400,
+      );
+    }
+    const manager =
+      args[0] === '--service-only'
+        ? (runtime.serviceOnlyManager ?? runtime.serviceManager)
+        : runtime.serviceManager;
+    print(runtime, await manager.install());
     return null;
   }
   if (command === 'status') {

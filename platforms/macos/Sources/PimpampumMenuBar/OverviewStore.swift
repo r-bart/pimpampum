@@ -9,6 +9,7 @@ protocol OverviewClock: Sendable {
 enum OverviewConnectionState: Equatable, Sendable {
   case loading
   case online
+  case setupRequired(String)
   case offline(String)
   case invalidToken(String)
   case incompatible(String)
@@ -93,6 +94,8 @@ final class OverviewStore: ObservableObject {
       guard !Task.isCancelled else { return }
       currentDate = await clock.now()
       switch error {
+      case .unreadableReceipt:
+        connectionState = .setupRequired(error.localizedDescription)
       case .invalidToken, .unauthorized, .unreadableToken:
         connectionState = .invalidToken(error.localizedDescription)
       case .incompatibleOverviewSchema, .incompatibleReceiptSchema:

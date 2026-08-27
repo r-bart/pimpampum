@@ -88,6 +88,7 @@ enum DesktopSmokeLogic {
     switch state {
     case .loading: "loading"
     case .online: "online"
+    case .setupRequired: "setup-required"
     case .offline: "offline"
     case .invalidToken: "credentials"
     case .incompatible: "incompatible"

@@ -111,6 +111,8 @@ coordination service without creating a tiny lonely database in every repository
 
 ## Install once
 
+The quickest cross-platform installation is:
+
 ```bash
 npm install --global pimpampum
 pimpampum install
@@ -120,6 +122,17 @@ pimpampum install
 No root access and no terminal window kept alive as a shrine. Inspect it with `pimpampum status`;
 remove only Pimpampum-owned runtime integrations with `pimpampum uninstall`. The database, token,
 logs, backups, and exports are preserved.
+
+On macOS, you can instead download the signed menu-bar app from GitHub Releases. Its first-run
+screen copies the runtime command and opens Terminal for you:
+
+```bash
+npm install --global pimpampum && pimpampum install --service-only
+```
+
+`--service-only` creates the daemon, CLI and MCP integration without copying or replacing the app
+you downloaded. On Omarchy, use the standard `pimpampum install` flow so the npm package can add
+both the systemd user service and Quattro widget.
 
 To install a development checkout instead:
 
@@ -152,14 +165,14 @@ Run only the foreground development daemon with `npm run dev`.
 
 Tagged versions are published under [GitHub Releases](https://github.com/r-bart/pimpampum/releases).
 Each release contains the installable npm tarball, the signed and notarized Apple Silicon menu-bar
-app, `SHA256SUMS`, and release notes. The app archive is supplied for inspection and advanced
-deployment; it still needs the daemon, local token, and installation receipt created by
-`pimpampum install`.
+app, `SHA256SUMS`, and release notes. The macOS app is the recommended native download; its Quiet
+onboarding guides the user through the npm runtime installation and detects the daemon as soon as
+it is ready.
 
 GitHub downloads from a private repository require read access. The public npm package remains the
-canonical installation channel because it carries the daemon, CLI, MCP bridge, and desktop
-integration together. Source-built macOS apps are unsigned development artifacts; published V1
-artifacts pass Developer ID signing, notarization, and Gatekeeper checks.
+canonical runtime channel because it carries the daemon, CLI, MCP bridge, and Omarchy integration.
+Source-built macOS apps are unsigned development artifacts; published V1 artifacts pass Developer
+ID signing, notarization, and Gatekeeper checks.
 
 ## A complete first workflow
 
@@ -400,7 +413,7 @@ pimpampum overview
 pimpampum config
 pimpampum tools
 pimpampum call <tool-name> [--input <json> | --stdin | --input-file <path>]
-pimpampum install
+pimpampum install [--service-only]
 pimpampum status
 pimpampum uninstall
 pimpampum workspace:list
@@ -449,8 +462,9 @@ as the canonical shell fallback for agents.
 The daemon is meant to disappear into the machine, not become a new pet process you check every
 morning.
 
-On **macOS 13+ on Apple Silicon**, installation adds a menu-bar-only app and starts the daemon at login. The menu
-shows portfolio status, active Claims, current Spec/Task work, and every Project. Green means the
+On **macOS 13+ on Apple Silicon**, download the signed menu-bar app and follow its one-command npm
+setup, or install the complete bundle directly with `pimpampum install`. The menu shows portfolio
+status, active Claims, current Spec/Task work, and every Project. Green means the
 portfolio is terminal; an active badge means an agent owns work; an error means the daemon needs
 attention. Click a Project to open its Workspace in Finder. **Settings…** configures automatic
 synchronization and backup. **Quit** closes the menu app and deliberately leaves the daemon running.

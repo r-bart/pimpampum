@@ -76,6 +76,7 @@ struct DesktopSmokeLogicTests {
   func labelsEveryConnectionStateAndBuildsStableSnapshot() {
     #expect(DesktopSmokeLogic.connectionLabel(.loading) == "loading")
     #expect(DesktopSmokeLogic.connectionLabel(.online) == "online")
+    #expect(DesktopSmokeLogic.connectionLabel(.setupRequired("missing")) == "setup-required")
     #expect(DesktopSmokeLogic.connectionLabel(.offline("down")) == "offline")
     #expect(DesktopSmokeLogic.connectionLabel(.invalidToken("bad")) == "credentials")
     #expect(DesktopSmokeLogic.connectionLabel(.incompatible("new")) == "incompatible")
