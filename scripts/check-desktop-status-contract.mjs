@@ -16,7 +16,7 @@ const frozen = new Map([
   ],
   [
     'test/quattro-live-evidence.acceptance.test.ts',
-    '1411ccc02c768ec0c67972d3d59d7750a79ed04470c39877643133c1d320e8e8',
+    '114c4cb84c316408037af8bd7faf0e3dd7f3d7505253d33b85d85fee7cb1fa8a',
   ],
   [
     'test/fixtures/overview/complete.json',

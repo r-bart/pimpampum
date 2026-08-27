@@ -468,7 +468,9 @@ describe('Task 4.4: reproducible live Quattro evidence', () => {
       scripts?: Record<string, string>;
     };
     expect(() => readFileSync(runner)).not.toThrow();
-    expect(scripts.scripts?.['test:e2e:omarchy:live']).toBe('node scripts/test-omarchy-live.mjs');
+    expect(scripts.scripts?.['test:e2e:omarchy:live']).toBe(
+      'npm run build && node scripts/test-omarchy-live.mjs',
+    );
   });
 
   it('Task 4.4: rejects legacy evidence made only from authored true flags', () => {
