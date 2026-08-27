@@ -55,7 +55,7 @@ jobs:
         run: |
           certificate="$RUNNER_TEMP/developer-id.p12"
           keychain="$RUNNER_TEMP/pimpampum-signing.keychain-db"
-          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+          printf '%s' "$CERTIFICATE_BASE64" | base64 -D > "$certificate"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
@@ -85,7 +85,9 @@ jobs:
       - name: Build release assets
         run: scripts/package-release-assets.sh "$RUNNER_TEMP/release"
       - name: Publish npm package with provenance
-        run: npm publish "$RUNNER_TEMP/release/pimpampum-${GITHUB_REF_NAME#v}.tgz" --access public --provenance
+        run: |
+          npm install --global npm@11
+          npm publish "$RUNNER_TEMP/release/pimpampum-${GITHUB_REF_NAME#v}.tgz" --access public --provenance
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
