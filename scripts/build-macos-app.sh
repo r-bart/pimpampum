@@ -31,25 +31,32 @@ cp "$compact_mark" "$app_root/Contents/Resources/PimpampumCompact.pdf"
 
 partial_plist=$(mktemp "$output_root/.Pimpampum-icon-partial.XXXXXX")
 trap 'rm -f "$partial_plist"' EXIT INT TERM
-xcrun actool "$app_icon" \
-  --compile "$app_root/Contents/Resources" \
-  --platform macosx \
-  --minimum-deployment-target 13.0 \
-  --app-icon Pimpampum \
-  --output-partial-info-plist "$partial_plist" \
-  >/dev/null
+used_icon_composer=false
+if [ "${PIMPAMPUM_USE_PRECOMPILED_ICON:-0}" != 1 ]; then
+  xcrun actool "$app_icon" \
+    --compile "$app_root/Contents/Resources" \
+    --platform macosx \
+    --minimum-deployment-target 13.0 \
+    --app-icon Pimpampum \
+    --output-partial-info-plist "$partial_plist" \
+    >/dev/null
+  used_icon_composer=true
+fi
 
-if [ ! -f "$app_root/Contents/Resources/Assets.car" ] || \
+if [ "$used_icon_composer" = false ] || \
+  [ ! -f "$app_root/Contents/Resources/Assets.car" ] || \
   [ ! -f "$app_root/Contents/Resources/Pimpampum.icns" ]; then
   if [ ! -f "$fallback_asset_catalog" ] || [ ! -f "$fallback_app_icon" ]; then
     printf 'Icon Composer did not produce complete assets and no reviewed fallback exists.\n' >&2
     exit 1
   fi
+  used_icon_composer=false
   cp "$fallback_asset_catalog" "$app_root/Contents/Resources/Assets.car"
   cp "$fallback_app_icon" "$app_root/Contents/Resources/Pimpampum.icns"
 fi
 
-if [ "$(/usr/bin/plutil -extract CFBundleIconName raw -o - "$partial_plist")" != "Pimpampum" ]; then
+if [ "$used_icon_composer" = true ] && \
+  [ "$(/usr/bin/plutil -extract CFBundleIconName raw -o - "$partial_plist")" != "Pimpampum" ]; then
   printf 'Icon Composer returned an unexpected app icon name.\n' >&2
   exit 1
 fi
