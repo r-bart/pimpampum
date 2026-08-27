@@ -96,8 +96,8 @@ struct DesktopSmokeLogicTests {
       openedWorkspacePath: "/tmp/workspace",
       settingsWindowReused: true,
       settingsWindowCount: 1,
-      settingsWindowWidth: 460,
-      settingsWindowHeight: 270,
+      settingsWindowWidth: 520,
+      settingsWindowHeight: 400,
       settingsWindowFocused: true,
       settingsBackupState: "healthy",
       settingsConfiguredPath: "/tmp/backup",
@@ -117,8 +117,8 @@ struct DesktopSmokeLogicTests {
     #expect(snapshot.activatedControlLabel == "Open active in Finder")
     #expect(snapshot.settingsWindowReused == true)
     #expect(snapshot.settingsWindowCount == 1)
-    #expect(snapshot.settingsWindowWidth == 460)
-    #expect(snapshot.settingsWindowHeight == 270)
+    #expect(snapshot.settingsWindowWidth == 520)
+    #expect(snapshot.settingsWindowHeight == 400)
     #expect(snapshot.settingsWindowFocused == true)
     #expect(snapshot.settingsBackupState == "healthy")
     #expect(snapshot.settingsConfiguredPath == "/tmp/backup")

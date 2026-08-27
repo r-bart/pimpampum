@@ -241,8 +241,8 @@ try {
     settingsDisabledUI.activatedControlLabel !== 'Settings…' ||
     settingsDisabledUI.settingsWindowReused !== true ||
     settingsDisabledUI.settingsWindowCount !== 1 ||
-    settingsDisabledUI.settingsWindowWidth !== 460 ||
-    settingsDisabledUI.settingsWindowHeight !== 270 ||
+    settingsDisabledUI.settingsWindowWidth !== 520 ||
+    settingsDisabledUI.settingsWindowHeight !== 400 ||
     settingsDisabledUI.settingsWindowFocused !== true ||
     settingsDisabledUI.settingsBackupState !== 'disabled' ||
     (settingsDisabledUI.settingsConfiguredPath ?? null) !== null ||
@@ -503,6 +503,15 @@ try {
       'node_modules/pimpampum/platforms/macos/dist/PimpampumMenuBar.app/Contents/Resources/PimpampumCompact.pdf',
     ),
   );
+  const artifactMetadata = JSON.parse(
+    readFileSync(
+      join(
+        runtimeRoot,
+        'node_modules/pimpampum/platforms/macos/dist/PimpampumMenuBar.app/Contents/Resources/artifact-metadata.json',
+      ),
+      'utf8',
+    ),
+  );
   const removal = runCli('uninstall');
   if (removal.uninstalled !== true) {
     throw new Error(`Uninstall did not acknowledge complete removal: ${JSON.stringify(removal)}`);
@@ -511,10 +520,12 @@ try {
   await assertInstallationAbsent();
 
   const evidence = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     testedAt: new Date().toISOString(),
     platform: 'macOS',
     architecture: 'arm64',
+    gitCommit: command('git', ['rev-parse', 'HEAD']),
+    sourceInputSha256: artifactMetadata.sourceInputSha256,
     appSha256: createHash('sha256').update(binary).digest('hex'),
     compactMarkSha256: createHash('sha256').update(compactMark).digest('hex'),
     loginItem: install.loginItem,

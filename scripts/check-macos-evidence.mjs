@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,10 @@ const evidencePath = join(root, 'thoughts/evidence/macos-live.json');
 const binaryPath = join(
   root,
   'platforms/macos/dist/PimpampumMenuBar.app/Contents/MacOS/PimpampumMenuBar',
+);
+const metadataPath = join(
+  root,
+  'platforms/macos/dist/PimpampumMenuBar.app/Contents/Resources/artifact-metadata.json',
 );
 
 let evidence;
@@ -27,6 +32,18 @@ if (!Number.isFinite(testedAt) || age < 0 || age > maximumAge) {
 }
 
 const binaryHash = createHash('sha256').update(readFileSync(binaryPath)).digest('hex');
+let metadata;
+try {
+  metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+} catch (error) {
+  throw new Error(`Missing or invalid macOS artifact metadata at ${metadataPath}`, {
+    cause: error,
+  });
+}
+const gitCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+  cwd: root,
+  encoding: 'utf8',
+}).trim();
 const expectedChecks = [
   'empty',
   'activeClaim',
@@ -44,9 +61,13 @@ const renderingNames = ['empty', 'active', 'complete', 'stale', 'recovered'];
 const validHash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
 
 if (
-  evidence.schemaVersion !== 1 ||
+  evidence.schemaVersion !== 2 ||
   evidence.platform !== 'macOS' ||
   evidence.architecture !== 'arm64' ||
+  evidence.gitCommit !== gitCommit ||
+  metadata.schemaVersion !== 2 ||
+  evidence.sourceInputSha256 !== metadata.sourceInputSha256 ||
+  !validHash(evidence.sourceInputSha256) ||
   !['enabled', 'requiresApproval'].includes(evidence.loginItem) ||
   evidence.appSha256 !== binaryHash ||
   !expectedChecks.every((name) => evidence.checks?.[name] === true) ||

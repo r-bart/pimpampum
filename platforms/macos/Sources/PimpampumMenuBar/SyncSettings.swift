@@ -330,7 +330,17 @@ private enum DesktopSettingsSection: String, CaseIterable, Identifiable {
 private struct DesktopSettingsView: View {
   @ObservedObject var syncStore: SyncSettingsStore
   @ObservedObject var backupStore: BackupSettingsStore
-  @State private var selection = DesktopSettingsSection.synchronization
+  @State private var selection: DesktopSettingsSection
+
+  init(
+    syncStore: SyncSettingsStore,
+    backupStore: BackupSettingsStore,
+    showBackupInitially: Bool
+  ) {
+    self.syncStore = syncStore
+    self.backupStore = backupStore
+    _selection = State(initialValue: showBackupInitially ? .backup : .synchronization)
+  }
 
   var body: some View {
     VStack(spacing: 0) {
@@ -358,14 +368,24 @@ private struct DesktopSettingsView: View {
 final class SyncSettingsWindowController: ObservableObject, SettingsWindowOpening {
   private let syncStore: SyncSettingsStore
   private let backupStore: BackupSettingsStore
+  private let showBackupInitially: Bool
   private var windowController: NSWindowController?
-  init(syncStore: SyncSettingsStore, backupStore: BackupSettingsStore) {
+  init(
+    syncStore: SyncSettingsStore,
+    backupStore: BackupSettingsStore,
+    showBackupInitially: Bool = false
+  ) {
     self.syncStore = syncStore
     self.backupStore = backupStore
+    self.showBackupInitially = showBackupInitially
   }
   func openSettings() {
     if windowController == nil {
-      let view = DesktopSettingsView(syncStore: syncStore, backupStore: backupStore)
+      let view = DesktopSettingsView(
+        syncStore: syncStore,
+        backupStore: backupStore,
+        showBackupInitially: showBackupInitially
+      )
       let window = NSWindow(contentViewController: NSHostingController(rootView: view))
       window.title = "Pimpampum Settings"
       window.styleMask = [.titled, .closable, .miniaturizable, .resizable]

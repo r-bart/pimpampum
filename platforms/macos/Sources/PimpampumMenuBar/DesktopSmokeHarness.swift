@@ -107,7 +107,16 @@ enum DesktopSmokeHarness {
         tokenURL: dataDirectory.appendingPathComponent("token")
       )
       let backupStore = BackupSettingsStore(client: backupClient)
-      let settingsWindowController = BackupSettingsWindowController(store: backupStore)
+      let syncClient = SyncSettingsClient(
+        receiptURL: dataDirectory.appendingPathComponent("install-receipt.json"),
+        tokenURL: dataDirectory.appendingPathComponent("token")
+      )
+      let syncStore = SyncSettingsStore(client: syncClient)
+      let settingsWindowController = SyncSettingsWindowController(
+        syncStore: syncStore,
+        backupStore: backupStore,
+        showBackupInitially: true
+      )
       if request.controlLabel == "Settings…" {
         await backupStore.load()
       }
@@ -166,7 +175,7 @@ enum DesktopSmokeHarness {
     store: OverviewStore,
     opener: RecordingWorkspaceOpener,
     backupStore: BackupSettingsStore,
-    settingsWindowController: BackupSettingsWindowController,
+    settingsWindowController: SyncSettingsWindowController,
     actionRecorder: SmokeActionRecorder,
     projectId: String?,
     controlLabel: String?
