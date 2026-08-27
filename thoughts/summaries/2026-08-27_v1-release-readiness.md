@@ -28,6 +28,7 @@
 - macOS live evidence must match the artifact source commit, source-input hash, and final executable hash.
 - Added scripts to verify Developer ID/Gatekeeper/notarization and to create npm, macOS ZIP, and checksum release assets.
 - Added CI for Linux and macOS plus a tag workflow that signs, live-tests, notarizes, publishes npm with provenance, and creates a GitHub Release.
+- Added reviewed precompiled icon resources as a deterministic fallback after the macOS CI runner exposed an Icon Composer compatibility gap.
 
 ## Why
 
@@ -59,7 +60,7 @@ V1 needs more than green unit tests: it needs bounded hostile-input behavior, on
 | Swift tests                      | 97 pass, 100% core coverage         |
 | Omarchy static/tests             | 31 pass                             |
 | Desktop contract                 | Pass                                |
-| macOS artifact/live evidence     | Pass for commit `3d00231`           |
+| macOS artifact/live evidence     | Pass for commit `a0db5e4`           |
 | npm audit                        | 0 vulnerabilities                   |
 | npm package dry run              | Pass, 1.34 MB compressed, 158 files |
 | Quattro live evidence            | Blocked: requires Quattro host      |
