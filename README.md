@@ -106,7 +106,7 @@ coordination service without creating a tiny lonely database in every repository
 ## Requirements
 
 - Node.js 22 or newer.
-- macOS 13+ for the menu-bar app.
+- macOS 13+ on Apple Silicon for the menu-bar app.
 - Omarchy Quattro for the dedicated Quickshell widget.
 
 ## Install once
@@ -121,7 +121,7 @@ No root access and no terminal window kept alive as a shrine. Inspect it with `p
 remove only Pimpampum-owned runtime integrations with `pimpampum uninstall`. The database, token,
 logs, backups, and exports are preserved.
 
-Until the first npm release, install from source:
+To install a development checkout instead:
 
 ```bash
 gh repo clone r-bart/pimpampum
@@ -147,6 +147,19 @@ The daemon listens on `http://127.0.0.1:7337` and creates:
 ```
 
 Run only the foreground development daemon with `npm run dev`.
+
+## Downloads and release artifacts
+
+Tagged versions are published under [GitHub Releases](https://github.com/r-bart/pimpampum/releases).
+Each release contains the installable npm tarball, the signed and notarized Apple Silicon menu-bar
+app, `SHA256SUMS`, and release notes. The app archive is supplied for inspection and advanced
+deployment; it still needs the daemon, local token, and installation receipt created by
+`pimpampum install`.
+
+GitHub downloads from a private repository require read access. The public npm package remains the
+canonical installation channel because it carries the daemon, CLI, MCP bridge, and desktop
+integration together. Source-built macOS apps are unsigned development artifacts; published V1
+artifacts pass Developer ID signing, notarization, and Gatekeeper checks.
 
 ## A complete first workflow
 
@@ -436,14 +449,13 @@ as the canonical shell fallback for agents.
 The daemon is meant to disappear into the machine, not become a new pet process you check every
 morning.
 
-On **macOS 13+**, installation adds a menu-bar-only app and starts the daemon at login. The menu
+On **macOS 13+ on Apple Silicon**, installation adds a menu-bar-only app and starts the daemon at login. The menu
 shows portfolio status, active Claims, current Spec/Task work, and every Project. Green means the
 portfolio is terminal; an active badge means an agent owns work; an error means the daemon needs
 attention. Click a Project to open its Workspace in Finder. **Settings…** configures automatic
-backup. **Quit Pimpampum** closes the menu app and deliberately leaves the daemon running.
-
-The first local release is unsigned, so macOS may request approval under Privacy & Security or
-Login Items. The app has no Dock icon. It knows its place.
+synchronization and backup. **Quit** closes the menu app and deliberately leaves the daemon running.
+The published app is signed and notarized; a locally built development app is not. The app has no
+Dock icon. It knows its place.
 
 On **Omarchy Quattro**, installation adds a dedicated Quickshell widget and systemd user service.
 The bar shows the same portfolio state and Claim count. Its popout lists current work and Projects,
@@ -593,9 +605,9 @@ npm run test:e2e:omarchy
 
 ## Status
 
-Pimpampum is at `0.1.0`: functional, local-first, and deliberately small. Every future feature has
-one admission test: does it improve coordination more than it increases surface area? If not, it
-can enjoy a fulfilling life in another product.
+The current release candidate is `1.0.0`: functional, local-first, and deliberately small. Every
+future feature has one admission test: does it improve coordination more than it increases surface
+area? If not, it can enjoy a fulfilling life in another product.
 
 ## License
 

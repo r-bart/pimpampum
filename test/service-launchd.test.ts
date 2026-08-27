@@ -37,7 +37,7 @@ function context(runCommand: RunCommand): ServiceAdapterContext {
     dataDirectory: '/Users/example/Pimpampum Data ñ',
     nodePath: '/opt/Pimpampum Runtime/bin/node',
     cliPath: '/opt/Pimpampum Runtime/dist/cli.js',
-    version: '0.1.0',
+    version: '1.0.0',
     host: '127.0.0.1',
     port: 7337,
     logDirectory: '/Users/example/Pimpampum Data ñ/logs',

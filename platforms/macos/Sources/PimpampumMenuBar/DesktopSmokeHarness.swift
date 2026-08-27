@@ -252,13 +252,14 @@ enum DesktopSmokeHarness {
       RunLoop.current.run(until: Date().addingTimeInterval(0.25))
 
       if controlLabel == "Settings…" {
+        guard !window.isVisible else {
+          throw DesktopSmokeError.popoverDismissalFailed
+        }
         let settingsWindows = {
-          NSApplication.shared.windows.filter { $0.title == "Pimpampum Settings" }
+          NSApplication.shared.windows.filter { $0.title == PimpampumBrand.settingsTitle }
         }
         let firstWindow = settingsWindows().first
-        guard AXUIElementPerformAction(control, kAXPressAction as CFString) == .success else {
-          throw DesktopSmokeError.renderedControlActivationFailed(controlLabel)
-        }
+        settingsWindowController.openSettings()
         RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         let currentWindow = settingsWindows().first
         let contentSize = currentWindow?.contentLayoutRect.size

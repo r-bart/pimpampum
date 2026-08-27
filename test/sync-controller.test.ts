@@ -64,6 +64,7 @@ describe('SyncController safeguards and lifecycle', () => {
       code: 'bad_request',
     });
     await expect(sync.configure(data, 'Bad device')).rejects.toMatchObject({ code: 'bad_request' });
+    await expect(sync.configure(data, 'linux-')).rejects.toMatchObject({ code: 'bad_request' });
     const file = join(data, 'file');
     writeFileSync(file, 'x');
     await expect(sync.configure(file, 'linux')).rejects.toMatchObject({ code: 'bad_request' });
@@ -158,8 +159,12 @@ describe('SyncController safeguards and lifecycle', () => {
     await sync.reconcile();
     expect(sync.getStatus()).toMatchObject({ state: 'unavailable' });
     expect(sync.getStatus().error).toBeTruthy();
+    writeFileSync(join(shared, 'Pimpampum'), 'not a directory');
+    await sync.reconcile();
+    expect(sync.getStatus()).toMatchObject({ state: 'unavailable' });
     await sync.close();
 
+    rmSync(join(shared, 'Pimpampum'));
     mkdirSync(join(shared, 'Pimpampum/devices/linux'), { recursive: true });
     const throwing = controller(join(data, 'other'), {
       snapshotter: () => {
@@ -174,27 +179,63 @@ describe('SyncController safeguards and lifecycle', () => {
   it('rejects invalid, tampered, and symbolic-link snapshots', async () => {
     const data = root();
     const sync = controller(data);
-    const invalid = join(data, 'invalid.json');
+    const configured = await sync.configure(data, 'linux');
+    const deviceDirectory = join(configured.directory!, 'devices/linux');
+    const invalidId = randomUUID();
+    const invalid = join(deviceDirectory, `000000000002-${invalidId}.json`);
     writeFileSync(invalid, '{}');
     expect(() =>
-      (sync as unknown as { readSnapshot(path: string): unknown }).readSnapshot(invalid),
+      (
+        sync as unknown as {
+          readSnapshot(path: string, expected: object): unknown;
+        }
+      ).readSnapshot(invalid, { deviceId: 'linux', sequence: 2, snapshotId: invalidId }),
     ).toThrow(/invalid/);
 
-    const target = join(data, 'target.json');
+    const target = join(deviceDirectory, 'target.json');
     writeFileSync(target, '{}');
-    const link = join(data, 'link.json');
+    const linkId = randomUUID();
+    const link = join(deviceDirectory, `000000000003-${linkId}.json`);
     symlinkSync(target, link);
     expect(() =>
-      (sync as unknown as { readSnapshot(path: string): unknown }).readSnapshot(link),
-    ).toThrow(/regular file/);
-    const tampered = join(data, 'tampered.json');
+      (
+        sync as unknown as {
+          readSnapshot(path: string, expected: object): unknown;
+        }
+      ).readSnapshot(link, { deviceId: 'linux', sequence: 3, snapshotId: linkId }),
+    ).toThrow(/symbolic links/);
+    expect(() =>
+      (
+        sync as unknown as {
+          readSnapshot(path: string, expected: object): unknown;
+        }
+      ).readSnapshot(deviceDirectory, {
+        deviceId: 'linux',
+        sequence: 3,
+        snapshotId: linkId,
+      }),
+    ).toThrow(/bounded regular file/);
+    const missingId = randomUUID();
+    expect(() =>
+      (
+        sync as unknown as {
+          readSnapshot(path: string, expected: object): unknown;
+        }
+      ).readSnapshot(join(deviceDirectory, `000000000005-${missingId}.json`), {
+        deviceId: 'linux',
+        sequence: 5,
+        snapshotId: missingId,
+      }),
+    ).toThrow();
+    const tamperedId = randomUUID();
+    const tampered = join(deviceDirectory, `000000000004-${tamperedId}.json`);
     writeFileSync(
       tampered,
       JSON.stringify({
         schemaVersion: 1,
-        snapshotId: randomUUID(),
+        snapshotId: tamperedId,
         deviceId: 'linux',
-        sequence: 1,
+        sequence: 4,
         createdAt: '2026-08-26T00:00:00.000Z',
         parentSnapshots: [],
         stateHash: `sha256:${'0'.repeat(64)}`,
@@ -202,7 +243,15 @@ describe('SyncController safeguards and lifecycle', () => {
       }),
     );
     expect(() =>
-      (sync as unknown as { readSnapshot(path: string): unknown }).readSnapshot(tampered),
+      (
+        sync as unknown as {
+          readSnapshot(path: string, expected: object): unknown;
+        }
+      ).readSnapshot(tampered, {
+        deviceId: 'linux',
+        sequence: 4,
+        snapshotId: tamperedId,
+      }),
     ).toThrow(/hash/);
     const valid = {
       schemaVersion: 1 as const,
@@ -216,11 +265,55 @@ describe('SyncController safeguards and lifecycle', () => {
     };
     writeFileSync(tampered, canonicalJson(valid));
     expect(() =>
-      (sync as unknown as { readSnapshot(path: string, device: string): unknown }).readSnapshot(
-        tampered,
-        'other',
-      ),
-    ).toThrow(/namespace/);
+      (
+        sync as unknown as {
+          readSnapshot(path: string, expected: object): unknown;
+        }
+      ).readSnapshot(tampered, {
+        deviceId: 'linux',
+        sequence: 4,
+        snapshotId: tamperedId,
+      }),
+    ).toThrow(/filename tuple/);
+    await sync.close();
+  });
+
+  it('rejects symbolic-link device directories during reconciliation', async () => {
+    const data = root();
+    const sync = controller(data);
+    await sync.configure(data, 'linux');
+    const outside = root();
+    symlinkSync(outside, join(data, 'Pimpampum/devices/remote'));
+    const status = await sync.reconcile();
+    expect(status).toMatchObject({ state: 'error' });
+    expect(status.error).toMatch(/symlink/);
+    await sync.close();
+  });
+
+  it('rejects symbolic-link snapshots and duplicate snapshot IDs during discovery', async () => {
+    const data = root();
+    const sync = controller(data);
+    const configured = await sync.configure(data, 'linux');
+    const devices = join(configured.directory!, 'devices');
+    mkdirSync(join(devices, 'bad-'));
+    const remote = join(devices, 'remote');
+    mkdirSync(remote);
+    const target = join(data, 'outside.json');
+    writeFileSync(target, '{}');
+    const linkedId = randomUUID();
+    symlinkSync(target, join(remote, `000000000001-${linkedId}.json`));
+    expect(await sync.reconcile()).toMatchObject({ state: 'error' });
+    rmSync(join(remote, `000000000001-${linkedId}.json`));
+
+    const duplicateId = randomUUID();
+    for (const deviceId of ['remote', 'remote-two']) {
+      const directory = join(devices, deviceId);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, `000000000001-${duplicateId}.json`), '{}');
+    }
+    const duplicate = await sync.reconcile();
+    expect(duplicate).toMatchObject({ state: 'error' });
+    expect(duplicate.error).toMatch(/snapshot ID is duplicated/);
     await sync.close();
   });
 

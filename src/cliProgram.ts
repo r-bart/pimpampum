@@ -44,7 +44,7 @@ export interface CliRuntime {
 
 export { MAX_AGENT_INPUT_BYTES } from './limits.js';
 
-export const CLI_USAGE = `Pimpampum 0.1.0
+export const CLI_USAGE = `Pimpampum 1.0.0
 
 Usage:
   pimpampum help

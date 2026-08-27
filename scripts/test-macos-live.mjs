@@ -33,6 +33,7 @@ const workspace = join(temporaryRoot, 'workspace');
 const evidencePath = join(repositoryRoot, 'thoughts/evidence/macos-live.json');
 const environment = { ...process.env, PIMPAMPUM_DATA_DIR: dataDirectory };
 let installed = false;
+let smokeCompleted = false;
 
 function command(executable, arguments_, options = {}) {
   const result = spawnSync(executable, arguments_, {
@@ -78,6 +79,14 @@ async function waitForBackupState(expected, attempts = 50) {
 
 function serviceIsLoaded() {
   return spawnSync('/bin/launchctl', ['print', launchDomain], { encoding: 'utf8' }).status === 0;
+}
+
+async function waitForServiceLoaded(expected, attempts = 50) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (serviceIsLoaded() === expected) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  throw new Error(`The launchd service did not become ${expected ? 'loaded' : 'unloaded'}.`);
 }
 
 function appProcessIsRunning() {
@@ -286,7 +295,7 @@ try {
   if (
     cappedUI.activeCount !== 100 ||
     cappedUI.displayedActiveCount !== '99+' ||
-    cappedUI.accessibilityLabel !== 'Pimpampum: Active, 100 active claims'
+    cappedUI.accessibilityLabel !== 'pim • pam • pum: Active, 100 active claims'
   ) {
     throw new Error(`Native UI did not cap the visible count only: ${JSON.stringify(cappedUI)}`);
   }
@@ -312,9 +321,9 @@ try {
     throw new Error('Native UI did not preserve the long-content rendering fixture.');
   }
 
-  const quitUI = uiSnapshot('quit-boundary', { controlLabel: 'Quit Pimpampum' });
+  const quitUI = uiSnapshot('quit-boundary', { controlLabel: 'Quit' });
   if (
-    quitUI.activatedControlLabel !== 'Quit Pimpampum' ||
+    quitUI.activatedControlLabel !== 'Quit' ||
     quitUI.quitActionInvoked !== true ||
     !runCli('status').running
   ) {
@@ -436,6 +445,7 @@ try {
   await waitForAppProcess(false);
 
   command('/bin/launchctl', ['bootout', `gui/${process.getuid()}`, launchAgent]);
+  await waitForServiceLoaded(false);
   const offline = spawnSync(process.execPath, [cli, 'overview'], {
     env: environment,
     encoding: 'utf8',
@@ -507,7 +517,7 @@ try {
     readFileSync(
       join(
         runtimeRoot,
-        'node_modules/pimpampum/platforms/macos/dist/PimpampumMenuBar.app/Contents/Resources/artifact-metadata.json',
+        'node_modules/pimpampum/platforms/macos/dist/PimpampumMenuBar.artifact.json',
       ),
       'utf8',
     ),
@@ -524,7 +534,7 @@ try {
     testedAt: new Date().toISOString(),
     platform: 'macOS',
     architecture: 'arm64',
-    gitCommit: command('git', ['rev-parse', 'HEAD']),
+    gitCommit: artifactMetadata.sourceGitCommit,
     sourceInputSha256: artifactMetadata.sourceInputSha256,
     appSha256: createHash('sha256').update(binary).digest('hex'),
     compactMarkSha256: createHash('sha256').update(compactMark).digest('hex'),
@@ -579,6 +589,7 @@ try {
   };
   mkdirSync(dirname(evidencePath), { recursive: true });
   writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+  smokeCompleted = true;
   process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
 } finally {
   if (installed) {
@@ -593,7 +604,9 @@ try {
       process.exitCode = 1;
     }
   }
-  if (!existsSync(launchAgent) && !existsSync(app)) {
+  if (smokeCompleted && !existsSync(launchAgent) && !existsSync(app)) {
     rmSync(temporaryRoot, { recursive: true, force: true });
+  } else if (!smokeCompleted) {
+    process.stderr.write(`Live-smoke diagnostics retained at ${temporaryRoot}\n`);
   }
 }

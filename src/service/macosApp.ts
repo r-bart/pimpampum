@@ -16,6 +16,7 @@ import type {
 } from './types.js';
 
 const APP_NAME = 'PimpampumMenuBar.app';
+const LEGACY_APP_NAMES = ['pim • pam • pum.app', 'Pimpampum.app'] as const;
 const APP_EXECUTABLE = 'Contents/MacOS/PimpampumMenuBar';
 const INSTALLATION_CONFIGURATION = 'Contents/Resources/installation.json';
 const REQUEST_FILE = 'login-registration-request.json';
@@ -87,6 +88,10 @@ function sourceFiles(root: string): Array<{ relativePath: string; content: Buffe
 
 function appRoot(context: ServiceAdapterContext): string {
   return join(context.homeDirectory, 'Applications', APP_NAME);
+}
+
+function legacyAppRoots(context: ServiceAdapterContext): string[] {
+  return LEGACY_APP_NAMES.map((name) => join(context.homeDirectory, 'Applications', name));
 }
 
 function controlPath(context: ServiceAdapterContext, name: string): string {
@@ -238,6 +243,18 @@ function removeEmptyAppDirectories(root: string, artifacts: ServiceArtifact[]): 
   }
 }
 
+function removeEmptyLegacyAppDirectories(root: string): void {
+  if (!existsSync(root) || !lstatSync(root).isDirectory()) return;
+  removeEmptyAppDirectories(
+    root,
+    [
+      'Contents/Info.plist',
+      'Contents/MacOS/PimpampumMenuBar',
+      'Contents/Resources/placeholder',
+    ].map((relativePath) => ({ path: join(root, relativePath), content: '', mode: 0o600 })),
+  );
+}
+
 export function createMacOSDesktopAdapter(
   options: MacOSDesktopAdapterOptions,
 ): PlatformServiceAdapter {
@@ -369,13 +386,15 @@ export function createMacOSDesktopAdapter(
       return [...options.daemonAdapter.artifacts(context), ...appArtifacts(context)];
     },
     ownedArtifactRoots(context) {
-      return [appRoot(context)];
+      return [appRoot(context), ...legacyAppRoots(context)];
     },
     async activate(context, artifacts) {
       await options.daemonAdapter.activate(context, artifacts);
     },
     async afterInstall(context) {
-      return registerLoginItem(context);
+      const integration = await registerLoginItem(context);
+      for (const legacyRoot of legacyAppRoots(context)) removeEmptyLegacyAppDirectories(legacyRoot);
+      return integration;
     },
     async deactivate(context, artifacts) {
       const installedApp = appRoot(context);

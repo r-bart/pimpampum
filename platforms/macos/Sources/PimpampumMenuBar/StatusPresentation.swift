@@ -92,7 +92,7 @@ enum StatusIndicatorPresentation {
     let boundedCount = max(0, activeCount)
     let claims =
       boundedCount == 1 ? "1 active claim" : "\(boundedCount) active claims"
-    return "Pimpampum: \(state.label), \(claims)"
+    return "\(PimpampumBrand.displayName): \(state.label), \(claims)"
   }
 }
 

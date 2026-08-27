@@ -1,0 +1,37 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [master, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck && npm run lint && npm run format:check && npm test
+      - run: npm run test:evals
+      - run: npm run test:omarchy
+      - run: npm run check:desktop-contract
+      - run: npm audit --omit=dev
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:macos
+      - run: npm run build:macos

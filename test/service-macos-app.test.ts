@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -63,7 +64,7 @@ function adapterContext(
     dataDirectory: root.data,
     nodePath: '/usr/bin/node',
     cliPath: '/opt/pimpampum/cli.js',
-    version: '0.1.0',
+    version: '1.0.0',
     host: '127.0.0.1',
     port: 7337,
     logDirectory: join(root.data, 'logs'),
@@ -139,7 +140,7 @@ describe('macOS menu app service integration', () => {
       dataDirectory: root.data,
       nodePath: '/usr/local/bin/node',
       cliPath: '/opt/pimpampum/dist/cli.js',
-      version: '0.1.0',
+      version: '1.0.0',
       runCommand,
       adapters: { darwin: adapter },
     });
@@ -189,6 +190,56 @@ describe('macOS menu app service integration', () => {
     ]);
   });
 
+  it('migrates receipt-owned historical app bundle names to the stable technical path', async () => {
+    const root = fixture('legacy-bundle-migration');
+    const runCommand = vi.fn<RunCommand>(async (executable, arguments_) => {
+      if (executable === '/usr/bin/open' && arguments_.includes('--register-login-item')) {
+        const request = JSON.parse(
+          readFileSync(join(root.data, 'login-registration-request.json'), 'utf8'),
+        ) as { requestId: string; requestedAt: string };
+        writeFileSync(
+          join(root.data, 'login-registration-acknowledgement.json'),
+          JSON.stringify({
+            requestId: request.requestId,
+            createdAt: request.requestedAt,
+            status: 'enabled',
+            registrationChanged: false,
+          }),
+        );
+      }
+      return success();
+    });
+    const manager = createPlatformServiceManager({
+      platform: 'darwin',
+      homeDirectory: root.home,
+      dataDirectory: root.data,
+      nodePath: '/usr/local/bin/node',
+      cliPath: '/opt/pimpampum/dist/cli.js',
+      version: '1.0.0',
+      runCommand,
+      adapters: { darwin: testDesktopAdapter(root) },
+    });
+    await manager.install();
+    const stableRoot = join(root.home, 'Applications', 'PimpampumMenuBar.app');
+    const legacyRoot = join(root.home, 'Applications', 'pim • pam • pum.app');
+    const unrelatedLegacyPath = join(root.home, 'Applications', 'Pimpampum.app');
+    writeFileSync(unrelatedLegacyPath, 'unrelated user file');
+    renameSync(stableRoot, legacyRoot);
+    const receiptPath = join(root.data, 'install-receipt.json');
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as {
+      artifacts: Array<{ path: string }>;
+    };
+    for (const artifact of receipt.artifacts) {
+      artifact.path = artifact.path.replace(stableRoot, legacyRoot);
+    }
+    writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+
+    await expect(manager.install()).resolves.toMatchObject({ installed: true, reconciled: true });
+    expect(existsSync(stableRoot)).toBe(true);
+    expect(existsSync(legacyRoot)).toBe(false);
+    expect(readFileSync(unrelatedLegacyPath, 'utf8')).toBe('unrelated user file');
+  });
+
   it('rolls back app, daemon and prior handshake files when registration fails', async () => {
     const root = fixture('rollback');
     for (const name of [
@@ -210,7 +261,7 @@ describe('macOS menu app service integration', () => {
       dataDirectory: root.data,
       nodePath: '/usr/bin/node',
       cliPath: '/opt/pimpampum/cli.js',
-      version: '0.1.0',
+      version: '1.0.0',
       runCommand,
       adapters: {
         darwin: createMacOSDesktopAdapter({
@@ -243,7 +294,7 @@ describe('macOS menu app service integration', () => {
       dataDirectory: root.data,
       nodePath: '/usr/bin/node',
       cliPath: '/opt/pimpampum/cli.js',
-      version: '0.1.0',
+      version: '1.0.0',
       host: '127.0.0.1',
       port: 7337,
       logDirectory: join(root.data, 'logs'),

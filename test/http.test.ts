@@ -60,7 +60,7 @@ describe('HTTP API', () => {
   });
 
   it('keeps health public and protects the API', async () => {
-    await request(app).get('/health').expect(200, { status: 'ok', version: '0.1.0' });
+    await request(app).get('/health').expect(200, { status: 'ok', version: '1.0.0' });
     await request(app)
       .get('/openapi.json')
       .expect(200)
@@ -160,7 +160,9 @@ describe('HTTP API', () => {
       .get('/api/v1/settings/sync/conflicts')
       .set(authorization)
       .expect(200)
-      .expect(({ body }) => expect(body.data).toEqual([]));
+      .expect(({ body }) =>
+        expect(body.data).toEqual({ items: [], limit: 50, offset: 0, hasMore: false }),
+      );
     vi.spyOn(sync, 'listConflicts').mockReturnValueOnce([
       {
         id: 'a'.repeat(64),
@@ -176,14 +178,19 @@ describe('HTTP API', () => {
       .set(authorization)
       .expect(200)
       .expect(({ body }) =>
-        expect(body.data).toEqual([
-          {
-            id: 'a'.repeat(64),
-            entityType: 'project',
-            entityId: 'project-id',
-            createdAt: '2026-08-26T00:00:00.000Z',
-          },
-        ]),
+        expect(body.data).toEqual({
+          items: [
+            {
+              id: 'a'.repeat(64),
+              entityType: 'project',
+              entityId: 'project-id',
+              createdAt: '2026-08-26T00:00:00.000Z',
+            },
+          ],
+          limit: 50,
+          offset: 0,
+          hasMore: false,
+        }),
       );
     const resolve = vi.spyOn(sync, 'resolveConflict').mockResolvedValue(sync.getStatus());
     await request(app)
@@ -247,7 +254,7 @@ describe('HTTP API', () => {
         expect(body).toEqual({
           data: {
             daemon: {
-              version: '0.1.0',
+              version: '1.0.0',
               startedAt: '2026-08-26T20:00:00.000Z',
               uptimeSeconds: 2,
             },
@@ -699,7 +706,7 @@ describe('HTTP API', () => {
         params: {
           protocolVersion: '2025-11-25',
           capabilities: {},
-          clientInfo: { name: 'http-test', version: '0.1.0' },
+          clientInfo: { name: 'http-test', version: '1.0.0' },
         },
       })
       .expect(200);

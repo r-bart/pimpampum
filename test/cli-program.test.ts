@@ -5,7 +5,7 @@ import { AppError } from '../src/errors.js';
 
 function fixture() {
   const client = {
-    health: vi.fn(async () => ({ status: 'ok', version: '0.1.0' })),
+    health: vi.fn(async () => ({ status: 'ok', version: '1.0.0' })),
     getOverview: vi.fn(async () => ({ status: 'empty' })),
     listWorkspaces: vi.fn(async () => []),
     registerWorkspace: vi.fn(async (input: unknown) => input),
@@ -86,7 +86,7 @@ function fixture() {
         installed: true,
         running: true,
         adapter: 'test',
-        version: '0.1.0',
+        version: '1.0.0',
       })),
       uninstall: vi.fn(async () => ({ uninstalled: true, dataPreserved: true as const })),
     },

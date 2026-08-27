@@ -102,7 +102,7 @@ struct StatusPopover: View {
       Divider()
 
       HStack {
-        Button("Quit Pimpampum", action: quitApplication)
+        Button(PimpampumBrand.quitTitle, action: quitApplication)
           .buttonStyle(.plain)
         Spacer()
         Button {
@@ -126,7 +126,7 @@ struct StatusPopover: View {
     VStack(alignment: .leading, spacing: 8) {
       Label("Login approval required", systemImage: "person.badge.key")
         .font(.subheadline.weight(.semibold))
-      Text("Allow Pimpampum in Login Items to start it automatically.")
+      Text("Allow \(PimpampumBrand.displayName) in Login Items to start it automatically.")
         .font(.caption)
         .foregroundStyle(.secondary)
       Button("Open Login Items Settings", action: openLoginSettings)
@@ -160,7 +160,7 @@ struct StatusPopover: View {
       )
 
       VStack(alignment: .leading, spacing: 2) {
-        Text("Pimpampum")
+        Text(PimpampumBrand.displayName)
           .font(.headline)
         Text(visualState.label)
           .font(.caption)
@@ -195,7 +195,8 @@ struct StatusPopover: View {
     case .offline(let message):
       notice(
         symbol: "wifi.slash",
-        title: store.overview == nil ? "Pimpampum is offline" : "Offline — showing stale data",
+        title: store.overview == nil
+          ? "\(PimpampumBrand.displayName) is offline" : "Offline — showing stale data",
         detail: message,
         color: .red
       )

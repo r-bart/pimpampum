@@ -76,16 +76,16 @@ struct PimpampumMarkTests {
   func combinesStatusAndUncappedCountIntoOneAccessibleLabel() {
     #expect(
       StatusIndicatorPresentation.accessibilityLabel(state: .active, activeCount: 1)
-        == "Pimpampum: Active, 1 active claim")
+        == "pim • pam • pum: Active, 1 active claim")
     #expect(
       StatusIndicatorPresentation.accessibilityLabel(state: .available, activeCount: 0)
-        == "Pimpampum: Work available, 0 active claims")
+        == "pim • pam • pum: Work available, 0 active claims")
     #expect(
       StatusIndicatorPresentation.accessibilityLabel(state: .stale, activeCount: 100)
-        == "Pimpampum: Offline — stale data, 100 active claims")
+        == "pim • pam • pum: Offline — stale data, 100 active claims")
     #expect(
       StatusIndicatorPresentation.accessibilityLabel(state: .offline, activeCount: -1)
-        == "Pimpampum: Offline, 0 active claims")
+        == "pim • pam • pum: Offline, 0 active claims")
   }
 
   private var compactMarkURL: URL {

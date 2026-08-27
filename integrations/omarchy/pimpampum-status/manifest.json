@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dev.pimpampum.status",
   "name": "Pimpampum Status",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "Pimpampum",
   "description": "Project status, synchronization, and backup settings for Pimpampum",
   "kinds": ["bar-widget"],

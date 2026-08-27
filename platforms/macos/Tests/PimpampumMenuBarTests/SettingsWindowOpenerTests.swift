@@ -6,6 +6,20 @@ import Testing
 @MainActor
 struct SettingsWindowOpenerTests {
   @Test
+  func dismissesThePopoverBeforeOpeningSettings() {
+    var calls: [String] = []
+    let settings = RecordingSettingsWindowOpener { calls.append("settings") }
+    let opener = PopoverDismissingSettingsWindowOpener(
+      settingsWindowOpener: settings,
+      dismissPopover: { calls.append("dismiss") }
+    )
+
+    opener.openSettings()
+
+    #expect(calls == ["dismiss", "settings"])
+  }
+
+  @Test
   func opensTheSettingsSceneAndActivatesTheAgentApplication() {
     var calls: [String] = []
     let opener = SettingsWindowOpener(
@@ -44,4 +58,11 @@ struct SettingsWindowOpenerTests {
 
     #expect(calls == ["activate", "settings", "preferences"])
   }
+}
+
+@MainActor
+private struct RecordingSettingsWindowOpener: SettingsWindowOpening {
+  let action: () -> Void
+
+  func openSettings() { action() }
 }

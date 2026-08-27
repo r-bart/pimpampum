@@ -27,22 +27,38 @@ afterEach(() => {
 });
 
 describe.skipIf(process.platform !== 'darwin')('packaged macOS artifact gate', () => {
-  it('canonically approves the exact plist and freezes both binary and plist hashes', () => {
+  it('canonically approves the named app, Icon Composer output, plist and executable', () => {
     const app = candidate('valid');
     expect(check(app, true).status).toBe(0);
     const metadata = JSON.parse(
-      readFileSync(join(app, 'Contents/Resources/artifact-metadata.json'), 'utf8'),
+      readFileSync(join(app, '..', 'PimpampumMenuBar.artifact.json'), 'utf8'),
     ) as {
       sourceInputSha256?: unknown;
       binarySha256?: unknown;
       plistSha256?: unknown;
+      appIconSha256?: unknown;
+      assetCatalogSha256?: unknown;
       architecture?: unknown;
     };
-    expect(metadata).toMatchObject({ architecture: 'arm64' });
+    expect(metadata).toMatchObject({
+      architecture: 'arm64',
+      appBundle: 'PimpampumMenuBar.app',
+      appName: 'pim • pam • pum',
+    });
     expect(metadata.binarySha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(metadata.plistSha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(metadata.sourceInputSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(metadata.appIconSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(metadata.assetCatalogSha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(check(app).status).toBe(0);
+  });
+
+  it('rejects missing or malformed Icon Composer artifacts', () => {
+    const app = candidate('bad-icon');
+    writeFileSync(join(app, 'Contents/Resources/Pimpampum.icns'), 'not-an-icon');
+    const result = check(app, true);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('app icon');
   });
 
   it('rejects a duplicate critical key even when the first value is valid', () => {

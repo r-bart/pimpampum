@@ -142,7 +142,7 @@ async function completedManifest(gateway: PimpampumGateway, completed: Spec | Ta
 }
 
 export function buildMcpServer(gateway: PimpampumGateway, sync?: SyncGateway): McpServer {
-  const server = new McpServer({ name: 'pimpampum', version: '0.1.0' });
+  const server = new McpServer({ name: 'pimpampum', version: '1.0.0' });
 
   server.registerTool(
     'workspace_list',
@@ -183,16 +183,23 @@ export function buildMcpServer(gateway: PimpampumGateway, sync?: SyncGateway): M
         description:
           'List bounded conflict manifests that need user attention without candidate bodies. Do not choose a winner autonomously; continue only unrelated work.',
         annotations: readOnly,
+        inputSchema: z.strictObject({ limit: limitSchema, offset: offsetSchema }),
       },
-      () =>
+      ({ limit, offset }) =>
         run(async () => {
-          const conflicts = await sync.listConflicts();
-          return conflicts.map(({ id, entityType, entityId, createdAt }) => ({
-            id,
-            entityType,
-            entityId,
-            createdAt,
-          }));
+          return paged(
+            async (fetchLimit) =>
+              (await sync.listConflicts({ limit: fetchLimit, offset })).map(
+                ({ id, entityType, entityId, createdAt }) => ({
+                  id,
+                  entityType,
+                  entityId,
+                  createdAt,
+                }),
+              ),
+            limit,
+            offset,
+          );
         }),
     );
     server.registerTool(
@@ -221,8 +228,7 @@ export function buildMcpServer(gateway: PimpampumGateway, sync?: SyncGateway): M
       },
       ({ conflictId, offsetCodeUnits, limitCodeUnits }) =>
         run(async () => {
-          const conflicts = await sync.listConflicts();
-          const conflict = conflicts.find((candidate) => candidate.id === conflictId);
+          const conflict = await sync.getConflict(conflictId);
           if (!conflict)
             throw new AppError('not_found', `Sync conflict ${conflictId} was not found`, 404);
           const page = (candidate: unknown) => {

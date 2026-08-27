@@ -91,6 +91,68 @@ describe('PimpampumStore v2', () => {
     error(() => store.applySyncState(invalidParent), 'bad_request', /invalid parent/);
   });
 
+  it('rejects sync states that bypass lifecycle and completion invariants', () => {
+    const { project: createdProject, spec: createdSpec } = readyProject();
+    const parent = task(createdSpec.id);
+    const child = task(createdSpec.id, parent.id);
+    const baseline = store.exportSyncState();
+    const invalid = (mutate: (state: typeof baseline) => void, message: RegExp): void => {
+      const state = structuredClone(baseline);
+      mutate(state);
+      error(() => store.applySyncState(state), 'bad_request', message);
+      expect(store.exportSyncState()).toEqual(baseline);
+    };
+
+    invalid((state) => {
+      state.projects[0]!.state = 'open';
+      state.specs = [];
+      state.tasks = [];
+    }, /open without a Spec/);
+    invalid((state) => {
+      state.projects[0]!.state = 'done';
+      state.projects[0]!.completionSummary = 'Done';
+      state.projects[0]!.completedAt = new Date().toISOString();
+    }, /done before every Spec is terminal/);
+    invalid((state) => {
+      state.projects[0]!.state = 'cancelled';
+    }, /cancelled with a non-terminal Spec/);
+    invalid((state) => {
+      state.specs[0]!.body = '   ';
+    }, /ready without Markdown/);
+    invalid((state) => {
+      state.specs[0]!.state = 'done';
+      state.specs[0]!.completionSummary = 'Done';
+      state.specs[0]!.completedAt = new Date().toISOString();
+    }, /terminal with a non-terminal Task/);
+    invalid((state) => {
+      const importedParent = state.tasks.find((item) => item.id === parent.id)!;
+      importedParent.state = 'done';
+      importedParent.completionSummary = 'Done';
+      importedParent.completedAt = new Date().toISOString();
+    }, /terminal with a non-terminal Subtask/);
+    invalid((state) => {
+      state.projects[0]!.completionSummary = 'Impossible';
+    }, /completion metadata while open/);
+    invalid((state) => {
+      state.tasks.find((item) => item.id === child.id)!.state = 'done';
+    }, /done without completion metadata/);
+    invalid((state) => {
+      const importedChild = state.tasks.find((item) => item.id === child.id)!;
+      importedChild.state = 'done';
+      importedChild.completionSummary = 'Done';
+    }, /done without completion metadata/);
+
+    const valid = structuredClone(baseline);
+    const importedChild = valid.tasks.find((item) => item.id === child.id)!;
+    importedChild.state = 'done';
+    importedChild.completionSummary = 'Done';
+    importedChild.completedAt = new Date().toISOString();
+    store.applySyncState(valid);
+    expect(store.getTask(child.id).state).toBe('done');
+
+    expect(createdProject.state).toBe('open');
+  });
+
   it('applies synchronized deletions in dependency order', () => {
     const createdProject = project();
     spec(createdProject.id);

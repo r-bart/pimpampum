@@ -62,8 +62,8 @@ private struct MissingPimpampumMark: View {
       }
       .stroke(Color.red, lineWidth: 1.5)
     }
-    .help("PimpampumCompact.pdf is missing")
-    .accessibilityLabel("Pimpampum mark resource is missing")
+    .help("\(PimpampumBrand.displayName) menu-bar mark is missing")
+    .accessibilityLabel("\(PimpampumBrand.displayName) mark resource is missing")
   }
 }
 

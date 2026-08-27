@@ -21,20 +21,9 @@ execFileSync(
   { cwd: repositoryRoot, stdio: 'inherit' },
 );
 
-if (process.platform === 'darwin') {
-  execFileSync(join(repositoryRoot, 'scripts/build-macos-app.sh'), [], {
-    cwd: repositoryRoot,
-    stdio: 'inherit',
-  });
-}
-
 execFileSync(
   process.execPath,
-  [
-    join(repositoryRoot, 'scripts/check-macos-artifact.mjs'),
-    appRoot,
-    ...(process.platform === 'darwin' ? ['--approve'] : []),
-  ],
+  [join(repositoryRoot, 'scripts/check-macos-artifact.mjs'), appRoot],
   { cwd: repositoryRoot, stdio: 'inherit' },
 );
 

@@ -29,9 +29,9 @@ import {
   updateTaskSchema,
 } from './schemas.js';
 import type { PimpampumHttpGateway } from './types.js';
-import type { SyncGateway } from './syncContract.js';
+import { syncDeviceIdSchema, type SyncGateway } from './syncContract.js';
 
-const DAEMON_VERSION = '0.1.0';
+const DAEMON_VERSION = '1.0.0';
 
 function parse<T>(schema: ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
@@ -184,7 +184,7 @@ export function createHttpApp(
     });
     app.put('/api/v1/settings/sync', async (request, response) => {
       const input = parse(
-        z.strictObject({ directory: absolutePathSchema, deviceId: z.string().min(1).max(63) }),
+        z.strictObject({ directory: absolutePathSchema, deviceId: syncDeviceIdSchema }),
         request.body,
       );
       responseData(response, await sync.configure(input.directory, input.deviceId));
@@ -201,17 +201,21 @@ export function createHttpApp(
     app.delete('/api/v1/settings/sync', async (_request, response) => {
       responseData(response, await sync.forget());
     });
-    app.get('/api/v1/settings/sync/conflicts', async (_request, response) => {
-      const conflicts = await sync.listConflicts();
-      responseData(
-        response,
-        conflicts.map(({ id, entityType, entityId, createdAt }) => ({
+    app.get('/api/v1/settings/sync/conflicts', async (request, response) => {
+      const page = parse(paginationSchema, request.query);
+      const conflicts = await sync.listConflicts({ limit: page.limit + 1, offset: page.offset });
+      const hasMore = conflicts.length > page.limit;
+      responseData(response, {
+        items: conflicts.slice(0, page.limit).map(({ id, entityType, entityId, createdAt }) => ({
           id,
           entityType,
           entityId,
           createdAt,
         })),
-      );
+        limit: page.limit,
+        offset: page.offset,
+        hasMore,
+      });
     });
     app.post('/api/v1/settings/sync/conflicts/:conflictId/resolve', async (request, response) => {
       const input = parse(z.strictObject({ choice: z.enum(['local', 'remote']) }), request.body);

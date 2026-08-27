@@ -180,7 +180,7 @@ export const openApiDocument: OpenApiDocument = {
   openapi: '3.1.0',
   info: {
     title: 'Pimpampum Local API',
-    version: '0.1.0',
+    version: '1.0.0',
     summary: 'Minimal local portfolio coordination for humans and software agents.',
     description:
       'One machine-local daemon owns Workspaces, Project initiatives, executable Markdown Specs, Tasks, one-level Subtasks, scoped Context, expiring Claims, backup, and export. Writes use optimistic revisions. Project is never an alias for a PRD; a PRD is one possible kind of Spec.',
@@ -317,7 +317,8 @@ export const openApiDocument: OpenApiDocument = {
         'listSyncConflicts',
         'List synchronization conflicts requiring user attention',
         'Administration',
-        arrayOf(ref('SyncConflictManifest')),
+        ref('SyncConflictManifestPage'),
+        { parameters: pagination },
       ),
     },
     '/api/v1/settings/sync/conflicts/{conflictId}/resolve': {
@@ -1172,7 +1173,10 @@ export const openApiDocument: OpenApiDocument = {
       DirectoryInput: objectSchema(['directory'], { directory: ref('AbsolutePath') }),
       SyncConfigurationInput: objectSchema(['directory', 'deviceId'], {
         directory: ref('AbsolutePath'),
-        deviceId: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,62}$' },
+        deviceId: {
+          type: 'string',
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$',
+        },
       }),
       ResolveSyncConflictInput: objectSchema(['choice'], {
         choice: { type: 'string', enum: ['local', 'remote'] },
@@ -1232,6 +1236,7 @@ export const openApiDocument: OpenApiDocument = {
         entityId: { type: 'string' },
         createdAt: ref('Timestamp'),
       }),
+      SyncConflictManifestPage: pageSchema(ref('SyncConflictManifest')),
       PathResult: objectSchema(['path'], { path: ref('AbsolutePath') }),
       AutomaticBackupStatus: objectSchema(
         [

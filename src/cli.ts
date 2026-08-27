@@ -140,7 +140,7 @@ async function main(): Promise<void> {
       dataDirectory: config.dataDirectory,
       nodePath: process.execPath,
       cliPath: compiledCliPath,
-      version: '0.1.0',
+      version: '1.0.0',
       host: config.host,
       port: config.port,
       runCommand: runServiceCommand,

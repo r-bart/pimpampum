@@ -103,7 +103,7 @@ describe('MCP endpoint v2', () => {
     });
     const handler = createPimpampumMcpHandler(store, sync);
     const client = new Client(
-      { name: 'sync-test', version: '0.1.0' },
+      { name: 'sync-test', version: '1.0.0' },
       { versionNegotiation: { mode: 'auto' } },
     );
     const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {

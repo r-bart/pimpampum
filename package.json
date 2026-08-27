@@ -1,6 +1,6 @@
 {
   "name": "pimpampum",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Ultra-minimal local project coordination for solopreneurs and software agents.",
   "engines": {
     "node": ">=22"
@@ -42,6 +42,7 @@
     "check:quattro-evidence": "node scripts/check-quattro-evidence.mjs",
     "benchmark:overview": "tsx scripts/benchmark-overview.ts",
     "build:macos": "./scripts/build-macos-app.sh",
+    "approve:macos": "npm run build:macos && node scripts/check-macos-artifact.mjs platforms/macos/dist/PimpampumMenuBar.app --approve",
     "test:macos": "./scripts/check-swift-coverage.sh",
     "validate:omarchy": "node scripts/validate-omarchy-plugin.mjs",
     "test:omarchy": "npm run validate:omarchy && vitest run test/omarchy-plugin.test.ts test/service-omarchy.test.ts",
@@ -64,8 +65,20 @@
     "specifications",
     "sqlite"
   ],
-  "author": "",
+  "author": "Roberto Díaz",
   "license": "MIT",
+  "homepage": "https://github.com/r-bart/pimpampum#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/r-bart/pimpampum.git"
+  },
+  "bugs": {
+    "url": "https://github.com/r-bart/pimpampum/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "dependencies": {
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/express": "2.0.0",

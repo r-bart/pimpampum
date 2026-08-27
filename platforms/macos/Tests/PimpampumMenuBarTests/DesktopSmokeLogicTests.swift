@@ -105,7 +105,7 @@ struct DesktopSmokeLogicTests {
       quitActionInvoked: false
     )
     #expect(snapshot.schemaVersion == 2)
-    #expect(snapshot.accessibilityLabel == "Pimpampum: Active, 2 active claims")
+    #expect(snapshot.accessibilityLabel == "pim • pam • pum: Active, 2 active claims")
     #expect(snapshot.accessibilityLabels == ["Alpha", "Zulu"])
     #expect(snapshot.markResource == "PimpampumCompact.pdf")
     #expect(snapshot.markResourceSha256 == String(repeating: "a", count: 64))
@@ -147,7 +147,7 @@ struct DesktopSmokeLogicTests {
       settingsErrorPresent: nil,
       quitActionInvoked: true
     )
-    #expect(singular.accessibilityLabel == "Pimpampum: Active, 1 active claim")
+    #expect(singular.accessibilityLabel == "pim • pam • pum: Active, 1 active claim")
     #expect(singular.quitActionInvoked)
 
     let empty = DesktopSmokeLogic.snapshot(
@@ -197,7 +197,7 @@ struct DesktopSmokeLogicTests {
       quitActionInvoked: false
     )
     #expect(capped.displayedActiveCount == "99+")
-    #expect(capped.accessibilityLabel == "Pimpampum: Active, 100 active claims")
+    #expect(capped.accessibilityLabel == "pim • pam • pum: Active, 100 active claims")
   }
 
   @Test
@@ -208,6 +208,7 @@ struct DesktopSmokeLogicTests {
       .projectMissing("p"),
       .renderedControlMissing("button"),
       .renderedControlActivationFailed("button"),
+      .popoverDismissalFailed,
       .markResourceMissing,
       .renderFailed,
     ]

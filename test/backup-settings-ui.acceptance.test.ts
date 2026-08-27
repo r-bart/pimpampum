@@ -27,7 +27,7 @@ describe('settings desktop surfaces', () => {
     expect(app).not.toMatch(/Settings\s*\{/);
     expect(popover).toContain('settingsWindowOpener.openSettings()');
     expect(popover).toContain('Label("Settings…", systemImage: "gearshape")');
-    expect(popover).toContain('Quit Pimpampum');
+    expect(popover).toContain('Button(PimpampumBrand.quitTitle');
     expect(settings).toContain('NSWindow(contentViewController:');
     expect(settings).toContain('makeKeyAndOrderFront');
     expect(settings).toContain('Synchronization');

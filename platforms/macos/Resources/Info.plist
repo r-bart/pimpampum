@@ -10,12 +10,18 @@
   <string>dev.pimpampum.menubar</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
-  <key>CFBundleName</key>
+  <key>CFBundleDisplayName</key>
+  <string>pim • pam • pum</string>
+  <key>CFBundleIconFile</key>
   <string>Pimpampum</string>
+  <key>CFBundleIconName</key>
+  <string>Pimpampum</string>
+  <key>CFBundleName</key>
+  <string>pim • pam • pum</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>1.0.0</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSMinimumSystemVersion</key>

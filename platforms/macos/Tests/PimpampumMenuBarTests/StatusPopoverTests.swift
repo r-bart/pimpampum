@@ -10,6 +10,10 @@ import Testing
 struct StatusPopoverTests {
   @Test
   func everyVisualStateHasCompletePresentationMetadata() {
+    #expect(PimpampumBrand.displayName == "pim • pam • pum")
+    #expect(PimpampumBrand.settingsTitle == "pim • pam • pum Settings")
+    #expect(PimpampumBrand.quitTitle == "Quit")
+
     let states: [StatusVisualState] = [
       .loading,
       .active,
@@ -249,7 +253,7 @@ private struct StaticOverviewReader: OverviewReading {
 private func makeOverview(status: OverviewStatus, cancelledProjects: Int = 0) -> Overview {
   Overview(
     daemon: OverviewDaemon(
-      version: "0.1.0",
+      version: "1.0.0",
       startedAt: Date(timeIntervalSince1970: 0),
       uptimeSeconds: 120
     ),

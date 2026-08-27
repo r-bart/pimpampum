@@ -8,15 +8,15 @@ struct HelpDialogItem: Identifiable, Equatable {
 
 enum HelpDialogCopy {
   static let buttonTitle = "How it works"
-  static let title = "How Pimpampum works"
-  static let introduction = "Pimpampum is a local, agent-first project manager."
+  static let title = "How \(PimpampumBrand.displayName) works"
+  static let introduction = "\(PimpampumBrand.displayName) is a local, agent-first project manager."
   static let done = "Done"
 
   static let items = [
     HelpDialogItem(
       id: "local",
       systemImage: "desktopcomputer",
-      text: "Pimpampum runs locally on this machine."
+      text: "\(PimpampumBrand.displayName) runs locally on this machine."
     ),
     HelpDialogItem(
       id: "projects",

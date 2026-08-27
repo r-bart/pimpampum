@@ -8,12 +8,22 @@ import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const appRoot = resolve(process.argv[2] ?? 'platforms/macos/dist/PimpampumMenuBar.app');
+const canonicalAppRoot = join(repositoryRoot, 'platforms/macos/dist/PimpampumMenuBar.app');
 const approve = process.argv.includes('--approve');
 const executable = join(appRoot, 'Contents/MacOS/PimpampumMenuBar');
 const infoPlist = join(appRoot, 'Contents/Info.plist');
-const metadataPath = join(appRoot, 'Contents/Resources/artifact-metadata.json');
+const metadataPath = join(dirname(appRoot), 'PimpampumMenuBar.artifact.json');
 const sourceCompactMark = join(repositoryRoot, 'platforms/macos/Resources/PimpampumCompact.pdf');
 const packagedCompactMark = join(appRoot, 'Contents/Resources/PimpampumCompact.pdf');
+const packagedIcon = join(appRoot, 'Contents/Resources/Pimpampum.icns');
+const packagedAssetCatalog = join(appRoot, 'Contents/Resources/Assets.car');
+const sourcePaths = [
+  'platforms/macos/Package.swift',
+  'platforms/macos/Sources',
+  'platforms/macos/Resources',
+  'branding/app-icon',
+  'scripts/build-macos-app.sh',
+];
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -24,12 +34,7 @@ function sha256(content) {
 }
 
 function macosSourceHash() {
-  const roots = [
-    join(repositoryRoot, 'platforms/macos/Package.swift'),
-    join(repositoryRoot, 'platforms/macos/Sources'),
-    join(repositoryRoot, 'platforms/macos/Resources'),
-    join(repositoryRoot, 'scripts/build-macos-app.sh'),
-  ];
+  const roots = sourcePaths.map((path) => join(repositoryRoot, path));
   const files = [];
   const visit = (path) => {
     const metadata = lstatSync(path);
@@ -97,6 +102,20 @@ function validateCompactVectorPDF(bytes, label) {
   );
 }
 
+function validateAppIcon(iconBytes, assetCatalogBytes) {
+  invariant(iconBytes.length >= 1_024, 'The packaged app icon is unexpectedly small.');
+  invariant(iconBytes.subarray(0, 4).toString('ascii') === 'icns', 'The app icon is not ICNS.');
+  invariant(
+    iconBytes.readUInt32BE(4) === iconBytes.length,
+    'The packaged app icon has an invalid length header.',
+  );
+  invariant(
+    assetCatalogBytes.length >= 1_024 &&
+      assetCatalogBytes.subarray(0, 8).toString('ascii') === 'BOMStore',
+    'The packaged Icon Composer asset catalog is invalid.',
+  );
+}
+
 function inspectArm64MachO(binary) {
   invariant(
     binary.length >= 32 && binary.readUInt32LE(0) === 0xfeedfacf,
@@ -143,6 +162,11 @@ function validateCanonicalPlist(plistBytes) {
     'LSMinimumSystemVersion',
     'CFBundleIdentifier',
     'CFBundleExecutable',
+    'CFBundleName',
+    'CFBundleDisplayName',
+    'CFBundleIconFile',
+    'CFBundleIconName',
+    'CFBundleShortVersionString',
   ]) {
     invariant(keyCount(source, key) === 1, `Info.plist must contain exactly one ${key}.`);
   }
@@ -169,13 +193,48 @@ function validateCanonicalPlist(plistBytes) {
     parsed.CFBundleExecutable === 'PimpampumMenuBar',
     'The packaged app has an unexpected executable name.',
   );
+  invariant(parsed.CFBundleName === 'pim • pam • pum', 'The packaged app has an unexpected name.');
+  invariant(
+    parsed.CFBundleDisplayName === 'pim • pam • pum',
+    'The packaged app has an unexpected display name.',
+  );
+  invariant(parsed.CFBundleIconFile === 'Pimpampum', 'The packaged app icon file is missing.');
+  invariant(parsed.CFBundleIconName === 'Pimpampum', 'The packaged app icon name is missing.');
+  invariant(
+    parsed.CFBundleShortVersionString === '1.0.0',
+    'The packaged app must use the package release version 1.0.0.',
+  );
+}
+
+function approvedSourceCommit() {
+  if (appRoot === canonicalAppRoot) {
+    const status = execFileSync(
+      'git',
+      ['status', '--porcelain', '--untracked-files=all', '--', ...sourcePaths],
+      { cwd: repositoryRoot, encoding: 'utf8' },
+    ).trim();
+    invariant(
+      status.length === 0,
+      `Refusing to approve a macOS artifact from uncommitted build inputs:\n${status}`,
+    );
+  }
+  return execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+  }).trim();
 }
 
 invariant(
   existsSync(sourceCompactMark) && lstatSync(sourceCompactMark).isFile(),
   `Missing source compact mark: ${sourceCompactMark}`,
 );
-for (const path of [executable, infoPlist, packagedCompactMark]) {
+for (const path of [
+  executable,
+  infoPlist,
+  packagedCompactMark,
+  packagedIcon,
+  packagedAssetCatalog,
+]) {
   invariant(existsSync(path) && lstatSync(path).isFile(), `Missing packaged artifact: ${path}`);
 }
 invariant(
@@ -187,8 +246,11 @@ const binary = readFileSync(executable);
 const plistBytes = readFileSync(infoPlist);
 const sourceCompactMarkBytes = readFileSync(sourceCompactMark);
 const packagedCompactMarkBytes = readFileSync(packagedCompactMark);
+const packagedIconBytes = readFileSync(packagedIcon);
+const packagedAssetCatalogBytes = readFileSync(packagedAssetCatalog);
 validateCompactVectorPDF(sourceCompactMarkBytes, 'The source compact mark');
 validateCompactVectorPDF(packagedCompactMarkBytes, 'The packaged compact mark');
+validateAppIcon(packagedIconBytes, packagedAssetCatalogBytes);
 invariant(
   packagedCompactMarkBytes.equals(sourceCompactMarkBytes),
   'The packaged compact mark differs from the reviewed source vector.',
@@ -199,6 +261,8 @@ const metadata = {
   binarySha256: sha256(binary),
   plistSha256: sha256(plistBytes),
   compactMarkSha256: sha256(packagedCompactMarkBytes),
+  appIconSha256: sha256(packagedIconBytes),
+  assetCatalogSha256: sha256(packagedAssetCatalogBytes),
   binaryFormat: 'Mach-O 64-bit',
   architecture: 'arm64',
   minimumMacOS: inspectArm64MachO(binary),
@@ -206,12 +270,19 @@ const metadata = {
   lsUIElement: true,
   bundleIdentifier: 'dev.pimpampum.menubar',
   executable: 'PimpampumMenuBar',
+  appBundle: 'PimpampumMenuBar.app',
+  appName: 'pim • pam • pum',
+  appVersion: '1.0.0',
 };
 
 if (approve) {
   invariant(process.platform === 'darwin', 'Artifact approval is allowed only on macOS.');
   validateCanonicalPlist(plistBytes);
-  writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o644 });
+  writeFileSync(
+    metadataPath,
+    `${JSON.stringify({ ...metadata, sourceGitCommit: approvedSourceCommit() }, null, 2)}\n`,
+    { mode: 0o644 },
+  );
 } else {
   invariant(
     existsSync(metadataPath) && lstatSync(metadataPath).isFile(),
@@ -223,9 +294,24 @@ if (approve) {
   } catch (error) {
     throw new Error('Approved macOS artifact metadata is invalid.', { cause: error });
   }
+  const { sourceGitCommit, ...approvedArtifact } = approved;
   invariant(
-    JSON.stringify(approved) === JSON.stringify(metadata),
-    'The staged app does not match its approved metadata and hashes.',
+    typeof sourceGitCommit === 'string' && /^[a-f0-9]{40}$/u.test(sourceGitCommit),
+    'The approved macOS artifact has no valid source commit.',
+  );
+  try {
+    execFileSync('git', ['cat-file', '-e', `${sourceGitCommit}^{commit}`], {
+      cwd: repositoryRoot,
+      stdio: 'ignore',
+    });
+  } catch (error) {
+    throw new Error('The approved macOS artifact source commit is not available.', {
+      cause: error,
+    });
+  }
+  invariant(
+    JSON.stringify(approvedArtifact) === JSON.stringify(metadata),
+    'The staged app does not match its approved metadata, source inputs, and hashes.',
   );
   if (process.platform === 'darwin') validateCanonicalPlist(plistBytes);
 }
