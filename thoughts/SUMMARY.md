@@ -1,53 +1,47 @@
 # Session Summary
 
-**Date**: 2026-08-27 13:18 CEST
-**Feature**: V1 release readiness
-**Type**: Bug Fix / Release Engineering
+**Date**: 2026-08-27
+**Feature**: Quiet macOS npm onboarding
+**Type**: Feature / Bug Fix
 **Branch**: `develop`
 
 ## What Was Done
 
-- Fixed the remaining synchronization validation hot path and bounded snapshot reads against growth races.
-- Made macOS conflict, unavailable, and error states actionable while explicitly preserving local-work confidence.
-- Removed the obsolete backup-only Settings controller; the unified Synchronization/Backup window is authoritative.
-- Bumped package, daemon, CLI, MCP, OpenAPI, fixtures, Omarchy, and macOS bundle contracts to `1.0.0`.
-- Completed package metadata and corrected README platform, Settings, Quit, signing, installation, and download guidance.
-- Made `npm pack` consume an already approved macOS artifact instead of rebuilding or autoapproving one.
-- Bound external macOS artifact metadata and live evidence to source commit `da7e0eb212b12d02f2b2fcff2a85f92d16bc2887` and binary SHA-256 `1a1d06382ac66dffc96b5be325b1fd67c75d5687587697899204df1c63561b67`.
-- Added GitHub quality and tag-release workflows for Developer ID signing, notarization, npm trusted publishing, GitHub Release assets, and checksums.
-- Added reviewed precompiled icon resources as a fallback for CI Xcode versions that cannot emit `Assets.car` from the newer Icon Composer source.
-- Ran the full macOS live matrix and restored the local 1.0.0 daemon/menu-bar installation afterward.
+- Added a native Quiet onboarding screen that appears only when the macOS app cannot find a valid installation receipt.
+- Added `pimpampum install --service-only` so the onboarding can install the daemon without trying to install a second copy of the app.
+- Made the primary onboarding action copy the command and open Terminal; it never executes the command without the user.
+- Matched the secondary “I’ve installed it — check again” control to the primary button geometry with a quieter visual treatment.
+- Registered downloaded app bundles with macOS Login Items during setup and exposed recovery guidance when registration needs approval.
+- Changed the launchd process type from `Background` to `Interactive`, removing the minute-long cold start observed under macOS scheduling pressure.
+- Rebuilt and approved the macOS artifact, then exercised the complete local install, onboarding, service, health, and restart flow.
 
 ## Why
 
-The product implementation was close to V1, but artifact provenance, public macOS distribution, package metadata, large sync-state performance, recovery copy, and release automation were not yet strong enough for a defensible public release.
+The downloaded menu-bar app needed a clear bridge to the npm-installed CLI/MCP service. Live testing also exposed a launchd scheduling choice that made a healthy install appear hung, so startup responsiveness was corrected before release.
 
 ## Key Decisions
 
-- npm is the canonical install channel; GitHub Releases carry the npm tarball, notarized arm64 app archive, release notes, and `SHA256SUMS`.
-- The app remains Apple Silicon-only for V1 and the README states that boundary explicitly.
-- Approval metadata lives beside the app, not inside its signed bundle, so signing and notarization cannot invalidate the resource seal.
-- No `v1.0.0` tag is created until both target-platform live gates and public-distribution credentials pass.
+- npm remains the canonical CLI/MCP distribution channel; the macOS app guides users into that installation.
+- Onboarding is receipt-driven rather than shown on every launch.
+- The app may copy and explain the install command, but Terminal remains the explicit execution boundary.
+- The HTTP daemon uses launchd's `Interactive` process type because the menu-bar UI directly depends on its response time.
 
 ## What's Pending
 
-- Capture and validate `thoughts/evidence/quattro-live.json` on a real Omarchy Quattro host.
-- Install/configure a Developer ID Application certificate and Apple notarization credentials in the GitHub `release` environment.
-- Configure npm trusted publishing for `r-bart/pimpampum` and decide whether GitHub release assets should remain private or the repository should become public.
-- Push tag `v1.0.0` only after those gates pass; the release workflow will publish npm and GitHub assets automatically.
+- Publish `pimpampum@1.0.0` to npm; until then the registry command returns `E404` and only the local tarball can exercise the flow.
+- Complete the existing release gates: Omarchy Quattro live evidence, Apple signing/notarization credentials, and the final `v1.0.0` tag.
 
 ## Files Modified
 
-| Area        | Files                                                            | Change                                                |
-| ----------- | ---------------------------------------------------------------- | ----------------------------------------------------- |
-| Domain/sync | `src/store.ts`, `src/syncController.ts`, tests                   | Linear validation indexes and bounded immutable reads |
-| macOS       | `platforms/macos/Sources`, tests, app bundle                     | Unified Settings, recovery guidance, V1 artifact      |
-| Packaging   | `scripts/prepare-package.mjs`, artifact/evidence/release scripts | Immutable artifact consumption and provenance         |
-| Release     | `.github/workflows/*.yml`, `package*.json`                       | CI, signing, notarization, npm and Releases           |
-| Docs        | `README.md`                                                      | Accurate V1 requirements, install and downloads       |
+| Area         | Files                                                              | Change                                                                               |
+| ------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| macOS UI     | `platforms/macos/Sources/PimpampumMenuBar/*`, tests                | Quiet onboarding, login-item registration, status recovery, secondary button styling |
+| CLI/service  | `src/cli.ts`, `src/cliProgram.ts`, `src/service/launchd.ts`, tests | Service-only installation and responsive launchd scheduling                          |
+| Distribution | `platforms/macos/dist/*`                                           | Rebuilt and approved app artifact                                                    |
+| Docs         | `README.md`, `thoughts/notes/2026-08-27_macos-npm-onboarding.md`   | Installation contract and decision record                                            |
 
 ## Next Steps
 
-1. Run `PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live` on Quattro and commit its evidence.
-2. Configure the GitHub release environment and npm trusted publisher.
-3. Re-run all release gates and create `v1.0.0`.
+1. Publish the npm package after configuring trusted publishing.
+2. Re-run the copied registry command from a clean machine/profile.
+3. Finish the remaining release gates and create `v1.0.0`.
