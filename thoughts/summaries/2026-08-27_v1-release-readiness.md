@@ -60,7 +60,7 @@ V1 needs more than green unit tests: it needs bounded hostile-input behavior, on
 | Swift tests                      | 97 pass, 100% core coverage         |
 | Omarchy static/tests             | 31 pass                             |
 | Desktop contract                 | Pass                                |
-| macOS artifact/live evidence     | Pass for commit `a0db5e4`           |
+| macOS artifact/live evidence     | Pass for commit `da7e0eb`           |
 | npm audit                        | 0 vulnerabilities                   |
 | npm package dry run              | Pass, 1.34 MB compressed, 158 files |
 | Quattro live evidence            | Blocked: requires Quattro host      |

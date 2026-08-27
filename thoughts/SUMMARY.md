@@ -13,7 +13,7 @@
 - Bumped package, daemon, CLI, MCP, OpenAPI, fixtures, Omarchy, and macOS bundle contracts to `1.0.0`.
 - Completed package metadata and corrected README platform, Settings, Quit, signing, installation, and download guidance.
 - Made `npm pack` consume an already approved macOS artifact instead of rebuilding or autoapproving one.
-- Bound external macOS artifact metadata and live evidence to source commit `a0db5e425e5be67e1ff51257759968e96587791b` and binary SHA-256 `1a1d06382ac66dffc96b5be325b1fd67c75d5687587697899204df1c63561b67`.
+- Bound external macOS artifact metadata and live evidence to source commit `da7e0eb212b12d02f2b2fcff2a85f92d16bc2887` and binary SHA-256 `1a1d06382ac66dffc96b5be325b1fd67c75d5687587697899204df1c63561b67`.
 - Added GitHub quality and tag-release workflows for Developer ID signing, notarization, npm trusted publishing, GitHub Release assets, and checksums.
 - Added reviewed precompiled icon resources as a fallback for CI Xcode versions that cannot emit `Assets.car` from the newer Icon Composer source.
 - Ran the full macOS live matrix and restored the local 1.0.0 daemon/menu-bar installation afterward.
