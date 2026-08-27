@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
-  "sourceInputSha256": "3a989ccd788fedfe92b9580869c11af3d50fb8397690f5a7ded7d542d1cc92ef",
-  "binarySha256": "1a1d06382ac66dffc96b5be325b1fd67c75d5687587697899204df1c63561b67",
+  "sourceInputSha256": "9d217c4ac6bdd192eab460316d23b8cb4ab2c10d199e680acea7349db9933862",
+  "binarySha256": "7f0e6f8787e857c1be1500bc00a28433c803eb8c14d57c20f594f2149ceffabc",
   "plistSha256": "97b9f43398772538b587002eaa363025af640b49d5d90ccb66d6bcfdf68e38e1",
   "compactMarkSha256": "5d9f558de031b9a3c4ed1052e093fb235f9a077d077c9a027286975d4a84f463",
   "appIconSha256": "8235c85139ea19e0c7487ff6321073ac1d35e60ee98a9d2e34afc9ab88dbbf4b",
-  "assetCatalogSha256": "6781826b605bca3d320e483a96de42bf6f96ca505a03345ec0b8b713ed2d0602",
+  "assetCatalogSha256": "dfe44b4bc0799467ed871ee767e2e0aeba8a2a98c71513197430060100690f5a",
   "binaryFormat": "Mach-O 64-bit",
   "architecture": "arm64",
   "minimumMacOS": "13.0.0",
@@ -16,5 +16,5 @@
   "appBundle": "PimpampumMenuBar.app",
   "appName": "pim • pam • pum",
   "appVersion": "1.0.0",
-  "sourceGitCommit": "da7e0eb212b12d02f2b2fcff2a85f92d16bc2887"
+  "sourceGitCommit": "da434fceb3615421db5cec2ac53af78fccc19b7c"
 }
