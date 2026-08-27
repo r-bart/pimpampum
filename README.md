@@ -612,6 +612,17 @@ PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
 PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live
 ```
 
+From a clean Omarchy Quattro machine with no existing Pimpampum installation, the complete live
+smoke starts from a fresh checkout. The npm command builds the CLI before exercising installation,
+the native plugin, service controls, screenshots, cleanup, and evidence capture:
+
+```bash
+git clone https://github.com/r-bart/pimpampum.git
+cd pimpampum
+npm ci
+PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live
+```
+
 The similarly named Quattro command below only validates the plugin and previously captured
 evidence; it does not run the live workflow:
 
