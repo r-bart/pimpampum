@@ -7,6 +7,8 @@ output_root="$package_root/dist"
 app_root="$output_root/PimpampumMenuBar.app"
 compact_mark="$package_root/Resources/PimpampumCompact.pdf"
 app_icon="$repository_root/branding/app-icon/Pimpampum.icon"
+fallback_asset_catalog="$package_root/Resources/Assets.car"
+fallback_app_icon="$package_root/Resources/Pimpampum.icns"
 
 if [ ! -f "$compact_mark" ]; then
   printf 'Missing required macOS mark resource: %s\n' "$compact_mark" >&2
@@ -37,12 +39,15 @@ xcrun actool "$app_icon" \
   --output-partial-info-plist "$partial_plist" \
   >/dev/null
 
-for icon_artifact in Assets.car Pimpampum.icns; do
-  if [ ! -f "$app_root/Contents/Resources/$icon_artifact" ]; then
-    printf 'Icon Composer did not produce %s\n' "$icon_artifact" >&2
+if [ ! -f "$app_root/Contents/Resources/Assets.car" ] || \
+  [ ! -f "$app_root/Contents/Resources/Pimpampum.icns" ]; then
+  if [ ! -f "$fallback_asset_catalog" ] || [ ! -f "$fallback_app_icon" ]; then
+    printf 'Icon Composer did not produce complete assets and no reviewed fallback exists.\n' >&2
     exit 1
   fi
-done
+  cp "$fallback_asset_catalog" "$app_root/Contents/Resources/Assets.car"
+  cp "$fallback_app_icon" "$app_root/Contents/Resources/Pimpampum.icns"
+fi
 
 if [ "$(/usr/bin/plutil -extract CFBundleIconName raw -o - "$partial_plist")" != "Pimpampum" ]; then
   printf 'Icon Composer returned an unexpected app icon name.\n' >&2
