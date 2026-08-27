@@ -88,8 +88,7 @@ struct SetupOnboardingView: View {
           Text("I’ve installed it — check again")
             .frame(maxWidth: .infinity)
         }
-          .buttonStyle(.bordered)
-          .controlSize(.large)
+        .buttonStyle(QuietSecondaryButtonStyle())
 
         if let actionMessage {
           Text(actionMessage)
@@ -150,6 +149,29 @@ private struct QuietPrimaryButtonStyle: ButtonStyle {
         in: RoundedRectangle(cornerRadius: 10, style: .continuous)
       )
       .opacity(configuration.isPressed ? 0.78 : 1)
+      .scaleEffect(configuration.isPressed ? 0.985 : 1)
+      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+  }
+}
+
+private struct QuietSecondaryButtonStyle: ButtonStyle {
+  @Environment(\.colorScheme) private var colorScheme
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.body.weight(.medium))
+      .foregroundStyle(.primary)
+      .padding(.horizontal, 14)
+      .frame(minHeight: 44)
+      .background(
+        Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.06),
+        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+      )
+      .overlay {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+      }
+      .opacity(configuration.isPressed ? 0.72 : 1)
       .scaleEffect(configuration.isPressed ? 0.985 : 1)
       .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
   }

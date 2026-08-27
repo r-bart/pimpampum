@@ -63,6 +63,8 @@ describe('LaunchAgent rendering', () => {
     expect(plist).toMatch(
       /<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>\s*<\/dict>/,
     );
+    expect(plist).toMatch(/<key>ProcessType<\/key>\s*<string>Interactive<\/string>/);
+    expect(plist).not.toContain('<string>Background</string>');
     expect(plist).not.toMatch(/\/bin\/(?:ba)?sh|sh -c|PIMPAMPUM_TOKEN|Bearer/);
     if (process.platform === 'darwin') {
       expect(() =>
