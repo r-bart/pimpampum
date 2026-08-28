@@ -623,12 +623,17 @@ npm ci
 PIMPAMPUM_QUATTRO_LIVE=1 npm run test:e2e:omarchy:live
 ```
 
-The similarly named Quattro command below only validates the plugin and previously captured
-evidence; it does not run the live workflow:
+The similarly named Quattro command below only validates the plugin; it does not run the live
+workflow. If a `thoughts/evidence/quattro-live.json` has been captured,
+`npm run check:quattro-evidence` verifies it against the current plugin:
 
 ```bash
 npm run test:e2e:omarchy
 ```
+
+Neither live smoke is a release gate. The release workflow regenerates the macOS artifact
+approval and smoke on its own macOS runner; the Quattro smoke is opt-in evidence, recorded when a
+person runs it, and its absence does not block a tag (decision of 2026-08-28).
 
 ## Status
 

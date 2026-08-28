@@ -53,7 +53,7 @@
     "test:evals": "npm run test:e2e",
     "test:e2e:macos": "node scripts/test-macos-live.mjs",
     "test:e2e:omarchy:live": "npm run build && node scripts/test-omarchy-live.mjs",
-    "test:e2e:omarchy": "npm run validate:omarchy && npm run check:quattro-evidence"
+    "test:e2e:omarchy": "npm run validate:omarchy"
   },
   "keywords": [
     "agent-first",
