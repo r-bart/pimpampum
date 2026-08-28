@@ -49,6 +49,37 @@ export function createAgentErrorEnvelope(error: unknown): AgentErrorEnvelope {
   };
 }
 
+function causeChain(error: Error): string[] {
+  const chain: string[] = [];
+  let current: unknown = error.cause;
+  while (current instanceof Error && chain.length < 8) {
+    chain.push(current.message);
+    current = current.cause;
+  }
+  return chain;
+}
+
+/**
+ * Envelope for the local CLI process. Unlike the HTTP and MCP boundaries, which must not leak
+ * internals to remote callers, the CLI runs on the user's own machine: an unexpected failure in
+ * `install` or `uninstall` is only diagnosable if its actual message reaches the terminal.
+ */
+export function createLocalErrorEnvelope(error: unknown): AgentErrorEnvelope {
+  if (error instanceof AppError || !(error instanceof Error)) {
+    return createAgentErrorEnvelope(error);
+  }
+  const chain = causeChain(error);
+  return {
+    error: {
+      code: 'internal_error',
+      message: error.message,
+      retryable: false,
+      details: { name: error.name, ...(chain.length > 0 ? { causes: chain } : {}) },
+      suggestion: fallbackGuidance,
+    },
+  };
+}
+
 type AgentCallToolResult = Pick<CallToolResult, 'content' | 'isError'>;
 
 function invalidEnvelope(): never {

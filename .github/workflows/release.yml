@@ -66,10 +66,23 @@ jobs:
           SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
         run: /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" platforms/macos/dist/PimpampumMenuBar.app
       - name: Approve and exercise the exact signed artifact
+        env:
+          # The live smoke creates its data directory, daemon logs, and login-item
+          # acknowledgements under os.tmpdir(); pin it so a failure can be uploaded.
+          TMPDIR: ${{ runner.temp }}/macos-live
         run: |
+          mkdir -p "$TMPDIR"
           node scripts/check-macos-artifact.mjs platforms/macos/dist/PimpampumMenuBar.app --approve
           PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
           npm run check:macos-evidence
+      - name: Upload live-smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-live-smoke-diagnostics
+          path: ${{ runner.temp }}/macos-live
+          if-no-files-found: warn
+          retention-days: 7
       - name: Notarize and staple
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
