@@ -231,28 +231,6 @@ extension StatusPopover {
     "\(project.title): \(description)"
   }
 
-  static func projectSymbol(_ project: OverviewProject) -> String {
-    if project.lifecycleState == .cancelled { return "xmark.circle.fill" }
-    return switch project.status {
-    case .active: "bolt.circle.fill"
-    case .available: "circle.fill"
-    case .draft: "circle.dashed"
-    case .paused: "pause.circle.fill"
-    case .complete: "checkmark.circle.fill"
-    }
-  }
-
-  static func projectColor(_ project: OverviewProject) -> Color {
-    if project.lifecycleState == .cancelled { return .secondary }
-    return switch project.status {
-    case .active: .blue
-    case .available: .orange
-    case .draft: .secondary
-    case .paused: .secondary
-    case .complete: .green
-    }
-  }
-
   private static func visualState(for overview: Overview) -> StatusVisualState {
     if overview.status == .complete, overview.counts.cancelledProjects > 0 {
       return .cancelled

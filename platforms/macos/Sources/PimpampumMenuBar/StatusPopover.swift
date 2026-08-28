@@ -389,13 +389,9 @@ struct StatusPopover: View {
       .lineLimit(Self.metadataLineLimit)
       .truncationMode(.tail)
 
-      HStack(spacing: 10) {
-        Label(work.agentId, systemImage: "person.crop.circle")
-        Label(
-          Self.leaseRemainingText(work.remainingSeconds(at: store.currentDate)),
-          systemImage: "timer"
-        )
-      }
+      Text(
+        "\(work.agentId) · \(Self.leaseRemainingText(work.remainingSeconds(at: store.currentDate)))"
+      )
       .font(.caption)
       .foregroundStyle(.secondary)
     }
@@ -507,11 +503,6 @@ private struct ProjectRowButton: View {
   var body: some View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 10) {
-        Image(systemName: StatusPopover.projectSymbol(project))
-          .foregroundStyle(StatusPopover.projectColor(project))
-          .frame(width: 16)
-          .accessibilityHidden(true)
-
         VStack(alignment: .leading, spacing: 3) {
           Text(project.title)
             .font(.subheadline.weight(.medium))
@@ -530,10 +521,6 @@ private struct ProjectRowButton: View {
 
         Spacer(minLength: 4)
 
-        Image(systemName: "arrow.up.forward.app")
-          .font(.caption)
-          .foregroundStyle(.tertiary)
-          .accessibilityHidden(true)
       }
       .padding(.horizontal, 6)
       .padding(.vertical, 5)
@@ -563,11 +550,6 @@ private struct SpecRowButton: View {
   var body: some View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 10) {
-        Image(systemName: spec.activeClaimCount > 0 ? "doc.text.fill" : "doc.text")
-          .foregroundStyle(spec.activeClaimCount > 0 ? Color.blue : Color.secondary)
-          .frame(width: 16)
-          .accessibilityHidden(true)
-
         VStack(alignment: .leading, spacing: 3) {
           Text(spec.title)
             .font(.subheadline.weight(.medium))
@@ -582,10 +564,6 @@ private struct SpecRowButton: View {
 
         Spacer(minLength: 4)
 
-        Image(systemName: "arrow.up.forward.app")
-          .font(.caption)
-          .foregroundStyle(.tertiary)
-          .accessibilityHidden(true)
       }
       .padding(.horizontal, 6)
       .padding(.vertical, 5)

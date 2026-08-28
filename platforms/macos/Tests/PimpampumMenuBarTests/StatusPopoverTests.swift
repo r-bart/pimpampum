@@ -169,20 +169,10 @@ struct StatusPopoverTests {
     #expect(
       StatusPopover.workspaceRevealError(project, description: "Folder missing")
         == "Project: Folder missing")
-    let available = makeProject(status: .available, activeClaimCount: 0, availableWorkCount: 1)
-    let draft = makeProject(status: .draft, activeClaimCount: 0, availableWorkCount: 0)
-    let complete = makeProject(status: .complete, activeClaimCount: 0, availableWorkCount: 0)
-    #expect(StatusPopover.projectSymbol(project) != StatusPopover.projectSymbol(available))
-    #expect(StatusPopover.projectSymbol(draft) != StatusPopover.projectSymbol(complete))
-    #expect(StatusPopover.projectSymbol(makeProject(
-      status: .paused,
-      activeClaimCount: 0,
-      availableWorkCount: 0
-    )) == "pause.circle.fill")
   }
 
   @Test
-  func formatsAndColorsEveryProjectStatus() {
+  func formatsEveryProjectStatusWithoutRelyingOnDecorativeIcons() {
     let cases: [(OverviewProjectStatus, Int, String)] = [
       (.active, 0, "2 active"),
       (.available, 3, "3 available"),
@@ -198,7 +188,6 @@ struct StatusPopoverTests {
         availableWorkCount: available
       )
       #expect(StatusPopover.projectCountsText(project) == expected)
-      _ = StatusPopover.projectColor(project)
     }
 
     let complete = makeProject(status: .complete, activeClaimCount: 0, availableWorkCount: 0)
@@ -210,10 +199,7 @@ struct StatusPopoverTests {
     )
     #expect(StatusPopover.projectCountsText(cancelled) == "Cancelled")
     #expect(StatusPopover.projectAccessibilityValue(cancelled) == "cancelled, Cancelled")
-    #expect(StatusPopover.projectSymbol(cancelled) == "xmark.circle.fill")
-    #expect(StatusPopover.projectSymbol(cancelled) != StatusPopover.projectSymbol(complete))
-    #expect(StatusPopover.projectColor(cancelled) == .secondary)
-    #expect(StatusPopover.projectColor(complete) == .green)
+    #expect(StatusPopover.projectCountsText(complete) == "Complete · 2 completed tasks")
   }
 
   @Test
