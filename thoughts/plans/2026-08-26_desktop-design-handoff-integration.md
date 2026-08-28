@@ -418,7 +418,11 @@ or component system.
 - Install through the supported Pimpampum lifecycle without editing shell configuration directly.
 - Validate hot reload leaves one widget/popout and preserves existing user layout.
 - Capture horizontal and vertical bar states for active count `7`, `42`, and visual cap `99+`.
-- Validate complete, available, draft, empty, offline, stale, credentials, and incompatible states.
+- Validate complete, available, draft, empty, offline, stale, and credentials states.
+- Amended 2026-08-28: `incompatible`, `importing`, and `exporting` are excluded from live
+  observation. A healthy daemon pins overview `schemaVersion` 2 and the two sync states are
+  transient within one local operation, so no reviewer can honestly attest to them. They remain
+  covered by automated tests; the runner prints and hashes the exclusion into the approval binding.
 - Validate active mixed work, completed-expanded long content, and all five Backup variants.
 - Repeat compact indicator checks in one light and one dark Quattro theme.
 - Exercise mouse, scroll, keyboard focus/activation where supported, folder opening, workspace

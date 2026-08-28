@@ -41,17 +41,24 @@ const TASK_3_3_CAPTURE_GUIDANCE = Object.freeze({
   workspaceOpen:
     'Exercise mouse and keyboard activation where Quickshell supports it, then use the project row in the Pimpampum QML popout to open the workspace.',
 });
-const TASK_3_3_REVIEW_MATRIX = Object.freeze([
+export const TASK_3_3_REVIEW_MATRIX = Object.freeze([
   'Fixed circle-p identity and theme-foreground tint in every state; status is carried only by the external accent and shape.',
   'Horizontal side-by-side and vertical stacked bar layouts, using inherited Quattro geometry and theme tokens.',
   'Counts 7, 42, and 99+ (for 100 or more); zero hidden and negative source values clamped to zero.',
   'Light and dark themes.',
-  'Complete, available, active/draft, empty, offline, stale, credentials, and incompatible states.',
+  'Complete, available, active/draft, empty, offline, stale, and credentials states.',
   'Hover plus visible keyboard focus and activation where Quickshell supports them.',
   'Bounded scrolling, long-content elision/disambiguation, completed disclosure, and safe workspace opening.',
   'Portfolio-to-Settings navigation inside the same bounded popout, keyboard-accessible back navigation, and no competing Quattro popout.',
   'Backup settings shown directly without nested disclosure; unconfigured, healthy, backing-up, and failed states; exact destination preview; explicit enable/disable confirmation; configure/retry/disable serialization and native folder-dialog behavior.',
-  'Synchronization settings shown directly without nested disclosure; unconfigured, healthy, pending, importing, exporting, paused, unavailable, failed, and conflicted states; provider-location selection; effective Pimpampum destination preview; explicit enable/forget confirmation; device identity, timestamps, pending count, open-folder, sync-now, and pause/resume behavior.',
+  'Synchronization settings shown directly without nested disclosure; unconfigured, healthy, pending, paused, unavailable, failed, and conflicted states; provider-location selection; effective Pimpampum destination preview; explicit enable/forget confirmation; device identity, timestamps, pending count, open-folder, sync-now, and pause/resume behavior.',
+]);
+// States the reviewer is NOT asked to observe live, because a healthy installation cannot hold
+// them long enough to be seen, or cannot produce them at all. Each stays covered by automated
+// tests; listing them here keeps that exclusion explicit in the prompt and in the evidence binding.
+export const TASK_3_3_AUTOMATED_ONLY = Object.freeze([
+  'incompatible: the daemon pins overview schemaVersion 2 (overviewContract.ts), so a healthy installation can never emit another version; covered by test/service-omarchy.test.ts and test/omarchy-plugin.test.ts.',
+  'importing and exporting: set and cleared inside one local filesystem operation (syncController.ts), so a poll observes them only by chance; covered by the sync controller tests.',
 ]);
 const COMMAND_TIMEOUT_MS = 30_000;
 
@@ -370,7 +377,7 @@ export default function createLiveRunner(dependencies) {
       const captureState = async (name, context) => {
         const matrixPrompt =
           name === 'activePopout'
-            ? `Before taking the five canonical captures, directly exercise every item in this live matrix through supported Omarchy controls and Pimpampum's public CLI/API; do not infer a state from static validation: ${TASK_3_3_REVIEW_MATRIX.join(' ')}`
+            ? `Before taking the five canonical captures, directly exercise every item in this live matrix through supported Omarchy controls and Pimpampum's public CLI/API; do not infer a state from static validation: ${TASK_3_3_REVIEW_MATRIX.join(' ')} Not required live, covered by automated tests only: ${TASK_3_3_AUTOMATED_ONLY.join(' ')}`
             : '';
         const guidedContext = {
           ...context,
@@ -715,7 +722,9 @@ export default function createLiveRunner(dependencies) {
         // Secondary fallback kept in the evidence transcript; the bound screenshot proves the QML action.
         await execute('workspace-open', 'xdg-open', [workspace], [0], false, true);
       } catch (error) {
-        operationError = error;
+        // A signal aborts the active prompt with readline's AbortError; report the interruption
+        // itself so the diagnostic and the exit path describe what actually happened.
+        operationError = interrupted ?? error;
       } finally {
         await cleanupOnce();
         if (immutableInstall) {
@@ -807,12 +816,14 @@ export default function createLiveRunner(dependencies) {
             screenshots: screenshotEvidence,
             checks: visualChecks,
             reviewMatrix: TASK_3_3_REVIEW_MATRIX,
+            automatedOnly: TASK_3_3_AUTOMATED_ONLY,
           }),
         );
         const visualReview = await dependencies.requestVisualReview({
           screenshots: reviewScreenshots,
           checklist: visualChecks,
           reviewMatrix: TASK_3_3_REVIEW_MATRIX,
+          automatedOnly: TASK_3_3_AUTOMATED_ONLY,
           artifactSetHash: approvalBinding,
         });
         if (
@@ -1344,6 +1355,7 @@ fi
       screenshots,
       checklist,
       reviewMatrix = TASK_3_3_REVIEW_MATRIX,
+      automatedOnly = TASK_3_3_AUTOMATED_ONLY,
       artifactSetHash,
     }) {
       for (const [name, artifact] of Object.entries(screenshots)) {
@@ -1363,6 +1375,7 @@ fi
           screenshots,
           checklist,
           reviewMatrix,
+          automatedOnly,
         })}\nReview the exact staged files and hashes above.\n`,
       );
       const terminal = createInterface({ input: process.stdin, output: process.stdout });
@@ -1448,6 +1461,12 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
       workspacePath: temporaryWorkspace,
     });
     process.stdout.write(json(evidence));
+  } catch (error) {
+    if (!/interrupted by SIG(?:INT|TERM)/u.test(String(error?.message))) throw error;
+    process.stderr.write(
+      `${error.message}; the Omarchy baseline was restored and no evidence was written.\n`,
+    );
+    process.exitCode = 130;
   } finally {
     const cleanupResidue = [
       join(temporaryData, 'install-receipt.json'),

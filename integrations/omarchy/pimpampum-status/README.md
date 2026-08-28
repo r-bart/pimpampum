@@ -156,18 +156,25 @@ come from the real machine. The reviewer must directly observe this matrix:
 - Horizontal side-by-side and vertical stacked bar layouts, with counts `7`,
   `42`, and `99+`; zero is hidden and negative input is clamped to zero.
 - Light and dark themes; complete, available, active/draft, empty, offline,
-  stale, credentials, and incompatible states.
+  stale, and credentials states.
 - Hover, visible keyboard focus, and activation where Quickshell supports them;
   bounded scrolling with a fixed footer, long-name disambiguation, in-progress Spec progress,
   completed-Spec expansion/collapse, safe workspace opening, Help, and Quit/Start.
 - Backup unconfigured, healthy, backing-up, and failed presentations; native folder selection;
   destination preview; explicit enable/disable confirmation; and serialized configure, retry, and
   disable actions.
-- Synchronization unconfigured, healthy, pending, importing, exporting, paused,
-  unavailable, failed, and conflicted presentations; provider-location selection and effective
+- Synchronization unconfigured, healthy, pending, paused, unavailable, failed, and conflicted
+  presentations; provider-location selection and effective
   `Pimpampum` destination preview; explicit enable/forget confirmation; device identity, timestamps,
   pending count, open-folder, sync-now, and pause/resume actions. If the native picker dependency is
   unavailable, the UI points to the bounded CLI instead of exposing a duplicate path form.
+
+Three presentations are deliberately not part of the live matrix, because a healthy
+installation cannot show them: `incompatible` requires an overview `schemaVersion` other than 2,
+which the daemon never emits; `importing` and `exporting` are set and cleared inside one local
+filesystem operation, so a poll sees them only by chance. All three stay covered by automated
+tests, and the runner prints this exclusion in the review prompt and hashes it into the approval
+binding so the evidence records exactly what was and was not observed.
 
 Use only supported Omarchy controls to change bar position or theme, and restore
 the original selection before the runner continues. Do not edit `shell.json` or
