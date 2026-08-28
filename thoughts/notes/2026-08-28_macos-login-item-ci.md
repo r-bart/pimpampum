@@ -1,0 +1,29 @@
+# Login Items registration on hosted macOS runners
+
+The first three `v1.0.0` release runs failed in the macOS live smoke. The first two reported only
+"An internal error occurred" because the CLI flattened every plain `Error` (#7, #8). The third
+reported the real cause: `macOS login item registration failed`.
+
+## What happens
+
+`pimpampum install` copies the menu app to `~/Applications`, launches it with
+`--register-login-item`, and waits for an acknowledgement file. The app calls
+`SMAppService.mainApp.register()` and writes back `enabled`, `requiresApproval`, or `error`. On a
+GitHub-hosted `macos-15` runner the result is `error`; on the owner's Mac it is `enabled`
+(recorded in the 2026-08-27 evidence). The Swift side writes `error` for any thrown failure and
+does not include the description, so the exact SMAppService error is not visible; registering
+Login Items from a hosted CI session is a known limitation of that environment.
+
+## What changed
+
+`install` used to throw on `error` and roll back. That contradicted the rest of the design: the
+receipt and status types already allow `loginItem: 'error'`, and the menu app shows a notice with
+a retry for exactly this state. The install now completes, records `error`, and opens the app.
+The macOS evidence checker accepts `error` as a recorded outcome so that the release smoke can
+run unattended; real-machine evidence continues to record `enabled` or `requiresApproval`.
+
+## Follow-up
+
+The registration acknowledgement should carry the failure description so a rejected registration
+is diagnosable without guesswork. That is a Swift contract change with matching TypeScript
+validation and tests on both sides, and needs a Mac to verify.

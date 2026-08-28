@@ -487,9 +487,39 @@ describe('macOS menu app service integration', () => {
       };
       await expect(
         testDesktopAdapter(root).afterInstall!(adapterContext(root, runCommand), []),
-      ).rejects.toThrow(status === 'error' ? /registration failed/ : /open.*\(7\)/i);
-      expect(calls).toBe(status === 'error' ? 1 : 3);
+      ).rejects.toThrow(/open.*\(7\)/i);
+      // A rejected registration changed nothing, so there is no login item to roll back.
+      expect(calls).toBe(status === 'error' ? 2 : 3);
     }
+  });
+
+  it('completes the install and records a rejected login item registration', async () => {
+    const root = fixture('registration-rejected');
+    const runCommand: RunCommand = async (_executable, arguments_) => {
+      if (arguments_.includes('--register-login-item')) {
+        const request = JSON.parse(
+          readFileSync(join(root.data, 'login-registration-request.json'), 'utf8'),
+        ) as { requestId: string; requestedAt: string };
+        writeFileSync(
+          join(root.data, 'login-registration-acknowledgement.json'),
+          JSON.stringify({
+            requestId: request.requestId,
+            createdAt: request.requestedAt,
+            status: 'error',
+            registrationChanged: false,
+          }),
+        );
+      }
+      return success();
+    };
+    await expect(
+      testDesktopAdapter(root).afterInstall!(adapterContext(root, runCommand), []),
+    ).resolves.toEqual({ loginItem: 'error' });
+    expect(
+      JSON.parse(readFileSync(join(root.data, 'login-item-status.json'), 'utf8')) as {
+        status: string;
+      },
+    ).toMatchObject({ status: 'error' });
   });
 
   it('aggregates a failed login-item compensation after registration changed', async () => {

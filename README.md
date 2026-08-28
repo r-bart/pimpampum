@@ -132,7 +132,9 @@ npm install --global pimpampum && pimpampum install --service-only
 
 `--service-only` creates the daemon, CLI and MCP integration without copying or replacing the app
 you downloaded. The onboarding registers that app in Login Items; if macOS requires approval, the
-normal status view links directly to the relevant System Settings page. On Omarchy, use the
+normal status view links directly to the relevant System Settings page. If macOS rejects the
+registration outright, the install still completes with `loginItem: "error"` in its receipt, and
+the status view shows a notice from which it can be retried. On Omarchy, use the
 standard `pimpampum install` flow so the npm package can add both the systemd user service and
 Quattro widget.
 
