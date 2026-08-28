@@ -277,7 +277,7 @@ Item {
     // bar.releasePopout(owner), avoiding competing popup windows.
     open: root.opened
     contentWidth: fittedContentWidth(Style.space(380))
-    contentHeight: fittedContentHeight(Math.min(content.implicitHeight + Style.space(55), Style.space(520)))
+    contentHeight: fittedContentHeight(Math.min(content.implicitHeight + Style.space(53), Style.space(520)))
 
     Flickable {
       id: scroller
@@ -1526,7 +1526,7 @@ Item {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.bottom: parent.bottom
-      height: Style.space(44)
+      height: Style.space(52)
 
       Item {
         id: footerHelpAction

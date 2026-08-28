@@ -131,7 +131,7 @@ describe('Omarchy Quattro plugin', () => {
 
     expect(popout).toContain('contentWidth: fittedContentWidth(Style.space(380))');
     expect(popout).toContain(
-      'contentHeight: fittedContentHeight(Math.min(content.implicitHeight + Style.space(55), Style.space(520)))',
+      'contentHeight: fittedContentHeight(Math.min(content.implicitHeight + Style.space(53), Style.space(520)))',
     );
     expect(popout).toContain('boundsBehavior: Flickable.StopAtBounds');
     expect(popout).toContain('clip: true');
@@ -195,6 +195,8 @@ describe('Omarchy Quattro plugin', () => {
     expect(popout).toContain('property bool helpView: false');
     expect(popout).not.toContain('id: helpAction');
     expect(popout).toContain('id: footerHelpAction');
+    expect(popout).toContain('id: footer');
+    expect(popout).toContain('height: Style.space(52)');
     expect(popout).toContain('anchors.bottom: footerSeparator.top');
     expect(popout).toContain('anchors.bottom: parent.bottom');
     expect(popout).toContain('Accessible.name: "Open help"');

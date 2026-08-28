@@ -362,7 +362,7 @@ invariant(
   statusPopout.includes('PopupCard {') &&
     statusPopout.includes('contentWidth: fittedContentWidth(Style.space(380))') &&
     statusPopout.includes(
-      'contentHeight: fittedContentHeight(Math.min(content.implicitHeight + Style.space(55), Style.space(520)))',
+      'contentHeight: fittedContentHeight(Math.min(content.implicitHeight + Style.space(53), Style.space(520)))',
     ) &&
     statusPopout.includes('clip: true') &&
     statusPopout.includes('boundsBehavior: Flickable.StopAtBounds'),
@@ -413,6 +413,8 @@ invariant(
     statusPopout.includes('anchors.left: parent.left') &&
     statusPopout.includes('anchors.bottom: footerSeparator.top') &&
     statusPopout.includes('anchors.bottom: parent.bottom') &&
+    statusPopout.includes('id: footer') &&
+    statusPopout.includes('height: Style.space(52)') &&
     !statusPopout.includes('id: footerSettingsAction') &&
     statusPopout.includes('height: Style.space(44)'),
   'popover footer must expose accessible Help and Quit/Start actions',
