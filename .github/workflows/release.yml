@@ -97,7 +97,15 @@ jobs:
       - name: Build release assets
         run: scripts/package-release-assets.sh "$RUNNER_TEMP/release"
       - name: Publish npm package with provenance
+        env:
+          # setup-node writes an .npmrc that reads this variable; without a real token it exports a
+          # placeholder and the registry answers the publish with 404.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN is not configured in the release environment." >&2
+            exit 1
+          fi
           npm install --global npm@11
           npm publish "$RUNNER_TEMP/release/pimpampum-${GITHUB_REF_NAME#v}.tgz" --access public --provenance
       - name: Publish GitHub Release
