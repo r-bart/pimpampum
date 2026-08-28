@@ -4,7 +4,7 @@ import { homedir, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentCliClient } from './agentClient.js';
-import { createAgentErrorEnvelope } from './agentProtocol.js';
+import { createLocalErrorEnvelope } from './agentProtocol.js';
 import { createHttpClient } from './client.js';
 import { MAX_AGENT_INPUT_BYTES, runCli } from './cliProgram.js';
 import { loadConfig } from './config.js';
@@ -202,6 +202,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${JSON.stringify(createAgentErrorEnvelope(error), null, 2)}\n`);
+  process.stderr.write(`${JSON.stringify(createLocalErrorEnvelope(error), null, 2)}\n`);
   process.exit(1);
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createAgentErrorEnvelope,
   createAgentSuccessEnvelope,
+  createLocalErrorEnvelope,
   extractAgentEnvelope,
 } from '../src/agentProtocol.js';
 import { AppError, type ErrorCode } from '../src/errors.js';
@@ -57,6 +58,41 @@ describe('agent protocol', () => {
           'Inspect the daemon logs and retry only if the underlying failure is transient.',
       },
     });
+  });
+
+  it('keeps the real message and cause chain in the local CLI envelope', () => {
+    const root = new Error('launchctl bootstrap failed with exit code 5: Input/output error');
+    const error = new Error('Unable to activate the LaunchAgent', { cause: root });
+    expect(createLocalErrorEnvelope(error)).toEqual({
+      error: {
+        code: 'internal_error',
+        message: 'Unable to activate the LaunchAgent',
+        retryable: false,
+        details: {
+          name: 'Error',
+          causes: ['launchctl bootstrap failed with exit code 5: Input/output error'],
+        },
+        suggestion:
+          'Inspect the daemon logs and retry only if the underlying failure is transient.',
+      },
+    });
+    expect(createLocalErrorEnvelope(new Error('plain'))).toMatchObject({
+      error: { message: 'plain', details: { name: 'Error' } },
+    });
+  });
+
+  it('routes typed and non-Error failures through the shared envelope locally', () => {
+    const typed = new AppError('not_found', 'Missing', 404, false, { id: 'x' });
+    expect(createLocalErrorEnvelope(typed)).toEqual(createAgentErrorEnvelope(typed));
+    expect(createLocalErrorEnvelope('failure')).toEqual(createAgentErrorEnvelope('failure'));
+  });
+
+  it('bounds a pathological cause chain in the local envelope', () => {
+    let error = new Error('depth 0');
+    for (let depth = 1; depth <= 12; depth += 1)
+      error = new Error(`depth ${depth}`, { cause: error });
+    const envelope = createLocalErrorEnvelope(error);
+    expect((envelope.error.details as { causes: string[] }).causes).toHaveLength(8);
   });
 
   it('extracts one successful MCP text envelope unchanged', () => {
