@@ -56,9 +56,24 @@ struct OverviewStoreTests {
       ),
     ]
     let clock = RecordingOverviewClock(date: now)
-    let store = OverviewStore(
-      reader: SequenceOverviewReader([.success(testOverview(projects: projects, activeWork: work))]
+    let specs = [
+      testSpec(
+        id: "ready-old", lifecycleState: .ready,
+        updatedAt: now.addingTimeInterval(-20)
       ),
+      testSpec(id: "done-b", lifecycleState: .done, updatedAt: now),
+      testSpec(id: "ready-new", lifecycleState: .ready, updatedAt: now),
+      testSpec(id: "done-a", lifecycleState: .done, updatedAt: now),
+      testSpec(id: "draft", lifecycleState: .draft, updatedAt: now),
+      testSpec(
+        id: "ready-paused-project", lifecycleState: .ready,
+        projectLifecycleState: .paused, updatedAt: now
+      ),
+    ]
+    let store = OverviewStore(
+      reader: SequenceOverviewReader([
+        .success(testOverview(projects: projects, specs: specs, activeWork: work))
+      ]),
       clock: clock
     )
 
@@ -72,6 +87,8 @@ struct OverviewStoreTests {
       ])
     #expect(store.completedProjects.map(\.id) == ["complete-a", "complete-b"])
     #expect(store.cancelledProjects.map(\.id) == ["cancelled-a", "cancelled-b"])
+    #expect(store.inProgressSpecs.map(\.id) == ["ready-new", "ready-old"])
+    #expect(store.completedSpecs.map(\.id) == ["done-a", "done-b"])
     #expect(store.visibleActiveWork.map(\.targetId) == ["live"])
     #expect(store.visibleActiveWork.first?.remainingSeconds(at: now.addingTimeInterval(40)) == 0)
 
@@ -186,6 +203,8 @@ struct OverviewStoreTests {
     #expect(store.incompleteProjects.isEmpty)
     #expect(store.completedProjects.isEmpty)
     #expect(store.cancelledProjects.isEmpty)
+    #expect(store.inProgressSpecs.isEmpty)
+    #expect(store.completedSpecs.isEmpty)
     #expect(store.visibleActiveWork.isEmpty)
   }
 

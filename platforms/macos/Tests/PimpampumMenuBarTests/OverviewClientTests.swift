@@ -25,6 +25,12 @@ struct OverviewClientTests {
         == [.active, .available, .draft, .paused, .complete, .complete]
     )
     #expect(overview.projects.last?.lifecycleState == .cancelled)
+    #expect(overview.specs.map(\.title) == [
+      "Widget V1", "Cross-device synchronization", "First-run onboarding",
+    ])
+    #expect(overview.specs.first?.completedTaskCount == 2)
+    #expect(overview.specs.first?.activeClaimCount == 2)
+    #expect(overview.specs.last?.lifecycleState == .done)
     #expect(overview.activeWork.first?.title == "Current work")
     #expect(overview.activeWork.first?.id == "task:task-active:codex-task")
     #expect(overview.activeWork.first?.remainingSeconds(at: overview.generatedAt) == 1_770)
@@ -232,6 +238,12 @@ struct OverviewClientTests {
     }
     mutations.append { root in
       var data = root["data"] as! [String: Any]
+      let spec = (data["specs"] as! [[String: Any]])[0]
+      data["specs"] = Array(repeating: spec, count: 501)
+      root["data"] = data
+    }
+    mutations.append { root in
+      var data = root["data"] as! [String: Any]
       var projects = data["projects"] as! [[String: Any]]
       projects[0]["id"] = ""
       data["projects"] = projects
@@ -267,6 +279,47 @@ struct OverviewClientTests {
       var projects = data["projects"] as! [[String: Any]]
       projects[0]["activeClaimCount"] = -1
       data["projects"] = projects
+      root["data"] = data
+    }
+    for key in ["id", "projectId", "projectTitle", "slug", "title"] {
+      mutations.append { root in
+        var data = root["data"] as! [String: Any]
+        var specs = data["specs"] as! [[String: Any]]
+        specs[0][key] = ""
+        data["specs"] = specs
+        root["data"] = data
+      }
+    }
+    mutations.append { root in
+      var data = root["data"] as! [String: Any]
+      var specs = data["specs"] as! [[String: Any]]
+      var workspace = specs[0]["workspace"] as! [String: Any]
+      workspace["id"] = ""
+      specs[0]["workspace"] = workspace
+      data["specs"] = specs
+      root["data"] = data
+    }
+    mutations.append { root in
+      var data = root["data"] as! [String: Any]
+      var specs = data["specs"] as! [[String: Any]]
+      var workspace = specs[0]["workspace"] as! [String: Any]
+      workspace["rootPath"] = ""
+      specs[0]["workspace"] = workspace
+      data["specs"] = specs
+      root["data"] = data
+    }
+    mutations.append { root in
+      var data = root["data"] as! [String: Any]
+      var specs = data["specs"] as! [[String: Any]]
+      specs[1]["id"] = specs[0]["id"]
+      data["specs"] = specs
+      root["data"] = data
+    }
+    mutations.append { root in
+      var data = root["data"] as! [String: Any]
+      var specs = data["specs"] as! [[String: Any]]
+      specs[0]["completedTaskCount"] = -1
+      data["specs"] = specs
       root["data"] = data
     }
     mutations.append { root in

@@ -17,6 +17,16 @@ struct SmokeProjectRow: Codable, Equatable {
   let status: String
 }
 
+struct SmokeSpecRow: Codable, Equatable {
+  let id: String
+  let title: String
+  let projectTitle: String
+  let lifecycleState: String
+  let completedTaskCount: Int
+  let taskCount: Int
+  let activeClaimCount: Int
+}
+
 struct DesktopSmokeSnapshot: Codable, Equatable {
   let schemaVersion: Int
   let visualState: String
@@ -31,6 +41,7 @@ struct DesktopSmokeSnapshot: Codable, Equatable {
   let statusBadgeSystemImage: String
   let displayedActiveCount: String?
   let projectRows: [SmokeProjectRow]
+  let specRows: [SmokeSpecRow]
   let completedCollapsed: Bool
   let renderedPngSha256: String
   let activatedControlLabel: String?
@@ -125,6 +136,17 @@ enum DesktopSmokeLogic {
         status: project.status.rawValue
       )
     }
+    let specRows = (overview?.specs ?? []).map { spec in
+      SmokeSpecRow(
+        id: spec.id,
+        title: spec.title,
+        projectTitle: spec.projectTitle,
+        lifecycleState: spec.lifecycleState.rawValue,
+        completedTaskCount: spec.completedTaskCount,
+        taskCount: spec.taskCount,
+        activeClaimCount: spec.activeClaimCount
+      )
+    }
     return DesktopSmokeSnapshot(
       schemaVersion: 2,
       visualState: visualState.label,
@@ -142,6 +164,7 @@ enum DesktopSmokeLogic {
       statusBadgeSystemImage: visualState.badgeKind.systemImageName,
       displayedActiveCount: StatusIndicatorPresentation.displayCount(activeCount),
       projectRows: rows,
+      specRows: specRows,
       completedCollapsed: true,
       renderedPngSha256: SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined(),
       activatedControlLabel: activatedControlLabel,

@@ -16,6 +16,8 @@ struct Overview: Codable, Equatable, Sendable {
   let counts: OverviewCounts
   let projects: [OverviewProject]
   let projectsTruncated: Bool
+  let specs: [OverviewSpec]
+  let specsTruncated: Bool
   let activeWork: [OverviewActiveWork]
   let activeWorkTruncated: Bool
 }
@@ -57,6 +59,13 @@ enum ProjectLifecycleState: String, Codable, Sendable {
   case draft
   case open
   case paused
+  case done
+  case cancelled
+}
+
+enum SpecLifecycleState: String, Codable, Sendable {
+  case draft
+  case ready
   case done
   case cancelled
 }
@@ -117,6 +126,26 @@ struct OverviewProject: Codable, Equatable, Identifiable, Sendable {
 
   var allCounts: [Int] {
     [specCount, openTaskCount, completedTaskCount, activeClaimCount, availableWorkCount]
+  }
+}
+
+struct OverviewSpec: Codable, Equatable, Identifiable, Sendable {
+  let id: String
+  let projectId: String
+  let projectTitle: String
+  let projectLifecycleState: ProjectLifecycleState
+  let workspace: OverviewWorkspace
+  let slug: String
+  let title: String
+  let lifecycleState: SpecLifecycleState
+  let taskCount: Int
+  let openTaskCount: Int
+  let completedTaskCount: Int
+  let activeClaimCount: Int
+  let updatedAt: Date
+
+  var allCounts: [Int] {
+    [taskCount, openTaskCount, completedTaskCount, activeClaimCount]
   }
 }
 

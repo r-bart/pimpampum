@@ -333,6 +333,8 @@ try {
   if (
     activeUI.visualState !== 'Active' ||
     activeUI.activeCount !== 1 ||
+    activeUI.specRows.find((row) => row.id === spec.id)?.title !== 'Status integration Spec' ||
+    activeUI.specRows.find((row) => row.id === spec.id)?.activeClaimCount !== 1 ||
     activeUI.projectRows.find((row) => row.id === project.id)?.workspacePath !==
       canonicalWorkspace ||
     activeUI.activatedControlLabel !== 'Open Status integration in Finder' ||
@@ -363,6 +365,7 @@ try {
     completeUI.visualState !== 'All complete' ||
     completeUI.activeCount !== 0 ||
     completeUI.completedCollapsed !== true ||
+    completeUI.specRows.find((row) => row.id === spec.id)?.lifecycleState !== 'done' ||
     completeUI.projectRows.find((row) => row.id === project.id)?.status !== 'complete'
   ) {
     throw new Error('Native UI did not render the expected completed state.');
@@ -554,6 +557,8 @@ try {
       staleRecovery: true,
       authenticationError: true,
       projectRowActivation: true,
+      namedSpecProgress: true,
+      completedSpecDisclosure: true,
       finderRevealExactPath: true,
       settingsDisabled: true,
       settingsHealthy: true,

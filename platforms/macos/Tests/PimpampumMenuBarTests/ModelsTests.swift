@@ -22,4 +22,18 @@ struct ModelsTests {
 
     #expect(work.title == "Spec title")
   }
+
+  @Test
+  func specExposesEveryBoundedCountForValidation() {
+    let spec = testSpec(
+      id: "spec",
+      lifecycleState: .ready,
+      updatedAt: Date(),
+      taskCount: 5,
+      completedTaskCount: 2,
+      activeClaimCount: 1
+    )
+
+    #expect(spec.allCounts == [5, 3, 2, 1])
+  }
 }

@@ -131,13 +131,14 @@ func isoDate(_ value: String) -> Date {
 func testOverview(
   status: OverviewStatus = .active,
   projects: [OverviewProject] = [],
+  specs: [OverviewSpec] = [],
   activeWork: [OverviewActiveWork] = [],
   generatedAt: Date = isoDate("2026-08-26T20:01:30.000Z")
 ) -> Overview {
   let counts = OverviewCounts(
     workspaces: projects.isEmpty ? 0 : 1,
     projects: projects.count,
-    specs: projects.reduce(0) { $0 + $1.specCount },
+    specs: specs.isEmpty ? projects.reduce(0) { $0 + $1.specCount } : specs.count,
     draftProjects: projects.filter { $0.lifecycleState == .draft }.count,
     openProjects: projects.filter { $0.lifecycleState == .open }.count,
     pausedProjects: projects.filter { $0.lifecycleState == .paused }.count,
@@ -160,8 +161,36 @@ func testOverview(
     counts: counts,
     projects: projects,
     projectsTruncated: false,
+    specs: specs,
+    specsTruncated: false,
     activeWork: activeWork,
     activeWorkTruncated: false
+  )
+}
+
+func testSpec(
+  id: String,
+  lifecycleState: SpecLifecycleState,
+  projectLifecycleState: ProjectLifecycleState = .open,
+  updatedAt: Date,
+  taskCount: Int = 4,
+  completedTaskCount: Int = 1,
+  activeClaimCount: Int = 0
+) -> OverviewSpec {
+  OverviewSpec(
+    id: id,
+    projectId: "project-\(id)",
+    projectTitle: "Project \(id)",
+    projectLifecycleState: projectLifecycleState,
+    workspace: OverviewWorkspace(id: "workspace", name: "Workspace", rootPath: "/tmp/workspace"),
+    slug: id,
+    title: "Spec \(id)",
+    lifecycleState: lifecycleState,
+    taskCount: taskCount,
+    openTaskCount: max(0, taskCount - completedTaskCount),
+    completedTaskCount: completedTaskCount,
+    activeClaimCount: activeClaimCount,
+    updatedAt: updatedAt
   )
 }
 

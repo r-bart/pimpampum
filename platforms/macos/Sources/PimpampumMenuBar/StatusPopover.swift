@@ -47,6 +47,7 @@ struct StatusPopover: View {
 
   @State private var isCompletedExpanded = false
   @State private var isCancelledExpanded = false
+  @State private var isCompletedSpecsExpanded = false
   @State private var isHelpPresented = false
   @State private var revealError: String?
 
@@ -98,7 +99,9 @@ struct StatusPopover: View {
             if shouldShowOverview, let overview = store.overview {
               summary(for: overview)
               activeWorkSection(overview: overview)
+              specsInProgressSection(overview: overview)
               projectsSection(overview: overview)
+              completedSpecsSection
             } else {
               unavailableContent()
             }
@@ -335,6 +338,41 @@ struct StatusPopover: View {
     }
   }
 
+  @ViewBuilder
+  private func specsInProgressSection(overview: Overview) -> some View {
+    if !store.inProgressSpecs.isEmpty || overview.specsTruncated {
+      VStack(alignment: .leading, spacing: 8) {
+        sectionTitle("Specs in progress (\(store.inProgressSpecs.count))")
+
+        ForEach(store.inProgressSpecs) { spec in
+          specButton(spec)
+        }
+
+        if overview.specsTruncated {
+          truncationNotice("The spec list is truncated. Counts still include every spec.")
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var completedSpecsSection: some View {
+    if !store.completedSpecs.isEmpty {
+      DisclosureGroup(isExpanded: $isCompletedSpecsExpanded) {
+        VStack(alignment: .leading, spacing: 8) {
+          ForEach(store.completedSpecs) { spec in
+            specButton(spec)
+          }
+        }
+        .padding(.top, 8)
+      } label: {
+        Text("Completed specs (\(store.completedSpecs.count))")
+          .font(.subheadline.weight(.semibold))
+      }
+      .accessibilityHint("Collapsed by default. Expand to show completed specs.")
+    }
+  }
+
   private func activeWorkRow(_ work: OverviewActiveWork) -> some View {
     VStack(alignment: .leading, spacing: 4) {
       Text(work.title)
@@ -375,6 +413,20 @@ struct StatusPopover: View {
       } catch {
         revealError = Self.workspaceRevealError(
           project,
+          description: error.localizedDescription
+        )
+      }
+    }
+  }
+
+  private func specButton(_ spec: OverviewSpec) -> some View {
+    SpecRowButton(spec: spec) {
+      do {
+        try workspaceOpener.openWorkspace(at: spec.workspace.rootPath)
+        revealError = nil
+      } catch {
+        revealError = Self.workspaceRevealError(
+          spec,
           description: error.localizedDescription
         )
       }
@@ -498,5 +550,57 @@ private struct ProjectRowButton: View {
     .accessibilityLabel(StatusPopover.projectOpenAccessibilityLabel(project))
     .accessibilityValue(StatusPopover.projectAccessibilityValue(project))
     .accessibilityHint(StatusPopover.projectOpenAccessibilityHint(project))
+  }
+}
+
+@MainActor
+private struct SpecRowButton: View {
+  let spec: OverviewSpec
+  let action: () -> Void
+
+  @State private var isHovering = false
+
+  var body: some View {
+    Button(action: action) {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: spec.activeClaimCount > 0 ? "doc.text.fill" : "doc.text")
+          .foregroundStyle(spec.activeClaimCount > 0 ? Color.blue : Color.secondary)
+          .frame(width: 16)
+          .accessibilityHidden(true)
+
+        VStack(alignment: .leading, spacing: 3) {
+          Text(spec.title)
+            .font(.subheadline.weight(.medium))
+            .lineLimit(StatusPopover.contentTitleLineLimit)
+
+          Text(StatusPopover.specMetadataText(spec))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(StatusPopover.metadataLineLimit)
+            .truncationMode(.tail)
+        }
+
+        Spacer(minLength: 4)
+
+        Image(systemName: "arrow.up.forward.app")
+          .font(.caption)
+          .foregroundStyle(.tertiary)
+          .accessibilityHidden(true)
+      }
+      .padding(.horizontal, 6)
+      .padding(.vertical, 5)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+      .background(
+        isHovering ? Color.primary.opacity(0.06) : Color.clear,
+        in: RoundedRectangle(cornerRadius: 6)
+      )
+    }
+    .buttonStyle(.plain)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .onHover { isHovering = $0 }
+    .accessibilityLabel(StatusPopover.specOpenAccessibilityLabel(spec))
+    .accessibilityValue(StatusPopover.specAccessibilityValue(spec))
+    .accessibilityHint(StatusPopover.specOpenAccessibilityHint(spec))
   }
 }

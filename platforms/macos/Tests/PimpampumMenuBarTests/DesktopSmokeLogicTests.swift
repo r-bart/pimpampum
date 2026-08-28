@@ -83,8 +83,12 @@ struct DesktopSmokeLogicTests {
 
     let complete = testProject(id: "complete", status: .complete, updatedAt: .now)
     let active = testProject(id: "active", status: .active, updatedAt: .now)
+    let readySpec = testSpec(
+      id: "widget-v1", lifecycleState: .ready, updatedAt: .now,
+      taskCount: 5, completedTaskCount: 2, activeClaimCount: 1
+    )
     let snapshot = DesktopSmokeLogic.snapshot(
-      overview: testOverview(projects: [complete, active]),
+      overview: testOverview(projects: [complete, active], specs: [readySpec]),
       visualState: .active,
       activeCount: 2,
       connectionState: .online,
@@ -114,6 +118,11 @@ struct DesktopSmokeLogicTests {
     #expect(snapshot.statusBadgeSystemImage == "circle.fill")
     #expect(snapshot.displayedActiveCount == "2")
     #expect(snapshot.projectRows.map(\.id) == ["complete", "active"])
+    #expect(snapshot.specRows.map(\.id) == ["widget-v1"])
+    #expect(snapshot.specRows.first?.title == "Spec widget-v1")
+    #expect(snapshot.specRows.first?.completedTaskCount == 2)
+    #expect(snapshot.specRows.first?.taskCount == 5)
+    #expect(snapshot.specRows.first?.activeClaimCount == 1)
     #expect(snapshot.renderedPngSha256.count == 64)
     #expect(snapshot.activatedControlLabel == "Open active in Finder")
     #expect(snapshot.settingsWindowReused == true)
@@ -174,6 +183,7 @@ struct DesktopSmokeLogicTests {
       quitActionInvoked: false
     )
     #expect(empty.projectRows.isEmpty)
+    #expect(empty.specRows.isEmpty)
 
     let capped = DesktopSmokeLogic.snapshot(
       overview: nil,

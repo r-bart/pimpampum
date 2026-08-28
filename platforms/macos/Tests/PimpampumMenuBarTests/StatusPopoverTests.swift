@@ -224,6 +224,64 @@ struct StatusPopoverTests {
   }
 
   @Test
+  func formatsNamedSpecProgressAndWorkspaceAccessibility() {
+    let spec = testSpec(
+      id: "widget-v1",
+      lifecycleState: .ready,
+      updatedAt: Date(timeIntervalSince1970: 100),
+      taskCount: 5,
+      completedTaskCount: 2,
+      activeClaimCount: 2
+    )
+
+    #expect(StatusPopover.specProgressText(spec) == "2/5 tasks · 2 active")
+    #expect(StatusPopover.specMetadataText(spec) == "Project widget-v1 · 2/5 tasks · 2 active")
+    #expect(StatusPopover.specOpenAccessibilityLabel(spec) == "Open Spec widget-v1 in Finder")
+    #expect(
+      StatusPopover.specOpenAccessibilityHint(spec)
+        == "Opens project Project widget-v1 in workspace Workspace"
+    )
+    #expect(
+      StatusPopover.specAccessibilityValue(spec)
+        == "ready, Project widget-v1 · 2/5 tasks · 2 active"
+    )
+    #expect(
+      StatusPopover.workspaceRevealError(spec, description: "Folder missing")
+        == "Spec widget-v1: Folder missing"
+    )
+
+    let singular = testSpec(
+      id: "single",
+      lifecycleState: .done,
+      updatedAt: Date(timeIntervalSince1970: 100),
+      taskCount: 1,
+      completedTaskCount: 1
+    )
+    #expect(StatusPopover.specProgressText(singular) == "1/1 task")
+  }
+
+  @Test
+  func populatedOverviewWithSpecsRemainsScrollableInsideTheApprovedBounds() async {
+    let now = Date(timeIntervalSince1970: 120)
+    let specs = [
+      testSpec(id: "widget-v1", lifecycleState: .ready, updatedAt: now),
+      testSpec(id: "sync", lifecycleState: .ready, updatedAt: now.addingTimeInterval(-1)),
+      testSpec(id: "onboarding", lifecycleState: .done, updatedAt: now.addingTimeInterval(-2)),
+    ]
+    let store = OverviewStore(
+      reader: StaticOverviewReader(overview: testOverview(specs: specs, generatedAt: now))
+    )
+    await store.refresh()
+    let view = NSHostingView(rootView: StatusPopover(store: store))
+
+    view.layoutSubtreeIfNeeded()
+
+    #expect(view.fittingSize.width == StatusPopover.containerWidth)
+    #expect(view.fittingSize.height > 250)
+    #expect(view.fittingSize.height < 700)
+  }
+
+  @Test
   func viewBoundaryAcceptsOnlyAReadStoreAndWorkspaceOpener() {
     let store = OverviewStore(reader: StaticOverviewReader(overview: makeOverview(status: .empty)))
     let opener = WorkspaceOpener(
@@ -322,6 +380,8 @@ private func makeOverview(status: OverviewStatus, cancelledProjects: Int = 0) ->
     ),
     projects: [],
     projectsTruncated: false,
+    specs: [],
+    specsTruncated: false,
     activeWork: [],
     activeWorkTruncated: false
   )

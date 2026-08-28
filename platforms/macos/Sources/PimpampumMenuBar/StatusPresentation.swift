@@ -189,6 +189,32 @@ extension StatusPopover {
     return "\(status), \(projectCountsText(project))"
   }
 
+  static func specProgressText(_ spec: OverviewSpec) -> String {
+    let tasks = spec.taskCount == 1 ? "task" : "tasks"
+    let progress = "\(spec.completedTaskCount)/\(spec.taskCount) \(tasks)"
+    return spec.activeClaimCount > 0 ? "\(progress) · \(spec.activeClaimCount) active" : progress
+  }
+
+  static func specMetadataText(_ spec: OverviewSpec) -> String {
+    "\(spec.projectTitle) · \(specProgressText(spec))"
+  }
+
+  static func specOpenAccessibilityLabel(_ spec: OverviewSpec) -> String {
+    "Open \(spec.title) in Finder"
+  }
+
+  static func specOpenAccessibilityHint(_ spec: OverviewSpec) -> String {
+    "Opens project \(spec.projectTitle) in workspace \(spec.workspace.name)"
+  }
+
+  static func specAccessibilityValue(_ spec: OverviewSpec) -> String {
+    "\(spec.lifecycleState.rawValue), \(specMetadataText(spec))"
+  }
+
+  static func workspaceRevealError(_ spec: OverviewSpec, description: String) -> String {
+    "\(spec.title): \(description)"
+  }
+
   static func projectMetadataText(_ project: OverviewProject) -> String {
     "\(project.workspace.name) · \(project.slug)"
   }

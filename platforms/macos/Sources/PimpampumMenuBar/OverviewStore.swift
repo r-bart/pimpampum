@@ -58,6 +58,18 @@ final class OverviewStore: ObservableObject {
       .sorted(by: Self.projectComesFirst)
   }
 
+  var inProgressSpecs: [OverviewSpec] {
+    (overview?.specs ?? [])
+      .filter { $0.lifecycleState == .ready && $0.projectLifecycleState == .open }
+      .sorted(by: Self.specComesFirst)
+  }
+
+  var completedSpecs: [OverviewSpec] {
+    (overview?.specs ?? [])
+      .filter { $0.lifecycleState == .done }
+      .sorted(by: Self.specComesFirst)
+  }
+
   var visibleActiveWork: [OverviewActiveWork] {
     (overview?.activeWork ?? []).filter { $0.expiresAt > currentDate }
   }
@@ -132,6 +144,11 @@ final class OverviewStore: ObservableObject {
     if lhs.status.sortRank != rhs.status.sortRank {
       return lhs.status.sortRank < rhs.status.sortRank
     }
+    if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+    return lhs.id < rhs.id
+  }
+
+  private static func specComesFirst(_ lhs: OverviewSpec, _ rhs: OverviewSpec) -> Bool {
     if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
     return lhs.id < rhs.id
   }

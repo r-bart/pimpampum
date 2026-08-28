@@ -135,7 +135,11 @@ struct OverviewClient: OverviewReading {
   private static func isValid(_ overview: Overview) -> Bool {
     guard overview.daemon.uptimeSeconds >= 0 else { return false }
     guard overview.counts.allValues.allSatisfy({ $0 >= 0 }) else { return false }
-    guard overview.projects.count <= maximumItems, overview.activeWork.count <= maximumItems else {
+    guard
+      overview.projects.count <= maximumItems,
+      overview.specs.count <= maximumItems,
+      overview.activeWork.count <= maximumItems
+    else {
       return false
     }
     guard
@@ -145,6 +149,15 @@ struct OverviewClient: OverviewReading {
       })
     else { return false }
     guard Set(overview.projects.map(\.id)).count == overview.projects.count else { return false }
+    guard
+      overview.specs.allSatisfy({ spec in
+        !spec.id.isEmpty && !spec.projectId.isEmpty && !spec.projectTitle.isEmpty
+          && !spec.workspace.id.isEmpty && !spec.workspace.rootPath.isEmpty
+          && !spec.slug.isEmpty && !spec.title.isEmpty
+          && spec.allCounts.allSatisfy { $0 >= 0 }
+      })
+    else { return false }
+    guard Set(overview.specs.map(\.id)).count == overview.specs.count else { return false }
     guard
       overview.activeWork.allSatisfy({ work in
         !work.targetId.isEmpty && !work.projectId.isEmpty && !work.specId.isEmpty
