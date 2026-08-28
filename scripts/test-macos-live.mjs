@@ -113,19 +113,22 @@ function anyPimpampumAppProcessIsRunning() {
   );
 }
 
-async function assertInstallationAbsent() {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (
-      !existsSync(app) &&
-      !existsSync(launchAgent) &&
-      !serviceIsLoaded() &&
-      !appProcessIsRunning()
-    ) {
-      return;
-    }
+// Uninstall returns once its own commands have completed; launchd and the menu app finish
+// tearing down asynchronously. A shared CI runner can take well over the five seconds this
+// originally allowed, so wait longer and, on failure, name what is actually left.
+async function assertInstallationAbsent(attempts = 300) {
+  let leftovers = [];
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    leftovers = [
+      existsSync(app) && 'app bundle',
+      existsSync(launchAgent) && 'LaunchAgent plist',
+      serviceIsLoaded() && 'launchd service',
+      appProcessIsRunning() && 'app process',
+    ].filter(Boolean);
+    if (leftovers.length === 0) return;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
-  throw new Error('Uninstall left the app, LaunchAgent, launchd service, or app process behind.');
+  throw new Error(`Uninstall left behind after ${attempts / 10}s: ${leftovers.join(', ')}.`);
 }
 
 function uiSnapshot(label, options = {}) {
