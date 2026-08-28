@@ -41,8 +41,6 @@ gates:
     - cmd: npm run typecheck # type safety
     - cmd: npm run lint # style + rules
     - cmd: npm test # the DoD tests must stay green
-    - cmd: npm run check:quattro-evidence
-      when: phase:live-quattro
   # Tier ② — subjective: judgment delegated to reviewing agents. Run per phase,
   # adversarially (multiple refuters; majority confirms). `strict` fails the phase
   # on an unresolved finding.

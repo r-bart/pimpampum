@@ -9,7 +9,7 @@ app_root="$repository_root/platforms/macos/dist/PimpampumMenuBar.app"
 mkdir -p "$output_root"
 node "$repository_root/scripts/check-macos-artifact.mjs" "$app_root"
 node "$repository_root/scripts/check-macos-evidence.mjs"
-node "$repository_root/scripts/check-quattro-evidence.mjs"
+# Quattro live evidence is opt-in, not a release gate (thoughts/notes/2026-08-28_quattro-gate-removed.md).
 
 npm pack --pack-destination "$output_root" >/dev/null
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
