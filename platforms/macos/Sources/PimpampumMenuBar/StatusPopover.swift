@@ -48,6 +48,8 @@ struct StatusPopover: View {
   @State private var isCompletedExpanded = false
   @State private var isCancelledExpanded = false
   @State private var isCompletedSpecsExpanded = false
+  @State private var isInProgressSpecsExpanded = true
+  @State private var isProjectsExpanded = true
   @State private var isHelpPresented = false
   @State private var revealError: String?
 
@@ -287,71 +289,79 @@ struct StatusPopover: View {
   }
 
   private func projectsSection(overview: Overview) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      sectionTitle("Projects")
+    DisclosureGroup(isExpanded: $isProjectsExpanded) {
+      VStack(alignment: .leading, spacing: 8) {
+        if store.incompleteProjects.isEmpty, store.completedProjects.isEmpty,
+          store.cancelledProjects.isEmpty
+        {
+          Text("No projects yet")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        } else {
+          ForEach(store.incompleteProjects) { project in
+            projectButton(project)
+          }
 
-      if store.incompleteProjects.isEmpty, store.completedProjects.isEmpty,
-        store.cancelledProjects.isEmpty
-      {
-        Text("No projects yet")
-          .font(.subheadline)
-          .foregroundStyle(.secondary)
-      } else {
-        ForEach(store.incompleteProjects) { project in
-          projectButton(project)
+          if !store.completedProjects.isEmpty {
+            DisclosureGroup(isExpanded: $isCompletedExpanded) {
+              VStack(alignment: .leading, spacing: 8) {
+                ForEach(store.completedProjects) { project in
+                  projectButton(project)
+                }
+              }
+              .padding(.top, 8)
+            } label: {
+              Text("Completed (\(store.completedProjects.count))")
+                .font(.subheadline.weight(.semibold))
+            }
+            .accessibilityHint("Collapsed by default. Expand to show completed projects.")
+          }
+
+          if !store.cancelledProjects.isEmpty {
+            DisclosureGroup(isExpanded: $isCancelledExpanded) {
+              VStack(alignment: .leading, spacing: 8) {
+                ForEach(store.cancelledProjects) { project in
+                  projectButton(project)
+                }
+              }
+              .padding(.top, 8)
+            } label: {
+              Text("Cancelled (\(store.cancelledProjects.count))")
+                .font(.subheadline.weight(.semibold))
+            }
+            .accessibilityHint("Collapsed by default. Expand to show cancelled projects.")
+          }
         }
 
-        if !store.completedProjects.isEmpty {
-          DisclosureGroup(isExpanded: $isCompletedExpanded) {
-            VStack(alignment: .leading, spacing: 8) {
-              ForEach(store.completedProjects) { project in
-                projectButton(project)
-              }
-            }
-            .padding(.top, 8)
-          } label: {
-            Text("Completed (\(store.completedProjects.count))")
-              .font(.subheadline.weight(.semibold))
-          }
-          .accessibilityHint("Collapsed by default. Expand to show completed projects.")
-        }
-
-        if !store.cancelledProjects.isEmpty {
-          DisclosureGroup(isExpanded: $isCancelledExpanded) {
-            VStack(alignment: .leading, spacing: 8) {
-              ForEach(store.cancelledProjects) { project in
-                projectButton(project)
-              }
-            }
-            .padding(.top, 8)
-          } label: {
-            Text("Cancelled (\(store.cancelledProjects.count))")
-              .font(.subheadline.weight(.semibold))
-          }
-          .accessibilityHint("Collapsed by default. Expand to show cancelled projects.")
+        if overview.projectsTruncated {
+          truncationNotice("The project list is truncated. Counts still include every project.")
         }
       }
-
-      if overview.projectsTruncated {
-        truncationNotice("The project list is truncated. Counts still include every project.")
-      }
+      .padding(.top, 8)
+    } label: {
+      sectionTitle("Projects (\(overview.counts.projects))")
     }
+    .accessibilityHint("Expanded by default. Collapse to hide projects.")
   }
 
   @ViewBuilder
   private func specsInProgressSection(overview: Overview) -> some View {
     if !store.inProgressSpecs.isEmpty || overview.specsTruncated {
-      VStack(alignment: .leading, spacing: 8) {
+      DisclosureGroup(isExpanded: $isInProgressSpecsExpanded) {
+        VStack(alignment: .leading, spacing: 8) {
+          ForEach(store.inProgressSpecs) { spec in
+            specButton(spec)
+          }
+
+          if overview.specsTruncated {
+            truncationNotice("The spec list is truncated. Counts still include every spec.")
+          }
+        }
+        .padding(.top, 8)
+      } label: {
         sectionTitle("Specs in progress (\(store.inProgressSpecs.count))")
-
-        ForEach(store.inProgressSpecs) { spec in
-          specButton(spec)
-        }
-
-        if overview.specsTruncated {
-          truncationNotice("The spec list is truncated. Counts still include every spec.")
-        }
       }
+      .accessibilityHint("Expanded by default. Collapse to hide Specs in progress.")
     }
   }
 

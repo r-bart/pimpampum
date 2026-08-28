@@ -247,15 +247,24 @@ struct StatusPopoverTests {
   }
 
   @Test
-  func populatedOverviewWithSpecsRemainsScrollableInsideTheApprovedBounds() async {
+  func longExpandedSpecAndProjectListsRemainScrollableInsideTheApprovedBounds() async {
     let now = Date(timeIntervalSince1970: 120)
-    let specs = [
-      testSpec(id: "widget-v1", lifecycleState: .ready, updatedAt: now),
-      testSpec(id: "sync", lifecycleState: .ready, updatedAt: now.addingTimeInterval(-1)),
-      testSpec(id: "onboarding", lifecycleState: .done, updatedAt: now.addingTimeInterval(-2)),
-    ]
+    let specs = (0..<20).map { index in
+      testSpec(
+        id: "spec-\(index)", lifecycleState: .ready,
+        updatedAt: now.addingTimeInterval(TimeInterval(-index))
+      )
+    }
+    let projects = (0..<20).map { index in
+      testProject(
+        id: "project-\(index)", status: .available,
+        updatedAt: now.addingTimeInterval(TimeInterval(-index))
+      )
+    }
     let store = OverviewStore(
-      reader: StaticOverviewReader(overview: testOverview(specs: specs, generatedAt: now))
+      reader: StaticOverviewReader(
+        overview: testOverview(projects: projects, specs: specs, generatedAt: now)
+      )
     )
     await store.refresh()
     let view = NSHostingView(rootView: StatusPopover(store: store))
@@ -263,8 +272,8 @@ struct StatusPopoverTests {
     view.layoutSubtreeIfNeeded()
 
     #expect(view.fittingSize.width == StatusPopover.containerWidth)
-    #expect(view.fittingSize.height > 250)
-    #expect(view.fittingSize.height < 700)
+    #expect(view.fittingSize.height > StatusPopover.bodyMaximumHeight)
+    #expect(view.fittingSize.height < StatusPopover.bodyMaximumHeight + 160)
   }
 
   @Test
