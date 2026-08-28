@@ -906,6 +906,72 @@ describe('macOS menu app service integration', () => {
     }
   });
 
+  it('quits the installed menu app as the last step of deactivation', async () => {
+    for (const pkillExit of [0, 1] as const) {
+      const root = fixture(`quit-menu-app-${pkillExit}`);
+      const calls: Array<[string, string[]]> = [];
+      const runCommand: RunCommand = async (executable, arguments_) => {
+        calls.push([executable, arguments_]);
+        if (arguments_.includes('--unregister-login-item')) {
+          writeFileSync(
+            join(root.data, 'login-unregistration-acknowledgement.json'),
+            JSON.stringify({
+              createdAt: '2026-08-26T20:00:00Z',
+              previousStatus: 'error',
+              status: 'disabled',
+            }),
+          );
+          return success();
+        }
+        if (executable === '/usr/bin/pkill') return { exitCode: pkillExit, stdout: '', stderr: '' };
+        return success();
+      };
+      const adapter = testDesktopAdapter(root);
+      const context = adapterContext(root, runCommand);
+      await expect(
+        adapter.deactivate!(context, adapter.artifacts(context)),
+      ).resolves.toBeUndefined();
+      const pkill = calls.at(-1);
+      expect(pkill?.[0]).toBe('/usr/bin/pkill');
+      expect(pkill?.[1]).toEqual([
+        '-TERM',
+        '-f',
+        join(root.home, 'Applications', 'PimpampumMenuBar.app', 'Contents/MacOS/PimpampumMenuBar'),
+      ]);
+    }
+  });
+
+  it('reports a pkill failure other than "no process" when quitting the menu app', async () => {
+    const root = fixture('quit-menu-app-failure');
+    const runCommand: RunCommand = async (executable, arguments_) => {
+      if (arguments_.includes('--unregister-login-item')) {
+        writeFileSync(
+          join(root.data, 'login-unregistration-acknowledgement.json'),
+          JSON.stringify({
+            createdAt: '2026-08-26T20:00:00Z',
+            previousStatus: 'enabled',
+            status: 'disabled',
+          }),
+        );
+        return success();
+      }
+      if (executable === '/usr/bin/pkill') return { exitCode: 3, stdout: '', stderr: '' };
+      return success();
+    };
+    const adapter = testDesktopAdapter(root);
+    const context = adapterContext(root, runCommand);
+    await expect(adapter.deactivate!(context, adapter.artifacts(context))).rejects.toThrow(
+      'Unable to stop the macOS menu app (3)',
+    );
+    expect(() =>
+      createMacOSDesktopAdapter({
+        appBundlePath: root.sourceApp,
+        daemonAdapter: createLaunchdAdapter({ guiDomain: 'gui/501' }),
+        pkillPath: 'pkill',
+      }),
+    ).toThrow('pkill path must be absolute');
+  });
+
   it('replaces prior unregistration acknowledgement and guards cleanup targets', async () => {
     const root = fixture('unregister-prior');
     const acknowledgementPath = join(root.data, 'login-unregistration-acknowledgement.json');
