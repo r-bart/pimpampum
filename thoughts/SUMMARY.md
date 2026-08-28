@@ -1,6 +1,6 @@
 # Session Summary
 
-**Date**: 2026-08-28 10:42
+**Date**: 2026-08-28 10:52
 **Feature**: macOS named Spec progress parity
 **Type**: Bug Fix / UI Refinement
 **Branch**: `develop`
@@ -13,6 +13,7 @@
 - Added a collapsed “Completed specs” disclosure and kept project/Spec rows able to reveal their workspace.
 - Removed decorative icons from Active work, Spec, and Project rows after live visual review.
 - Made the in-progress Spec and Project sections collapsible, open by default, while retaining the bounded vertical scroll.
+- Replaced unreliable native disclosure labels with full-width buttons whose text, empty space, and chevron all toggle the section.
 - Exercised 20 Specs plus 20 projects in the native layout test to prove long expanded lists stay within the popover height.
 - Extended Swift unit, presentation, contract, accessibility, and smoke coverage for named Spec progress.
 - Extended the reversible macOS live-smoke assertions and approved the rebuilt arm64 app artifact.
@@ -48,8 +49,9 @@ Omarchy already displayed standalone Spec names and progress, but the native mac
 
 - TypeScript typecheck, lint, Prettier, 415 unit/acceptance tests, and 6 E2E tests passed.
 - 103 Swift tests passed with 100% core region/function/line coverage.
+- The native accessibility smoke successfully pressed `Specs in progress (9)` as a button.
 - Frozen desktop contract passed.
-- Approved packaged app hash: `eb1aae7b35e51c587fb7f7f9447d77e2f7e32eec23aca36cd5246ac6016cff9d`.
+- Approved packaged app hash: `3eed23d206a75950146db6dc365364f2eaaced4e24e8fa94824aadb94849a8d8`.
 
 ## Next Steps
 

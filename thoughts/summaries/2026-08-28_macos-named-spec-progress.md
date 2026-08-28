@@ -23,6 +23,7 @@
 - Kept Spec and Project rows clickable so Finder can reveal the registered workspace.
 - Removed decorative icons from Active work, Spec, and Project rows after visual review.
 - Made in-progress Specs and Projects collapsible and open by default; Active work remains permanently visible.
+- Replaced the unreliable `DisclosureGroup` hit target with full-width section buttons and explicit expanded/collapsed accessibility state.
 - Kept the entire content area inside the existing 480px scroll boundary.
 - Kept global app controls and branding unchanged.
 
@@ -33,6 +34,7 @@
 - Built and approved the packaged arm64 app.
 - Created a disposable live portfolio on port 7449 showing “Menu bar parity” and “Named Spec progress on macOS” at 1/3 tasks with one active claim.
 - Rendered 20 ready Specs and 20 projects in the native layout test to verify the expanded lists remain scrollable and bounded.
+- Used the packaged native smoke harness to locate and press the `Specs in progress (9)` accessibility button successfully.
 
 ## Why
 
@@ -47,6 +49,7 @@ The TypeScript overview API and Omarchy widget already exposed standalone Spec p
 | Display `completed/total` plus active claims | Provides durable progress even when no task is claimed        | Show only Active work claims                                       |
 | Remove row icons                             | Text already conveys state; icons added visual noise          | Keep colored project/Spec status glyphs                            |
 | Collapse long resource sections              | Users can reduce density without hiding urgent Active work    | Make every section, including Active work, collapsible             |
+| Use full-width section buttons               | Makes the whole header reliably clickable on macOS            | Keep the native `DisclosureGroup` label hit target                 |
 | Keep lease countdown                         | It accurately communicates claim availability                 | Present it as an ETA or remove claim expiry information            |
 | Use a disposable data directory              | Makes the demo reversible and protects real local data        | Seed `~/.pimpampum` directly                                       |
 
