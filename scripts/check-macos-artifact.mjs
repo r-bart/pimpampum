@@ -2,9 +2,11 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { macosSourceHash, sourcePaths } from './macosSourceHash.mjs';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const appRoot = resolve(process.argv[2] ?? 'platforms/macos/dist/PimpampumMenuBar.app');
@@ -17,13 +19,6 @@ const sourceCompactMark = join(repositoryRoot, 'platforms/macos/Resources/Pimpam
 const packagedCompactMark = join(appRoot, 'Contents/Resources/PimpampumCompact.pdf');
 const packagedIcon = join(appRoot, 'Contents/Resources/Pimpampum.icns');
 const packagedAssetCatalog = join(appRoot, 'Contents/Resources/Assets.car');
-const sourcePaths = [
-  'platforms/macos/Package.swift',
-  'platforms/macos/Sources',
-  'platforms/macos/Resources',
-  'branding/app-icon',
-  'scripts/build-macos-app.sh',
-];
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -31,28 +26,6 @@ function invariant(condition, message) {
 
 function sha256(content) {
   return createHash('sha256').update(content).digest('hex');
-}
-
-function macosSourceHash() {
-  const roots = sourcePaths.map((path) => join(repositoryRoot, path));
-  const files = [];
-  const visit = (path) => {
-    const metadata = lstatSync(path);
-    invariant(!metadata.isSymbolicLink(), `macOS build input must not be a symlink: ${path}`);
-    if (metadata.isDirectory()) {
-      for (const entry of readdirSync(path).sort()) visit(join(path, entry));
-    } else if (metadata.isFile()) files.push(path);
-    else invariant(false, `macOS build input must be a regular file: ${path}`);
-  };
-  for (const root of roots) visit(root);
-  const hash = createHash('sha256');
-  for (const path of files.sort()) {
-    hash.update(relative(repositoryRoot, path));
-    hash.update('\0');
-    hash.update(readFileSync(path));
-    hash.update('\0');
-  }
-  return hash.digest('hex');
 }
 
 function packedVersion(value) {
@@ -257,7 +230,7 @@ invariant(
 );
 const metadata = {
   schemaVersion: 2,
-  sourceInputSha256: macosSourceHash(),
+  sourceInputSha256: macosSourceHash(repositoryRoot),
   binarySha256: sha256(binary),
   plistSha256: sha256(plistBytes),
   compactMarkSha256: sha256(packagedCompactMarkBytes),
