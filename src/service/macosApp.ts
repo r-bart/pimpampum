@@ -38,6 +38,7 @@ export interface MacOSDesktopAdapterOptions {
   appBundlePath: string;
   daemonAdapter: PlatformServiceAdapter;
   openPath?: string;
+  pkillPath?: string;
   now?: () => Date;
   sleep?: (milliseconds: number) => Promise<void>;
   acknowledgementPolls?: number;
@@ -264,6 +265,9 @@ export function createMacOSDesktopAdapter(
   const openPath = options.openPath ?? '/usr/bin/open';
   if (!isAbsolute(openPath) || openPath.includes('\0'))
     throw new Error('open path must be absolute');
+  const pkillPath = options.pkillPath ?? '/usr/bin/pkill';
+  if (!isAbsolute(pkillPath) || pkillPath.includes('\0'))
+    throw new Error('pkill path must be absolute');
   const now = options.now ?? (() => new Date());
   const sleep =
     options.sleep ??
@@ -404,6 +408,19 @@ export function createMacOSDesktopAdapter(
       const previousStatus = await unregisterLoginItem(context, openPath, installedApp, now);
       if (pendingLoginRollbackState) pendingLoginRollbackState.previousStatus = previousStatus;
       await options.daemonAdapter.deactivate(context, artifacts);
+      // Quit the menu app this installation launched. The Swift side only terminates running
+      // instances after a successful SMAppService unregistration, which never happens when the
+      // registration was rejected (hosted CI, or a Login Items policy), so uninstall must do it.
+      // Last step on purpose: a failure before this point rolls back with the app still open.
+      const stopped = await context.runCommand(pkillPath, [
+        '-TERM',
+        '-f',
+        join(installedApp, APP_EXECUTABLE),
+      ]);
+      // pkill: 0 = signalled, 1 = no matching process.
+      if (stopped.exitCode !== 0 && stopped.exitCode !== 1) {
+        throw new Error(`Unable to stop the macOS menu app (${stopped.exitCode})`);
+      }
     },
     async prepareDeactivationRollback(context, artifacts) {
       const daemonRollback = await options.daemonAdapter.prepareDeactivationRollback?.(

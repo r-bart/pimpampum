@@ -22,6 +22,19 @@ a retry for exactly this state. The install now completes, records `error`, and 
 The macOS evidence checker accepts `error` as a recorded outcome so that the release smoke can
 run unattended; real-machine evidence continues to record `enabled` or `requiresApproval`.
 
+## Second consequence: uninstall left the menu app running
+
+With the install tolerating `error`, the smoke reached its final check and reported, after a
+30-second wait, that the app process was still alive. The Swift side quits the running menu app
+inside `MainAppLoginItemService.unregister()`, only after a successful `SMAppService.unregister()`,
+and `LoginItemManager` skips that call entirely when the previous state was `error`. Quitting the
+app was therefore a side effect of a Login Items transition, not part of uninstalling.
+
+`deactivate` in `macosApp.ts` now quits any running instance of the installed bundle as its last
+step, with `pkill -TERM -f <installed executable path>`, independent of the Login Items state. It
+runs after the daemon is deactivated on purpose: a failure before that point rolls back with the
+app still open, and the rollback's re-registration reopens it anyway.
+
 ## Follow-up
 
 The registration acknowledgement should carry the failure description so a rejected registration
