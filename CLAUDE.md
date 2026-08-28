@@ -78,6 +78,8 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER start a portable export while claims are active; it is a synchronous maintenance operation.
 - ALWAYS validate bearer tokens as printable non-space ASCII before constructing HTTP headers.
 - ALWAYS isolate Git-driven evals: strip inherited `GIT_*`, disable system config/attributes, and use temporary empty global config and template paths.
+- NEVER hash build inputs by walking the filesystem; enumerate them with `git ls-files --cached` so ignored files like `.DS_Store` cannot change artifact identity.
+- NEVER put a state in a live review matrix that a healthy installation cannot show; keep it in automated tests and record the exclusion explicitly.
 
 ## Self-Improvement
 

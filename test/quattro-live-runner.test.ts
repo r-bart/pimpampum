@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  cpSync,
   chmodSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -356,6 +356,47 @@ afterEach(() => {
 });
 
 describe('Quattro live runner hardening', () => {
+  it('reports a signal that lands on a prompt as the interruption, not as an AbortError', async () => {
+    const harness = createHarness();
+    harness.dependencies.prepareScreenshot = vi.fn(async () => {
+      await harness.signalHandler?.('SIGINT');
+      const abort = new Error('Aborted with Ctrl+C');
+      abort.name = 'AbortError';
+      throw abort;
+    });
+    await expect(runHarness(harness)).rejects.toThrow('interrupted by SIGINT');
+    const diagnostics = readdirSync(harness.evidenceRoot).filter((name) =>
+      name.startsWith('.quattro-live-failure-'),
+    );
+    expect(diagnostics).toHaveLength(1);
+    const diagnostic = JSON.parse(
+      readFileSync(join(harness.evidenceRoot, diagnostics[0] as string), 'utf8'),
+    ) as { errors: string[] };
+    expect(diagnostic.errors.join('\n')).toContain('interrupted by SIGINT');
+    expect(diagnostic.errors.join('\n')).not.toContain('AbortError');
+    const execute = (harness.dependencies as { execute: ReturnType<typeof vi.fn> }).execute;
+    expect(
+      execute.mock.calls.filter((call) => (call[0] as ExecuteInput).label === 'uninstall'),
+    ).toHaveLength(1);
+  });
+
+  it('asks the reviewer only for states a healthy installation can show', async () => {
+    const module = (await import(
+      `${pathToFileURL(join(process.cwd(), 'scripts/test-omarchy-live.mjs')).href}?matrix=${Date.now()}-${Math.random()}`
+    )) as { TASK_3_3_REVIEW_MATRIX: readonly string[]; TASK_3_3_AUTOMATED_ONLY: readonly string[] };
+    const live = module.TASK_3_3_REVIEW_MATRIX.join(' ');
+    const automated = module.TASK_3_3_AUTOMATED_ONLY.join(' ');
+    // The daemon pins overview schemaVersion 2, and importing/exporting are transient.
+    for (const state of ['incompatible', 'importing', 'exporting']) {
+      expect(live).not.toMatch(new RegExp(`\\b${state}\\b`, 'u'));
+      expect(automated).toMatch(new RegExp(`\\b${state}\\b`, 'u'));
+    }
+    // Everything the reviewer is asked for remains reachable through the public CLI or Omarchy UI.
+    for (const state of ['credentials', 'offline', 'stale', 'unavailable', 'conflicted', '99+']) {
+      expect(live).toContain(state);
+    }
+  });
+
   it('uses the documented Omarchy screenshot command and controlled output directory', () => {
     const source = readFileSync(join(process.cwd(), 'scripts/test-omarchy-live.mjs'), 'utf8');
     expect(source).toContain('OMARCHY_SCREENSHOT_DIR: screenshotRoot');
