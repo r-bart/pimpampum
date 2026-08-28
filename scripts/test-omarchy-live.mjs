@@ -542,9 +542,16 @@ export default function createLiveRunner(dependencies) {
         if (online.running !== true) throw new Error('Installed Pimpampum daemon is not running');
         const specBodyPath = resolve(dirname(activeCliPath), '..', 'README.md');
 
-        await cli('seed-workspace', ['workspace:add', 'live', 'Live', workspace]);
+        await cli('seed-workspace', ['workspace:add', 'live', 'Pimpampum', workspace]);
         const activeProject = parseObject(
-          (await cli('seed-project', ['project:create', 'live', 'active', 'Active'])).stdout,
+          (
+            await cli('seed-project', [
+              'project:create',
+              'live',
+              'omarchy-plugin',
+              'Omarchy plugin',
+            ])
+          ).stdout,
           'active project creation',
         );
         const activeSpec = parseObject(
@@ -552,8 +559,8 @@ export default function createLiveRunner(dependencies) {
             await cli('seed-active-spec', [
               'spec:create',
               String(activeProject.id),
-              'active-spec',
-              'Active Spec',
+              'widget-v1',
+              'Widget V1',
               specBodyPath,
             ])
           ).stdout,
@@ -580,7 +587,8 @@ export default function createLiveRunner(dependencies) {
           'active project open',
         );
         const task = parseObject(
-          (await cli('seed-task', ['task:create', String(activeSpec.id), 'Live task'])).stdout,
+          (await cli('seed-task', ['task:create', String(activeSpec.id), 'Polish widget design']))
+            .stdout,
           'task creation',
         );
         await cli('seed-claim', ['work:start', 'task', String(task.id), 'live-agent']);
@@ -1162,6 +1170,29 @@ fi
 
 exec ${quote(process.execPath)} ${quote(cliPath)} sync "$1" --json
 `;
+      const serviceHelper = `#!/bin/bash
+set -euo pipefail
+
+case \${1:-} in
+  status)
+    [[ $# -eq 1 ]] || exit 64
+    ;;
+  start|stop|restart)
+    [[ $# -eq 1 ]] || exit 64
+    /usr/bin/systemctl --user "$1" pimpampum.service >/dev/null
+    ;;
+  *)
+    printf '%s\\n' 'pimpampum-service: expected status, start, stop, or restart' >&2
+    exit 64
+    ;;
+esac
+
+if /usr/bin/systemctl --user is-active --quiet pimpampum.service; then
+  printf '%s\\n' '{"running":true}'
+else
+  printf '%s\\n' '{"running":false}'
+fi
+`;
       const expected = [];
       const visit = (directory) => {
         for (const name of readdirSync(directory).sort()) {
@@ -1181,13 +1212,16 @@ exec ${quote(process.execPath)} ${quote(cliPath)} sync "$1" --json
                     ? Buffer.from(backupHelper)
                     : child === 'pimpampum-sync'
                       ? Buffer.from(syncHelper)
-                      : readFileSync(source),
+                      : child === 'pimpampum-service'
+                        ? Buffer.from(serviceHelper)
+                        : readFileSync(source),
               mode: [
                 'install.sh',
                 'uninstall.sh',
                 'pimpampum-backup',
                 'pimpampum-folder-picker',
                 'pimpampum-overview',
+                'pimpampum-service',
                 'pimpampum-sync',
               ].includes(child)
                 ? 0o755

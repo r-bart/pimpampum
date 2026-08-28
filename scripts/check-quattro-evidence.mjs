@@ -657,10 +657,10 @@ const workspacePath = seedWorkspace.arguments[4];
 if (!isAbsolute(workspacePath)) fail('seed-workspace path must be absolute');
 argumentsEqual(
   seedWorkspace,
-  [cliPath, 'workspace:add', 'live', 'Live', workspacePath],
+  [cliPath, 'workspace:add', 'live', 'Pimpampum', workspacePath],
   'seed-workspace',
 );
-cli('seed-project', ['project:create', 'live', 'active', 'Active']);
+cli('seed-project', ['project:create', 'live', 'omarchy-plugin', 'Omarchy plugin']);
 const activeProject = object(
   outputJson(commands['seed-project'], 'seed-project'),
   'seed-project.stdout',
@@ -668,13 +668,7 @@ const activeProject = object(
 const activeProjectId = scalar(activeProject.id, 'seed-project.stdout.id');
 const activeRevision = scalar(activeProject.revision, 'seed-project.stdout.revision');
 const specBodyPath = resolve(dirname(cliPath), '..', 'README.md');
-cli('seed-active-spec', [
-  'spec:create',
-  activeProjectId,
-  'active-spec',
-  'Active Spec',
-  specBodyPath,
-]);
+cli('seed-active-spec', ['spec:create', activeProjectId, 'widget-v1', 'Widget V1', specBodyPath]);
 const activeSpec = object(
   outputJson(commands['seed-active-spec'], 'seed-active-spec'),
   'seed-active-spec.stdout',
@@ -683,7 +677,7 @@ const activeSpecId = scalar(activeSpec.id, 'seed-active-spec.stdout.id');
 const activeSpecRevision = scalar(activeSpec.revision, 'seed-active-spec.stdout.revision');
 cli('ready-active-spec', ['spec:ready', activeSpecId, activeSpecRevision]);
 cli('open-active-project', ['project:open', activeProjectId, activeRevision]);
-cli('seed-task', ['task:create', activeSpecId, 'Live task']);
+cli('seed-task', ['task:create', activeSpecId, 'Polish widget design']);
 const taskOutput = commands['seed-task'].stdout.trim();
 const taskId =
   taskOutput === ''

@@ -55,6 +55,8 @@ describe('Automatic service and desktop status integrations', () => {
           },
           projects: [],
           projectsTruncated: false,
+          specs: [],
+          specsTruncated: false,
           activeWork: [],
           activeWorkTruncated: false,
         });

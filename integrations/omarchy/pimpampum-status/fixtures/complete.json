@@ -44,6 +44,28 @@
       }
     ],
     "projectsTruncated": false,
+    "specs": [
+      {
+        "id": "complete-spec",
+        "projectId": "complete-project",
+        "projectTitle": "Completed project",
+        "projectLifecycleState": "done",
+        "workspace": {
+          "id": "finished",
+          "name": "Finished",
+          "rootPath": "/Users/example/Finished"
+        },
+        "slug": "shipped-v1",
+        "title": "Ship V1",
+        "lifecycleState": "done",
+        "taskCount": 1,
+        "openTaskCount": 0,
+        "completedTaskCount": 1,
+        "activeClaimCount": 0,
+        "updatedAt": "2026-08-26T19:00:00.000Z"
+      }
+    ],
+    "specsTruncated": false,
     "activeWork": [],
     "activeWorkTruncated": false
   }

@@ -43,6 +43,13 @@ Item {
   readonly property string fontFamily: bar ? bar.fontFamily : "monospace"
   readonly property var projects: service.overview ? service.overview.projects : []
   readonly property var activeWork: service.overview ? service.overview.activeWork : []
+  readonly property var specs: service.overview ? service.overview.specs : []
+  readonly property var inProgressSpecs: specs.filter(function(spec) {
+    return spec.lifecycleState === "ready" && spec.projectLifecycleState === "open"
+  })
+  readonly property var completedSpecs: specs.filter(function(spec) {
+    return spec.lifecycleState === "done"
+  })
   readonly property var incompleteProjects: projects.filter(function(project) {
     return project.lifecycleState !== "done" && project.lifecycleState !== "cancelled"
   })
@@ -206,6 +213,11 @@ Item {
     scroller.contentY = 0
   }
 
+  function openHelp() {
+    showSettings(true)
+    showHelp(true)
+  }
+
   function toggle() {
     if (opened) close()
     else open()
@@ -265,11 +277,14 @@ Item {
     // bar.releasePopout(owner), avoiding competing popup windows.
     open: root.opened
     contentWidth: fittedContentWidth(Style.space(380))
-    contentHeight: fittedContentHeight(Math.min(content.implicitHeight, Style.space(520)))
+    contentHeight: fittedContentHeight(Math.min(content.implicitHeight + Style.space(55), Style.space(520)))
 
     Flickable {
       id: scroller
-      anchors.fill: parent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.bottom: footerSeparator.top
       contentWidth: width
       contentHeight: content.implicitHeight
       clip: true
@@ -307,7 +322,7 @@ Item {
             id: headerCopy
             anchors.left: headerMark.right
             anchors.leftMargin: Style.space(10)
-            anchors.right: helpAction.visible ? helpAction.left : headerAction.left
+            anchors.right: headerAction.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(1)
@@ -321,48 +336,13 @@ Item {
             }
 
             Text {
-              text: root.helpView ? "Synchronization and backup explained"
+              text: root.helpView ? "Portfolio, synchronization, and backup"
                 : root.settingsView ? "Synchronization and backup"
                 : root.service.stale ? "Stale" : root.service.connectionState
               color: root.service.connectionState === "online" ? root.foreground : root.urgent
               opacity: root.service.connectionState === "online" ? 0.72 : 1
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
-            }
-          }
-
-          Item {
-            id: helpAction
-            visible: root.settingsView && !root.helpView
-            anchors.right: headerAction.left
-            anchors.rightMargin: Style.space(4)
-            anchors.verticalCenter: parent.verticalCenter
-            width: visible ? Style.space(44) : 0
-            height: Style.space(44)
-
-            Rectangle {
-              anchors.fill: parent
-              radius: Style.space(4)
-              color: root.foreground
-              opacity: helpActionArea.activeFocus ? 0.13
-                : helpActionArea.containsMouse ? 0.07 : 0
-              border.width: helpActionArea.activeFocus ? 1 : 0
-              border.color: root.foreground
-            }
-            Text {
-              anchors.centerIn: parent
-              text: "?"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-              font.bold: true
-            }
-            PimpampumActionArea {
-              id: helpActionArea
-              anchors.fill: parent
-              focusOnTab: parent.visible
-              Accessible.name: "Open synchronization and backup help"
-              onTriggered: root.showHelp(true)
             }
           }
 
@@ -392,10 +372,10 @@ Item {
             PimpampumActionArea {
               id: headerActionArea
               anchors.fill: parent
-              Accessible.name: root.helpView ? "Back to settings"
+              Accessible.name: root.helpView ? "Back to portfolio"
                 : root.settingsView ? "Back to portfolio" : "Open settings"
               onTriggered: {
-                if (root.helpView) root.showHelp(false)
+                if (root.helpView) root.showSettings(false)
                 else root.showSettings(!root.settingsView)
               }
             }
@@ -492,6 +472,79 @@ Item {
         }
 
         Text {
+          visible: !root.settingsView && root.inProgressSpecs.length > 0
+          text: "Specs in progress (" + root.inProgressSpecs.length + ")"
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          font.bold: true
+        }
+
+        Repeater {
+          model: root.settingsView ? [] : root.inProgressSpecs
+
+          delegate: Item {
+            required property var modelData
+            width: content.width
+            height: inProgressSpecText.implicitHeight + Style.space(10)
+
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.space(4)
+              color: root.foreground
+              opacity: inProgressSpecAction.activeFocus ? 0.13
+                : inProgressSpecAction.containsMouse ? 0.07 : 0
+              border.width: inProgressSpecAction.activeFocus ? 1 : 0
+              border.color: root.foreground
+            }
+
+            Column {
+              id: inProgressSpecText
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(1)
+
+              Text {
+                width: parent.width
+                elide: Text.ElideRight
+                text: modelData.title
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              Text {
+                width: parent.width
+                elide: Text.ElideRight
+                text: modelData.projectTitle + " · " + modelData.completedTaskCount
+                  + "/" + modelData.taskCount + " tasks"
+                  + (modelData.activeClaimCount > 0 ? " · active" : "")
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            PimpampumActionArea {
+              id: inProgressSpecAction
+              anchors.fill: parent
+              Accessible.name: "Open " + modelData.title + " from " + modelData.projectTitle
+              onTriggered: root.openWorkspace(modelData.workspace.rootPath)
+            }
+          }
+        }
+
+        Text {
+          visible: !root.settingsView && root.service.overview && root.service.overview.specsTruncated
+          text: "Spec list truncated"
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Text {
           visible: !root.settingsView && root.incompleteProjects.length > 0
           text: "Projects (" + root.incompleteProjects.length + ")"
           color: root.foreground
@@ -567,7 +620,7 @@ Item {
         }
 
         Item {
-          visible: !root.settingsView && root.completedProjects.length > 0
+          visible: !root.settingsView && root.completedSpecs.length > 0
           width: parent.width
           height: completedTitle.implicitHeight + Style.space(8)
 
@@ -585,7 +638,7 @@ Item {
             id: completedTitle
             anchors.verticalCenter: parent.verticalCenter
             text: (root.completedExpanded ? "▾ " : "▸ ")
-              + "Completed (" + root.completedProjects.length + ")"
+              + "Completed specs (" + root.completedSpecs.length + ")"
             color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -603,7 +656,7 @@ Item {
         }
 
         Repeater {
-          model: !root.settingsView && root.completedExpanded ? root.completedProjects : []
+          model: !root.settingsView && root.completedExpanded ? root.completedSpecs : []
 
           delegate: Item {
             required property var modelData
@@ -625,7 +678,7 @@ Item {
               anchors.verticalCenter: parent.verticalCenter
               width: parent.width
               elide: Text.ElideRight
-              text: modelData.title + " · " + modelData.workspace.name + " / " + modelData.slug
+              text: modelData.title + " · " + modelData.projectTitle
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -634,7 +687,7 @@ Item {
             PimpampumActionArea {
               id: completedRowAction
               anchors.fill: parent
-              Accessible.name: "Open " + modelData.title + " in " + modelData.workspace.name
+              Accessible.name: "Open " + modelData.title + " from " + modelData.projectTitle
               onTriggered: root.openWorkspace(modelData.workspace.rootPath)
             }
           }
@@ -943,39 +996,6 @@ Item {
                     : root.confirmingSyncForget ? "confirm-forget"
                     : root.syncService.enabled ? "now" : "choose")
                 }
-              }
-            }
-          }
-
-          Rectangle {
-            width: parent.width
-            height: helpProduct.implicitHeight + Style.space(28)
-            radius: Style.space(6)
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
-            border.width: 1
-            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-            Column {
-              id: helpProduct
-              anchors.left: parent.left
-              anchors.right: parent.right
-              anchors.top: parent.top
-              anchors.margins: Style.space(14)
-              spacing: Style.space(6)
-              Text {
-                text: "How Pimpampum works"
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-                font.bold: true
-              }
-              Text {
-                width: parent.width
-                wrapMode: Text.Wrap
-                text: "Pimpampum is a local, agent-first project manager. Projects contain Specs and tasks; agents work through MCP, the CLI, or the local API. Claimed work appears under Active work, and selecting a project opens its local workspace."
-                color: root.foreground
-                opacity: 0.72
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
               }
             }
           }
@@ -1307,6 +1327,39 @@ Item {
 
           Rectangle {
             width: parent.width
+            height: helpProduct.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            Column {
+              id: helpProduct
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(14)
+              spacing: Style.space(6)
+              Text {
+                text: "How Pimpampum works"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Pimpampum is a local, agent-first project manager. Active work names the task being claimed now, followed by its project, Spec, agent, and remaining lease. Specs in progress remain visible even when no task is claimed and show completed versus total tasks. Completed Specs stay collapsed until you need the history. Project rows use the registered project and workspace names and open that workspace when selected."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
+          Rectangle {
+            width: parent.width
             height: helpIntro.implicitHeight + Style.space(28)
             radius: Style.space(6)
             color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
@@ -1455,6 +1508,99 @@ Item {
           }
         }
 
+      }
+    }
+
+    Rectangle {
+      id: footerSeparator
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.bottom: footer.top
+      height: 1
+      color: root.foreground
+      opacity: 0.14
+    }
+
+    Item {
+      id: footer
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      height: Style.space(44)
+
+      Item {
+        id: footerHelpAction
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        width: footerHelpLabel.implicitWidth + Style.space(20)
+        height: Style.space(44)
+
+        Rectangle {
+          anchors.fill: parent
+          radius: Style.space(4)
+          color: root.foreground
+          opacity: footerHelpActionArea.activeFocus ? 0.13
+            : footerHelpActionArea.containsMouse ? 0.07 : 0
+          border.width: footerHelpActionArea.activeFocus ? 1 : 0
+          border.color: root.foreground
+        }
+
+        Text {
+          id: footerHelpLabel
+          anchors.centerIn: parent
+          text: "Help"
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        PimpampumActionArea {
+          id: footerHelpActionArea
+          anchors.fill: parent
+          focusOnTab: parent.visible
+          Accessible.name: "Open help"
+          onTriggered: root.openHelp()
+        }
+      }
+
+      Item {
+        id: quitAction
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        width: quitLabel.implicitWidth + Style.space(20)
+        height: Style.space(44)
+
+        Rectangle {
+          anchors.fill: parent
+          radius: Style.space(4)
+          color: root.foreground
+          opacity: quitActionArea.activeFocus ? 0.13
+            : quitActionArea.containsMouse ? 0.07 : 0
+          border.width: quitActionArea.activeFocus ? 1 : 0
+          border.color: root.foreground
+        }
+
+        Text {
+          id: quitLabel
+          anchors.centerIn: parent
+          text: root.serviceControl.running ? "Quit" : "Start"
+          color: root.foreground
+          opacity: root.serviceControl.busy ? 0.5 : 1
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        PimpampumActionArea {
+          id: quitActionArea
+          anchors.fill: parent
+          enabled: !root.serviceControl.busy
+          focusOnTab: parent.visible && enabled
+          Accessible.name: root.serviceControl.running ? "Quit Pimpampum" : "Start Pimpampum"
+          onTriggered: {
+            if (root.serviceControl.running) root.serviceControl.stop()
+            else root.serviceControl.start()
+          }
+        }
       }
     }
   }

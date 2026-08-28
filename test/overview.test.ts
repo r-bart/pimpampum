@@ -80,6 +80,7 @@ describe('overview v2', () => {
         availableWork: 0,
       },
       projects: [],
+      specs: [],
       activeWork: [],
     });
   });
@@ -115,6 +116,15 @@ describe('overview v2', () => {
       availableWork: 1,
     });
     expect(overview.projects.map((item) => item.status)).toEqual(['available', 'draft']);
+    expect(overview.specs).toContainEqual(
+      expect.objectContaining({
+        id: executable.spec.id,
+        projectTitle: executable.project.title,
+        lifecycleState: 'ready',
+        taskCount: 0,
+        activeClaimCount: 0,
+      }),
+    );
 
     const bundle = store.startWork({
       targetType: 'spec',
@@ -190,6 +200,13 @@ describe('overview v2', () => {
       taskId: child.id,
       specId: executable.spec.id,
       projectId: executable.project.id,
+    });
+    expect(overview.specs[0]).toMatchObject({
+      id: executable.spec.id,
+      taskCount: 2,
+      openTaskCount: 2,
+      completedTaskCount: 0,
+      activeClaimCount: 1,
     });
   });
 

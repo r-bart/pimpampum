@@ -11,7 +11,7 @@
     "counts": {
       "workspaces": 1,
       "projects": 6,
-      "specs": 7,
+      "specs": 3,
       "draftProjects": 1,
       "openProjects": 2,
       "pausedProjects": 1,
@@ -134,6 +134,66 @@
       }
     ],
     "projectsTruncated": false,
+    "specs": [
+      {
+        "id": "spec-widget-v1",
+        "projectId": "project-active",
+        "projectTitle": "Active project",
+        "projectLifecycleState": "open",
+        "workspace": {
+          "id": "projects",
+          "name": "100 Projects",
+          "rootPath": "/Users/example/100 Projects"
+        },
+        "slug": "widget-v1",
+        "title": "Widget V1",
+        "lifecycleState": "ready",
+        "taskCount": 5,
+        "openTaskCount": 3,
+        "completedTaskCount": 2,
+        "activeClaimCount": 2,
+        "updatedAt": "2026-08-26T20:00:20.000Z"
+      },
+      {
+        "id": "spec-sync",
+        "projectId": "project-available",
+        "projectTitle": "Available project",
+        "projectLifecycleState": "open",
+        "workspace": {
+          "id": "projects",
+          "name": "100 Projects",
+          "rootPath": "/Users/example/100 Projects"
+        },
+        "slug": "sync",
+        "title": "Cross-device synchronization",
+        "lifecycleState": "ready",
+        "taskCount": 4,
+        "openTaskCount": 4,
+        "completedTaskCount": 0,
+        "activeClaimCount": 0,
+        "updatedAt": "2026-08-26T19:00:00.000Z"
+      },
+      {
+        "id": "spec-onboarding",
+        "projectId": "project-complete",
+        "projectTitle": "Completed project",
+        "projectLifecycleState": "done",
+        "workspace": {
+          "id": "projects",
+          "name": "100 Projects",
+          "rootPath": "/Users/example/100 Projects"
+        },
+        "slug": "onboarding",
+        "title": "First-run onboarding",
+        "lifecycleState": "done",
+        "taskCount": 2,
+        "openTaskCount": 0,
+        "completedTaskCount": 2,
+        "activeClaimCount": 0,
+        "updatedAt": "2026-08-25T20:00:00.000Z"
+      }
+    ],
+    "specsTruncated": false,
     "activeWork": [
       {
         "targetType": "task",

@@ -10,6 +10,7 @@ Item {
   property bool busy: false
   property string pendingOperation: ""
   property string operationError: ""
+  property string processOutput: ""
 
   function refresh() { run("status") }
   function start() { run("start") }
@@ -21,7 +22,7 @@ Item {
     operationError = ""
     pendingOperation = operation
     busy = true
-    output.text = ""
+    processOutput = ""
     serviceProcess.command = [helperPath, operation]
     serviceProcess.running = true
   }
@@ -29,7 +30,7 @@ Item {
   function accept(exitCode) {
     busy = false
     var parsed
-    try { parsed = JSON.parse(output.text.trim()) }
+    try { parsed = JSON.parse(processOutput.trim()) }
     catch (error) { operationError = "Could not read the Pimpampum service state"; return }
     if (exitCode !== 0 || !parsed || Object.keys(parsed).length !== 1
         || typeof parsed.running !== "boolean") {
@@ -45,7 +46,7 @@ Item {
   Process {
     id: serviceProcess
     command: [root.helperPath, "status"]
-    stdout: StdioCollector { id: output }
+    stdout: StdioCollector { onStreamFinished: root.processOutput = text }
     onExited: function(exitCode) { root.accept(exitCode) }
   }
 }

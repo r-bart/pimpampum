@@ -39,6 +39,7 @@ import type {
   OverviewCounts,
   OverviewProject,
   OverviewSnapshot,
+  OverviewSpec,
   Project,
   ProjectManifest,
   ProjectState,
@@ -1286,13 +1287,66 @@ export class PimpampumStore {
         agentId: r.agent_id,
         expiresAt: r.expires_at,
       }));
+      const specRows = this.database
+        .prepare(
+          `SELECT s.id,s.project_id,p.title project_title,p.state project_state,p.workspace_id,w.name workspace_name,
+                  w.root_path workspace_root_path,s.slug,s.title,s.state,s.updated_at,
+                  (SELECT COUNT(*) FROM tasks t WHERE t.spec_id=s.id) task_count,
+                  (SELECT COUNT(*) FROM tasks t WHERE t.spec_id=s.id AND t.state='open') open_task_count,
+                  (SELECT COUNT(*) FROM tasks t WHERE t.spec_id=s.id AND t.state='done') completed_task_count,
+                  (SELECT COUNT(*) FROM claims c
+                   LEFT JOIN tasks t ON c.target_type='task' AND t.id=c.target_id
+                   WHERE c.expires_at>? AND ((c.target_type='spec' AND c.target_id=s.id)
+                     OR (c.target_type='task' AND t.spec_id=s.id))) active_claim_count
+           FROM specs s
+           JOIN projects p ON p.id=s.project_id
+           JOIN workspaces w ON w.id=p.workspace_id
+           ORDER BY CASE s.state WHEN 'ready' THEN 0 WHEN 'done' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END,
+                    s.updated_at DESC,s.id
+           LIMIT 501`,
+        )
+        .all(at) as Array<
+        Pick<SpecRow, 'id' | 'project_id' | 'slug' | 'title' | 'state' | 'updated_at'> & {
+          project_title: string;
+          project_state: ProjectState;
+          workspace_id: string;
+          workspace_name: string;
+          workspace_root_path: string;
+          task_count: number;
+          open_task_count: number;
+          completed_task_count: number;
+          active_claim_count: number;
+        }
+      >;
+      const specs = specRows.map<OverviewSpec>((r) => ({
+        id: r.id,
+        projectId: r.project_id,
+        projectTitle: r.project_title,
+        projectLifecycleState: r.project_state,
+        workspace: {
+          id: r.workspace_id,
+          name: r.workspace_name,
+          rootPath: r.workspace_root_path,
+        },
+        slug: r.slug,
+        title: r.title,
+        lifecycleState: r.state,
+        taskCount: r.task_count,
+        openTaskCount: r.open_task_count,
+        completedTaskCount: r.completed_task_count,
+        activeClaimCount: r.active_claim_count,
+        updatedAt: r.updated_at,
+      }));
       const boundedProjects = boundOverview(projects, 500);
+      const boundedSpecs = boundOverview(specs, 500);
       const boundedActiveWork = boundOverview(activeWork, 500);
       return {
         status: statusForOverview(counts),
         counts,
         projects: boundedProjects.items,
         projectsTruncated: boundedProjects.truncated,
+        specs: boundedSpecs.items,
+        specsTruncated: boundedSpecs.truncated,
         activeWork: boundedActiveWork.items,
         activeWorkTruncated: boundedActiveWork.truncated,
       };

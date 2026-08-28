@@ -297,6 +297,8 @@ describe('OpenAPI v2 contract', () => {
     expect(schemas.OverviewActiveWork?.required).toEqual(
       expect.arrayContaining(['targetType', 'specId', 'specTitle', 'taskId', 'taskTitle']),
     );
+    expect(schemas.WorkItem?.required).not.toContain('projectLifecycleState');
+    expect(schemas.OverviewSpec?.required).toContain('projectLifecycleState');
 
     const overview = openApiDocument.paths['/api/v1/overview'] as {
       get: { operationId: string; responses: Record<string, unknown> };

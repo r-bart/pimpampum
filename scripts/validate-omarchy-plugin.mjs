@@ -362,7 +362,7 @@ invariant(
   statusPopout.includes('PopupCard {') &&
     statusPopout.includes('contentWidth: fittedContentWidth(Style.space(380))') &&
     statusPopout.includes(
-      'contentHeight: fittedContentHeight(Math.min(content.implicitHeight, Style.space(520)))',
+      'contentHeight: fittedContentHeight(Math.min(content.implicitHeight + Style.space(55), Style.space(520)))',
     ) &&
     statusPopout.includes('clip: true') &&
     statusPopout.includes('boundsBehavior: Flickable.StopAtBounds'),
@@ -373,8 +373,9 @@ const popoutOrder = [
   'visible: !root.settingsView && root.service.connectionState !== "online"',
   'No workspaces. Run: pimpampum workspace:add',
   'text: "Active work ("',
+  'text: "Specs in progress ("',
   'text: "Projects ("',
-  '+ "Completed ("',
+  '+ "Completed specs ("',
   '+ "Cancelled ("',
   'text: "Backup"',
 ].map((fragment) => statusPopout.indexOf(fragment));
@@ -388,9 +389,10 @@ invariant(
     statusPopout.includes('back: root.settingsView') &&
     statusPopout.includes('width: Style.space(44)') &&
     statusPopout.includes('property bool helpView: false') &&
-    statusPopout.includes('id: helpAction') &&
-    statusPopout.includes('Accessible.name: "Open synchronization and backup help"') &&
-    statusPopout.includes('Accessible.name: root.helpView ? "Back to settings"') &&
+    !statusPopout.includes('id: helpAction') &&
+    statusPopout.includes('id: footerHelpAction') &&
+    statusPopout.includes('Accessible.name: "Open help"') &&
+    statusPopout.includes('Accessible.name: root.helpView ? "Back to portfolio"') &&
     statusPopout.includes('id: helpPage') &&
     statusPopout.includes('pimpampum sync conflicts') &&
     statusPopout.includes('text: "Synchronization"') &&
@@ -398,6 +400,29 @@ invariant(
     !statusPopout.includes('syncExpanded') &&
     !statusPopout.includes('backupExpanded'),
   'synchronization and backup must live in one navigable settings view',
+);
+invariant(
+  statusPopout.includes('id: footer') &&
+    statusPopout.includes('text: root.serviceControl.running ? "Quit" : "Start"') &&
+    statusPopout.includes(
+      'Accessible.name: root.serviceControl.running ? "Quit Pimpampum" : "Start Pimpampum"',
+    ) &&
+    statusPopout.includes('id: quitAction') &&
+    statusPopout.includes('anchors.right: parent.right') &&
+    statusPopout.includes('id: footerHelpAction') &&
+    statusPopout.includes('anchors.left: parent.left') &&
+    statusPopout.includes('anchors.bottom: footerSeparator.top') &&
+    statusPopout.includes('anchors.bottom: parent.bottom') &&
+    !statusPopout.includes('id: footerSettingsAction') &&
+    statusPopout.includes('height: Style.space(44)'),
+  'popover footer must expose accessible Help and Quit/Start actions',
+);
+invariant(
+  statusPopout.includes('Active work names the task being claimed now') &&
+    statusPopout.includes('Specs in progress remain visible even when no task is claimed') &&
+    statusPopout.includes('Completed Specs stay collapsed') &&
+    statusPopout.includes('registered project and workspace names'),
+  'help must explain work names and the in-progress/completed Spec hierarchy',
 );
 invariant(
   statusPopout.includes('elide: Text.ElideRight') &&

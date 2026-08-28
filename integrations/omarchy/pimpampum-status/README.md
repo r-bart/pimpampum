@@ -2,10 +2,10 @@
 
 This native `bar-widget` gives Omarchy Quattro a compact view of the single
 Pimpampum instance running for the current user. It shows semantic
-project health, active-claim count, active work, available work, and a collapsed
-completed-project group. Selecting a project opens its registered workspace
-root with `xdg-open`. Settings contains separate Synchronization and Backup
-cards plus an internal Help page.
+project health, active-claim count, active work, specs in progress, available work, and a collapsed
+completed-spec group. Selecting a project or spec opens its registered workspace root with
+`xdg-open`. Settings contains separate Synchronization and Backup cards. Help is a dedicated page
+opened from the persistent footer.
 
 The integration targets the Quattro plugin contract pinned at Omarchy commit
 `0ae1694830b6bd9511042fe1b89a0062d8c083cb`. Waybar is not supported.
@@ -17,11 +17,13 @@ external through badge shape/accent, tooltip, popout copy, and an optional activ
 is hidden and values above 99 display as `99+`; offline and error states never replace the mark.
 
 Clicking opens one bounded 380-unit native `PopupCard`. Its Portfolio view is ordered as connection
-state, Active work, Projects, and Completed. **Settings** switches the same card to a dedicated
-second view showing Synchronization and Backup controls directly, without nested disclosures.
-Help is available from Settings and explains the product model and the difference between both
-storage features. A 44-unit vector header icon opens Settings and changes to a back arrow there,
-without opening a competing Quattro popout.
+state, Active work, Specs in progress, Projects, and collapsed Completed specs. Active work names
+the claimed task plus its project, Spec, agent, and lease; in-progress Specs remain visible without
+an active claim and show completed versus total tasks. **Settings** switches the same card to a
+dedicated second view showing Synchronization and Backup controls directly, without nested
+disclosures. The fixed footer opens Help on the left and stops or starts Pimpampum on the right. A
+44-unit vector header icon opens Settings and changes to a back arrow on internal pages, without
+opening a competing Quattro popout.
 Horizontal bars place mark and count side by side;
 vertical bars stack them. Project rows open the exact registered workspace root.
 
@@ -44,8 +46,8 @@ vertical bars stack them. Project rows open the exact registered workspace root.
   user can start it again without a terminal.
 - Workspace paths are accepted only when absolute and are passed to `xdg-open`
   as one argument. They are never evaluated as shell source.
-- The UI exposes no project, task, claim, or service mutation. Its writes are limited to daemon-owned
-  synchronization and automatic-backup preferences.
+- The UI exposes no project, task, or claim mutation. Its writes are limited to the fixed service
+  lifecycle and daemon-owned synchronization and automatic-backup preferences.
 - Plugin installation, ownership checks, lifecycle locking, rollback, status,
   and removal are owned by the same `pimpampum` CLI lifecycle.
 
@@ -156,8 +158,8 @@ come from the real machine. The reviewer must directly observe this matrix:
 - Light and dark themes; complete, available, active/draft, empty, offline,
   stale, credentials, and incompatible states.
 - Hover, visible keyboard focus, and activation where Quickshell supports them;
-  bounded scrolling, long-name disambiguation, completed expansion/collapse,
-  and safe workspace opening.
+  bounded scrolling with a fixed footer, long-name disambiguation, in-progress Spec progress,
+  completed-Spec expansion/collapse, safe workspace opening, Help, and Quit/Start.
 - Backup unconfigured, healthy, backing-up, and failed presentations; native folder selection;
   destination preview; explicit enable/disable confirmation; and serialized configure, retry, and
   disable actions.

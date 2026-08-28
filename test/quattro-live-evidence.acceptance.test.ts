@@ -120,17 +120,17 @@ function fixture() {
     ),
     command('install', process.execPath, [cli, 'install'], '{"installed":true}\n'),
     command('status-online', process.execPath, [cli, 'status'], '{"running":true}\n'),
-    command('seed-workspace', process.execPath, [cli, 'workspace:add', 'live', 'Live', root]),
+    command('seed-workspace', process.execPath, [cli, 'workspace:add', 'live', 'Pimpampum', root]),
     command(
       'seed-project',
       process.execPath,
-      [cli, 'project:create', 'live', 'active', 'Active'],
+      [cli, 'project:create', 'live', 'omarchy-plugin', 'Omarchy plugin'],
       '{"id":"project-id","revision":1}\n',
     ),
     command(
       'seed-active-spec',
       process.execPath,
-      [cli, 'spec:create', 'project-id', 'active-spec', 'Active Spec', specBody],
+      [cli, 'spec:create', 'project-id', 'widget-v1', 'Widget V1', specBody],
       '{"id":"active-spec-id","revision":1}\n',
     ),
     command(
@@ -148,7 +148,7 @@ function fixture() {
     command(
       'seed-task',
       process.execPath,
-      [cli, 'task:create', 'active-spec-id', 'Live task'],
+      [cli, 'task:create', 'active-spec-id', 'Polish widget design'],
       '{"id":"task-id","revision":1}\n',
     ),
     command('seed-claim', process.execPath, [cli, 'work:start', 'task', 'task-id', 'live-agent']),

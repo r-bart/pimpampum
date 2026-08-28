@@ -215,11 +215,29 @@ export interface OverviewActiveWork {
   expiresAt: string;
 }
 
+export interface OverviewSpec {
+  id: string;
+  projectId: string;
+  projectTitle: string;
+  projectLifecycleState: ProjectState;
+  workspace: Pick<Workspace, 'id' | 'name' | 'rootPath'>;
+  slug: string;
+  title: string;
+  lifecycleState: SpecState;
+  taskCount: number;
+  openTaskCount: number;
+  completedTaskCount: number;
+  activeClaimCount: number;
+  updatedAt: string;
+}
+
 export interface OverviewSnapshot {
   status: OverviewStatus;
   counts: OverviewCounts;
   projects: OverviewProject[];
   projectsTruncated: boolean;
+  specs: OverviewSpec[];
+  specsTruncated: boolean;
   activeWork: OverviewActiveWork[];
   activeWorkTruncated: boolean;
 }

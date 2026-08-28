@@ -131,7 +131,7 @@ describe('Omarchy Quattro plugin', () => {
 
     expect(popout).toContain('contentWidth: fittedContentWidth(Style.space(380))');
     expect(popout).toContain(
-      'contentHeight: fittedContentHeight(Math.min(content.implicitHeight, Style.space(520)))',
+      'contentHeight: fittedContentHeight(Math.min(content.implicitHeight + Style.space(55), Style.space(520)))',
     );
     expect(popout).toContain('boundsBehavior: Flickable.StopAtBounds');
     expect(popout).toContain('clip: true');
@@ -141,8 +141,9 @@ describe('Omarchy Quattro plugin', () => {
       'visible: !root.settingsView && root.service.connectionState !== "online"',
       'No workspaces. Run: pimpampum workspace:add',
       'text: "Active work ("',
+      'text: "Specs in progress ("',
       'text: "Projects ("',
-      '+ "Completed ("',
+      '+ "Completed specs ("',
       '+ "Cancelled ("',
       'text: "Synchronization"',
       'text: "Backup"',
@@ -192,9 +193,12 @@ describe('Omarchy Quattro plugin', () => {
     expect(popout).toContain('id: headerAction');
     expect(popout).toContain('width: Style.space(44)');
     expect(popout).toContain('property bool helpView: false');
-    expect(popout).toContain('id: helpAction');
-    expect(popout).toContain('Accessible.name: "Open synchronization and backup help"');
-    expect(popout).toContain('Accessible.name: root.helpView ? "Back to settings"');
+    expect(popout).not.toContain('id: helpAction');
+    expect(popout).toContain('id: footerHelpAction');
+    expect(popout).toContain('anchors.bottom: footerSeparator.top');
+    expect(popout).toContain('anchors.bottom: parent.bottom');
+    expect(popout).toContain('Accessible.name: "Open help"');
+    expect(popout).toContain('Accessible.name: root.helpView ? "Back to portfolio"');
     expect(popout).toContain('id: helpPage');
     expect(popout).toContain('visible: root.settingsView && root.helpView');
     expect(popout).toContain('pimpampum sync conflicts');
@@ -203,7 +207,23 @@ describe('Omarchy Quattro plugin', () => {
     expect(popout).not.toContain('syncExpanded');
     expect(popout).not.toContain('backupExpanded');
     expect(popout).toContain('model: root.settingsView ? [] : root.activeWork');
+    expect(popout).toContain('text: "Specs in progress ("');
+    expect(popout).toContain('spec.lifecycleState === "ready"');
+    expect(popout).toContain('spec.projectLifecycleState === "open"');
+    expect(popout).toContain('+ "/" + modelData.taskCount + " tasks"');
+    expect(popout).toContain('+ "Completed specs ("');
+    expect(popout).toContain(
+      'model: !root.settingsView && root.completedExpanded ? root.completedSpecs : []',
+    );
     expect(popout).toContain('showSettings(false)');
+    expect(popout).toContain('id: footer');
+    expect(popout).toContain('text: root.serviceControl.running ? "Quit" : "Start"');
+    expect(popout).toContain(
+      'Accessible.name: root.serviceControl.running ? "Quit Pimpampum" : "Start Pimpampum"',
+    );
+    expect(popout).toContain('id: quitAction');
+    expect(popout).toContain('id: footerHelpAction');
+    expect(popout).not.toContain('id: footerSettingsAction');
     expect(popout).toContain('actionEnabled: !root.backupService.busy');
     expect(settingsButton).toContain('implicitHeight: Style.space(44)');
     expect(settingsButton).toContain('minimumWidth: compact ? Style.space(44)');
@@ -214,6 +234,10 @@ describe('Omarchy Quattro plugin', () => {
     );
     expect(popout).toContain('!root.syncService.paused');
     expect(popout).toContain('text: "How Pimpampum works"');
+    expect(popout).toContain('Active work names the task being claimed now');
+    expect(popout).toContain('Specs in progress remain visible even when no task is claimed');
+    expect(popout).toContain('Completed Specs stay collapsed');
+    expect(popout).toContain('registered project and workspace names');
     expect(popout).toContain('readonly property color accent: Color.accent');
     expect(popout).toContain('parent.width - syncSecondaryAction.width');
     expect(popout).toContain('parent.width - backupSecondaryAction.width');
@@ -228,9 +252,21 @@ describe('Omarchy Quattro plugin', () => {
     expect(service).toContain('["spec", "task"].indexOf(work.targetType)');
     expect(service).toContain('isString(work.specId)');
     expect(service).toContain('isString(work.specTitle)');
+    expect(service).toContain('function validSpec(spec)');
+    expect(service).toContain('Array.isArray(data.specs)');
+    expect(service).toContain('typeof data.specsTruncated !== "boolean"');
     expect(service).toContain(
       'work.targetType === "spec" && (work.taskId !== null || work.taskTitle !== null)',
     );
+  });
+
+  it('collects service output without mutating the read-only collector text', () => {
+    const control = readFileSync(join(pluginSource, 'ServiceControl.qml'), 'utf8');
+
+    expect(control).toContain('property string processOutput: ""');
+    expect(control).toContain('onStreamFinished: root.processOutput = text');
+    expect(control).toContain('JSON.parse(processOutput.trim())');
+    expect(control).not.toContain('output.text = ""');
   });
 
   it('keeps backup configuration bounded and passes paths as process arguments', () => {

@@ -70,7 +70,8 @@ describe('settings desktop surfaces', () => {
     expect(service).not.toMatch(/sh\s+-c|bash\s+-c|shellQuote|\+\s*(?:directory|path)/);
     expect(popout).toContain('Synchronization');
     expect(popout).toContain('Sync now');
-    expect(popout).toContain('Open synchronization and backup help');
+    expect(popout).toContain('Accessible.name: "Open help"');
+    expect(popout).toContain('Specs in progress remain visible even when no task is claimed');
     expect(popout).toContain('What is the difference?');
     expect(popout).toContain('Why choose a shared folder?');
   });

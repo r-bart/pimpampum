@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 const frozen = new Map([
   [
     'test/desktop-status.acceptance.test.ts',
-    '0ebbbde0d26e17951dedaea3345b55b7f2852250aac52223fbf93a7616b6b8a1',
+    '328f53c2f0d20afdb62c355047ac0f529206057984ff810ceb961b9779257fba',
   ],
   [
     'test/desktop-status.safety.acceptance.test.ts',
@@ -16,15 +16,15 @@ const frozen = new Map([
   ],
   [
     'test/quattro-live-evidence.acceptance.test.ts',
-    '114c4cb84c316408037af8bd7faf0e3dd7f3d7505253d33b85d85fee7cb1fa8a',
+    '7050c4388a4c5fe7e931e9ac0caf5697501ef1d4558f84c53998b982d355a0dc',
   ],
   [
     'test/fixtures/overview/complete.json',
-    'd577a304a26269eb7be4c480159a06290b4ba763befa04e8bb03761f45ebaade',
+    'a622e45665a33646afb10eeeea78b3f8ec7248cad176163d1c7f47870520ec5f',
   ],
   [
     'test/fixtures/overview/empty.json',
-    'ae6022769c756946be2304ddc678bedffc4ca1e657e7abec5abe07221b9f7d33',
+    'bbf834d7bd82369eb53ccebc3f90c0237342ebd2ab1f579a2047d25e343366eb',
   ],
   [
     'test/fixtures/overview/invalid.json',
@@ -32,7 +32,7 @@ const frozen = new Map([
   ],
   [
     'test/fixtures/overview/mixed.json',
-    'ad560079b063e78df957a28758a7b86f8c59fc0d7f331b6763283cd95c1a47c8',
+    '27fb33e9d3113c073d8e08aaa17b96d789d873d555630dfbcf6cfa99d3571453',
   ],
 ]);
 

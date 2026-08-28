@@ -79,6 +79,19 @@ Item {
     return true
   }
 
+  function validSpec(spec) {
+    if (!isObject(spec) || !isObject(spec.workspace)) return false
+    if (!isString(spec.id) || !isString(spec.projectId) || !isString(spec.projectTitle)) return false
+    if (["draft", "open", "paused", "done", "cancelled"].indexOf(spec.projectLifecycleState) === -1) return false
+    if (!isString(spec.slug) || !isString(spec.title)) return false
+    if (["draft", "ready", "done", "cancelled"].indexOf(spec.lifecycleState) === -1) return false
+    if (!isString(spec.workspace.id) || !isString(spec.workspace.name)) return false
+    if (!isAbsoluteWorkspacePath(spec.workspace.rootPath)) return false
+    if (!isCount(spec.taskCount) || !isCount(spec.openTaskCount)) return false
+    if (!isCount(spec.completedTaskCount) || !isCount(spec.activeClaimCount)) return false
+    return isTimestamp(spec.updatedAt)
+  }
+
   function validateEnvelope(envelope) {
     if (!isObject(envelope)) return "invalid"
     var data = envelope
@@ -90,15 +103,18 @@ Item {
     if (["active", "available", "complete", "draft", "paused", "empty"].indexOf(data.status) === -1) return "invalid"
     if (!isObject(data.daemon) || !isString(data.daemon.version) || !isTimestamp(data.daemon.startedAt)) return "invalid"
     if (!isCount(data.daemon.uptimeSeconds) || !isTimestamp(data.generatedAt)) return "invalid"
-    if (!validCounts(data.counts) || !Array.isArray(data.projects) || !Array.isArray(data.activeWork)) return "invalid"
-    if (typeof data.projectsTruncated !== "boolean" || typeof data.activeWorkTruncated !== "boolean") return "invalid"
-    if (data.projects.length > 500 || data.activeWork.length > 500) return "invalid"
+    if (!validCounts(data.counts) || !Array.isArray(data.projects) || !Array.isArray(data.specs) || !Array.isArray(data.activeWork)) return "invalid"
+    if (typeof data.projectsTruncated !== "boolean" || typeof data.specsTruncated !== "boolean" || typeof data.activeWorkTruncated !== "boolean") return "invalid"
+    if (data.projects.length > 500 || data.specs.length > 500 || data.activeWork.length > 500) return "invalid"
 
     for (var projectIndex = 0; projectIndex < data.projects.length; projectIndex += 1) {
       if (!validProject(data.projects[projectIndex])) return "invalid"
     }
     for (var workIndex = 0; workIndex < data.activeWork.length; workIndex += 1) {
       if (!validActiveWork(data.activeWork[workIndex])) return "invalid"
+    }
+    for (var specIndex = 0; specIndex < data.specs.length; specIndex += 1) {
+      if (!validSpec(data.specs[specIndex])) return "invalid"
     }
     return "valid"
   }

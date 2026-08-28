@@ -469,6 +469,30 @@ fi
 exec '${process.execPath}' '${cliPath}' sync "$1" --json
 `;
     writeFileSync(join(plugin, 'pimpampum-sync'), syncHelper);
+    const serviceHelper = `#!/bin/bash
+set -euo pipefail
+
+case \${1:-} in
+  status)
+    [[ $# -eq 1 ]] || exit 64
+    ;;
+  start|stop|restart)
+    [[ $# -eq 1 ]] || exit 64
+    /usr/bin/systemctl --user "$1" pimpampum.service >/dev/null
+    ;;
+  *)
+    printf '%s\\n' 'pimpampum-service: expected status, start, stop, or restart' >&2
+    exit 64
+    ;;
+esac
+
+if /usr/bin/systemctl --user is-active --quiet pimpampum.service; then
+  printf '%s\\n' '{"running":true}'
+else
+  printf '%s\\n' '{"running":false}'
+fi
+`;
+    writeFileSync(join(plugin, 'pimpampum-service'), serviceHelper);
     const artifacts: Array<{ path: string; sha256: string; mode: number }> = [];
     const visit = (directory: string) => {
       for (const name of readdirSync(directory)) {
@@ -482,6 +506,7 @@ exec '${process.execPath}' '${cliPath}' sync "$1" --json
             'pimpampum-backup',
             'pimpampum-folder-picker',
             'pimpampum-overview',
+            'pimpampum-service',
             'pimpampum-sync',
           ].includes(child)
             ? 0o755

@@ -52,6 +52,30 @@ export const overviewSchema = z.strictObject({
     )
     .max(500),
   projectsTruncated: z.boolean(),
+  specs: z
+    .array(
+      z.strictObject({
+        id: identifierSchema,
+        projectId: identifierSchema,
+        projectTitle: z.string().min(1).max(200),
+        projectLifecycleState: z.enum(['draft', 'open', 'paused', 'done', 'cancelled']),
+        workspace: z.strictObject({
+          id: identifierSchema,
+          name: z.string().min(1).max(120),
+          rootPath: z.string().min(1),
+        }),
+        slug: identifierSchema,
+        title: z.string().min(1).max(200),
+        lifecycleState: z.enum(['draft', 'ready', 'done', 'cancelled']),
+        taskCount: countSchema,
+        openTaskCount: countSchema,
+        completedTaskCount: countSchema,
+        activeClaimCount: countSchema,
+        updatedAt: timestampSchema,
+      }),
+    )
+    .max(500),
+  specsTruncated: z.boolean(),
   activeWork: z
     .array(
       z.strictObject({

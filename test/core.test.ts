@@ -384,6 +384,8 @@ describe('HTTP client adapter', () => {
             },
             projects: [],
             projectsTruncated: false,
+            specs: [],
+            specsTruncated: false,
             activeWork: [],
             activeWorkTruncated: false,
           },

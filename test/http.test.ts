@@ -277,6 +277,8 @@ describe('HTTP API', () => {
             },
             projects: [],
             projectsTruncated: false,
+            specs: [],
+            specsTruncated: false,
             activeWork: [],
             activeWorkTruncated: false,
           },
