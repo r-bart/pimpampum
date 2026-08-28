@@ -1,47 +1,55 @@
 # Session Summary
 
-**Date**: 2026-08-27
-**Feature**: Omarchy Quattro live-test preflight
-**Type**: Bug Fix / Release Engineering
+**Date**: 2026-08-28 10:20
+**Feature**: macOS named Spec progress parity
+**Type**: Bug Fix / UI Refinement
 **Branch**: `develop`
 
 ## What Was Done
 
-- Integrated the completed macOS onboarding and Omarchy service-control work into `master` through PRs `#1` and `#2`.
-- Made `npm run test:e2e:omarchy:live` build the CLI automatically so it works from a fresh checkout after `npm ci`.
-- Documented the exact clean-machine Quattro flow and updated the frozen desktop contract for the intentional command change.
-- Passed the complete local quality suite, Omarchy validation, desktop contract, npm audit, and package dry-run.
-- Passed Linux and macOS GitHub Actions on the final `master` commit `c898ffe1cf0b9963a888f82bb17acbb5b329fb21`.
-- Cloned `master` again from GitHub into a clean temporary directory and verified installation, build, plugin validation, contract integrity, and the live command.
-- Confirmed that the Release workflow is now active on the default branch without creating a tag or publishing npm.
+- Added the missing `specs` contract to the native macOS overview model and bounded payload validation.
+- Added deterministic in-progress and completed Spec groups matching the Omarchy lifecycle rules.
+- Added “Specs in progress” rows with the Spec name, project name, completed/total task progress, and active-claim count.
+- Added a collapsed “Completed specs” disclosure and kept project/Spec rows able to reveal their workspace.
+- Removed decorative icons from Active work, Spec, and Project rows after live visual review.
+- Extended Swift unit, presentation, contract, accessibility, and smoke coverage for named Spec progress.
+- Extended the reversible macOS live-smoke assertions and approved the rebuilt arm64 app artifact.
+- Started a disposable local demo with one project, one ready Spec, three tasks, one completed task, and one active claim without changing `~/.pimpampum`.
 
 ## Why
 
-The real Quattro gate must be reproducible from exactly what another machine downloads. The prior live command assumed a pre-existing `dist/`, so a clean checkout could fail before reaching the native smoke.
+Omarchy already displayed standalone Spec names and progress, but the native macOS client discarded the `specs` field and therefore showed only projects and claimed work. The fix restores desktop parity while keeping the menu compact and read-only.
 
 ## Key Decisions
 
-- Keep real Quattro validation as a release gate rather than infer support from fixtures.
-- Make the public npm script own its build prerequisite instead of relying on undocumented setup.
-- Merge only after both Linux and macOS CI pass; keep `v1.0.0` absent until real Quattro evidence is captured.
+- Show only ready Specs whose project is open; show done Specs in collapsed history, matching Omarchy.
+- Treat lease time as claim expiry, not an estimate of work duration.
+- Keep the rows text-led and remove decorative status/action icons; preserve accessible labels and click targets.
+- Use an isolated data directory and port for visual testing so the user’s real local store remains untouched.
 
 ## What's Pending
 
-- Run the documented live smoke on a clean, non-root Omarchy Quattro Wayland session.
-- Return and commit the generated `thoughts/evidence/quattro-live.json` plus its screenshots.
-- Re-run release gates and request authorization before creating `v1.0.0`.
+- User visual confirmation of the icon-free restarted demo.
+- Push the four implementation/artifact commits when this local result is accepted.
 
 ## Files Modified
 
-| File                                            | Change                                                            |
-| ----------------------------------------------- | ----------------------------------------------------------------- |
-| `package.json`                                  | The real Quattro smoke now performs a clean CLI build first       |
-| `README.md`                                     | Added the exact fresh-checkout Quattro commands and prerequisites |
-| `test/quattro-live-evidence.acceptance.test.ts` | Locks the self-contained live command contract                    |
-| `scripts/check-desktop-status-contract.mjs`     | Updated the intentional frozen-test fingerprint                   |
+| Area                                          | Change                                                                   |
+| --------------------------------------------- | ------------------------------------------------------------------------ |
+| `platforms/macos/Sources/PimpampumMenuBar`    | Spec model, validation, grouping, presentation, rows, and smoke snapshot |
+| `platforms/macos/Tests/PimpampumMenuBarTests` | Contract, sorting, formatting, accessibility, layout, and smoke tests    |
+| `scripts/test-macos-live.mjs`                 | Named/progress and completed-Spec live assertions                        |
+| `platforms/macos/dist`                        | Approved arm64 menu-bar app artifact                                     |
+
+## Quality Status
+
+- TypeScript typecheck, lint, Prettier, 415 unit/acceptance tests, and 6 E2E tests passed.
+- 103 Swift tests passed with 100% core region/function/line coverage.
+- Frozen desktop contract passed.
+- Approved packaged app hash: `04b67c066a8adbcfc80465b90655d99c41019e3bbb5284bb8ef27440cf45fbc9`.
 
 ## Next Steps
 
-1. Clone `master` on the Omarchy Quattro machine and run the documented command.
-2. Bring the generated evidence back to the repository.
-3. Validate the evidence and prepare the authorized `v1.0.0` release.
+1. Confirm the restarted menu no longer contains row icons.
+2. Push `develop` after approval.
+3. Re-run the release gate from the resulting remote commit before tagging v1.0.0.
