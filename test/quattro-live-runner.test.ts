@@ -380,6 +380,66 @@ describe('Quattro live runner hardening', () => {
     ).toHaveLength(1);
   });
 
+  it('reports a declined review by name and still completes cleanup', async () => {
+    const harness = createHarness();
+    harness.dependencies.requestVisualReview = vi.fn(async () => ({
+      approved: false,
+      reviewer: 'Roberto',
+      reviewedAt: new Date().toISOString(),
+    }));
+    await expect(runHarness(harness)).rejects.toThrow('Reviewer Roberto declined approval');
+    expect(existsSync(harness.evidencePath)).toBe(false);
+    const execute = (harness.dependencies as { execute: ReturnType<typeof vi.fn> }).execute;
+    expect(
+      execute.mock.calls.filter((call) => (call[0] as ExecuteInput).label === 'uninstall'),
+    ).toHaveLength(1);
+  });
+
+  it('asks again for the reviewer name until one is given', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pimpampum-reviewer-prompt-'));
+    roots.push(root);
+    const home = join(root, 'home');
+    const bin = join(root, 'bin');
+    mkdirSync(home);
+    mkdirSync(bin);
+    const xdgOpen = join(bin, 'xdg-open');
+    writeFileSync(xdgOpen, '#!/bin/sh\nexit 0\n');
+    chmodSync(xdgOpen, 0o755);
+    const shot = join(root, 'shot.png');
+    writeFileSync(shot, 'png');
+    const moduleUrl = pathToFileURL(join(process.cwd(), 'scripts/test-omarchy-live.mjs')).href;
+    const childSource = `
+      import { createRealDependencies } from ${JSON.stringify(moduleUrl)};
+      const [root, home, bin, shot] = process.argv.slice(1);
+      process.env.PATH = bin + ':' + process.env.PATH;
+      const dependencies = createRealDependencies(${JSON.stringify(process.cwd())}, home, {
+        dataDirectory: root + '/data', screenshotDirectory: root + '/screenshots', existingPaths: []
+      });
+      const review = await dependencies.requestVisualReview({
+        screenshots: { activePopout: { path: shot, sha256: '0'.repeat(64) } },
+        checklist: { activeCount: 'activePopout' }, artifactSetHash: '1'.repeat(64)
+      });
+      process.stdout.write('RESULT ' + JSON.stringify(review) + '\\n');
+    `;
+    const result = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e', childSource, root, home, bin, shot],
+      { input: '\n   \nRoberto\nyes\n', encoding: 'utf8' },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.match(/A reviewer name is required/gu)).toHaveLength(2);
+    // The approval prompt has no trailing newline, so the result shares its line.
+    const line = result.stdout.split('\n').find((entry) => entry.includes('RESULT '));
+    expect(line).toBeDefined();
+    expect(
+      JSON.parse((line as string).slice((line as string).indexOf('RESULT ') + 7)),
+    ).toMatchObject({
+      approved: true,
+      reviewer: 'Roberto',
+      artifactSetHash: '1'.repeat(64),
+    });
+  });
+
   it('asks the reviewer only for states a healthy installation can show', async () => {
     const module = (await import(
       `${pathToFileURL(join(process.cwd(), 'scripts/test-omarchy-live.mjs')).href}?matrix=${Date.now()}-${Math.random()}`

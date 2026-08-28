@@ -826,12 +826,13 @@ export default function createLiveRunner(dependencies) {
           automatedOnly: TASK_3_3_AUTOMATED_ONLY,
           artifactSetHash: approvalBinding,
         });
-        if (
-          visualReview.approved !== true ||
-          typeof visualReview.reviewer !== 'string' ||
-          !visualReview.reviewer.trim()
-        ) {
+        if (typeof visualReview.reviewer !== 'string' || !visualReview.reviewer.trim()) {
           throw new Error('A named human must approve the Quattro visual smoke');
+        }
+        if (visualReview.approved !== true) {
+          throw new Error(
+            `Reviewer ${visualReview.reviewer.trim()} declined approval; no evidence was written`,
+          );
         }
         if (
           (existsSync(join(candidatePath, '.pimpampum-plugin-owner.json')) ||
@@ -1379,13 +1380,29 @@ fi
         })}\nReview the exact staged files and hashes above.\n`,
       );
       const terminal = createInterface({ input: process.stdin, output: process.stdout });
+      // Read answers through the async iterator rather than question(): question() only captures
+      // the next 'line' event, so answers that arrive in one chunk (a paste, or piped input) are
+      // dropped between prompts. The iterator buffers them.
+      const lines = terminal[Symbol.asyncIterator]();
+      const { signal } = promptAbortController;
+      const aborted = new Promise((_, reject) => {
+        if (signal.aborted) reject(signal.reason);
+        else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+      const ask = async (prompt) => {
+        process.stdout.write(prompt);
+        const next = await Promise.race([lines.next(), aborted]);
+        if (next.done) throw new Error('Review input ended before the reviewer answered');
+        return next.value;
+      };
       try {
-        const reviewer = await terminal.question('Reviewer name: ', {
-          signal: promptAbortController.signal,
-        });
-        const approval = await terminal.question(
+        let reviewer = '';
+        while (!reviewer) {
+          reviewer = (await ask('Reviewer name: ')).trim();
+          if (!reviewer) process.stdout.write('A reviewer name is required.\n');
+        }
+        const approval = await ask(
           'Did you directly observe every Task 3.3 matrix item during this run, and do the bound captures match the screenshot checklist? Type yes: ',
-          { signal: promptAbortController.signal },
         );
         return {
           approved: approval.trim().toLowerCase() === 'yes',
@@ -1462,11 +1479,18 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
     });
     process.stdout.write(json(evidence));
   } catch (error) {
-    if (!/interrupted by SIG(?:INT|TERM)/u.test(String(error?.message))) throw error;
-    process.stderr.write(
-      `${error.message}; the Omarchy baseline was restored and no evidence was written.\n`,
-    );
-    process.exitCode = 130;
+    const message = String(error?.message);
+    if (/interrupted by SIG(?:INT|TERM)/u.test(message)) {
+      process.stderr.write(
+        `${message}; the Omarchy baseline was restored and no evidence was written.\n`,
+      );
+      process.exitCode = 130;
+    } else if (/declined approval/u.test(message)) {
+      process.stderr.write(`${message}; the Omarchy baseline was restored.\n`);
+      process.exitCode = 1;
+    } else {
+      throw error;
+    }
   } finally {
     const cleanupResidue = [
       join(temporaryData, 'install-receipt.json'),

@@ -97,8 +97,13 @@ keyboard, and confirm no competing Quattro popout opens.
 ## Closing
 
 The runner shows the five captures with their hashes and asks for a reviewer name, then for
-`yes`. Type `yes` only if every live item was actually observed. Anything else leaves the
-evidence unapproved, which is the correct outcome for a partial session.
+`yes`. An empty name is asked again; it is never accepted. Type `yes` only if every live item was
+actually observed. Anything else is reported as a decline by name, exits 1 after restoring the
+baseline, and writes no evidence, which is the correct outcome for a partial session.
+
+Do not press Enter through the capture prompts. Each capture is taken the moment you press Enter,
+of whatever is on screen at that moment; five captures ten seconds apart of the same terminal are
+worthless, and approving them would bind false evidence to the release.
 
 Ctrl+C at any point restores the baseline, writes `.quattro-live-failure-*.json` next to the
 evidence, and exits 130.
