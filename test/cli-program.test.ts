@@ -231,6 +231,31 @@ describe('CLI program', () => {
     });
   });
 
+  it('reports the real message and cause when a service lifecycle command throws a plain Error', async () => {
+    const state = fixture();
+    state.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+    state.runtime.serviceManager.install = vi.fn(async () => {
+      throw new Error('Unable to activate the LaunchAgent', {
+        cause: new Error('launchctl bootstrap failed with exit code 5: Input/output error'),
+      });
+    });
+
+    await expect(runCli(['install'], state.runtime)).rejects.toThrow('exit:1');
+
+    expect(JSON.parse(state.errors[0] ?? '')).toMatchObject({
+      error: {
+        code: 'internal_error',
+        message: 'Unable to activate the LaunchAgent',
+        details: {
+          name: 'Error',
+          causes: ['launchctl bootstrap failed with exit code 5: Input/output error'],
+        },
+      },
+    });
+  });
+
   it('treats service-only as the ordinary service install when no platform UI manager exists', async () => {
     const state = fixture();
     delete state.runtime.serviceOnlyManager;

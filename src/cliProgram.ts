@@ -1,7 +1,7 @@
 import type { AgentCliClient } from './agentClient.js';
 import {
-  createAgentErrorEnvelope,
   createAgentSuccessEnvelope,
+  createLocalErrorEnvelope,
   extractAgentEnvelope,
   type AgentErrorEnvelope,
 } from './agentProtocol.js';
@@ -589,7 +589,7 @@ export async function runCli(arguments_: string[], runtime: CliRuntime): Promise
   try {
     failure = await executeCli(arguments_, runtime);
   } catch (error) {
-    failure = createAgentErrorEnvelope(error);
+    failure = createLocalErrorEnvelope(error);
   }
   if (failure) {
     writeError(runtime, failure);
