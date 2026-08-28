@@ -80,6 +80,7 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - ALWAYS isolate Git-driven evals: strip inherited `GIT_*`, disable system config/attributes, and use temporary empty global config and template paths.
 - NEVER hash build inputs by walking the filesystem; enumerate them with `git ls-files --cached` so ignored files like `.DS_Store` cannot change artifact identity.
 - NEVER put a state in a live review matrix that a healthy installation cannot show; keep it in automated tests and record the exclusion explicitly.
+- NEVER abort `install` on a recoverable login-item state (`error`, `requiresApproval`); record it in the receipt and let the menu app's notice handle retry.
 - NEVER print `asAppError` output from the CLI entrypoint; use `createLocalErrorEnvelope` so install/uninstall failures keep their real message and cause chain locally (HTTP/MCP stay flattened).
 
 ## Self-Improvement

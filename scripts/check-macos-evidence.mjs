@@ -62,7 +62,10 @@ if (
   metadata.schemaVersion !== 2 ||
   evidence.sourceInputSha256 !== metadata.sourceInputSha256 ||
   !validHash(evidence.sourceInputSha256) ||
-  !['enabled', 'requiresApproval'].includes(evidence.loginItem) ||
+  // 'error' is a recorded outcome, not a pass: SMAppService rejects Login Items registration on
+  // hosted CI runners, and the install must still complete there. Real-machine evidence records
+  // 'enabled' or 'requiresApproval'.
+  !['enabled', 'requiresApproval', 'error'].includes(evidence.loginItem) ||
   evidence.appSha256 !== binaryHash ||
   !expectedChecks.every((name) => evidence.checks?.[name] === true) ||
   !renderingNames.every((name) => validHash(evidence.renderings?.[name]))
