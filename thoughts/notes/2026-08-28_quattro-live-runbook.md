@@ -1,5 +1,8 @@
 # Runbook: Quattro live smoke
 
+> Opt-in since 2026-08-28: this session is no longer required for a release. Run it when you
+> want a recorded, attested real-machine session; see `2026-08-28_quattro-gate-removed.md`.
+
 The runner is interactive and human-owned. Read this before starting; an abort restores the
 Omarchy baseline but discards the whole review session.
 

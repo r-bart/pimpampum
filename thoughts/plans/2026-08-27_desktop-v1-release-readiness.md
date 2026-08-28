@@ -27,6 +27,15 @@ The release is complete only when its source, packaged artifacts, automated chec
 observed live evidence all refer to the same Git commit. A locally green implementation without the
 macOS and Quattro live gates is not a releasable V1.
 
+> **Amendment 2026-08-28.** The Quattro live matrix is no longer a release gate.
+> `release.yml` no longer runs `check:quattro-evidence`, and `test:e2e:omarchy` validates only the
+> plugin. The runner, the checker, and the matrix stay in the repository as opt-in evidence for
+> anyone who wants to record a real-machine session. Reason: the project owner uses the Quattro
+> widget daily on the target machine, and the gate's cost (a 30-45 minute attested session per
+> release candidate, plus the Actions minutes to validate the resulting commit) outweighed its
+> value for a personal project. The macOS live smoke stays, because CI runs it unattended.
+> See `thoughts/notes/2026-08-28_quattro-gate-removed.md`.
+
 ## V1 Product Contract
 
 Both platforms must provide:

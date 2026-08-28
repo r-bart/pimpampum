@@ -28,7 +28,6 @@ jobs:
       - run: npm run test:evals
       - run: npm run test:omarchy
       - run: npm run check:desktop-contract
-      - run: npm run check:quattro-evidence
       - run: npm audit --omit=dev
 
   publish:
