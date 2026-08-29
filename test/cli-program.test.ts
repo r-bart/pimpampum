@@ -104,6 +104,7 @@ function fixture() {
       })),
       uninstall: vi.fn(async () => ({ uninstalled: true, dataPreserved: true as const })),
     },
+    startStdioBridge: vi.fn(async () => undefined),
     startServer: vi.fn(async () => ({ config: { baseUrl: 'http://127.0.0.1:7337' }, close })),
     readFile: vi.fn(() => '# Spec'),
     readStdin: vi.fn(() => '{}'),
@@ -226,8 +227,7 @@ describe('CLI program', () => {
     expect(state.runtime.serviceOnlyManager?.install).toHaveBeenCalledOnce();
     expect(state.runtime.serviceManager.install).not.toHaveBeenCalled();
     expect(JSON.parse(state.output[0] ?? '')).toMatchObject({
-      installed: true,
-      receiptPath: '/service-only-receipt',
+      data: { installed: true, receiptPath: '/service-only-receipt' },
     });
   });
 

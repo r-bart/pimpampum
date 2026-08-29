@@ -1,10 +1,14 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
+// Digests freeze the generated desktop-status acceptance artifacts. Update one only alongside
+// its spec: the 2026-08-29 CLI envelope amendment in
+// thoughts/specs/2026-08-25_desktop-status-integrations.md moved desktop-status.acceptance.test.ts
+// and quattro-live-evidence.acceptance.test.ts.
 const frozen = new Map([
   [
     'test/desktop-status.acceptance.test.ts',
-    '328f53c2f0d20afdb62c355047ac0f529206057984ff810ceb961b9779257fba',
+    '79bca7ec61cd008763c3f574d1af35a7e4f48d946555814e6fa5cafd62305f5d',
   ],
   [
     'test/desktop-status.safety.acceptance.test.ts',
@@ -16,7 +20,7 @@ const frozen = new Map([
   ],
   [
     'test/quattro-live-evidence.acceptance.test.ts',
-    '7050c4388a4c5fe7e931e9ac0caf5697501ef1d4558f84c53998b982d355a0dc',
+    '394382d4f5d75ad7744da1ca43ceb9981959200d537be5be119ffe7eaac134bf',
   ],
   [
     'test/fixtures/overview/complete.json',

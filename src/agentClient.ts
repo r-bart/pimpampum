@@ -13,6 +13,7 @@ import {
 } from '@modelcontextprotocol/client';
 import { createAgentErrorEnvelope } from './agentProtocol.js';
 import { AppError } from './errors.js';
+import { PIMPAMPUM_VERSION } from './version.js';
 
 export interface AgentCliClient {
   listTools(): Promise<ListToolsResult>;
@@ -40,7 +41,7 @@ interface AgentCliClientFactories {
 const defaultFactories: AgentCliClientFactories = {
   createClient: () =>
     new Client(
-      { name: 'pimpampum-agent-cli', version: '1.0.0' },
+      { name: 'pimpampum-agent-cli', version: PIMPAMPUM_VERSION },
       { versionNegotiation: { mode: 'auto' } },
     ),
   createTransport: (url, options) => new StreamableHTTPClientTransport(url, options),
@@ -69,7 +70,12 @@ function normalizeClientError(error: unknown): AppError {
       return new AppError('bad_request', error.message, 400);
     }
   }
-  return new AppError('internal_error', 'Pimpampum is unavailable', 503, true);
+  return new AppError(
+    'unavailable',
+    'The Pimpampum daemon did not answer on its local address',
+    503,
+    true,
+  );
 }
 
 function normalizeToolResult(result: CallToolResult): CallToolResult {

@@ -2,6 +2,11 @@
 
 Local TypeScript daemon with a shared domain store, HTTP API and MCP interfaces.
 
+> **This file is for agents working _on_ this codebase.** If you are an agent
+> that wants to _use_ Pimpampum as shared project memory — install it, connect
+> over MCP, claim and complete work — read [`docs/agents.md`](docs/agents.md)
+> instead. It is short, and it is the whole contract.
+
 ## Commands
 
 - **Dev**: `npm run dev`

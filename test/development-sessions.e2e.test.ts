@@ -187,12 +187,24 @@ describe.sequential('real synthetic development sessions through the compiled pr
         `Compiled CLI ${arguments_[0] ?? ''} failed (${String(result.code)}): ${result.stderr}`,
       );
     }
-    return parseJson<T>(result.stdout, `Compiled CLI ${arguments_[0] ?? ''}`);
+    // Unwrapping here asserts the envelope contract on every CLI call this suite makes:
+    // a success is always exactly one {"data": ...} object on stdout.
+    const envelope = parseJson<unknown>(result.stdout, `Compiled CLI ${arguments_[0] ?? ''}`);
+    if (
+      typeof envelope !== 'object' ||
+      envelope === null ||
+      Object.keys(envelope).length !== 1 ||
+      !('data' in envelope)
+    ) {
+      throw new Error(
+        `Compiled CLI ${arguments_[0] ?? ''} did not return one data envelope: ${result.stdout}`,
+      );
+    }
+    return (envelope as { data: T }).data;
   }
 
   async function callTool<T>(name: string, input: Record<string, unknown>): Promise<T> {
-    const envelope = await executeCli<{ data: T }>('call', name, '--input', JSON.stringify(input));
-    return envelope.data;
+    return executeCli<T>('call', name, '--input', JSON.stringify(input));
   }
 
   async function runSession(input: {

@@ -655,7 +655,7 @@ describe('HTTP client adapter', () => {
   });
 
   it('maps status fallbacks, network failures and invalid success envelopes', async () => {
-    const failures = [401, 403, 404, 409, 413].map(
+    const failures = [401, 403, 404, 409, 413, 503, 502].map(
       (status) => new Response('<html>failure</html>', { status }),
     );
     vi.stubGlobal('fetch', async () => failures.shift() as Response);
@@ -666,6 +666,8 @@ describe('HTTP client adapter', () => {
       'not_found',
       'conflict',
       'payload_too_large',
+      'unavailable',
+      'internal_error',
     ]) {
       await expect(client.listWorkspaces()).rejects.toMatchObject({ code });
     }
@@ -674,7 +676,7 @@ describe('HTTP client adapter', () => {
       throw new Error('network down');
     });
     await expect(client.listWorkspaces()).rejects.toMatchObject({
-      code: 'internal_error',
+      code: 'unavailable',
       status: 503,
       retryable: true,
     });

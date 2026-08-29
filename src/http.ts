@@ -30,8 +30,9 @@ import {
 } from './schemas.js';
 import type { PimpampumHttpGateway } from './types.js';
 import { syncDeviceIdSchema, type SyncGateway } from './syncContract.js';
+import { PIMPAMPUM_VERSION } from './version.js';
 
-const DAEMON_VERSION = '1.0.0';
+const DAEMON_VERSION = PIMPAMPUM_VERSION;
 
 function parse<T>(schema: ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);

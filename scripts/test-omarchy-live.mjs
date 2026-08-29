@@ -198,6 +198,22 @@ function parseObject(stdout, label) {
   }
 }
 
+/**
+ * Pimpampum CLI success is always exactly one {"data": ...} object. Unwrapping here keeps the live
+ * runner honest about the contract instead of silently reading undefined fields off the envelope.
+ */
+function parseCliObject(stdout, label) {
+  const envelope = parseObject(stdout, label);
+  if (Object.keys(envelope).length !== 1 || !('data' in envelope)) {
+    throw new Error(`${label} did not return one data envelope`);
+  }
+  const data = envelope.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error(`${label} returned a non-object data payload`);
+  }
+  return data;
+}
+
 function parseOptionalJson(stdout) {
   if (!stdout.trim()) return null;
   try {
@@ -435,7 +451,7 @@ export default function createLiveRunner(dependencies) {
         cleanupPromise = (async () => {
           if (installAttempted) {
             try {
-              const removal = parseObject(
+              const removal = parseCliObject(
                 (await cli('uninstall', ['uninstall'], true)).stdout,
                 'uninstall',
               );
@@ -530,7 +546,7 @@ export default function createLiveRunner(dependencies) {
         assertCandidateUnchanged(candidatePath, initialCandidateHash, 'before install');
 
         installAttempted = true;
-        const installResult = parseObject((await cli('install', ['install'])).stdout, 'install');
+        const installResult = parseCliObject((await cli('install', ['install'])).stdout, 'install');
         if (productionCandidate) {
           if (typeof dependencies.verifyInstalledCandidate !== 'function') {
             throw new Error(
@@ -545,12 +561,12 @@ export default function createLiveRunner(dependencies) {
           });
         }
         assertCandidateUnchanged(candidatePath, initialCandidateHash, 'after install');
-        const online = parseObject((await cli('status-online', ['status'])).stdout, 'status');
+        const online = parseCliObject((await cli('status-online', ['status'])).stdout, 'status');
         if (online.running !== true) throw new Error('Installed Pimpampum daemon is not running');
         const specBodyPath = resolve(dirname(activeCliPath), '..', 'README.md');
 
         await cli('seed-workspace', ['workspace:add', 'live', 'Pimpampum', workspace]);
-        const activeProject = parseObject(
+        const activeProject = parseCliObject(
           (
             await cli('seed-project', [
               'project:create',
@@ -561,7 +577,7 @@ export default function createLiveRunner(dependencies) {
           ).stdout,
           'active project creation',
         );
-        const activeSpec = parseObject(
+        const activeSpec = parseCliObject(
           (
             await cli('seed-active-spec', [
               'spec:create',
@@ -573,7 +589,7 @@ export default function createLiveRunner(dependencies) {
           ).stdout,
           'active Spec creation',
         );
-        parseObject(
+        parseCliObject(
           (
             await cli('ready-active-spec', [
               'spec:ready',
@@ -583,7 +599,7 @@ export default function createLiveRunner(dependencies) {
           ).stdout,
           'active Spec ready',
         );
-        parseObject(
+        parseCliObject(
           (
             await cli('open-active-project', [
               'project:open',
@@ -593,13 +609,13 @@ export default function createLiveRunner(dependencies) {
           ).stdout,
           'active project open',
         );
-        const task = parseObject(
+        const task = parseCliObject(
           (await cli('seed-task', ['task:create', String(activeSpec.id), 'Polish widget design']))
             .stdout,
           'task creation',
         );
         await cli('seed-claim', ['work:start', 'task', String(task.id), 'live-agent']);
-        const completeProject = parseObject(
+        const completeProject = parseCliObject(
           (
             await cli('seed-completed-project', [
               'project:create',
@@ -610,7 +626,7 @@ export default function createLiveRunner(dependencies) {
           ).stdout,
           'completed project creation',
         );
-        const completeSpec = parseObject(
+        const completeSpec = parseCliObject(
           (
             await cli('seed-completed-spec', [
               'spec:create',
@@ -622,7 +638,7 @@ export default function createLiveRunner(dependencies) {
           ).stdout,
           'completed Spec creation',
         );
-        const completeReady = parseObject(
+        const completeReady = parseCliObject(
           (
             await cli('ready-completed-spec', [
               'spec:ready',
@@ -632,7 +648,7 @@ export default function createLiveRunner(dependencies) {
           ).stdout,
           'completed Spec ready',
         );
-        const completeOpen = parseObject(
+        const completeOpen = parseCliObject(
           (
             await cli('open-completed-project', [
               'project:open',
@@ -642,7 +658,7 @@ export default function createLiveRunner(dependencies) {
           ).stdout,
           'completed project open',
         );
-        const completeClaim = parseObject(
+        const completeClaim = parseCliObject(
           (
             await cli('start-completed-spec', [
               'work:start',
@@ -667,7 +683,7 @@ export default function createLiveRunner(dependencies) {
           String(completeOpen.revision),
           'Complete',
         ]);
-        const overview = parseObject(
+        const overview = parseCliObject(
           (await cli('overview-active-and-complete', ['overview'])).stdout,
           'overview',
         );
@@ -707,7 +723,7 @@ export default function createLiveRunner(dependencies) {
           instruction: 'Show the Pimpampum stale/offline state.',
         });
         await execute('recovery', 'systemctl', ['--user', 'start', 'pimpampum.service']);
-        const recovered = parseObject(
+        const recovered = parseCliObject(
           (await cli('status-recovered', ['status'])).stdout,
           'recovered status',
         );

@@ -177,6 +177,14 @@ Add equivalent CLI access:
 pimpampum overview
 ```
 
+**Amended 2026-08-29.** Every CLI success writes one `{"data": ...}` envelope to stdout, so
+`overview`, `install`, `status`, and `uninstall` return the payload under `data` rather than bare.
+The HTTP surface keeps its own independently versioned `{meta, data}` envelope. The Omarchy plugin
+accepts the bare payload and the `data` envelope, so an installed plugin keeps working against
+either CLI version. The live Quattro evidence transcript records raw stdout, so
+`scripts/check-quattro-evidence.mjs` unwraps the envelope for Pimpampum CLI commands and keeps
+reading omarchy shell and plugin probes as-is.
+
 The response includes:
 
 - Server version, generated timestamp, and uptime.

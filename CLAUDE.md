@@ -82,6 +82,16 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER put a state in a live review matrix that a healthy installation cannot show; keep it in automated tests and record the exclusion explicitly.
 - NEVER abort `install` on a recoverable login-item state (`error`, `requiresApproval`); record it in the receipt and let the menu app's notice handle retry.
 - NEVER print `asAppError` output from the CLI entrypoint; use `createLocalErrorEnvelope` so install/uninstall failures keep their real message and cause chain locally (HTTP/MCP stay flattened).
+- ALWAYS print CLI success through `print`, which wraps in `{data}`; only `call` uses `printEnvelope`, because the daemon already enveloped that payload.
+- ALWAYS declare a new CLI verb in `src/cliCommands.ts`; `pimpampum help` and `pimpampum commands` are both generated from that table and must never be hand-edited.
+- NEVER hardcode a version string; import `PIMPAMPUM_VERSION` from `src/version.ts`, which reads `package.json`.
+- NEVER map a transport failure to `internal_error`; use `unavailable`, whose suggestion names `pimpampum status` and `pimpampum install`.
+- ALWAYS keep the Omarchy QML readers tolerant of both the bare payload and the `{data}` envelope, so an installed plugin survives a CLI upgrade.
+- ALWAYS amend the spec first and then refresh the digest in `scripts/check-desktop-status-contract.mjs` when a frozen acceptance test must change.
+- NEVER import application modules at module scope in `src/cli.ts`; it is a bootstrap that loads `src/cliMain.ts` dynamically so startup failures still emit a JSON envelope.
+- ALWAYS pass the entry module URL into `runCliEntrypoint`; deriving it from `cliMain.ts` would point launchd and systemd at the wrong file.
+- NEVER give CLI failures distinct exit codes; the Omarchy helpers `exec` the CLI and already reserve 64 and 127, and every consumer branches on non-zero then parses the envelope.
+- ALWAYS sweep `scripts/` as well as `integrations/` and `platforms/` when changing CLI output; the live runners and the evidence validator parse it too.
 
 ## Self-Improvement
 

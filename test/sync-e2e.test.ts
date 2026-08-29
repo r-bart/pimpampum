@@ -35,8 +35,23 @@ function command(environment: NodeJS.ProcessEnv, args: string[]): Promise<unknow
     child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
     child.once('error', reject);
     child.once('exit', (code) => {
-      if (code !== 0) reject(new Error(`${args.join(' ')} failed: ${stderr}`));
-      else resolveResult(JSON.parse(stdout) as unknown);
+      if (code !== 0) {
+        reject(new Error(`${args.join(' ')} failed: ${stderr}`));
+        return;
+      }
+      // Unwrapping here asserts the envelope contract on every CLI call this suite makes:
+      // a success is always exactly one {"data": ...} object on stdout.
+      const envelope = JSON.parse(stdout) as unknown;
+      if (
+        typeof envelope !== 'object' ||
+        envelope === null ||
+        Object.keys(envelope).length !== 1 ||
+        !('data' in envelope)
+      ) {
+        reject(new Error(`${args.join(' ')} did not return one data envelope: ${stdout}`));
+        return;
+      }
+      resolveResult((envelope as { data: unknown }).data);
     });
   });
 }

@@ -21,10 +21,17 @@ stateless and forwards every operation to the same authenticated instance.
 The CLI negotiates with the MCP endpoint; it does not maintain a second tool implementation:
 
 ```bash
+pimpampum commands
 pimpampum config
 pimpampum tools
 pimpampum call workspace_resolve --input '{"path":"/absolute/project/path"}'
 ```
+
+`pimpampum mcp` runs the stdio bridge through the main binary, which is what MCP registry clients
+invoke (`npx pimpampum mcp`); `pimpampum-mcp` is the same bridge under its own bin name.
+
+`commands` describes the CLI itself: every verb with its arguments, options, usage line, and effect
+annotations. It works offline, like `config`.
 
 `config` reports redacted connection details without exposing the token. `tools` returns the live
 catalog. `call` accepts no input for zero-argument tools or exactly one of `--input <json>`,
@@ -42,8 +49,10 @@ printf '%s' '{
 }' | pimpampum call spec_create --stdin
 ```
 
-Success is written to stdout with exit code 0. Failures are written to stderr with a non-zero exit
-code. Every invocation opens and closes one short-lived MCP session.
+Success is written to stdout as one `{ "data": ... }` envelope with exit code 0. Failures are
+written to stderr as one `{ "error": ... }` envelope with a non-zero exit code. Every CLI command
+follows this contract, not only `call`; `help` alone prints text. Every `call` invocation opens and
+closes one short-lived MCP session.
 
 ## Result contract
 

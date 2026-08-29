@@ -6,7 +6,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/cli.ts', 'src/daemon.ts', 'src/mcpStdio.ts', 'src/types.ts'],
+      exclude: ['src/cli.ts', 'src/cliMain.ts', 'src/daemon.ts', 'src/mcpStdio.ts', 'src/types.ts'],
       reporter: ['text', 'json', 'html'],
       thresholds: {
         statements: 100,

@@ -51,7 +51,22 @@ function command(executable, arguments_, options = {}) {
 }
 
 function runCli(...arguments_) {
-  return JSON.parse(command(process.execPath, [cli, ...arguments_]));
+  // Pimpampum CLI success is always exactly one {"data": ...} object. Unwrapping here keeps the
+  // live runner honest about the contract instead of reading undefined fields off the envelope.
+  const stdout = command(process.execPath, [cli, ...arguments_]);
+  const envelope = JSON.parse(stdout);
+  if (
+    !envelope ||
+    typeof envelope !== 'object' ||
+    Array.isArray(envelope) ||
+    Object.keys(envelope).length !== 1 ||
+    !('data' in envelope)
+  ) {
+    throw new Error(
+      `pimpampum ${arguments_.join(' ')} did not return one data envelope: ${stdout}`,
+    );
+  }
+  return envelope.data;
 }
 
 async function runCliEventually(arguments_, attempts = 100) {

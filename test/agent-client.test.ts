@@ -84,8 +84,8 @@ describe('agent CLI MCP client', () => {
         state.factories,
       ),
     ).rejects.toMatchObject({
-      code: 'internal_error',
-      message: 'Pimpampum is unavailable',
+      code: 'unavailable',
+      message: 'The Pimpampum daemon did not answer on its local address',
       retryable: true,
     });
     expect(state.client.close).toHaveBeenCalledOnce();
@@ -102,7 +102,7 @@ describe('agent CLI MCP client', () => {
         { baseUrl: 'http://127.0.0.1:7337', token: 'secret-token' },
         state.factories,
       ),
-    ).rejects.toMatchObject({ code: 'internal_error', retryable: true });
+    ).rejects.toMatchObject({ code: 'unavailable', retryable: true });
     expect(state.client.close).toHaveBeenCalledOnce();
   });
 
@@ -126,7 +126,7 @@ describe('agent CLI MCP client', () => {
     {
       name: 'an HTTP server failure',
       error: new SdkHttpError(SdkErrorCode.ClientHttpFailedToOpenStream, 'Failed', { status: 503 }),
-      expected: { code: 'internal_error', retryable: true },
+      expected: { code: 'unavailable', retryable: true },
     },
     {
       name: 'a missing method',
@@ -156,7 +156,7 @@ describe('agent CLI MCP client', () => {
     {
       name: 'an internal protocol failure',
       error: new ProtocolError(ProtocolErrorCode.InternalError, 'Internal'),
-      expected: { code: 'internal_error', retryable: true },
+      expected: { code: 'unavailable', retryable: true },
     },
   ])('normalizes $name from tool calls', async ({ error, expected }) => {
     const state = fixture();
@@ -183,7 +183,7 @@ describe('agent CLI MCP client', () => {
       applicationError,
     );
     await expect(client.listTools()).rejects.toMatchObject({
-      code: 'internal_error',
+      code: 'unavailable',
       retryable: true,
     });
   });

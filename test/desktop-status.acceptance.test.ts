@@ -251,7 +251,7 @@ describe('Automatic service and desktop status integrations', () => {
 
       await runCli(['overview'], runtime);
       expect(getOverview).toHaveBeenCalledOnce();
-      expect(JSON.parse(output[0] ?? '')).toEqual(overview);
+      expect(JSON.parse(output[0] ?? '')).toEqual({ data: overview });
     });
 
     it('AC-2/FR-2: maps install, status and uninstall to an injected idempotent manager', async () => {
@@ -278,9 +278,9 @@ describe('Automatic service and desktop status integrations', () => {
       expect(serviceManager.status).toHaveBeenCalledOnce();
       expect(serviceManager.uninstall).toHaveBeenCalledOnce();
       expect(output.map((entry) => JSON.parse(entry))).toEqual([
-        { installed: true, reconciled: false },
-        { installed: true, running: true },
-        { uninstalled: true, dataPreserved: true },
+        { data: { installed: true, reconciled: false } },
+        { data: { installed: true, running: true } },
+        { data: { uninstalled: true, dataPreserved: true } },
       ]);
     });
   });
