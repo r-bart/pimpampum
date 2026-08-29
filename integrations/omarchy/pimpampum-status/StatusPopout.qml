@@ -310,7 +310,6 @@ Item {
             activeClaims: root.service.activeClaims
             showActiveCount: false
             foreground: root.foreground
-            contrastBackground: root.background
             urgent: root.urgent
             activeColor: "#3b82f6"
             availableColor: "#f59e0b"

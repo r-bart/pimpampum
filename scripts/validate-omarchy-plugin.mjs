@@ -150,7 +150,6 @@ for (const expected of [
   'StatusPopout.qml',
   'SyncService.qml',
   'assets/pimpampum-compact.svg',
-  'assets/pimpampum-compact-white.svg',
   'README.md',
   'install.sh',
   'manifest.json',
@@ -173,16 +172,11 @@ invariant(
 );
 const canonicalCompactMark = read(canonicalCompactMarkPath);
 const pluginCompactMark = read(join(pluginRoot, 'assets/pimpampum-compact.svg'));
-const pluginCompactMarkWhite = read(join(pluginRoot, 'assets/pimpampum-compact-white.svg'));
 validateCompactSVG(canonicalCompactMark, 'canonical compact-mark SVG');
 validateCompactSVG(pluginCompactMark, 'plugin compact-mark SVG');
 invariant(
   pluginCompactMark === canonicalCompactMark,
   'plugin compact-mark SVG differs from the reviewed canonical master',
-);
-invariant(
-  pluginCompactMarkWhite === canonicalCompactMark.replace('#000000', '#ffffff'),
-  'white compact-mark SVG must differ from the canonical master only by fill color',
 );
 
 const manifest = JSON.parse(read(join(pluginRoot, 'manifest.json')));
@@ -314,11 +308,23 @@ invariant(
   'bar widget must use the fixed Pimpampum mark instead of status identity glyphs',
 );
 invariant(
-  pimpampumMark.includes('assets/pimpampum-compact-white.svg') &&
-    pimpampumMark.includes('assets/pimpampum-compact.svg') &&
-    pimpampumMark.includes('root.useLightAsset') &&
-    pimpampumMark.includes('contrastBackground.r'),
-  'fixed mark must select an explicit high-contrast light or dark asset',
+  pimpampumMark.includes('fillColor: root.foreground') &&
+    pimpampumMark.includes('fillRule: ShapePath.OddEvenFill') &&
+    !pimpampumMark.includes('contrastBackground') &&
+    !pimpampumMark.includes('MultiEffect {'),
+  'fixed mark must fill from the bar foreground, never picked from the theme background ' +
+    'and never tinted through a layer, whose cached texture keeps the first color',
+);
+// The mark is drawn from the reviewed master's own path data, so the identity cannot drift
+// between the canonical SVG and what the bar actually paints.
+const canonicalMarkPath = /\sd="([^"]+)"/u.exec(canonicalCompactMark)?.[1];
+invariant(
+  typeof canonicalMarkPath === 'string' && canonicalMarkPath.length > 0,
+  'canonical compact-mark SVG has no path data',
+);
+invariant(
+  pimpampumMark.includes(`path: "${canonicalMarkPath}"`),
+  'fixed mark path must match the canonical master SVG exactly',
 );
 invariant(
   pimpampumMark.includes('id: badge') &&

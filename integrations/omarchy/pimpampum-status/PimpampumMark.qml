@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Shapes
 
 Item {
   id: root
@@ -9,7 +10,6 @@ Item {
   required property bool vertical
   required property int activeClaims
   required property color foreground
-  required property color contrastBackground
   required property color urgent
   required property color activeColor
   required property color availableColor
@@ -45,9 +45,6 @@ Item {
     : status === "complete" ? completeColor
     : ["offline", "credentials", "invalid", "incompatible"].indexOf(status) !== -1
       ? urgent : foreground
-  readonly property bool useLightAsset:
-    (contrastBackground.r * 0.2126 + contrastBackground.g * 0.7152
-      + contrastBackground.b * 0.0722) < 0.5
 
   implicitWidth: indicator.implicitWidth
   implicitHeight: indicator.implicitHeight
@@ -66,19 +63,36 @@ Item {
       height: Math.max(root.markSize, root.badgeSize)
       Accessible.ignored: true
 
-      Image {
+      // Drawn as a shape rather than a tinted image: MultiEffect samples the source
+      // through a layer, and that texture kept its first color, so the mark stayed dark
+      // when the bar recomputed its foreground against a new wallpaper. fillColor
+      // repaints on every change, which is what PimpampumHeaderIcon already relies on.
+      Item {
         id: markSource
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
         width: root.markSize
         height: root.markSize
-        source: Qt.resolvedUrl(root.useLightAsset
-          ? "assets/pimpampum-compact-white.svg"
-          : "assets/pimpampum-compact.svg")
-        sourceSize.width: root.markSize
-        sourceSize.height: root.markSize
-        fillMode: Image.PreserveAspectFit
-        smooth: true
+
+        Shape {
+          width: 16
+          height: 16
+          transformOrigin: Item.TopLeft
+          scale: root.markSize / 16
+          preferredRendererType: Shape.CurveRenderer
+
+          ShapePath {
+            fillColor: root.foreground
+            fillRule: ShapePath.OddEvenFill
+            strokeColor: "transparent"
+            strokeWidth: 0
+            // Identical to branding/assets/pimpampum-compact-master.svg; the plugin
+            // validator fails if the two ever drift apart.
+            PathSvg {
+              path: "M8 .5a7.5 7.5 0 1 1 0 15 7.5 7.5 0 1 1 0-15zM4.8 3.9h1.4v.7c.7-.6 1.6-.9 2.6-.9 2 0 3.2 1.4 3.2 3.5 0 2-1.3 3.4-3.2 3.4-1 0-1.9-.3-2.6-.9v2.9H4.8V3.9zM6.3 7.2c0-1.3.9-2.2 2.2-2.2s2.1.9 2.1 2.2-.8 2.1-2.1 2.1-2.2-.8-2.2-2.1z"
+            }
+          }
+        }
       }
 
       Item {

@@ -96,10 +96,20 @@ describe('Omarchy Quattro plugin', () => {
     expect(widget).toContain('completedGreen');
     expect(widget).toContain('root.themeForeground');
     expect(widget).toContain('Accessible.name: indicator.accessibleLabel');
-    expect(mark).toContain('assets/pimpampum-compact.svg');
-    expect(mark).toContain('assets/pimpampum-compact-white.svg');
-    expect(mark).toContain('root.useLightAsset');
-    expect(mark).toContain('contrastBackground.r');
+    // The mark is drawn from the reviewed master's own path data, so the painted identity
+    // cannot drift from the canonical SVG.
+    const masterPath = /\sd="([^"]+)"/u.exec(
+      readFileSync(join(repositoryRoot, 'branding/assets/pimpampum-compact-master.svg'), 'utf8'),
+    )?.[1];
+    expect(masterPath).toBeTruthy();
+    expect(mark).toContain(`path: "${masterPath}"`);
+    // The bar resolves its own foreground against whatever is behind a transparent bar, so
+    // the mark fills from it. It must not go back to a layer-tinted image: that texture kept
+    // its first color and left the mark dark after the wallpaper changed.
+    expect(mark).toContain('fillColor: root.foreground');
+    expect(mark).toContain('fillRule: ShapePath.OddEvenFill');
+    expect(mark).not.toContain('contrastBackground');
+    expect(mark).not.toContain('MultiEffect {');
     expect(mark).toContain('id: badge');
     expect(mark).toContain('Math.max(0, activeClaims)');
     expect(mark).toContain('safeActiveClaims >= 100 ? "99+" : String(safeActiveClaims)');

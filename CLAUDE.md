@@ -92,6 +92,9 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - ALWAYS pass the entry module URL into `runCliEntrypoint`; deriving it from `cliMain.ts` would point launchd and systemd at the wrong file.
 - NEVER give CLI failures distinct exit codes; the Omarchy helpers `exec` the CLI and already reserve 64 and 127, and every consumer branches on non-zero then parses the envelope.
 - ALWAYS sweep `scripts/` as well as `integrations/` and `platforms/` when changing CLI output; the live runners and the evidence validator parse it too.
+- NEVER pick a desktop asset or color from `bar.background`; on a transparent bar Omarchy resolves it to the foreground via `omarchy-bar-text-color`, so paint from `bar.barForeground`.
+- NEVER tint a bar icon through a `MultiEffect` over a `layer.enabled` source; the cached texture keeps its first color and survives a wallpaper change. Draw it with `Shape`/`ShapePath` and `fillColor`.
+- ALWAYS restart the shell (`omarchy restart shell`) to verify a plugin QML change; `rescanPlugins` reloads the plugin but the QML engine keeps the already-compiled components, so edits appear to do nothing.
 
 ## Self-Improvement
 
