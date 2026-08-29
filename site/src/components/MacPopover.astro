@@ -1,0 +1,531 @@
+---
+/*
+ * Interactive replica of the macOS menu-bar surface.
+ *
+ * Built from the approved handoff in thoughts/design/handoff-pimpampum-escritorio/:
+ * 360pt popover, 16pt horizontal padding, 11pt container radius, 8pt rows, and
+ * the fixed order header → summary → active work → projects → completed →
+ * truncation → footer. The palette is the mockup's own macOS token set.
+ *
+ * The Completed group is a real <details>, so it opens with a click, with Enter
+ * or Space, and works with no JavaScript at all. That matters here because the
+ * prototype harness clones this from a <template>.
+ */
+import Mark from './Mark.astro';
+
+interface Props {
+  appearance?: 'light' | 'dark';
+}
+
+const { appearance = 'light' } = Astro.props;
+
+const activeWork = [
+  { title: 'Ship the menu-bar status popover', project: 'Desktop status surfaces', agent: 'claude-code-01', left: '24m remaining' },
+  { title: 'Sweep expired claims on daemon boot', project: 'Daemon core', agent: 'codex-agent-02', left: '1h 12m remaining' },
+];
+
+const projects = [
+  { title: 'Desktop status surfaces', slug: '28.project-master · desktop-status-surfaces', state: 'active', counts: '1 active · 3 available' },
+  { title: 'Daemon core', slug: '28.project-master · daemon-core', state: 'active', counts: '1 active · 2 available' },
+  { title: 'Quattro bar widget', slug: 'omarchy-lab · quattro-bar-widget', state: 'available', counts: '2 available' },
+  { title: 'Snapshot restore spike', slug: 'omarchy-lab · snapshot-restore-spike', state: 'draft', counts: 'Draft' },
+];
+
+const completed = [
+  { title: 'CLI claim lifecycle', slug: '28.project-master · cli-claim-lifecycle', counts: 'Complete · 14 completed tasks' },
+  { title: 'SQLite migration runner', slug: '28.project-master · sqlite-migration-runner', counts: 'Complete · 8 completed tasks' },
+];
+---
+
+<div class="surface" data-pp={appearance}>
+  <div class="menubar">
+    <span class="menubar-app">Finder</span>
+    <span class="menubar-right">
+      <span class="menubar-item is-pimpampum">
+        <Mark size={13} decorative />
+        <span class="menubar-count">3</span>
+      </span>
+      <span class="menubar-clock">Wed 26 Aug&nbsp;&nbsp;14:32</span>
+    </span>
+  </div>
+
+  <div class="popover">
+    <header class="head">
+      <span class="head-mark">
+        <Mark size={16} decorative />
+        <span class="head-dot" aria-hidden="true"></span>
+      </span>
+      <span class="head-text">
+        <span class="head-title">Pimpampum</span>
+        <span class="head-state">Active</span>
+      </span>
+      <span class="head-updated">Updated 4 seconds ago</span>
+    </header>
+
+    <div class="body">
+      <section class="group">
+        <h4 class="group-title">Summary</h4>
+        <p class="summary">4 projects · 2 active · 7 available</p>
+        <p class="summary summary-2">Daemon 1.0.0 · 3h 12m uptime</p>
+      </section>
+
+      <section class="group">
+        <h4 class="group-title">Active work</h4>
+        {
+          activeWork.map((item) => (
+            <div class="claim">
+              <p class="claim-title">{item.title}</p>
+              <p class="claim-project">{item.project}</p>
+              <p class="claim-meta">
+                <span>{item.agent}</span>
+                <span class="claim-left">{item.left}</span>
+              </p>
+            </div>
+          ))
+        }
+      </section>
+
+      <section class="group">
+        <h4 class="group-title">Projects</h4>
+        {
+          projects.map((project) => (
+            <div class="row">
+              <span class={`pip pip-${project.state}`} aria-hidden="true" />
+              <span class="row-text">
+                <span class="row-title">{project.title}</span>
+                <span class="row-slug">{project.slug}</span>
+                <span class="row-counts">{project.counts}</span>
+              </span>
+              <span class="row-open" aria-hidden="true">↗</span>
+            </div>
+          ))
+        }
+      </section>
+
+      <details class="completed">
+        <summary>
+          <span class="chevron" aria-hidden="true"></span>
+          <span>Completed ({completed.length})</span>
+        </summary>
+        <div class="completed-body">
+          {
+            completed.map((project) => (
+              <div class="row">
+                <span class="pip pip-complete" aria-hidden="true" />
+                <span class="row-text">
+                  <span class="row-title">{project.title}</span>
+                  <span class="row-slug">{project.slug}</span>
+                  <span class="row-counts">{project.counts}</span>
+                </span>
+                <span class="row-open" aria-hidden="true">↗</span>
+              </div>
+            ))
+          }
+        </div>
+      </details>
+
+      <p class="truncation">The project list is truncated. Counts still include every project.</p>
+    </div>
+
+    <footer class="foot">
+      <span class="foot-button">Quit Pimpampum</span>
+      <span class="foot-button">Settings…</span>
+    </footer>
+  </div>
+</div>
+
+<style>
+  /* The mockup's own macOS token set. Two deliberate departures from it: --l2
+     and --l3 are darker than Apple's secondary and tertiary labels, which
+     measure 4.2:1 and 2.5:1 here. This is a web page, so the floor is WCAG AA
+     4.5:1. The step between the two levels is preserved. */
+  .surface[data-pp='light'] {
+    --solid: #f6f6f6;
+    --card: #ffffff;
+    --label: #000000;
+    --l2: rgba(0, 0, 0, 0.68);
+    --l3: rgba(0, 0, 0, 0.54);
+    --quat: rgba(0, 0, 0, 0.045);
+    --hov: rgba(0, 0, 0, 0.06);
+    --sep: rgba(0, 0, 0, 0.11);
+    --blue: #007aff;
+    --amber: #ff9500;
+    --green: #34c759;
+    --neutral: rgba(0, 0, 0, 0.42);
+    --desktop: #c9c6bd;
+  }
+
+  .surface[data-pp='dark'] {
+    --solid: #2a2a2c;
+    --card: #1e1e20;
+    --label: #ffffff;
+    --l2: rgba(255, 255, 255, 0.72);
+    --l3: rgba(255, 255, 255, 0.5);
+    --quat: rgba(255, 255, 255, 0.07);
+    --hov: rgba(255, 255, 255, 0.1);
+    --sep: rgba(255, 255, 255, 0.13);
+    --blue: #0a84ff;
+    --amber: #ff9f0a;
+    --green: #30d158;
+    --neutral: rgba(255, 255, 255, 0.45);
+    --desktop: #3a3a3f;
+  }
+
+  .surface {
+    width: 100%;
+    max-width: 392px;
+    padding: 0 16px 16px;
+    border-radius: 14px;
+    background: var(--desktop);
+    color: var(--label);
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- Menu bar ------------------------------------------------------ */
+
+  .menubar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 24px;
+    margin-inline: -16px;
+    padding-inline: 12px;
+    border-radius: 14px 14px 0 0;
+    background: var(--solid);
+    font-size: 12px;
+  }
+
+  .menubar-app {
+    font-weight: 600;
+  }
+
+  .menubar-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--label);
+  }
+
+  .menubar-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .menubar-count {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .menubar-clock {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- Popover ------------------------------------------------------- */
+
+  .popover {
+    margin-top: 8px;
+    overflow: hidden;
+    border-radius: 11px;
+    background: var(--solid);
+    box-shadow:
+      0 0 0 0.5px var(--sep),
+      0 10px 30px rgb(0 0 0 / 18%);
+  }
+
+  .head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 0.5px solid var(--sep);
+  }
+
+  .head-mark {
+    position: relative;
+    display: grid;
+    place-items: center;
+  }
+
+  .head-dot {
+    position: absolute;
+    top: -2px;
+    right: -3px;
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: var(--blue);
+  }
+
+  .head-text {
+    display: grid;
+  }
+
+  .head-title {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .head-state {
+    color: var(--l2);
+    font-size: 11px;
+  }
+
+  .head-updated {
+    color: var(--l3);
+    font-size: 11px;
+  }
+
+  .body {
+    padding: 12px 16px;
+  }
+
+  .group + .group,
+  .group + .completed,
+  .completed + .truncation {
+    margin-top: 16px;
+  }
+
+  .group-title {
+    margin: 0 0 6px;
+    color: var(--l2);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .summary {
+    margin: 0;
+    font-size: 13px;
+  }
+
+  .summary-2 {
+    color: var(--l2);
+    font-size: 11px;
+  }
+
+  .claim {
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--quat);
+  }
+
+  .claim + .claim {
+    margin-top: 6px;
+  }
+
+  .claim-title {
+    margin: 0;
+    font-size: 13px;
+  }
+
+  .claim-project,
+  .claim-meta {
+    margin: 1px 0 0;
+    color: var(--l2);
+    font-size: 11px;
+  }
+
+  .claim-meta {
+    display: flex;
+    gap: 10px;
+    color: var(--l3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- Rows ---------------------------------------------------------- */
+
+  .row {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) 12px;
+    gap: 8px;
+    align-items: start;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 8px;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    text-align: start;
+    cursor: default;
+    transition: background-color 120ms ease-out;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .row:hover {
+      background: var(--hov);
+    }
+  }
+
+  .pip {
+    width: 8px;
+    height: 8px;
+    margin-top: 4px;
+    border-radius: 999px;
+  }
+
+  .pip-active {
+    background: var(--blue);
+  }
+
+  .pip-available {
+    border: 1.5px solid var(--amber);
+  }
+
+  .pip-draft {
+    border: 1.5px solid var(--neutral);
+    opacity: 0.6;
+  }
+
+  .pip-complete {
+    border: 2.5px solid var(--green);
+  }
+
+  .row-text {
+    display: grid;
+    min-width: 0;
+  }
+
+  .row-title {
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .row-slug {
+    overflow: hidden;
+    color: var(--l2);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .row-counts {
+    color: var(--l3);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .row-open {
+    color: var(--l3);
+    font-size: 11px;
+  }
+
+  /* ---- Completed disclosure ------------------------------------------ */
+
+  .completed summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    color: var(--l2);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    list-style: none;
+    text-transform: uppercase;
+    cursor: default;
+  }
+
+  .completed summary::-webkit-details-marker {
+    display: none;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .completed summary:hover {
+      background: var(--hov);
+    }
+  }
+
+  .completed summary:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: -2px;
+  }
+
+  .chevron {
+    width: 0;
+    height: 0;
+    border-top: 3.5px solid transparent;
+    border-bottom: 3.5px solid transparent;
+    border-left: 5px solid currentcolor;
+    transition: rotate 140ms ease-out;
+  }
+
+  .completed[open] .chevron {
+    rotate: 90deg;
+  }
+
+  .completed-body {
+    margin-top: 2px;
+  }
+
+  .truncation {
+    margin: 16px 0 0;
+    color: var(--l3);
+    font-size: 10px;
+  }
+
+  /* ---- Footer -------------------------------------------------------- */
+
+  .foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-top: 0.5px solid var(--sep);
+  }
+
+  .foot-button {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    font-size: 13px;
+    cursor: default;
+    transition: background-color 120ms ease-out;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .foot-button:hover {
+      background: var(--hov);
+    }
+  }
+
+
+  /* Native height is 28px, which is right for the replica. The hit area is
+     grown to 44px without moving anything. */
+  .completed summary {
+    position: relative;
+  }
+
+  .completed summary::before {
+    position: absolute;
+    inset: -8px -6px;
+    content: '';
+  }
+
+  /* Native height is 28px, which is right for the replica. The hit area is
+     grown to 44px without moving anything. */
+  .foot-button {
+    position: relative;
+  }
+
+  .foot-button::before {
+    position: absolute;
+    inset: -8px -6px;
+    content: '';
+  }
+</style>

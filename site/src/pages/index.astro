@@ -1,0 +1,1074 @@
+---
+import '../styles/tokens.css';
+import Mark from '../components/Mark.astro';
+import DesktopSection from '../components/DesktopSection.astro';
+
+const beats = [
+  {
+    n: '1',
+    tone: 'signal',
+    beat: 'pim',
+    call: 'work_list',
+    title: 'What can I work on?',
+    body: 'Comes back with the work that can actually be started right now. Nothing to read, nothing to prioritise.',
+    ask: 'What is left on the desktop app?',
+    reply: 'Three specs are claimable. The oldest is desktop-status-surfaces.',
+  },
+  {
+    n: '2',
+    tone: 'blue',
+    beat: 'pam',
+    call: 'work_start',
+    title: 'I am taking this one.',
+    body: 'An expiring lease on exactly one Spec or Task. Two agents can never grab the same job.',
+    ask: 'Take the popover one and start.',
+    reply: 'Claimed desktop-status-surfaces for 24 minutes. Reading the Spec now.',
+  },
+  {
+    n: '3',
+    tone: 'ink',
+    beat: 'pum',
+    call: 'work_complete',
+    title: 'Done, and here is what happened.',
+    body: 'A summary and the links to what changed. Whoever shows up next reads that and carries on.',
+    ask: 'Ship it.',
+    reply: 'Completed, with a summary and two artifact links. The claim is released.',
+  },
+];
+
+const model = [
+  { depth: 0, name: 'Workspace', note: 'a product, anchored to one folder' },
+  { depth: 1, name: 'Project', note: 'something you decided to do' },
+  { depth: 2, name: 'Spec', note: 'the Markdown that says what it is' },
+  { depth: 3, name: 'Task', note: 'work that comes out of the Spec' },
+  { depth: 4, name: 'Subtask', note: 'one level, and no more' },
+];
+
+const omissions = [
+  'Sprints, milestones, roadmaps, priorities, estimates, points, labels.',
+  'Users, teams, roles, comments, chat, notifications, activity feeds.',
+  'Configurable workflows and arbitrary task dependencies.',
+  'More than one level of subtasks.',
+  'Cloud sync of the live database.',
+];
+
+const links = [
+  {
+    label: 'Source',
+    value: 'github.com/r-bart/pimpampum',
+    href: 'https://github.com/r-bart/pimpampum',
+  },
+  {
+    label: 'Package',
+    value: 'npmjs.com/package/pimpampum',
+    href: 'https://www.npmjs.com/package/pimpampum',
+  },
+  {
+    label: 'Releases',
+    value: 'Signed macOS app',
+    href: 'https://github.com/r-bart/pimpampum/releases',
+  },
+];
+
+const description =
+  'An absurdly simple, local, agent-first project manager for solopreneurs. Three calls are the whole workflow. Everything is Markdown you can open by hand.';
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f3ed" />
+    <meta name="description" content={description} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>pimpampum — project management for people who are already the whole company</title>
+  </head>
+  <body>
+    <script is:inline>
+      // Both run before first paint, so nothing flashes and nothing shifts.
+      try {
+        if (sessionStorage.getItem('seen-intro')) {
+          document.documentElement.setAttribute('data-intro', 'skip');
+        } else {
+          sessionStorage.setItem('seen-intro', '1');
+        }
+      } catch {
+        /* Private mode blocks storage. Play the intro; it is 460ms. */
+      }
+
+      // Omarchy is a Linux distribution, so Linux is the honest signal.
+      // Anything else falls back to macOS, where the signed app ships.
+      (function () {
+        var platform =
+          (navigator.userAgentData && navigator.userAgentData.platform) ||
+          navigator.platform ||
+          navigator.userAgent;
+        var linux = /linux/i.test(platform) && !/android/i.test(navigator.userAgent);
+        document.documentElement.setAttribute('data-os', linux ? 'omarchy' : 'macos');
+      })();
+    </script>
+
+    <article class="page">
+      <header class="masthead">
+        <span class="masthead-brand">
+          <Mark size={13} decorative />
+          <span class="wordmark"
+            >pim<span aria-hidden="true">·</span>pam<span aria-hidden="true">·</span>pum</span
+          >
+        </span>
+        <span class="masthead-meta">version 1.0.0 · mit</span>
+      </header>
+
+      <section class="opening" aria-labelledby="opening-title">
+        <p class="standfirst" style="--i: 0">Three beats. One idea.</p>
+
+        <h1 id="opening-title" style="--i: 1">
+          Project management for people who are already <em>the whole company</em>.
+        </h1>
+
+        <p class="deck" style="--i: 2">
+          You are the PM, the engineer, and the person who answers support. You do not need a
+          sprint board. You need one place that remembers what is going on across every product you
+          run — and that your agents can read too. Pimpampum is that place. It lives on your
+          machine, and the entire workflow is three calls.
+        </p>
+
+        <div class="opening-cta" style="--i: 3">
+          <a class="button button-primary" href="#get-it">
+            Get it <span class="button-arrow" aria-hidden="true">→</span>
+          </a>
+          <a class="button button-secondary" href="https://github.com/r-bart/pimpampum">
+            Read the source
+          </a>
+          <p class="dateline">
+            <span>local</span><span aria-hidden="true">/</span><span>express</span><span
+              aria-hidden="true">/</span
+            ><span>open source</span>
+          </p>
+        </div>
+      </section>
+
+      <section class="band" aria-labelledby="loop-title">
+        <div class="band-head">
+          <h2 class="rubric" id="loop-title">pim. pam. pum.</h2>
+          <p class="statement statement-wide">That is the whole thing. There is no fourth step.</p>
+        </div>
+        <div>
+          <ol class="loop">
+            {
+              beats.map((beat) => (
+                <li>
+                  <span class="loop-head">
+                    <span class={`route route-${beat.tone}`} aria-hidden="true">
+                      {beat.n}
+                    </span>
+                    <span class="loop-beat">{beat.beat}</span>
+                  </span>
+                  <span class="loop-title">{beat.title}</span>
+                  <span class="loop-text">{beat.body}</span>
+                  <span class="exchange">
+                    <span class="turn turn-ask">
+                      <span class="who">You</span>
+                      <span>{beat.ask}</span>
+                    </span>
+                    <span class="turn turn-reply">
+                      <span class="who">Agent</span>
+                      <span>{beat.reply}</span>
+                    </span>
+                    <code class="turn-call">{beat.call}</code>
+                  </span>
+                </li>
+              ))
+            }
+          </ol>
+          <p class="aside aside-wide">
+            Your current tool needs a sprint, an estimate, a status column, and a weekly meeting to
+            keep the three of them honest. This needs three calls and no meeting.
+          </p>
+        </div>
+      </section>
+
+      <section class="spread" aria-labelledby="objection-title">
+        <h2 class="rubric" id="objection-title">But I already have Linear</h2>
+        <div class="omissions">
+          <div>
+            <p class="statement">Then keep it.</p>
+            <p class="prose">
+              Pimpampum is not trying to be the issue tracker for a team of forty. It is for the
+              portfolio you run by yourself, where the expensive part was never tracking the work.
+              It was remembering what you decided three Tuesdays ago, and stopping two agents from
+              doing the same job twice.
+            </p>
+            <p class="prose">Here is everything it does not have.</p>
+            <ul>
+              {omissions.map((item) => <li>{item}</li>)}
+            </ul>
+          </div>
+          <p class="aside">
+            Nobody forgot. Every one of those was left out on purpose, and each one is a decision
+            you no longer have to make. Excellent larger tools already exist for the rest.
+          </p>
+        </div>
+      </section>
+
+      <section class="spread" aria-labelledby="model-title">
+        <h2 class="rubric" id="model-title">Where does it all live?</h2>
+        <div class="omissions">
+          <div>
+            <p class="statement">Five things, and one optional level of subtasks.</p>
+            <p class="prose">
+              That is the entire model. You can hold it in your head, and so can an agent that has
+              never seen your product before.
+            </p>
+            <ul class="tree">
+              {
+                model.map((node) => (
+                  <li style={`--depth: ${node.depth}`}>
+                    <span class="tree-name">{node.name}</span>
+                    <span class="tree-note">{node.note}</span>
+                  </li>
+                ))
+              }
+            </ul>
+          </div>
+          <p class="aside">
+            One SQLite database in <code>~/.pimpampum</code>, on your own disk. The daemon listens
+            on <code>127.0.0.1:7337</code> and nowhere else.
+          </p>
+        </div>
+      </section>
+
+      <section class="spread" aria-labelledby="files-title">
+        <h2 class="rubric" id="files-title">It is agent-first. It is also just Markdown.</h2>
+        <div class="omissions">
+          <div>
+            <p class="statement">Built for agents. Readable by you.</p>
+            <p class="prose">
+              Agents connect over MCP and get 32 tools with strict schemas, bounded reads, and a
+              claim that expires on its own. You hand an agent four sentences and it knows how to
+              work. There is a JSON-first CLI and a documented local API for everything else.
+            </p>
+            <div class="snippet">
+              <pre class="code"><code>&lbrace;
+  "mcpServers": &lbrace;
+    "pimpampum": &lbrace; "command": "pimpampum-mcp" &rbrace;
+  &rbrace;
+&rbrace;</code></pre>
+              <button
+                class="copy"
+                type="button"
+                data-copy={'{\n  "mcpServers": {\n    "pimpampum": { "command": "pimpampum-mcp" }\n  }\n}'}
+              >
+                Copy
+              </button>
+            </div>
+            <p class="prose prose-tight">
+              That is the whole configuration. The bridge resolves its own credentials from your
+              data directory, so the agent never handles a token.
+            </p>
+            <p class="prose">
+              And none of it is locked up. A Spec is a Markdown document. A Context page is a
+              Markdown document. Export writes them to a folder in a shape that never changes:
+            </p>
+            <pre class="code"><code>workspaces/&lt;workspace&gt;/
+  context/*.md
+  projects/&lt;project&gt;/
+    context/*.md
+    specs/&lt;spec&gt;/
+      spec.md
+      tasks.json</code></pre>
+          </div>
+          <p class="aside">
+            Open them in your editor. Read them on a plane. Paste one into a chat. There is no
+            proprietary format to escape from, because there is no proprietary format.
+          </p>
+        </div>
+      </section>
+
+      <DesktopSection />
+
+      <section class="spread" aria-labelledby="sync-title">
+        <h2 class="rubric" id="sync-title">Sync it with whatever you already pay for</h2>
+        <div class="omissions">
+          <div>
+            <p class="statement">Point it at a folder. That is the integration.</p>
+            <p class="prose">
+              Dropbox, Google Drive, iCloud Drive, Syncthing, rclone — whichever one is already
+              running on your machine. Pimpampum writes immutable JSON snapshots into{' '}
+              <code>Pimpampum/devices/&lt;device&gt;</code> and reads the other machines back. Every
+              computer keeps its own database, its own token, and its own claims.
+            </p>
+            <div class="snippet">
+              <pre class="code"><code>pimpampum sync configure ~/Dropbox/Pimpampum \
+  --device laptop</code></pre>
+              <button
+                class="copy"
+                type="button"
+                data-copy="pimpampum sync configure ~/Dropbox/Pimpampum --device laptop"
+              >
+                Copy
+              </button>
+            </div>
+            <p class="prose">
+              Provider offline? Keep working. It exports when the folder comes back. Edited the same
+              thing on two machines? Both versions are kept as a visible conflict and you decide. No
+              timestamp gets to win, and no agent picks for you.
+            </p>
+          </div>
+          <p class="aside">
+            One rule: the live database stays out of that folder. A synchronised SQLite file is an
+            exciting way to discover file locking at the worst possible moment.
+          </p>
+        </div>
+      </section>
+
+      <section class="band" id="get-it" aria-labelledby="get-title">
+        <div class="band-head">
+          <h2 class="rubric" id="get-title">Get it</h2>
+          <p class="statement statement-wide">One command, or one download.</p>
+        </div>
+
+        <div class="routes">
+          <article class="route-card">
+            <p class="route-label">Everything, from npm</p>
+            <div class="snippet">
+              <pre class="code"><code>npm install --global pimpampum
+pimpampum install</code></pre>
+              <button
+                class="copy"
+                type="button"
+                data-copy="npm install --global pimpampum&#10;pimpampum install"
+              >
+                Copy
+              </button>
+            </div>
+            <p class="route-note">
+              The daemon, the CLI, and the MCP bridge. One background service, started at login. No
+              root access, and no terminal window kept alive as a shrine.
+            </p>
+          </article>
+
+          <article class="route-card">
+            <p class="route-label">Or the signed macOS app</p>
+            <p class="route-lead">
+              <a class="button button-primary" href="https://github.com/r-bart/pimpampum/releases">
+                Download for macOS <span class="button-arrow" aria-hidden="true">→</span>
+              </a>
+            </p>
+            <p class="route-note">
+              Its first-run screen copies the one command it still needs and opens Terminal for you.
+              On Omarchy the Quickshell widget installs with the plugin instead, and uninstalls with
+              it.
+            </p>
+          </article>
+        </div>
+
+        <p class="requirements">
+          Node.js 22 or newer. macOS 13 or newer on Apple Silicon for the menu-bar app. Omarchy with
+          Quattro for the widget.
+        </p>
+      </section>
+
+      <footer class="colophon">
+        <div class="colophon-top">
+          <div class="colophon-brand">
+            <p class="colophon-mark">pimpampum<span class="tm">™</span></p>
+            <p class="colophon-line">Small outside. Obsessive inside.</p>
+          </div>
+
+          <nav class="colophon-links" aria-label="Project links">
+            <a href="/llms.txt">
+              <span class="link-label">Agents</span>
+              <span class="link-value">llms.txt</span>
+            </a>
+            {
+              links.map((link) => (
+                <a href={link.href}>
+                  <span class="link-label">{link.label}</span>
+                  <span class="link-value">{link.value}</span>
+                </a>
+              ))
+            }
+          </nav>
+        </div>
+
+        <div class="colophon-bottom">
+          <p class="colophon-made">
+            Made with love (for simplicity) by rbart ·{' '}
+            <a href="https://x.com/_rbart_">@_rbart_</a>
+          </p>
+          <p class="colophon-meta">MIT · Node 22+ · 1.0.0</p>
+        </div>
+      </footer>
+    </article>
+
+    <script>
+      type Os = 'macos' | 'omarchy';
+
+      const tabs = [...document.querySelectorAll<HTMLElement>('[data-os-tab]')];
+
+      function selectOs(os: Os, focusTab = false) {
+        document.documentElement.setAttribute('data-os', os);
+        tabs.forEach((tab) => {
+          const selected = tab.dataset.osTab === os;
+          tab.setAttribute('aria-selected', String(selected));
+          // Roving tabindex: one stop for the whole group, as tabs expect.
+          tab.tabIndex = selected ? 0 : -1;
+          if (selected && focusTab) tab.focus();
+        });
+      }
+
+      if (tabs.length) {
+        selectOs((document.documentElement.dataset.os as Os) ?? 'macos');
+
+        tabs.forEach((tab) => {
+          tab.addEventListener('click', () => selectOs(tab.dataset.osTab as Os));
+          tab.addEventListener('keydown', (event) => {
+            const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+            if (!keys.includes(event.key)) return;
+            event.preventDefault();
+            const index = tabs.indexOf(tab);
+            const next =
+              event.key === 'Home'
+                ? 0
+                : event.key === 'End'
+                  ? tabs.length - 1
+                  : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+            selectOs(tabs[next].dataset.osTab as Os, true);
+          });
+        });
+      }
+
+      // The install and sync commands exist to be pasted. The button announces
+      // its own change, so the confirmation is not visual-only.
+      document.addEventListener('click', async (event) => {
+        const button = (event.target as HTMLElement).closest<HTMLElement>('[data-copy]');
+        if (!button) return;
+        try {
+          await navigator.clipboard.writeText(button.dataset.copy ?? '');
+        } catch {
+          return;
+        }
+        const previous = button.textContent;
+        button.setAttribute('aria-live', 'polite');
+        button.textContent = 'Copied';
+        window.setTimeout(() => {
+          button.textContent = previous;
+          button.removeAttribute('aria-live');
+        }, 1500);
+      });
+    </script>
+
+    <style>
+      .page {
+        width: min(100%, 68rem);
+        margin-inline: auto;
+        padding-inline: var(--page-pad);
+        padding-block: var(--space-5) var(--space-8);
+      }
+
+      .masthead {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: var(--space-5);
+        padding-bottom: var(--space-4);
+        border-bottom: var(--border-hairline) solid var(--line);
+      }
+
+      .masthead-brand {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-2);
+      }
+
+      /* The expressive wordmark from BRAND.md: three beats, separated. The
+         functional joined form stays in the title, the URL, and the command. */
+      .wordmark {
+        font-weight: var(--weight-bold);
+        letter-spacing: -0.035em;
+      }
+
+      .wordmark span {
+        margin-inline: 0.3em;
+        color: var(--ink-muted);
+        font-weight: var(--weight-regular);
+        letter-spacing: 0;
+      }
+
+      .masthead-meta,
+      .standfirst,
+      .dateline {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: var(--text-label);
+        font-weight: var(--weight-regular);
+        letter-spacing: var(--tracking-label);
+        line-height: 1.4;
+        text-transform: uppercase;
+      }
+
+      /* ---- Opening ----------------------------------------------------- */
+
+      .opening {
+        padding-block: clamp(var(--space-9), 16vh, var(--space-10)) var(--space-9);
+      }
+
+      .opening > * {
+        animation: rise 460ms var(--ease-beat) both;
+        animation-delay: calc(var(--i) * 70ms);
+      }
+
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+      }
+
+      :global([data-intro='skip']) .opening > * {
+        animation: none;
+      }
+
+      .standfirst {
+        margin: 0 0 var(--space-6);
+        color: var(--signal-text);
+      }
+
+      h1 {
+        max-width: 18ch;
+        margin: 0 0 var(--space-6);
+        font-size: clamp(2.75rem, 8vw, 6.5rem);
+        font-weight: var(--weight-bold);
+        letter-spacing: -0.055em;
+        line-height: 0.95;
+      }
+
+      h1 em {
+        font-style: normal;
+        /* The second and last use of colour above the fold. */
+        color: var(--signal-text);
+      }
+
+      .deck {
+        max-width: var(--measure);
+        margin: 0 0 var(--space-7);
+        font-size: var(--text-lead);
+        line-height: 1.5;
+      }
+
+      .opening-cta {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--space-4) var(--space-5);
+        margin: 0;
+      }
+
+      .dateline {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: var(--space-3);
+        margin: 0;
+      }
+
+      /* ---- Section content --------------------------------------------- */
+
+      .statement {
+        max-width: 24ch;
+        margin: 0 0 var(--space-5);
+        font-size: var(--text-headline);
+        font-weight: var(--weight-bold);
+        letter-spacing: -0.035em;
+        line-height: 1.15;
+      }
+
+      .statement-wide {
+        max-width: 30ch;
+        margin-bottom: 0;
+      }
+
+      .prose {
+        max-width: min(100%, var(--measure));
+        margin: 0 0 var(--space-4);
+        font-size: var(--text-lead);
+        line-height: 1.55;
+      }
+
+      .prose:last-child {
+        margin-bottom: 0;
+      }
+
+      .prose-tight {
+        margin-top: var(--space-4);
+      }
+
+      .prose code,
+      .aside code {
+        color: var(--ink);
+        font-family: var(--font-mono);
+        font-size: 0.875em;
+      }
+
+      .aside {
+        max-width: 48ch;
+        margin: 0;
+        color: var(--ink-muted);
+        font-size: var(--text-caption);
+      }
+
+      .aside-wide {
+        max-width: var(--measure);
+        margin-top: var(--space-6);
+        padding-top: var(--space-5);
+        border-top: var(--border-hairline) solid var(--line);
+      }
+
+      /* ---- The loop ---------------------------------------------------- */
+
+      .loop {
+        display: grid;
+        gap: var(--space-4);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      @media (min-width: 64rem) {
+        .loop {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      .loop li {
+        /* Flex column so the exchange can sit at the bottom of every card and
+           the three of them line up whatever the copy length. */
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+        padding: var(--space-4);
+        border-radius: var(--radius-card);
+        background: var(--paper-2);
+        box-shadow: var(--elevation-raised);
+      }
+
+      .loop-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--space-3);
+      }
+
+      .route {
+        display: grid;
+        place-items: center;
+        aspect-ratio: 1;
+        width: 1.5rem;
+        min-height: 0;
+        border-radius: var(--radius-pill);
+        color: var(--paper);
+        font-size: var(--text-label);
+        font-weight: var(--weight-bold);
+        font-variant-numeric: tabular-nums;
+        line-height: 1;
+      }
+
+      .route-signal {
+        background: var(--signal);
+      }
+      .route-blue {
+        background: var(--metro-blue);
+      }
+      .route-ink {
+        background: var(--ink);
+      }
+
+      .loop-beat {
+        font-size: var(--text-title);
+        font-weight: var(--weight-bold);
+        letter-spacing: -0.05em;
+        line-height: 1;
+      }
+
+      .loop-title {
+        font-weight: var(--weight-medium);
+      }
+
+      .loop-text {
+        color: var(--ink-muted);
+        font-size: var(--text-caption);
+      }
+
+      /* A prompt and its answer. Text wraps; nothing here ever scrolls. */
+      .exchange {
+        display: grid;
+        margin-top: auto;
+        gap: var(--space-2);
+        padding: var(--space-3);
+        border-radius: var(--radius-inner);
+        background: var(--paper);
+      }
+
+      .turn {
+        display: grid;
+        grid-template-columns: 3.25rem minmax(0, 1fr);
+        gap: var(--space-2);
+        font-size: var(--text-caption);
+        line-height: 1.45;
+      }
+
+      .who {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: var(--text-label);
+        letter-spacing: var(--tracking-label);
+        line-height: 1.6;
+        text-transform: uppercase;
+      }
+
+      .turn-reply {
+        padding-top: var(--space-2);
+        border-top: var(--border-hairline) solid var(--line);
+      }
+
+      .turn-call {
+        justify-self: start;
+        margin-top: var(--space-1);
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: var(--text-label);
+      }
+
+      /* ---- Two-column bodies ------------------------------------------- */
+
+      .omissions {
+        display: grid;
+        gap: var(--space-5);
+        align-items: start;
+      }
+
+      /* Grid items default to min-width:auto, so the scrollable code block
+         inside pushes the whole track past the viewport on a phone. */
+      .omissions > * {
+        min-width: 0;
+      }
+
+      @media (min-width: 68rem) {
+        .omissions {
+          grid-template-columns: minmax(0, 1.55fr) minmax(0, 0.85fr);
+          gap: var(--space-6);
+        }
+      }
+
+      .omissions ul:not(.tree) {
+        display: grid;
+        gap: var(--space-3);
+        max-width: var(--measure);
+        margin: var(--space-4) 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .omissions ul:not(.tree) li {
+        padding-bottom: var(--space-3);
+        border-bottom: var(--border-hairline) solid var(--line);
+        font-size: var(--text-lead);
+      }
+
+      .omissions ul:not(.tree) li:last-child {
+        border-bottom: 0;
+      }
+
+      /* ---- The model --------------------------------------------------- */
+
+      .tree {
+        max-width: var(--measure);
+        margin: var(--space-4) 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .tree li {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-3);
+        align-items: baseline;
+        padding-block: var(--space-3);
+        padding-inline-start: calc(var(--depth) * 1.25rem);
+        border-top: var(--border-hairline) solid var(--line);
+      }
+
+      .tree li:first-child {
+        border-top: 0;
+      }
+
+      .tree-name {
+        font-weight: var(--weight-medium);
+      }
+
+      .tree-note {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: var(--text-label);
+      }
+
+      /* ---- Code and copying -------------------------------------------- */
+
+      .code {
+        max-width: 100%;
+        margin: 0;
+        padding: var(--space-3);
+        overflow-x: auto;
+        border-radius: var(--radius-inner);
+        background: var(--paper);
+        font-family: var(--font-mono);
+        font-size: var(--text-label);
+        line-height: 1.7;
+      }
+
+      .code::-webkit-scrollbar {
+        height: 8px;
+      }
+
+      .code::-webkit-scrollbar-thumb {
+        border-radius: 4px;
+        background: oklch(0.199 0.004 106.7 / 20%);
+      }
+
+      .snippet {
+        position: relative;
+        max-width: min(100%, var(--measure));
+        margin-top: var(--space-4);
+        padding: var(--space-4);
+        border-radius: var(--radius-card);
+        background: var(--paper-2);
+        box-shadow: var(--elevation-raised);
+      }
+
+      .snippet .code {
+        /* Room for the copy button so a long command never runs under it, and
+           a soft wrap instead of a scrollbar: a command that wraps is normal in
+           documentation, a horizontal scrollbar on a phone is not. */
+        padding: 0 6.5rem 0 0;
+        overflow-wrap: break-word;
+        white-space: pre-wrap;
+        background: transparent;
+        font-size: var(--text-caption);
+      }
+
+      .copy {
+        position: absolute;
+        top: var(--space-2);
+        inset-inline-end: var(--space-2);
+        min-width: 5.5rem;
+        min-height: 32px;
+        padding-inline: var(--space-3);
+        border: 0;
+        border-radius: var(--radius-inner);
+        color: var(--ink-muted);
+        background: var(--paper-2);
+        font-family: var(--font-mono);
+        font-size: var(--text-label);
+        letter-spacing: var(--tracking-label);
+        text-transform: uppercase;
+        cursor: pointer;
+        transition:
+          color var(--duration-hover) ease-out,
+          background-color var(--duration-hover) ease-out,
+          scale var(--duration-hover) ease-out;
+      }
+
+      .copy::before {
+        position: absolute;
+        inset: -6px;
+        content: '';
+      }
+
+      .copy:active {
+        scale: 0.96;
+      }
+
+      @media (hover: hover) and (pointer: fine) {
+        .copy:hover {
+          color: var(--ink);
+          background: oklch(0.199 0.004 106.7 / 6%);
+        }
+      }
+
+      /* ---- Get it ------------------------------------------------------ */
+
+      .routes {
+        display: grid;
+        gap: var(--space-6);
+      }
+
+      @media (min-width: 60rem) {
+        .routes {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: var(--space-7);
+        }
+      }
+
+      .route-card {
+        display: grid;
+        align-content: start;
+        gap: var(--space-3);
+        min-width: 0;
+      }
+
+      .route-label {
+        margin: 0;
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: var(--text-label);
+        letter-spacing: var(--tracking-label);
+        text-transform: uppercase;
+      }
+
+      .route-card .snippet {
+        max-width: 100%;
+        margin-top: 0;
+      }
+
+      .route-lead {
+        margin: 0;
+      }
+
+      .route-note {
+        max-width: 48ch;
+        margin: 0;
+        color: var(--ink-muted);
+        font-size: var(--text-caption);
+      }
+
+      .requirements {
+        max-width: var(--measure);
+        margin: var(--space-6) 0 0;
+        padding-top: var(--space-5);
+        border-top: var(--border-hairline) solid var(--line);
+        color: var(--ink-muted);
+        font-size: var(--text-caption);
+      }
+
+      /* ---- Colophon ---------------------------------------------------- */
+
+      .colophon {
+        padding-top: var(--space-8);
+        border-top: var(--border-hairline) solid var(--line);
+      }
+
+      .colophon-top {
+        display: grid;
+        gap: var(--space-6);
+        align-items: start;
+        margin-bottom: var(--space-7);
+      }
+
+      @media (min-width: 52rem) {
+        .colophon-top {
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: var(--space-7);
+        }
+      }
+
+      .colophon-mark {
+        margin: 0;
+        font-size: var(--text-title);
+        font-weight: var(--weight-bold);
+        letter-spacing: -0.045em;
+      }
+
+      /* A default <sup> is oversized and disturbs the line box, so the mark is
+         sized and shifted by hand. */
+      .tm {
+        font-size: 0.42em;
+        font-weight: var(--weight-regular);
+        letter-spacing: 0;
+        vertical-align: 0.85em;
+      }
+
+      .colophon-line {
+        margin: var(--space-1) 0 0;
+        color: var(--ink-muted);
+        font-size: var(--text-caption);
+      }
+
+      /* No gap between rows: each link is a full 44px target and they sit flush,
+         so the hit areas touch without ever overlapping. */
+      .colophon-links {
+        display: grid;
+      }
+
+      .colophon-links a {
+        display: grid;
+        grid-template-columns: 5.5rem minmax(0, 1fr);
+        gap: var(--space-3);
+        align-items: center;
+        min-height: 44px;
+        font-size: var(--text-caption);
+        text-decoration: none;
+      }
+
+      .link-label {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: var(--text-label);
+        letter-spacing: var(--tracking-label);
+        text-transform: uppercase;
+      }
+
+      .link-value {
+        overflow-wrap: break-word;
+        text-decoration: underline;
+        text-decoration-color: oklch(0.199 0.004 106.7 / 25%);
+        text-underline-offset: 3px;
+        transition: text-decoration-color var(--duration-hover) ease-out;
+      }
+
+      @media (hover: hover) and (pointer: fine) {
+        .colophon-links a:hover .link-value {
+          text-decoration-color: var(--signal);
+        }
+      }
+
+      .colophon-bottom {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: var(--space-4);
+        padding-top: var(--space-5);
+        border-top: var(--border-hairline) solid var(--line);
+      }
+
+      .colophon-made {
+        margin: 0;
+        font-size: var(--text-caption);
+      }
+
+      /* An inline link cannot be 44px tall without breaking the line, so the
+         target grows through a pseudo-element. Nothing else is clickable
+         nearby, so it cannot collide. */
+      .colophon-made a {
+        position: relative;
+        text-decoration-color: var(--signal);
+      }
+
+      .colophon-made a::before {
+        position: absolute;
+        inset: -14px -6px;
+        content: '';
+      }
+
+      .colophon-meta {
+        margin: 0;
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: var(--text-label);
+        letter-spacing: var(--tracking-label);
+        text-transform: uppercase;
+      }
+    </style>
+  </body>
+</html>
