@@ -409,6 +409,8 @@ describe('Omarchy Quattro plugin', () => {
     expect(service).toContain('command = [helperPath, operation]');
     expect(service).toContain('Qt.callLater(function() { root.handleExit(exitCode) })');
     expect(service).toContain('helperPath.charAt(0) !== "/"');
+    expect(service).toContain('stderr: StdioCollector');
+    expect(service).toContain('failure.error.message');
     expect(helper).toContain('command_name=update:check');
     expect(helper).toContain('command_name=update');
     expect(helper).not.toMatch(/eval\b|bearer|token/iu);

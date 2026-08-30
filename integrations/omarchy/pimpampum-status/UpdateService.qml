@@ -10,6 +10,7 @@ Item {
   property string latestVersion: ""
   property string errorMessage: ""
   property string operation: ""
+  property string processError: ""
   readonly property bool busy: process.running
   readonly property bool updateAvailable: state === "available"
 
@@ -22,6 +23,7 @@ Item {
     }
     errorMessage = ""
     processOutput = ""
+    processError = ""
     root.operation = operation
     process.command = [helperPath, operation]
     state = operation === "install" ? "installing" : "checking"
@@ -31,13 +33,27 @@ Item {
   Process {
     id: process
     stdout: StdioCollector { onStreamFinished: root.processOutput = text }
+    stderr: StdioCollector { onStreamFinished: root.processError = text }
     onExited: function(exitCode) {
       Qt.callLater(function() { root.handleExit(exitCode) })
     }
   }
 
   function handleExit(exitCode) {
-    if (exitCode !== 0) { root.state = "error"; root.errorMessage = "Could not check for updates"; return }
+    if (exitCode !== 0) {
+      root.state = "error"
+      try {
+        var failure = JSON.parse(root.processOutput)
+        root.errorMessage = failure.error && failure.error.message
+          ? failure.error.message : "Could not check for updates"
+      } catch (error) {
+        root.errorMessage = root.processError.indexOf("CLI unavailable") !== -1
+          ? "Pimpampum CLI is unavailable. Reinstall Pimpampum and retry."
+          : "Could not check for updates"
+      }
+      console.warn("Pimpampum update command failed with exit code", exitCode)
+      return
+    }
     try {
       var envelope = JSON.parse(root.processOutput)
       var data = envelope.data
