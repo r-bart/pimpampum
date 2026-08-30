@@ -42,6 +42,14 @@
   failing run and that a child flooding stderr cannot deadlock the read.
 - Bumped the release to `1.1.1` and aligned the macOS bundle, Omarchy manifest, MCP registry
   metadata, README, and website with it, then re-approved the checked-in macOS artifact.
+- Fixed the defect `1.1.1` shipped with: the CLI writes its typed error envelope to stderr, but
+  both desktop adapters parsed stdout, which a failing run leaves empty. Every npm refusal was
+  reported as "Check your connection and retry", so the bounded npm reason reached nobody.
+- The macOS adapter now drains stdout and stderr concurrently on two dispatch queues instead of
+  discarding stderr, which is what the earlier deadlock fix had done.
+- `UpdateService.qml` gained `actionableFailure`, the bounded stderr reader `BackupService.qml`
+  already used, and an install-specific fallback.
+- Bumped the release to `1.1.2`.
 
 ## Key Decisions
 

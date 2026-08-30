@@ -72,7 +72,13 @@ private func succeeded(_ json: String) -> UpdateCommandOutput {
   UpdateCommandOutput(exitCode: 0, standardOutput: Data(json.utf8))
 }
 
+// The CLI writes its typed envelope to stderr and leaves stdout empty on a failure. Building this
+// fixture the other way round is exactly what let a panel that only read stdout reach a release.
 private func failed(_ json: String) -> UpdateCommandOutput {
+  UpdateCommandOutput(exitCode: 1, standardOutput: Data(), standardError: Data(json.utf8))
+}
+
+private func failedOnStandardOutput(_ json: String) -> UpdateCommandOutput {
   UpdateCommandOutput(exitCode: 1, standardOutput: Data(json.utf8))
 }
 
@@ -174,6 +180,40 @@ struct UpdateSettingsTests {
     #expect(reconciliation.errorMessage == "Pimpampum updated but service reconciliation failed")
     #expect(reconciliation.status == nil)
     #expect(!reconciliation.relaunchRequired)
+  }
+
+  // The refusal a real machine produced: npm declined 1.1.1 under a minimum-release-age policy and
+  // the panel answered "Could not install the update. Check your connection and retry." because it
+  // read stdout, which the CLI leaves empty on a failure.
+  @Test
+  func quotesTheNpmRefusalTheCliReportsOnStderr() async {
+    let policy = store(
+      UpdateRunner(
+        output: failed(
+          #"{"error":{"code":"unavailable","message":"Pimpampum update failed: notarget No matching version found for pimpampum@1.1.1 with a date before 8/23/2026, 2:42:25 PM."}}"#
+        )
+      )
+    )
+
+    await policy.install()
+
+    #expect(
+      policy.errorMessage
+        == "Pimpampum update failed: notarget No matching version found for pimpampum@1.1.1 with a date before 8/23/2026, 2:42:25 PM."
+    )
+    #expect(policy.errorMessage != UpdateOperation.install.genericFailure)
+  }
+
+  // Both streams are read, so moving the envelope back to stdout would not silently blind the panel.
+  @Test
+  func stillReadsAnEnvelopeThatArrivesOnStandardOutput() async {
+    let legacy = store(
+      UpdateRunner(output: failedOnStandardOutput(#"{"error":{"message":"from stdout"}}"#))
+    )
+
+    await legacy.check()
+
+    #expect(legacy.errorMessage == "from stdout")
   }
 
   @Test
@@ -385,6 +425,8 @@ struct UpdateSettingsTests {
     #expect(shouted.errorMessage?.count == UpdateSettingsStore.maximumMessageLength + 1)
     #expect(shouted.errorMessage?.hasSuffix("…") == true)
     #expect(UpdateSettingsStore.bounded("short") == "short")
+    // npm text arrives with newlines, and the panel renders one line.
+    #expect(UpdateSettingsStore.bounded("two\n\tlines  here") == "two lines here")
   }
 
   @Test
