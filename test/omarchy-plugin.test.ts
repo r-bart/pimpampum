@@ -410,7 +410,14 @@ describe('Omarchy Quattro plugin', () => {
     expect(service).toContain('Qt.callLater(function() { root.handleExit(exitCode) })');
     expect(service).toContain('helperPath.charAt(0) !== "/"');
     expect(service).toContain('stderr: StdioCollector');
-    expect(service).toContain('failure.error.message');
+    // The CLI writes its typed envelope to stderr and leaves stdout empty on a failure. Parsing
+    // only stdout reported an npm refusal as "Could not install the update".
+    expect(service).toContain('root.actionableFailure(');
+    expect(service).toContain('root.processError, root.actionableFailure(root.processOutput');
+    expect(service).toContain('stream.length > 4096');
+    expect(service).toContain('message.length > 500');
+    expect(service).toContain('"Could not install the update" : "Could not check for updates"');
+    expect(service).not.toMatch(/errorMessage\s*=\s*(?:root\.)?processError\b/u);
     expect(helper).toContain('command_name=update:check');
     expect(helper).toContain('command_name=update');
     expect(helper).not.toMatch(/eval\b|bearer|token/iu);

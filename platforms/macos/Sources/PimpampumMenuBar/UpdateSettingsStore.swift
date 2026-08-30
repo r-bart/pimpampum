@@ -12,6 +12,15 @@ struct DesktopUpdateStatus: Decodable, Equatable, Sendable {
 struct UpdateCommandOutput: Equatable, Sendable {
   let exitCode: Int32
   let standardOutput: Data
+  // The CLI prints success data on stdout and its typed error envelope on stderr, so a failing
+  // run is only diagnosable when both streams come back.
+  let standardError: Data
+
+  init(exitCode: Int32, standardOutput: Data, standardError: Data = Data()) {
+    self.exitCode = exitCode
+    self.standardOutput = standardOutput
+    self.standardError = standardError
+  }
 }
 
 protocol UpdateCommandRunning: Sendable {
@@ -171,7 +180,7 @@ final class UpdateSettingsStore: ObservableObject {
       )
       guard output.exitCode == 0 else {
         throw UpdateSettingsError.commandFailed(
-          Self.failureMessage(from: output.standardOutput, operation: operation)
+          Self.failureMessage(from: output, operation: operation)
         )
       }
       guard
@@ -189,28 +198,40 @@ final class UpdateSettingsStore: ObservableObject {
     }
   }
 
-  // The CLI prints a typed envelope on stdout for local failures, so the panel shows the real
-  // cause instead of a connection guess. Flattening it here would report a failed service
-  // reconciliation as a network problem.
-  nonisolated static func failureMessage(from output: Data, operation: UpdateOperation) -> String {
-    guard
-      let failure = try? JSONDecoder().decode(DesktopUpdateFailureEnvelope.self, from: output),
-      !failure.error.message.isEmpty
-    else { return operation.genericFailure }
-    // A healthy installation ships the app and the CLI from one npm package, so the CLI always
-    // knows these commands. `bad_request` means the app is newer than the CLI beside it, which
-    // happens when the signed app is downloaded from Releases. Quoting "Unknown command" would
-    // hand the user a fact they cannot act on; reinstalling is the repair.
-    if failure.error.code == "bad_request" { return UpdateSettingsError.unavailable.message }
-    return bounded(failure.error.message)
+  // `src/cli.ts` writes the typed envelope to stderr, so a failing run leaves stdout empty. Reading
+  // stdout alone reported every npm refusal as "Check your connection and retry". Both streams are
+  // read, so the panel keeps working if the CLI ever moves the envelope to stdout.
+  nonisolated static func failureMessage(from output: UpdateCommandOutput, operation: UpdateOperation)
+    -> String
+  {
+    for stream in [output.standardError, output.standardOutput] {
+      guard
+        let failure = try? JSONDecoder().decode(DesktopUpdateFailureEnvelope.self, from: stream),
+        !failure.error.message.isEmpty
+      else { continue }
+      // A healthy installation ships the app and the CLI from one npm package, so the CLI always
+      // knows these commands. `bad_request` means the app is newer than the CLI beside it, which
+      // happens when the signed app is downloaded from Releases. Quoting "Unknown command" would
+      // hand the user a fact they cannot act on; reinstalling is the repair.
+      if failure.error.code == "bad_request" { return UpdateSettingsError.unavailable.message }
+      return bounded(failure.error.message)
+    }
+    return operation.genericFailure
   }
 
   // The CLI quotes npm output in some messages, and npm output is only bounded at 1 MB. The
   // panel is the last place that text passes through, so it clamps what it renders.
   nonisolated static let maximumMessageLength = 240
 
+  // npm text is arbitrary and may arrive with newlines or control characters. The panel renders one
+  // line, so collapse the whitespace before clamping the length.
   nonisolated static func bounded(_ message: String) -> String {
-    message.count <= maximumMessageLength ? message : "\(message.prefix(maximumMessageLength))…"
+    let collapsed = message
+      .components(separatedBy: CharacterSet.whitespacesAndNewlines.union(.controlCharacters))
+      .filter { !$0.isEmpty }
+      .joined(separator: " ")
+    return collapsed.count <= maximumMessageLength
+      ? collapsed : "\(collapsed.prefix(maximumMessageLength))…"
   }
 
   private func loadReceipt() throws -> DesktopUpdateReceipt {

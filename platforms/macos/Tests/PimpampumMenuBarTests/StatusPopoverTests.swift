@@ -294,7 +294,7 @@ struct StatusPopoverTests {
     #expect(StatusPopover.bodyMaximumHeight == 480)
     #expect(StatusPopover.contentTitleLineLimit == 2)
     #expect(StatusPopover.metadataLineLimit == 1)
-    #expect(PimpampumBrand.versionText() == "Version 1.1.1")
+    #expect(PimpampumBrand.versionText() == "Version 1.1.2")
   }
 
   @Test

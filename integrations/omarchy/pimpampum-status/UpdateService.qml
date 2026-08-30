@@ -39,17 +39,39 @@ Item {
     }
   }
 
+  function isObject(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+  }
+
+  // The CLI writes its typed envelope to stderr and leaves stdout empty on a failure, so a reader
+  // that only parsed stdout reported every npm refusal as a generic message. Same bounds as
+  // BackupService: the text comes from npm and is rendered on one line of the popout.
+  function actionableFailure(stream, fallback) {
+    if (typeof stream !== "string" || stream.length === 0 || stream.length > 4096) return fallback
+    try {
+      var envelope = JSON.parse(stream)
+      if (!isObject(envelope) || !isObject(envelope.error)) return fallback
+      var message = envelope.error.message
+      if (typeof message !== "string" || message.length === 0 || message.length > 500)
+        return fallback
+      message = message.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+        .replace(/\s+/g, " ").trim()
+      return message.length > 0 ? message : fallback
+    } catch (error) {
+      return fallback
+    }
+  }
+
   function handleExit(exitCode) {
     if (exitCode !== 0) {
       root.state = "error"
-      try {
-        var failure = JSON.parse(root.processOutput)
-        root.errorMessage = failure.error && failure.error.message
-          ? failure.error.message : "Could not check for updates"
-      } catch (error) {
-        root.errorMessage = root.processError.indexOf("CLI unavailable") !== -1
-          ? "Pimpampum CLI is unavailable. Reinstall Pimpampum and retry."
-          : "Could not check for updates"
+      var fallback = root.operation === "install"
+        ? "Could not install the update" : "Could not check for updates"
+      if (root.processError.indexOf("CLI unavailable") !== -1) {
+        root.errorMessage = "Pimpampum CLI is unavailable. Reinstall Pimpampum and retry."
+      } else {
+        root.errorMessage = root.actionableFailure(
+          root.processError, root.actionableFailure(root.processOutput, fallback))
       }
       console.warn("Pimpampum update command failed with exit code", exitCode)
       return

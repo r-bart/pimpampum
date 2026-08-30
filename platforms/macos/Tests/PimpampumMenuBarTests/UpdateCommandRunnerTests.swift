@@ -5,8 +5,8 @@ import Testing
 
 // LocalUpdateCommandRunner is excluded from the coverage manifest because it only drives
 // `Process`. These tests run real processes, which is the only way to prove the properties the
-// covered store depends on: the exit code arrives, stdout arrives whole, and a child that writes
-// heavily to the stream we ignore cannot deadlock the read.
+// covered store depends on: the exit code arrives, both streams arrive whole, and a child that
+// writes heavily to one of them cannot deadlock the read of the other.
 @Suite
 struct UpdateCommandRunnerTests {
   private let shell = URL(fileURLWithPath: "/bin/sh")
@@ -23,6 +23,27 @@ struct UpdateCommandRunnerTests {
       String(decoding: output.standardOutput, as: UTF8.self)
         == #"{"data":{"updateAvailable":false}}"#
     )
+    #expect(output.standardError.isEmpty)
+  }
+
+  // The shape `src/cli.ts` actually produces: the typed envelope on stderr, stdout empty. Reading
+  // stdout alone turned every npm refusal into "Check your connection and retry".
+  @Test
+  func readsTheEnvelopeTheCliWritesToStderr() async throws {
+    let output = try await LocalUpdateCommandRunner().run(
+      executable: shell,
+      arguments: [
+        "-c",
+        #"printf '{"error":{"code":"unavailable","message":"Pimpampum update failed: notarget"}}' >&2; exit 1"#,
+      ]
+    )
+
+    #expect(output.exitCode == 1)
+    #expect(output.standardOutput.isEmpty)
+    #expect(
+      UpdateSettingsStore.failureMessage(from: output, operation: .install)
+        == "Pimpampum update failed: notarget"
+    )
   }
 
   @Test
@@ -33,16 +54,14 @@ struct UpdateCommandRunnerTests {
     )
 
     #expect(output.exitCode == 1)
-    #expect(
-      UpdateSettingsStore.failureMessage(from: output.standardOutput, operation: .install) == "boom"
-    )
+    #expect(UpdateSettingsStore.failureMessage(from: output, operation: .install) == "boom")
   }
 
-  // npm writes its warnings to stderr. An unread `Pipe` fills after roughly 64 KB, the child
-  // blocks on write, and stdout never reaches EOF. This asks for 1 MB, so the test hangs until
-  // the time limit if the adapter ever goes back to piping a stream nobody drains.
+  // An unread pipe fills after roughly 64 KB and the child blocks on write. Each of these asks for
+  // 1 MB on one stream while the answer arrives on the other, so the test hangs until the time
+  // limit if the adapter ever stops draining both pipes at the same time.
   @Test(.timeLimit(.minutes(1)))
-  func survivesAChildThatFloodsTheIgnoredStream() async throws {
+  func survivesAChildThatFloodsStderr() async throws {
     let output = try await LocalUpdateCommandRunner().run(
       executable: shell,
       arguments: [
@@ -52,9 +71,27 @@ struct UpdateCommandRunnerTests {
     )
 
     #expect(output.exitCode == 0)
+    #expect(output.standardError.count == 655_360)
     #expect(
       String(decoding: output.standardOutput, as: UTF8.self)
         == #"{"data":{"currentVersion":"1.1.0","latestVersion":"1.1.0","updateAvailable":false}}"#
+    )
+  }
+
+  @Test(.timeLimit(.minutes(1)))
+  func survivesAChildThatFloodsStdout() async throws {
+    let output = try await LocalUpdateCommandRunner().run(
+      executable: shell,
+      arguments: [
+        "-c",
+        #"i=0; while [ $i -lt 16384 ]; do printf 'progress progress progress progress pad\n'; i=$((i+1)); done; printf '{"error":{"message":"drowned but heard"}}' >&2; exit 1"#,
+      ]
+    )
+
+    #expect(output.exitCode == 1)
+    #expect(output.standardOutput.count == 655_360)
+    #expect(
+      UpdateSettingsStore.failureMessage(from: output, operation: .check) == "drowned but heard"
     )
   }
 
