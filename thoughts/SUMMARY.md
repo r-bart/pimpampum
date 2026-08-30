@@ -40,6 +40,8 @@
   can produce one, and "Unknown command: update:check" is not something a user can act on.
 - Added `UpdateCommandRunnerTests`: real processes that prove the exit code and stdout survive a
   failing run and that a child flooding stderr cannot deadlock the read.
+- Bumped the release to `1.1.1` and aligned the macOS bundle, Omarchy manifest, MCP registry
+  metadata, README, and website with it, then re-approved the checked-in macOS artifact.
 
 ## Key Decisions
 
