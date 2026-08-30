@@ -50,6 +50,11 @@
 - `UpdateService.qml` gained `actionableFailure`, the bounded stderr reader `BackupService.qml`
   already used, and an install-specific fallback.
 - Bumped the release to `1.1.2`.
+- Measured the fix against the installed CLI on macOS with the shipped adapter logic. A failing
+  `pimpampum update` returns exit 1 with 0 bytes on stdout and 383 on stderr, and the new reader
+  produces "Pimpampum update failed: notarget No matching version found for pimpampum@1.1.2 with
+  a date before 8/23/2026, 3:00:24 PM." The empty stdout is exactly why 1.1.1 showed a generic
+  message. The panel itself still has to be exercised against the shipped 1.1.2 artifact.
 
 ## Key Decisions
 
