@@ -55,6 +55,18 @@
   produces "Pimpampum update failed: notarget No matching version found for pimpampum@1.1.2 with
   a date before 8/23/2026, 3:00:24 PM." The empty stdout is exactly why 1.1.1 showed a generic
   message. The panel itself still has to be exercised against the shipped 1.1.2 artifact.
+- Closed the documentation drift the update work left behind. The README `CLI reference` block
+  never listed `update:check` and `update`, and both the main README and the Omarchy plugin
+  README still described the panels as read-only apart from synchronization and backup.
+- Added a guard so that block cannot drift again: `test/cli-agent-surface.test.ts` compares the
+  README fence with `renderUsage(PIMPAMPUM_VERSION)`. Removing one usage line fails the test.
+- Corrected the README MCP catalog. It announced a canonical 32-tool catalog, but a live
+  `tools/list` returns 36 over HTTP: the daemon registers `sync_status`, `sync_now`,
+  `sync_conflict_list`, and `sync_conflict_read`, which `docs/mcp-tools.md` already documented.
+  The stdio bridge builds its server without the sync gateway and still returns 32, so the README
+  now states both counts and where each applies.
+- Corrected the OpenAPI paragraph, which claimed to list every documented operation and omitted
+  the portfolio overview and synchronization. The live document exposes 44 paths.
 
 ## Key Decisions
 

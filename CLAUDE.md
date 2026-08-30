@@ -106,6 +106,9 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - ALWAYS commit macOS build inputs before `npm run approve:macos`; the gate records `sourceGitCommit` and refuses a dirty tree.
 - NEVER derive a test fixture path from `process.cwd()`'s parent; it silently binds the test to the checkout directory name. Build a temporary directory instead.
 - ALWAYS mirror a new `HelpDialogCopy.items` entry in `HelpDialogTests`; that list is frozen copy and the macOS CI job runs `npm run test:macos`.
+- ALWAYS regenerate the README `CLI reference` block from `pimpampum help` when you touch `src/cliCommands.ts`; `test/cli-agent-surface.test.ts` compares the whole block and a new verb otherwise ships undocumented.
+- ALWAYS update `integrations/omarchy/pimpampum-status/README.md` and the `Native status surfaces` section of `README.md` when a settings card gains a write action; both still claimed the panels were read-only apart from sync and backup after updates shipped.
+- NEVER document an MCP tool count from `src/mcp.ts` alone; the daemon registers four `sync_*` tools that `src/mcpStdio.ts` does not, so a live `tools/list` returns 36 over HTTP and 32 over stdio.
 
 ## Self-Improvement
 

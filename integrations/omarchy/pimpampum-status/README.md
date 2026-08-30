@@ -4,8 +4,8 @@ This native `bar-widget` gives Omarchy Quattro a compact view of the single
 Pimpampum instance running for the current user. It shows semantic
 project health, active-claim count, active work, specs in progress, available work, and a collapsed
 completed-spec group. Selecting a project or spec opens its registered workspace root with
-`xdg-open`. Settings contains separate Synchronization and Backup cards. Help is a dedicated page
-opened from the persistent footer.
+`xdg-open`. Settings contains separate Updates, Synchronization, Backup, and service cards. Help is
+a dedicated page opened from the persistent footer.
 
 The integration targets the Quattro plugin contract pinned at Omarchy commit
 `0ae1694830b6bd9511042fe1b89a0062d8c083cb`. Waybar is not supported.
@@ -20,10 +20,10 @@ Clicking opens one bounded 380-unit native `PopupCard`. Its Portfolio view is or
 state, Active work, Specs in progress, Projects, and collapsed Completed specs. Active work names
 the claimed task plus its project, Spec, agent, and lease; in-progress Specs remain visible without
 an active claim and show completed versus total tasks. **Settings** switches the same card to a
-dedicated second view showing Synchronization and Backup controls directly, without nested
-disclosures. The fixed footer opens Help on the left and stops or starts Pimpampum on the right. A
-44-unit vector header icon opens Settings and changes to a back arrow on internal pages, without
-opening a competing Quattro popout.
+dedicated second view showing Updates, Synchronization, and Backup controls directly, without
+nested disclosures. The fixed footer opens Help on the left and stops or starts Pimpampum on the
+right. A 44-unit vector header icon opens Settings and changes to a back arrow on internal pages,
+without opening a competing Quattro popout.
 Horizontal bars place mark and count side by side;
 vertical bars stack them. Project rows open the exact registered workspace root.
 
@@ -34,6 +34,9 @@ vertical bars stack them. Project rows open the exact registered workspace root.
   canonical Node, CLI, data-directory, host, and port configuration.
   Authentication remains inside the CLI and no bearer token enters QML,
   settings, or process arguments.
+- Update actions launch the bounded `pimpampum-update` helper. It accepts only `check` and
+  `install`, and maps them to `pimpampum update:check` and `pimpampum update`. The helper takes no
+  version, registry, or path argument, so the popout cannot select what gets installed.
 - Backup actions launch the separate receipt-owned `pimpampum-backup` helper.
   It accepts only `status`, `configure <absolute-directory>`, `retry`, and
   `disable`, delegates to the canonical JSON CLI contract, and passes the
@@ -47,7 +50,8 @@ vertical bars stack them. Project rows open the exact registered workspace root.
 - Workspace paths are accepted only when absolute and are passed to `xdg-open`
   as one argument. They are never evaluated as shell source.
 - The UI exposes no project, task, or claim mutation. Its writes are limited to the fixed service
-  lifecycle and daemon-owned synchronization and automatic-backup preferences.
+  lifecycle, the fixed update installation, and daemon-owned synchronization and automatic-backup
+  preferences.
 - Plugin installation, ownership checks, lifecycle locking, rollback, status,
   and removal are owned by the same `pimpampum` CLI lifecycle.
 
@@ -70,6 +74,16 @@ The repository-local `install.sh` remains only as a convenience wrapper. It
 executes `pimpampum install`; it does not own a second installation path. The
 installed overview and backup helpers do not depend on the graphical session's
 `PATH`.
+
+## Update settings
+
+Open **Settings** and use the **Updates** card. **Check for updates** is read-only. When npm
+publishes a newer release the button becomes **Install update**, which installs it and reconciles
+the background service and the plugin.
+
+A failure shows the reason the CLI reported, not a guess. The CLI writes its typed error envelope
+to stderr, so the card reads that stream first and falls back to stdout. A registry policy, a
+permission error, and an offline machine therefore read as three different messages.
 
 ## Backup settings
 

@@ -315,7 +315,7 @@ workspace_resolve
   → work_complete or work_release
 ```
 
-The canonical 32-tool catalog is:
+The canonical catalog holds 32 domain tools:
 
 ```text
 workspace_list          workspace_resolve
@@ -338,6 +338,16 @@ activity_list
 work_list               work_start              work_renew
 work_release            work_complete
 ```
+
+The daemon adds four synchronization tools, so `tools/list` returns 36 over HTTP:
+
+```text
+sync_status             sync_now
+sync_conflict_list      sync_conflict_read
+```
+
+The stdio bridge exposes the 32 domain tools only. A stdio session starts at `workspace_resolve`;
+`sync_status` is available to HTTP clients alone.
 
 No transitional aliases are exposed. The live MCP `tools/list` result is authoritative and
 includes strict schemas, defaults, descriptions, bounds, and effect annotations. The full human
@@ -414,10 +424,11 @@ The public loopback OpenAPI 3.1 document is available at:
 GET http://127.0.0.1:7337/openapi.json
 ```
 
-It documents all Workspace, Project, Spec, Task, scoped Context, work, activity, backup, and export
-operations. `/health` and `/openapi.json` are the only unauthenticated routes. Ordinary success
-envelopes use HTTP schema version 1; the independently versioned portfolio overview uses schema
-version 2 because the macOS and Omarchy clients validate it strictly.
+It documents all Workspace, Project, Spec, Task, scoped Context, work, activity, portfolio
+overview, synchronization, backup, and export operations. `/health` and `/openapi.json` are the
+only unauthenticated routes. Ordinary success envelopes use HTTP schema version 1; the
+independently versioned portfolio overview uses schema version 2 because the macOS and Omarchy
+clients validate it strictly.
 
 Domain Model v2 deliberately keeps the pre-release `/api/v1` route prefix. The version of the
 resource model and the URL prefix are separate boundaries. A minimal HTTP creation flow is:
@@ -466,6 +477,8 @@ Usage:
   pimpampum mcp
   pimpampum install [--service-only]
   pimpampum status
+  pimpampum update:check
+  pimpampum update
   pimpampum uninstall
   pimpampum health
   pimpampum overview
@@ -521,18 +534,19 @@ On **macOS 13+ on Apple Silicon**, download the signed menu-bar app and follow i
 setup, or install the complete bundle directly with `pimpampum install`. The menu shows portfolio
 status, active Claims, current Spec/Task work, and every Project. Green means the
 portfolio is terminal; an active badge means an agent owns work; an error means the daemon needs
-attention. Click a Project to open its Workspace in Finder. **Settings…** configures automatic
-synchronization and backup. **Quit** closes the menu app and deliberately leaves the daemon running.
+attention. Click a Project to open its Workspace in Finder. **Settings…** configures updates,
+automatic synchronization, and backup. **Quit** closes the menu app and deliberately leaves the
+daemon running.
 The published app is signed and notarized; a locally built development app is not. The app has no
 Dock icon. It knows its place.
 
 On **Omarchy Quattro**, installation adds a dedicated Quickshell widget and systemd user service.
 The bar shows the same portfolio state and Claim count. Its popout lists current work and Projects,
-opens Workspaces with `xdg-open`, and exposes the same backup controls. Other Linux desktops receive
-the background service without the Quattro widget.
+opens Workspaces with `xdg-open`, and exposes the same update and backup controls. Other Linux
+desktops receive the background service without the Quattro widget.
 
-Both status clients are read-only apart from synchronization and backup settings. Agents do the work; the status bar
-simply tells you whether they are doing it.
+Both status clients are read-only apart from update, synchronization, and backup settings. Agents
+do the work; the status bar simply tells you whether they are doing it.
 
 ## Persistence, backup, and export
 
