@@ -80,6 +80,10 @@
   the SwiftUI composition and the window controller and is now a recorded exclusion.
 - Bumped the release to `1.1.3` and aligned the macOS bundle and brand fallback, the Omarchy
   manifest, the MCP registry metadata, the README, and the website.
+- Regenerated `thoughts/evidence/macos-live.json` against the 1.1.3 bundle. The live smoke refuses
+  to run while a user installation exists, so the local integration was uninstalled first and
+  restored afterwards. The user's database was never touched: the smoke uses a temporary
+  `PIMPAMPUM_DATA_DIR`, and `~/.pimpampum/pimpampum.sqlite` kept its 2026-08-26 mtime.
 
 ## Key Decisions
 
@@ -133,8 +137,12 @@ requirements issues. The changes are ready to commit and push.
   exercises only the popover and the Settings window. The panel was verified by hand instead.
 - Nothing has ever run `Install update` against the real registry, on either platform. The next
   published release is the first chance to exercise it end to end.
-- `thoughts/evidence/macos-live.json` is bound to the previous binary. Only `release.yml` runs
-  `check:macos-evidence`, and it regenerates the evidence first, so the release is unaffected.
+- Restoring the local installation after the smoke needed three attempts. `pimpampum install`
+  failed with `Timed out waiting for macOS login item registration` while it copied the app into
+  `~/Applications` for the first time; the handshake budget is 10 seconds (100 polls of 100 ms).
+  It then succeeded in one second once the app was already in place. The cause was not
+  established: it may be LaunchServices re-registering a path the smoke had just removed. Nothing
+  in the shipped code changed, and a first install on a clean machine passes inside the smoke.
 - `pimpampum update` cannot succeed on this machine: `minimum-release-age` in the user's `.npmrc`
   makes `npm install --global pimpampum@1.1.0` fail with `ETARGET`. The panel now quotes that
   reason. It is a local npm policy, not a defect.

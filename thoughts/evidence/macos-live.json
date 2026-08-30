@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
-  "testedAt": "2026-08-29T09:26:23.054Z",
+  "testedAt": "2026-08-30T21:41:00.858Z",
   "platform": "macOS",
   "architecture": "arm64",
-  "gitCommit": "fc6fc17df328375b965f665193bd37610c7e3a26",
-  "sourceInputSha256": "b6e6fde54f79f9ae9c60dc625f5dcbfd04321befece701c2e1b8cda06529c9e7",
-  "appSha256": "3eed23d206a75950146db6dc365364f2eaaced4e24e8fa94824aadb94849a8d8",
+  "gitCommit": "58ca5ae3a3a0f458cc28421e1562760eaa4b7791",
+  "sourceInputSha256": "ddccb6537d2d47159e141240d98e687d78d82659afaf081c8557e871e89e1ab0",
+  "appSha256": "7aea24abc96c472cef49c00907ff67ad7392ebbfc7179634ef3e4cfb429ff0ca",
   "compactMarkSha256": "5d9f558de031b9a3c4ed1052e093fb235f9a077d077c9a027286975d4a84f463",
   "loginItem": "enabled",
   "checks": {

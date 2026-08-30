@@ -109,6 +109,7 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - ALWAYS regenerate the README `CLI reference` block from `pimpampum help` when you touch `src/cliCommands.ts`; `test/cli-agent-surface.test.ts` compares the whole block and a new verb otherwise ships undocumented.
 - ALWAYS update `integrations/omarchy/pimpampum-status/README.md` and the `Native status surfaces` section of `README.md` when a settings card gains a write action; both still claimed the panels were read-only apart from sync and backup after updates shipped.
 - NEVER document an MCP tool count from `src/mcp.ts` alone; the daemon registers four `sync_*` tools that `src/mcpStdio.ts` does not, so a live `tools/list` returns 36 over HTTP and 32 over stdio.
+- ALWAYS uninstall the local integration before `PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos`; it refuses to run beside a user installation, and restoring one afterwards can need a retry because the login handshake allows only 10 seconds.
 
 ## Self-Improvement
 
