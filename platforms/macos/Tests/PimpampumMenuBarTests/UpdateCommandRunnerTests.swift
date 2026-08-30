@@ -15,7 +15,8 @@ struct UpdateCommandRunnerTests {
   func returnsStdoutAndASuccessfulExitCode() async throws {
     let output = try await LocalUpdateCommandRunner().run(
       executable: shell,
-      arguments: ["-c", #"printf '{"data":{"updateAvailable":false}}'"#]
+      arguments: ["-c", #"printf '{"data":{"updateAvailable":false}}'"#],
+      timeout: nil
     )
 
     #expect(output.exitCode == 0)
@@ -35,7 +36,8 @@ struct UpdateCommandRunnerTests {
       arguments: [
         "-c",
         #"printf '{"error":{"code":"unavailable","message":"Pimpampum update failed: notarget"}}' >&2; exit 1"#,
-      ]
+      ],
+      timeout: nil
     )
 
     #expect(output.exitCode == 1)
@@ -50,7 +52,8 @@ struct UpdateCommandRunnerTests {
   func keepsStdoutOnAFailingExitSoTheStoreCanReadTheEnvelope() async throws {
     let output = try await LocalUpdateCommandRunner().run(
       executable: shell,
-      arguments: ["-c", #"printf '{"error":{"message":"boom"}}'; exit 1"#]
+      arguments: ["-c", #"printf '{"error":{"message":"boom"}}'; exit 1"#],
+      timeout: nil
     )
 
     #expect(output.exitCode == 1)
@@ -67,7 +70,8 @@ struct UpdateCommandRunnerTests {
       arguments: [
         "-c",
         #"i=0; while [ $i -lt 16384 ]; do printf 'npm warn deprecated padding padding pad\n' >&2; i=$((i+1)); done; printf '{"data":{"currentVersion":"1.1.0","latestVersion":"1.1.0","updateAvailable":false}}'"#,
-      ]
+      ],
+      timeout: nil
     )
 
     #expect(output.exitCode == 0)
@@ -85,7 +89,8 @@ struct UpdateCommandRunnerTests {
       arguments: [
         "-c",
         #"i=0; while [ $i -lt 16384 ]; do printf 'progress progress progress progress pad\n'; i=$((i+1)); done; printf '{"error":{"message":"drowned but heard"}}' >&2; exit 1"#,
-      ]
+      ],
+      timeout: nil
     )
 
     #expect(output.exitCode == 1)
@@ -100,8 +105,43 @@ struct UpdateCommandRunnerTests {
     await #expect(throws: (any Error).self) {
       try await LocalUpdateCommandRunner().run(
         executable: URL(fileURLWithPath: "/nonexistent/pimpampum-node"),
-        arguments: []
+        arguments: [],
+        timeout: nil
       )
     }
+  }
+
+  // A hung `npm view` used to disable the panel until the app restarted. The child here never
+  // exits on its own, so only the deadline can end this test.
+  @Test
+  func terminatesAChildThatOutlivesItsDeadline() async throws {
+    let started = ContinuousClock.now
+
+    await #expect(throws: UpdateSettingsError.timedOut) {
+      try await LocalUpdateCommandRunner().run(
+        executable: shell,
+        arguments: ["-c", "sleep 30"],
+        timeout: .milliseconds(200)
+      )
+    }
+
+    #expect(ContinuousClock.now - started < .seconds(10))
+  }
+
+  // The deadline must not truncate a run that finishes inside it, and it must not report a
+  // timeout for a child that failed on its own.
+  @Test
+  func leavesARunThatFinishesInsideItsDeadlineUntouched() async throws {
+    let output = try await LocalUpdateCommandRunner().run(
+      executable: shell,
+      arguments: ["-c", #"printf '{"data":{"updateAvailable":false}}'; exit 3"#],
+      timeout: .seconds(30)
+    )
+
+    #expect(output.exitCode == 3)
+    #expect(
+      String(decoding: output.standardOutput, as: UTF8.self)
+        == #"{"data":{"updateAvailable":false}}"#
+    )
   }
 }
