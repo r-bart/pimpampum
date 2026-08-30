@@ -80,6 +80,11 @@
   the SwiftUI composition and the window controller and is now a recorded exclusion.
 - Bumped the release to `1.1.3` and aligned the macOS bundle and brand fallback, the Omarchy
   manifest, the MCP registry metadata, the README, and the website.
+- Readied the README for a public audience after 1.1.3 shipped. It still warned that Releases
+  downloads need read access to a private repository, named private projects and a personal
+  directory layout in its Architecture section, used `vcomp` as an example workspace that tells a
+  new reader nothing, and called the published release a candidate. Added ten discovery topics to
+  the repository, which had none.
 - Regenerated `thoughts/evidence/macos-live.json` against the 1.1.3 bundle. The live smoke refuses
   to run while a user installation exists, so the local integration was uninstalled first and
   restored afterwards. The user's database was never touched: the smoke uses a temporary
