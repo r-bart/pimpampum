@@ -49,11 +49,15 @@ struct PimpampumMenuBarApp: App {
       tokenURL: dataDirectory.appendingPathComponent("token")
     )
     let backupSettingsStore = BackupSettingsStore(client: backupClient)
+    let updateSettingsStore = UpdateSettingsStore(
+      receiptURL: dataDirectory.appendingPathComponent("install-receipt.json")
+    )
     _store = StateObject(wrappedValue: OverviewStore(reader: client))
     _settingsWindowController = StateObject(
       wrappedValue: SyncSettingsWindowController(
         syncStore: syncSettingsStore,
-        backupStore: backupSettingsStore
+        backupStore: backupSettingsStore,
+        updateStore: updateSettingsStore
       )
     )
   }

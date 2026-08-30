@@ -19,6 +19,17 @@ describe('update manager', () => {
     expect(isNewerVersion('1.2.0', '1.1.9')).toBe(true);
     expect(isNewerVersion('1.1.0', '1.1.0')).toBe(false);
     expect(isNewerVersion('1.0.9', '1.1.0')).toBe(false);
+    expect(isNewerVersion('1.1.0', '1.1.0-beta.2')).toBe(true);
+    expect(isNewerVersion('1.1.0-beta.10', '1.1.0-beta.2')).toBe(true);
+    expect(isNewerVersion('1.1.0-beta.2', '1.1.0-beta.10')).toBe(false);
+    expect(isNewerVersion('1.1.0-beta', '1.1.0')).toBe(false);
+    expect(isNewerVersion('1.1.0-beta', '1.1.0-beta')).toBe(false);
+    expect(isNewerVersion('1.1.0-beta', '1.1.0-beta.1')).toBe(false);
+    expect(isNewerVersion('1.1.0-beta.1', '1.1.0-beta')).toBe(true);
+    expect(isNewerVersion('1.1.0-1', '1.1.0-beta')).toBe(false);
+    expect(isNewerVersion('1.1.0-beta', '1.1.0-1')).toBe(true);
+    expect(isNewerVersion('1.1.0-rc', '1.1.0-beta')).toBe(true);
+    expect(isNewerVersion('1.1.0-beta', '1.1.0-rc')).toBe(false);
     expect(() => isNewerVersion('latest', '1.1.0')).toThrow('invalid Pimpampum version');
   });
 

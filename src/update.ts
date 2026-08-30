@@ -38,18 +38,38 @@ export function resolveNpmPath(
   return npmPath ? realpathSync(npmPath) : null;
 }
 
-function versionParts(version: string): number[] {
+function versionParts(version: string): { core: number[]; prerelease: string[] } {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version)) {
     throw new AppError('unavailable', `npm returned an invalid Pimpampum version: ${version}`, 503);
   }
-  return version.split('-', 1)[0]!.split('.').map(Number);
+  const [core, prerelease = ''] = version.split('-', 2);
+  return {
+    core: core!.split('.').map(Number),
+    prerelease: prerelease ? prerelease.split('.') : [],
+  };
 }
 
 export function isNewerVersion(candidate: string, current: string): boolean {
   const left = versionParts(candidate);
   const right = versionParts(current);
   for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index]! > right[index]!;
+    if (left.core[index] !== right.core[index]) return left.core[index]! > right.core[index]!;
+  }
+  if (left.prerelease.length === 0) return right.prerelease.length > 0;
+  if (right.prerelease.length === 0) return false;
+  const length = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const candidatePart = left.prerelease[index];
+    const currentPart = right.prerelease[index];
+    if (candidatePart === undefined) return false;
+    if (currentPart === undefined) return true;
+    if (candidatePart === currentPart) continue;
+    const candidateNumber = /^\d+$/u.test(candidatePart) ? Number(candidatePart) : null;
+    const currentNumber = /^\d+$/u.test(currentPart) ? Number(currentPart) : null;
+    if (candidateNumber !== null && currentNumber !== null) return candidateNumber > currentNumber;
+    if (candidateNumber !== null) return false;
+    if (currentNumber !== null) return true;
+    return candidatePart > currentPart;
   }
   return false;
 }

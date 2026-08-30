@@ -131,7 +131,9 @@ pimpampum update
 ```
 
 `update:check` is read-only. `update` installs the latest published npm release and then runs that
-new CLI's idempotent installer to reconcile the background service and desktop integration.
+new CLI's idempotent installer to reconcile the background service and desktop integration. The
+same manual controls are available under **Settings → Updates** on macOS and in the Pimpampum
+settings popout on Omarchy.
 
 On macOS, you can instead download the signed menu-bar app from GitHub Releases. Its first-run
 screen copies the runtime command and opens Terminal for you:

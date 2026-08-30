@@ -112,9 +112,13 @@ enum DesktopSmokeHarness {
         tokenURL: dataDirectory.appendingPathComponent("token")
       )
       let syncStore = SyncSettingsStore(client: syncClient)
+      let updateStore = UpdateSettingsStore(
+        receiptURL: dataDirectory.appendingPathComponent("install-receipt.json")
+      )
       let settingsWindowController = SyncSettingsWindowController(
         syncStore: syncStore,
         backupStore: backupStore,
+        updateStore: updateStore,
         showBackupInitially: true
       )
       if request.controlLabel == "Settings…" {

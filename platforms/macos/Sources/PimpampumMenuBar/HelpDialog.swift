@@ -51,7 +51,7 @@ enum HelpDialogCopy {
     HelpDialogItem(
       id: "updates",
       systemImage: "arrow.down.circle",
-      text: "Run pimpampum update:check to check for a release, then pimpampum update to install it without deleting local data."
+      text: "Check and install releases from Settings > Updates without deleting local data. The same actions are available as pimpampum update:check and pimpampum update."
     ),
   ]
 }
