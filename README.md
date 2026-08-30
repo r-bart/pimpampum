@@ -186,8 +186,8 @@ app, `SHA256SUMS`, and release notes. The macOS app is the recommended native do
 onboarding guides the user through the npm runtime installation and detects the daemon as soon as
 it is ready.
 
-GitHub downloads from a private repository require read access. The public npm package remains the
-canonical runtime channel because it carries the daemon, CLI, MCP bridge, and Omarchy integration.
+The npm package remains the canonical runtime channel because it carries the daemon, CLI, MCP
+bridge, and Omarchy integration.
 Source-built macOS apps are unsigned development artifacts; published V1 artifacts pass Developer
 ID signing, notarization, and Gatekeeper checks.
 
