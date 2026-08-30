@@ -27,6 +27,8 @@ const errorGuidance: Partial<Record<ErrorCode, string>> = {
   not_found: 'Verify the resource ID or resolve the current workspace again.',
   revision_conflict: 'Read the latest manifest, then retry with its current revision.',
   unauthorized: 'Verify the daemon bearer token used by the MCP transport or stdio bridge.',
+  unavailable:
+    'The local daemon did not answer. Run `pimpampum status`; if it is not installed or not running, run `pimpampum install`, then retry.',
 };
 
 const fallbackGuidance =
@@ -104,6 +106,7 @@ function isErrorCode(value: unknown): value is ErrorCode {
     value === 'invalid_state' ||
     value === 'unauthorized' ||
     value === 'payload_too_large' ||
+    value === 'unavailable' ||
     value === 'internal_error'
   );
 }

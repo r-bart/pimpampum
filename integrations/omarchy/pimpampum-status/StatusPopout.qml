@@ -12,6 +12,7 @@ Item {
   required property var backupService
   required property var syncService
   required property var serviceControl
+  required property var updateService
   property bool opened: false
   property bool settingsView: false
   property bool helpView: false
@@ -36,8 +37,12 @@ Item {
   readonly property bool folderDialogOpen: folderPicker.running
   readonly property bool folderDialogAvailable: pickerHelperPath.charAt(0) === "/"
 
-  readonly property color foreground: bar ? bar.barForeground : "white"
-  readonly property color background: bar ? bar.background : "#202020"
+  // The popout draws on the popup card Omarchy paints with Color.popups.background, not on
+  // the wallpaper. bar.barForeground is resolved against whatever is behind a transparent
+  // bar, and on a light wallpaper over a dark theme it equals the card's own background,
+  // which rendered every label invisible. The popup tokens are what native panels use.
+  readonly property color foreground: Color.popups.text
+  readonly property color background: Color.popups.background
   readonly property color urgent: bar ? bar.urgent : "#ff5f57"
   readonly property color accent: Color.accent
   readonly property string fontFamily: bar ? bar.fontFamily : "monospace"
@@ -310,7 +315,6 @@ Item {
             activeClaims: root.service.activeClaims
             showActiveCount: false
             foreground: root.foreground
-            contrastBackground: root.background
             urgent: root.urgent
             activeColor: "#3b82f6"
             availableColor: "#f59e0b"
@@ -390,7 +394,9 @@ Item {
         }
 
         Text {
-          visible: !root.settingsView && root.service.connectionState !== "online"
+          visible: !root.settingsView
+            && root.service.connectionState !== "online"
+            && root.service.connectionState !== "credentials"
           width: parent.width
           wrapMode: Text.Wrap
           maximumLineCount: 3
@@ -399,6 +405,66 @@ Item {
           color: root.urgent
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
+        }
+
+        Item {
+          visible: !root.settingsView && root.service.connectionState === "credentials"
+          width: parent.width
+          height: credentialsState.implicitHeight + Style.space(16)
+
+          Column {
+            id: credentialsState
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(8)
+
+            Column {
+              width: parent.width
+              spacing: Style.space(3)
+
+              Text {
+                text: "Authentication required"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: root.service.errorMessage
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            Rectangle {
+              width: parent.width
+              height: credentialsCommand.implicitHeight + Style.space(14)
+              radius: Style.space(4)
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+              border.width: 1
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+              Text {
+                id: credentialsCommand
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(10)
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                wrapMode: Text.WrapAnywhere
+                text: "pimpampum install"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+            }
+          }
         }
 
         Text {
@@ -413,14 +479,79 @@ Item {
           font.pixelSize: Style.font.bodySmall
         }
 
-        Text {
+        // A first run is not an error report: headline, one line of explanation, and the
+        // command that resolves it on its own surface, so the shell verb is never read as
+        // prose. The wrapper adds the breathing room a lone Text could not take from the
+        // column spacing.
+        Item {
           visible: !root.settingsView && root.service.overview && root.service.overview.counts.projects === 0
-          text: root.service.overview && root.service.overview.counts.workspaces === 0
-            ? "No workspaces. Run: pimpampum workspace:add"
-            : "No projects"
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
+          width: parent.width
+          height: emptyState.implicitHeight + Style.space(16)
+
+          Column {
+            id: emptyState
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            // Headline and explanation are one unit at the tight inner spacing; the command
+            // is a separate affordance and gets the wider outer gap.
+            spacing: Style.space(8)
+
+            readonly property bool noWorkspaces:
+              root.service.overview && root.service.overview.counts.workspaces === 0
+
+            Column {
+              width: parent.width
+              spacing: Style.space(3)
+
+              Text {
+                text: emptyState.noWorkspaces ? "No workspaces" : "No projects"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: emptyState.noWorkspaces
+                  ? "Register a folder as a workspace to start tracking projects."
+                  : "Projects appear here as your agents create them."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            // A translucent foreground fill composites over whatever popup background the
+            // theme paints, so one value works light and dark. The command wraps rather
+            // than elides: a truncated command is worse than a taller card.
+            Rectangle {
+              visible: emptyState.noWorkspaces
+              width: parent.width
+              height: emptyCommand.implicitHeight + Style.space(14)
+              radius: Style.space(4)
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+              border.width: 1
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+              Text {
+                id: emptyCommand
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(10)
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                wrapMode: Text.WrapAnywhere
+                text: "pimpampum workspace:add"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+            }
+          }
         }
 
         Text {
@@ -775,6 +906,38 @@ Item {
           visible: root.settingsView && !root.helpView
           width: parent.width
           spacing: Style.space(10)
+
+          Rectangle {
+            width: parent.width
+            height: updateCard.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            Column {
+              id: updateCard
+              anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+              anchors.margins: Style.space(14); spacing: Style.space(8)
+              Text { text: "Updates"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true }
+              Text {
+                width: parent.width; wrapMode: Text.Wrap; color: root.foreground; opacity: 0.72
+                font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                text: root.updateService.state === "available" ? "Pimpampum " + root.updateService.latestVersion + " is available."
+                  : root.updateService.state === "current" ? "Pimpampum is up to date."
+                  : root.updateService.state === "installing" ? "Installing and restarting Pimpampum…"
+                  : root.updateService.errorMessage !== "" ? root.updateService.errorMessage
+                  : "Check npm for a newer release. Nothing changes until you install it."
+              }
+              PimpampumSettingsButton {
+                width: parent.width; height: implicitHeight
+                label: root.updateService.updateAvailable ? "Install update" : root.updateService.busy ? "Checking…" : "Check for updates"
+                primary: root.updateService.updateAvailable
+                foreground: root.foreground; background: root.background; accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                actionEnabled: !root.updateService.busy
+                onTriggered: root.updateService.run(root.updateService.updateAvailable ? "install" : "check")
+              }
+            }
+          }
 
           Rectangle {
             width: parent.width
@@ -1449,6 +1612,39 @@ Item {
                 width: parent.width
                 wrapMode: Text.Wrap
                 text: "Pause stops synchronization temporarily. Forget disconnects this computer without deleting shared snapshots or local data. Disabling backup stops new copies without deleting the existing backup file."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
+          Rectangle {
+            width: parent.width
+            height: helpUpdates.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            Column {
+              id: helpUpdates
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(14)
+              spacing: Style.space(6)
+              Text {
+                text: "Updates"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Run pimpampum update:check to check for a release, then pimpampum update to install it. Your local data is preserved."
                 color: root.foreground
                 opacity: 0.72
                 font.family: root.fontFamily

@@ -1,3 +1,5 @@
+import { PIMPAMPUM_VERSION } from './version.js';
+
 type JsonSchema = Record<string, unknown>;
 type Operation = Record<string, unknown>;
 
@@ -180,7 +182,7 @@ export const openApiDocument: OpenApiDocument = {
   openapi: '3.1.0',
   info: {
     title: 'Pimpampum Local API',
-    version: '1.0.0',
+    version: PIMPAMPUM_VERSION,
     summary: 'Minimal local portfolio coordination for humans and software agents.',
     description:
       'One machine-local daemon owns Workspaces, Project initiatives, executable Markdown Specs, Tasks, one-level Subtasks, scoped Context, expiring Claims, backup, and export. Writes use optimistic revisions. Project is never an alias for a PRD; a PRD is one possible kind of Spec.',

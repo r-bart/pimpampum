@@ -60,6 +60,10 @@ Item {
       fail("Pimpampum returned invalid backup status")
       return
     }
+    // The CLI wraps every success in {data}. Older installations emitted the payload
+    // bare, so both shapes are accepted. A status payload never carries a data key.
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        && parsed.data && typeof parsed.data === "object") parsed = parsed.data
     if (!validateStatus(parsed)) {
       fail("Pimpampum returned invalid backup status")
       return

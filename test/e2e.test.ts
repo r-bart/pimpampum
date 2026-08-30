@@ -19,6 +19,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AutomaticBackupStatus } from '../src/backupContract.js';
+import { PIMPAMPUM_VERSION } from '../src/version.js';
 import type {
   ContextDocument,
   Overview,
@@ -67,11 +68,25 @@ function executeCli<T>(environment: NodeJS.ProcessEnv, ...arguments_: string[]):
         reject(new Error(`CLI ${arguments_[0] ?? ''} failed (${String(code)}): ${stderr}`));
         return;
       }
+      let envelope: unknown;
       try {
-        resolveResult(JSON.parse(stdout) as T);
+        envelope = JSON.parse(stdout) as unknown;
       } catch (error) {
         reject(new Error(`CLI returned invalid JSON: ${stdout}`, { cause: error }));
+        return;
       }
+      // Unwrapping here asserts the envelope contract on every CLI call this suite makes:
+      // a success is always exactly one {"data": ...} object on stdout.
+      if (
+        typeof envelope !== 'object' ||
+        envelope === null ||
+        Object.keys(envelope).length !== 1 ||
+        !('data' in envelope)
+      ) {
+        reject(new Error(`CLI did not return one data envelope: ${stdout}`));
+        return;
+      }
+      resolveResult((envelope as { data: T }).data);
     });
   });
 }
@@ -212,7 +227,10 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
   });
 
   it('executes the complete multi-Spec portfolio workflow through the compiled daemon', async () => {
-    expect(await executeCli(environment, 'health')).toEqual({ status: 'ok', version: '1.0.0' });
+    expect(await executeCli(environment, 'health')).toEqual({
+      status: 'ok',
+      version: PIMPAMPUM_VERSION,
+    });
     const workspace = await executeCli<Workspace>(
       environment,
       'workspace:add',

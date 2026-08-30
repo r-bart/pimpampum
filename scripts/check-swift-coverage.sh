@@ -35,6 +35,7 @@ covered_sources=(
     "$package_root/Sources/PimpampumMenuBar/BackupSettingsModels.swift"
     "$package_root/Sources/PimpampumMenuBar/BackupSettingsClient.swift"
     "$package_root/Sources/PimpampumMenuBar/BackupSettingsStore.swift"
+    "$package_root/Sources/PimpampumMenuBar/UpdateSettingsStore.swift"
 )
 
 report="$(

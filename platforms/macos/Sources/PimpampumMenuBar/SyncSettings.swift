@@ -502,6 +502,7 @@ struct SyncSettingsView: View {
 private enum DesktopSettingsSection: String, CaseIterable, Identifiable {
   case synchronization = "Synchronization"
   case backup = "Backup"
+  case updates = "Updates"
   var id: Self { self }
 }
 
@@ -509,15 +510,18 @@ private enum DesktopSettingsSection: String, CaseIterable, Identifiable {
 private struct DesktopSettingsView: View {
   @ObservedObject var syncStore: SyncSettingsStore
   @ObservedObject var backupStore: BackupSettingsStore
+  @ObservedObject var updateStore: UpdateSettingsStore
   @State private var selection: DesktopSettingsSection
 
   init(
     syncStore: SyncSettingsStore,
     backupStore: BackupSettingsStore,
+    updateStore: UpdateSettingsStore,
     showBackupInitially: Bool
   ) {
     self.syncStore = syncStore
     self.backupStore = backupStore
+    self.updateStore = updateStore
     _selection = State(initialValue: showBackupInitially ? .backup : .synchronization)
   }
 
@@ -536,6 +540,7 @@ private struct DesktopSettingsView: View {
         switch selection {
         case .synchronization: SyncSettingsView(store: syncStore)
         case .backup: BackupSettingsView(store: backupStore)
+        case .updates: UpdateSettingsView(store: updateStore)
         }
       }
     }
@@ -548,15 +553,18 @@ private struct DesktopSettingsView: View {
 final class SyncSettingsWindowController: ObservableObject, SettingsWindowOpening {
   private let syncStore: SyncSettingsStore
   private let backupStore: BackupSettingsStore
+  private let updateStore: UpdateSettingsStore
   private let showBackupInitially: Bool
   private var windowController: NSWindowController?
   init(
     syncStore: SyncSettingsStore,
     backupStore: BackupSettingsStore,
+    updateStore: UpdateSettingsStore,
     showBackupInitially: Bool = false
   ) {
     self.syncStore = syncStore
     self.backupStore = backupStore
+    self.updateStore = updateStore
     self.showBackupInitially = showBackupInitially
   }
   func openSettings() {
@@ -564,6 +572,7 @@ final class SyncSettingsWindowController: ObservableObject, SettingsWindowOpenin
       let view = DesktopSettingsView(
         syncStore: syncStore,
         backupStore: backupStore,
+        updateStore: updateStore,
         showBackupInitially: showBackupInitially
       )
       let window = NSWindow(contentViewController: NSHostingController(rootView: view))

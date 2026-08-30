@@ -1,0 +1,127 @@
+# Pimpampum
+
+> A local, agent-first project manager for solopreneurs running a portfolio of
+> products. One tiny background service gives every repository and every agent
+> the same operational memory. The entire workflow is three calls. Specs and
+> context stay readable Markdown; state stays in local SQLite on your own disk.
+
+Pimpampum is for one person and the agents working for them. It has no sprints,
+no estimates, no status columns and no meetings to keep them honest. It is MIT
+licensed and the source is public.
+
+## Install
+
+No prompts, no root, no interactive steps. Safe for an agent to run unattended.
+
+```
+npm install --global pimpampum
+pimpampum install
+```
+
+This creates one per-user background service and starts the local daemon at
+login. Verify with `pimpampum status`. Requires Node.js 22 or newer.
+
+On macOS 13 or newer with Apple Silicon there is also a signed menu-bar app in
+GitHub Releases. On Omarchy there is a Quickshell widget that installs with the
+plugin.
+
+## Connect over MCP
+
+The stdio bridge resolves its own credentials from the local data directory, so
+an agent never handles a token.
+
+```json
+{
+  "mcpServers": {
+    "pimpampum": {
+      "command": "pimpampum-mcp"
+    }
+  }
+}
+```
+
+`pimpampum mcp` starts the same bridge through the main binary. MCP registry clients use that
+route as `npx pimpampum mcp`, because `npx pimpampum` alone resolves to the CLI.
+
+Hosts that speak streamable HTTP: `POST http://127.0.0.1:7337/mcp` with
+`Authorization: Bearer <local-token>`. The token lives at
+`<data-directory>/token` with mode 0600. `pimpampum config` reports the
+effective data directory, base URL, MCP URL and stdio command, works offline,
+and never prints the token itself.
+
+## Or use the CLI, with no MCP
+
+```
+pimpampum commands
+pimpampum tools
+pimpampum call work_list --input '{"limit":20}'
+```
+
+Every command writes one `{"data": ...}` envelope to stdout and exits 0, or one
+`{"error": ...}` envelope to stderr and exits non-zero. `help` is the single
+exception and prints a text banner; `commands` returns the same catalog as JSON,
+with every verb, its arguments, its options and its effect annotations. `--help`,
+`-h`, `--version` and `-v` are accepted and exit 0.
+
+Tool input comes from exactly one of `--input`, `--stdin` or `--input-file`.
+
+Errors carry a stable code, a `retryable` boolean and a `suggestion`. When the
+daemon does not answer, the code is `unavailable` and the suggestion names the
+recovery command, so an agent never confuses a stopped service with a fault.
+
+The named verbs (`work:start`, `work:complete`, `project:create`) wrap the same
+tools and accept flags for everything the tools accept: `--lease-seconds`,
+`--limit`, `--actor`, `--artifact` (repeatable) and `--artifacts` for labelled
+references.
+
+## The loop
+
+- pim — `work_list` returns only the work that can be started right now.
+- pam — `work_start` takes an expiring lease on exactly one Spec or leaf Task.
+  Two agents can never grab the same job.
+- pum — `work_complete` records a summary and artifact references, and releases
+  the claim.
+
+Renew a long claim with `work_renew`. Give it back untouched with
+`work_release`. There is no fourth step.
+
+## The model
+
+Workspace (a product, anchored to one filesystem root) contains Projects. A
+Project contains Specs. A Spec contains Tasks. A Task may contain one optional
+level of Subtasks. That is the whole model.
+
+A ready Spec with no open Tasks is claimable directly; once open Tasks exist,
+only leaf Tasks are claimable. `doing` is derived from a live Claim and is never
+persisted.
+
+## Rules an agent must respect
+
+- Claim before editing. A claim is an expiring lease, not a status field.
+- Read only the Spec, Task and Context explicitly in scope. List tools return
+  manifests and bounded reads, never whole bodies.
+- Never create a project directly in `done`; call the completion operation.
+- Never add subtasks while the parent task is claimed.
+- Sync conflicts are preserved as visible conflicts. Explain the candidates;
+  never resolve one autonomously.
+- Errors carry stable codes. Do not flatten them.
+
+## Sync between machines
+
+Point it at a folder your provider already syncs — Dropbox, Google Drive, iCloud
+Drive, Syncthing, rclone. Pimpampum writes immutable JSON snapshots into
+`Pimpampum/devices/<device>`; every computer keeps its own database, token and
+claims. The live SQLite database must stay out of that folder.
+
+```
+pimpampum sync configure ~/Dropbox/Pimpampum --device laptop
+```
+
+## Docs
+
+- Agent guide: https://github.com/r-bart/pimpampum/blob/main/docs/agents.md
+- Tool catalog with schemas: https://github.com/r-bart/pimpampum/blob/main/docs/mcp-tools.md
+- Full documentation: https://github.com/r-bart/pimpampum#readme
+- Source: https://github.com/r-bart/pimpampum
+- Package: https://www.npmjs.com/package/pimpampum
+- Releases: https://github.com/r-bart/pimpampum/releases

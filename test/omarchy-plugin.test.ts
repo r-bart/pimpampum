@@ -96,10 +96,20 @@ describe('Omarchy Quattro plugin', () => {
     expect(widget).toContain('completedGreen');
     expect(widget).toContain('root.themeForeground');
     expect(widget).toContain('Accessible.name: indicator.accessibleLabel');
-    expect(mark).toContain('assets/pimpampum-compact.svg');
-    expect(mark).toContain('assets/pimpampum-compact-white.svg');
-    expect(mark).toContain('root.useLightAsset');
-    expect(mark).toContain('contrastBackground.r');
+    // The mark is drawn from the reviewed master's own path data, so the painted identity
+    // cannot drift from the canonical SVG.
+    const masterPath = /\sd="([^"]+)"/u.exec(
+      readFileSync(join(repositoryRoot, 'branding/assets/pimpampum-compact-master.svg'), 'utf8'),
+    )?.[1];
+    expect(masterPath).toBeTruthy();
+    expect(mark).toContain(`path: "${masterPath}"`);
+    // The bar resolves its own foreground against whatever is behind a transparent bar, so
+    // the mark fills from it. It must not go back to a layer-tinted image: that texture kept
+    // its first color and left the mark dark after the wallpaper changed.
+    expect(mark).toContain('fillColor: root.foreground');
+    expect(mark).toContain('fillRule: ShapePath.OddEvenFill');
+    expect(mark).not.toContain('contrastBackground');
+    expect(mark).not.toContain('MultiEffect {');
     expect(mark).toContain('id: badge');
     expect(mark).toContain('Math.max(0, activeClaims)');
     expect(mark).toContain('safeActiveClaims >= 100 ? "99+" : String(safeActiveClaims)');
@@ -120,12 +130,28 @@ describe('Omarchy Quattro plugin', () => {
     expect(widget).toContain('Accessible.onPressAction: root.togglePanel()');
     expect(`${widget}\n${mark}`).not.toMatch(/["'](?:×|!|✓|wifi\.slash)["']/u);
     expect(service).toContain('fail("credentials"');
-    expect(service).toContain('Run pimpampum install');
+    expect(service).toContain('The saved credentials no longer match the local daemon.');
     expect(service).not.toMatch(/errorMessage\s*=\s*processError/u);
   });
 
   it('keeps the popout bounded, ordered, readable, and keyboard accessible', () => {
     const popout = readFileSync(join(pluginSource, 'StatusPopout.qml'), 'utf8');
+    // The popout is drawn on Omarchy's popup card, so it must read the popup tokens. Using
+    // bar.barForeground here painted every label in the card's own background colour on a
+    // light wallpaper over a dark theme, leaving the popout blank.
+    expect(popout).toContain('Color.popups.text');
+    expect(popout).toContain('Color.popups.background');
+    expect(popout).not.toContain('bar.background');
+    // The empty popout is a first-run screen: headline, explanation, and the command that
+    // resolves it on its own surface, never one sentence with the shell verb buried in prose.
+    expect(popout).toContain('"Register a folder as a workspace to start tracking projects."');
+    expect(popout).toContain('"Projects appear here as your agents create them."');
+    expect(popout).toContain('text: "pimpampum workspace:add"');
+    expect(popout).not.toContain('No workspaces. Run:');
+    expect(popout).toContain('text: "Authentication required"');
+    expect(popout).toContain('text: "pimpampum install"');
+    expect(popout).toContain('root.service.connectionState !== "credentials"');
+    expect(popout).not.toContain('Local credentials were rejected. Run');
     const actionArea = readFileSync(join(pluginSource, 'PimpampumActionArea.qml'), 'utf8');
     const settingsButton = readFileSync(join(pluginSource, 'PimpampumSettingsButton.qml'), 'utf8');
 
@@ -138,8 +164,8 @@ describe('Omarchy Quattro plugin', () => {
 
     const ordered = [
       'text: root.helpView ? "Help" : root.settingsView ? "Settings" : "Pimpampum"',
-      'visible: !root.settingsView && root.service.connectionState !== "online"',
-      'No workspaces. Run: pimpampum workspace:add',
+      '&& root.service.connectionState !== "credentials"',
+      '? "No workspaces" : "No projects"',
       'text: "Active work ("',
       'text: "Specs in progress ("',
       'text: "Projects ("',
@@ -368,6 +394,26 @@ describe('Omarchy Quattro plugin', () => {
     expect(helper).toContain('/usr/bin/systemctl --user "$1" pimpampum.service');
     expect(helper).toContain('/usr/bin/systemctl --user is-active --quiet pimpampum.service');
     expect(helper).not.toMatch(/eval\b|sh\s+-c|bash\s+-c|bearer|token/iu);
+  });
+
+  it('checks and installs updates only after an explicit accessible action', () => {
+    const widget = readFileSync(join(pluginSource, 'BarWidget.qml'), 'utf8');
+    const popout = readFileSync(join(pluginSource, 'StatusPopout.qml'), 'utf8');
+    const service = readFileSync(join(pluginSource, 'UpdateService.qml'), 'utf8');
+    const helper = readFileSync(join(pluginSource, 'pimpampum-update'), 'utf8');
+    expect(widget).toContain('UpdateService {');
+    expect(popout).toContain('"Check for updates"');
+    expect(popout).toContain('"Install update"');
+    expect(popout).toContain('actionEnabled: !root.updateService.busy');
+    expect(service).not.toContain('Timer {');
+    expect(service).toContain('command = [helperPath, operation]');
+    expect(service).toContain('Qt.callLater(function() { root.handleExit(exitCode) })');
+    expect(service).toContain('helperPath.charAt(0) !== "/"');
+    expect(service).toContain('stderr: StdioCollector');
+    expect(service).toContain('failure.error.message');
+    expect(helper).toContain('command_name=update:check');
+    expect(helper).toContain('command_name=update');
+    expect(helper).not.toMatch(/eval\b|bearer|token/iu);
   });
 
   it('delegates install and uninstall to the single Pimpampum lifecycle', () => {

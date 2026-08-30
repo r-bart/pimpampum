@@ -10,6 +10,7 @@ import { createHttpApp } from '../src/http.js';
 import { PimpampumStore } from '../src/store.js';
 import type { PimpampumHttpGateway } from '../src/types.js';
 import { SyncController } from '../src/syncController.js';
+import { PIMPAMPUM_VERSION } from '../src/version.js';
 
 describe('HTTP API', () => {
   let store: PimpampumStore;
@@ -60,7 +61,7 @@ describe('HTTP API', () => {
   });
 
   it('keeps health public and protects the API', async () => {
-    await request(app).get('/health').expect(200, { status: 'ok', version: '1.0.0' });
+    await request(app).get('/health').expect(200, { status: 'ok', version: PIMPAMPUM_VERSION });
     await request(app)
       .get('/openapi.json')
       .expect(200)
@@ -254,7 +255,7 @@ describe('HTTP API', () => {
         expect(body).toEqual({
           data: {
             daemon: {
-              version: '1.0.0',
+              version: PIMPAMPUM_VERSION,
               startedAt: '2026-08-26T20:00:00.000Z',
               uptimeSeconds: 2,
             },

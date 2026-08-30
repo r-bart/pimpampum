@@ -1,0 +1,308 @@
+---
+/*
+ * The desktop-surface section, consolidated from the three prototype
+ * directions at /proto/os:
+ *
+ *  - the platform is named inside the sentence, so the page talks about your
+ *    machine rather than presenting a compatibility matrix (from Inline);
+ *  - the switch is a real tablist with arrow-key navigation, so it is visible
+ *    and reachable (from Tabs);
+ *  - the option you are not on stays on screen and is clearly a live control,
+ *    so nobody misses that the other platform exists (from Both), without
+ *    paying for two full panels of height.
+ *
+ * The default comes from the visitor's own platform, applied before first paint
+ * by the inline script in the page so nothing flashes. With no JavaScript the
+ * control never appears and both panels render, which is a worse layout but a
+ * complete one.
+ */
+import MacPopover from './MacPopover.astro';
+import QuattroPopout from './QuattroPopout.astro';
+
+const platforms = [
+  {
+    id: 'macos',
+    label: 'macOS',
+    where: 'in the menu bar',
+    body: 'The mark shows up next to the clock with the number of active claims beside it. Click it and you get the popover: what is being worked on right now, which projects still have work, and what finished. Settings holds backup and sync. Nothing else.',
+    facts: [
+      'Signed, notarised, and started at login.',
+      'macOS 13 or newer, Apple Silicon.',
+      'Download it from GitHub Releases, or install the service with npm.',
+    ],
+  },
+  {
+    id: 'omarchy',
+    label: 'Omarchy',
+    where: 'in the Quattro bar',
+    body: 'The same mark, as a Quickshell widget — horizontal or vertical, whichever way your bar runs. Click it and you get the popout: the same information in the same order, plus the backup section. It follows your Quattro theme instead of fighting it.',
+    facts: [
+      'Installs with the plugin, and uninstalls with it too.',
+      'Inherits bar.foreground, bar.background, and your theme.',
+      'Horizontal and vertical bars, with the count capped at 99+.',
+    ],
+  },
+];
+---
+
+<section class="band" aria-labelledby="desktop-title">
+  <div class="band-head">
+    <h2 class="rubric" id="desktop-title">On your desktop</h2>
+
+    <div>
+      <p class="statement">
+        It sits{' '}
+        <span class="swap">
+          {
+            platforms.map((platform) => (
+              <span class="swap-word" data-os-word={platform.id}>
+                {platform.where}
+              </span>
+            ))
+          }
+        </span>{' '}
+        and stays out of the way.
+      </p>
+
+      <div class="switcher" data-os-switcher>
+        <span class="switcher-label" id="switcher-label">Showing</span>
+        <div class="switcher-options" role="tablist" aria-labelledby="switcher-label">
+          {
+            platforms.map((platform) => (
+              <button
+                class="option"
+                type="button"
+                role="tab"
+                id={`tab-${platform.id}`}
+                aria-controls={`panel-${platform.id}`}
+                data-os-tab={platform.id}
+              >
+                {platform.label}
+              </button>
+            ))
+          }
+      </div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    {
+      platforms.map((platform) => (
+        <div
+          class="panel"
+          role="tabpanel"
+          id={`panel-${platform.id}`}
+          aria-labelledby={`tab-${platform.id}`}
+          data-os-panel={platform.id}
+        >
+          <div class="panel-copy">
+            <p class="prose">{platform.body}</p>
+            <ul class="facts">
+              {platform.facts.map((fact) => (
+                <li>{fact}</li>
+              ))}
+            </ul>
+          </div>
+          <div class="surface-frame">
+            {platform.id === 'macos' ? <MacPopover /> : <QuattroPopout />}
+            <p class="surface-note">
+              Live, not a screenshot. Open <span class="note-em">Completed</span>
+              {platform.id === 'omarchy' ? ' and Backup' : ''}.
+            </p>
+          </div>
+        </div>
+      ))
+    }
+  </div>
+</section>
+
+<style>
+  .statement {
+    max-width: 30ch;
+    margin: 0 0 var(--space-5);
+    font-size: var(--text-headline);
+    font-weight: var(--weight-bold);
+    letter-spacing: -0.035em;
+    line-height: 1.15;
+  }
+
+  /* The phrase is set inline, so the sentence closes up around whichever
+     platform is showing. Switching reflows one line, and the user asked for it
+     by clicking. Reserving the wider phrase left a visible hole instead. */
+  .swap {
+    display: inline;
+  }
+
+  .swap-word {
+    color: var(--signal-text);
+    white-space: nowrap;
+  }
+
+  /* Without JS only the first phrase shows, so the sentence still reads. */
+  .swap-word + .swap-word {
+    display: none;
+  }
+
+  :global(html[data-os='omarchy']) .swap-word[data-os-word='macos'] {
+    display: none;
+  }
+
+  :global(html[data-os='omarchy']) .swap-word[data-os-word='omarchy'] {
+    display: inline;
+  }
+
+  /* ---- The switch ---------------------------------------------------- */
+
+  /* Hidden until the inline script proves JavaScript ran. With no JS the
+     control never appears and both panels render instead. */
+  .switcher {
+    display: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-4);
+    margin: 0;
+  }
+
+
+
+  :global(html[data-os]) .switcher {
+    display: flex;
+  }
+
+  .switcher-label {
+    color: var(--ink-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+  }
+
+  .switcher-options {
+    display: flex;
+    gap: var(--space-5);
+  }
+
+  .option {
+    position: relative;
+    min-height: 32px;
+    padding: 0;
+    border: 0;
+    color: var(--ink-muted);
+    background: transparent;
+    font: inherit;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    transition: color var(--duration-hover) ease-out;
+  }
+
+  /* 44px hit area without moving the baseline. Positioned parent above, so the
+     inset resolves against the button and not the whole page. */
+  .option::before {
+    position: absolute;
+    inset: -6px -10px;
+    content: '';
+  }
+
+  .option::after {
+    position: absolute;
+    right: 0;
+    bottom: 2px;
+    left: 0;
+    height: 2px;
+    background: var(--signal);
+    content: '';
+    scale: 0 1;
+    transform-origin: left;
+    transition: scale var(--duration-hover) ease-out;
+  }
+
+  /* Selection is styled from the root attribute, not from aria-selected, so the
+     first paint is already right. The script keeps aria-selected in sync for
+     assistive technology. */
+  :global(html[data-os='macos']) .option[data-os-tab='macos'],
+  :global(html[data-os='omarchy']) .option[data-os-tab='omarchy'] {
+    color: var(--ink);
+  }
+
+  :global(html[data-os='macos']) .option[data-os-tab='macos']::after,
+  :global(html[data-os='omarchy']) .option[data-os-tab='omarchy']::after {
+    scale: 1 1;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .option:hover {
+      color: var(--ink);
+    }
+  }
+
+  /* ---- Panels -------------------------------------------------------- */
+
+  :global(html[data-os='macos']) .panel[data-os-panel='omarchy'],
+  :global(html[data-os='omarchy']) .panel[data-os-panel='macos'] {
+    display: none;
+  }
+
+  .panel {
+    display: grid;
+    gap: var(--space-6);
+    align-items: start;
+  }
+
+  .panel + .panel {
+    margin-top: var(--space-6);
+  }
+
+  @media (min-width: 64rem) {
+    .panel {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-8);
+    }
+  }
+
+  .panel-copy {
+    max-width: var(--measure);
+  }
+
+  .prose {
+    margin: 0 0 var(--space-5);
+    font-size: var(--text-lead);
+    line-height: 1.55;
+  }
+
+  .facts {
+    display: grid;
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .facts li {
+    padding-bottom: var(--space-3);
+    border-bottom: var(--border-hairline) solid var(--line);
+    color: var(--ink-muted);
+    font-size: var(--text-caption);
+  }
+
+  .facts li:last-child {
+    border-bottom: 0;
+  }
+
+  .surface-frame {
+    width: min(100%, 404px);
+  }
+
+  .surface-note {
+    margin: var(--space-3) 0 0;
+    color: var(--ink-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+  }
+
+  .surface-note .note-em {
+    color: var(--ink);
+  }
+</style>

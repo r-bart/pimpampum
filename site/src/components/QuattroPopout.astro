@@ -1,0 +1,455 @@
+---
+/*
+ * Interactive replica of the Omarchy Quattro surface.
+ *
+ * Built from the approved handoff: a 380-unit popout, 520 units high at most,
+ * with the fixed order title+connection → active work → projects → completed →
+ * backup. The palette is the mockup's own Quattro theme tokens.
+ *
+ * Completed and Backup are real <details>, matching the spec's "collapsed by
+ * default" rule, and they work with no JavaScript.
+ */
+interface Props {
+  theme?: 'dark' | 'light';
+}
+
+const { theme = 'dark' } = Astro.props;
+
+const activeWork = [
+  { title: 'Desktop status surfaces — Ship the menu-bar status popover', meta: 'claude-code-01 · 24m' },
+  { title: 'Daemon core — Sweep expired claims on daemon boot', meta: 'codex-agent-02 · 1h 12m' },
+  { title: 'Quattro bar widget', meta: 'opencode-03 · 48s' },
+];
+
+const projects = [
+  { title: 'Desktop status surfaces', state: 'active', slug: '28.project-master / desktop-status-surfaces · 1 active · 3 available' },
+  { title: 'Daemon core', state: 'active', slug: '28.project-master / daemon-core · 1 active · 2 available' },
+  { title: 'Quattro bar widget', state: 'available', slug: 'omarchy-lab / quattro-bar-widget · 0 active · 2 available' },
+  { title: 'Snapshot restore spike', state: 'draft', slug: 'omarchy-lab / snapshot-restore-spike' },
+];
+
+const completed = [
+  { title: 'CLI claim lifecycle', slug: '28.project-master / cli-claim-lifecycle' },
+  { title: 'SQLite migration runner', slug: '28.project-master / sqlite-migration-runner' },
+];
+---
+
+<div class="surface" data-q={theme}>
+  <div class="bar">
+    <span class="bar-right">
+      <span class="widget">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path
+            fill-rule="evenodd"
+            d="M8 .5a7.5 7.5 0 1 1 0 15 7.5 7.5 0 1 1 0-15zM4.8 3.9h1.4v.7c.7-.6 1.6-.9 2.6-.9 2 0 3.2 1.4 3.2 3.5 0 2-1.3 3.4-3.2 3.4-1 0-1.9-.3-2.6-.9v2.9H4.8V3.9zM6.3 7.2c0-1.3.9-2.2 2.2-2.2s2.1.9 2.1 2.2-.8 2.1-2.1 2.1-2.2-.8-2.2-2.1z"
+          ></path>
+        </svg>
+        <span class="widget-count">3</span>
+      </span>
+      <span class="clock">14:32</span>
+    </span>
+  </div>
+
+  <div class="popout">
+    <header class="head">
+      <span class="head-title">Pimpampum</span>
+      <span class="head-state">online</span>
+    </header>
+
+    <div class="body">
+      <section class="group">
+        <h4 class="group-title">Active work (3)</h4>
+        {
+          activeWork.map((item) => (
+            <div class="claim">
+              <p class="claim-title">{item.title}</p>
+              <p class="claim-meta">{item.meta}</p>
+            </div>
+          ))
+        }
+      </section>
+
+      <section class="group">
+        <h4 class="group-title">Projects (4)</h4>
+        {
+          projects.map((project) => (
+            <div class="row">
+              <span class="row-head">
+                <span class="row-title">{project.title}</span>
+                <span class={`state state-${project.state}`}>{project.state}</span>
+              </span>
+              <span class="row-slug">{project.slug}</span>
+            </div>
+          ))
+        }
+      </section>
+
+      <details class="disclosure">
+        <summary>
+          <span class="chevron" aria-hidden="true"></span>
+          <span>Completed ({completed.length})</span>
+        </summary>
+        <div class="disclosure-body">
+          {
+            completed.map((project) => (
+              <div class="row">
+                <span class="row-head">
+                  <span class="row-title">{project.title}</span>
+                </span>
+                <span class="row-slug">{project.slug}</span>
+              </div>
+            ))
+          }
+        </div>
+      </details>
+
+      <details class="disclosure">
+        <summary>
+          <span class="chevron" aria-hidden="true"></span>
+          <span>Backup</span>
+        </summary>
+        <div class="disclosure-body">
+          <p class="path-value">…pim/Dropbox/Backups/Pimpampum snapshots/rolling</p>
+          <p class="backup-state"><span class="ok">Up to date</span> · 14:31</p>
+          <p class="field-label">Backup folder (absolute path)</p>
+          <p class="field">/home/pim/Dropbox/Backups/Pimpampum snapshots/rolling</p>
+          <p class="chips">
+            <span class="chip">Choose…</span>
+            <span class="chip">Save</span>
+            <span class="chip">Open</span>
+            <span class="chip">Back Up Now</span>
+            <span class="chip">Disable</span>
+          </p>
+        </div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* The mockup's own Quattro theme tokens. --qfg2 is raised in both themes:
+     the handoff values measure 4.2:1 on dark and 2.8:1 on light, and this is a
+     web page, so the floor is WCAG AA 4.5:1. */
+  .surface[data-q='dark'] {
+    --qbg: #16161e;
+    --qfg: #c0caf5;
+    --qfg2: rgba(192, 202, 245, 0.62);
+    --qurg: #f7768e;
+    --qok: #9ece6a;
+    --qwarn: #e0af68;
+    --qact: #7aa2f7;
+    --qhov: rgba(192, 202, 245, 0.09);
+    --qsep: rgba(192, 202, 245, 0.14);
+    --qfield: rgba(192, 202, 245, 0.07);
+  }
+
+  .surface[data-q='light'] {
+    --qbg: #eff1f5;
+    --qfg: #4c4f69;
+    --qfg2: rgba(76, 79, 105, 0.85);
+    --qurg: #d20f39;
+    --qok: #40a02b;
+    --qwarn: #df8e1d;
+    --qact: #1e66f5;
+    --qhov: rgba(76, 79, 105, 0.08);
+    --qsep: rgba(76, 79, 105, 0.16);
+    --qfield: rgba(76, 79, 105, 0.07);
+  }
+
+  .surface {
+    width: 100%;
+    max-width: 404px;
+    padding: 0 12px 12px;
+    border-radius: 10px;
+    background: var(--qbg);
+    color: var(--qfg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- Bar ----------------------------------------------------------- */
+
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    height: 34px;
+    margin-inline: -12px;
+    padding-inline: 10px;
+    border-bottom: 1px solid var(--qsep);
+  }
+
+  .bar-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .clock {
+    color: var(--qfg2);
+    font-size: 11px;
+  }
+
+  .widget {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 6px;
+    border-radius: 5px;
+    background: var(--qhov);
+  }
+
+  .widget-count {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- Popout -------------------------------------------------------- */
+
+  .popout {
+    margin-top: 10px;
+    overflow: hidden;
+    border-radius: 8px;
+    background: var(--qbg);
+    box-shadow: 0 0 0 1px var(--qsep);
+  }
+
+  .head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--qsep);
+  }
+
+  .head-title {
+    font-weight: 700;
+  }
+
+  .head-state {
+    color: var(--qok);
+    font-size: 11px;
+  }
+
+  .body {
+    padding: 10px 12px;
+  }
+
+  .group + .group,
+  .group + .disclosure,
+  .disclosure + .disclosure {
+    margin-top: 12px;
+  }
+
+  .group-title {
+    margin: 0 0 6px;
+    color: var(--qfg2);
+    font-size: 11px;
+    font-weight: 400;
+  }
+
+  .claim {
+    padding: 5px 0;
+  }
+
+  .claim + .claim {
+    border-top: 1px solid var(--qsep);
+  }
+
+  .claim-title,
+  .claim-meta {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .claim-meta {
+    color: var(--qfg2);
+    font-size: 11px;
+  }
+
+  /* ---- Rows ---------------------------------------------------------- */
+
+  .row {
+    display: grid;
+    gap: 1px;
+    width: 100%;
+    padding: 5px 6px;
+    border: 0;
+    border-radius: 5px;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    text-align: start;
+    cursor: default;
+    transition: background-color 120ms ease-out;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .row:hover {
+      background: var(--qhov);
+    }
+  }
+
+  .row-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .row-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .state {
+    font-size: 11px;
+  }
+
+  .state-active {
+    color: var(--qact);
+  }
+  .state-available {
+    color: var(--qwarn);
+  }
+  .state-draft {
+    color: var(--qfg2);
+  }
+
+  .row-slug {
+    overflow: hidden;
+    color: var(--qfg2);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ---- Disclosures --------------------------------------------------- */
+
+  .disclosure summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 6px;
+    border-radius: 5px;
+    color: var(--qfg2);
+    font-size: 11px;
+    list-style: none;
+    cursor: default;
+  }
+
+  .disclosure summary::-webkit-details-marker {
+    display: none;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .disclosure summary:hover {
+      background: var(--qhov);
+      color: var(--qfg);
+    }
+  }
+
+  .disclosure summary:focus-visible {
+    outline: 1px solid var(--qact);
+    outline-offset: -1px;
+  }
+
+  .chevron {
+    width: 0;
+    height: 0;
+    border-top: 3.5px solid transparent;
+    border-bottom: 3.5px solid transparent;
+    border-left: 5px solid currentcolor;
+    transition: rotate 140ms ease-out;
+  }
+
+  .disclosure[open] .chevron {
+    rotate: 90deg;
+  }
+
+  .disclosure-body {
+    padding: 4px 6px 0;
+  }
+
+  .path-value,
+  .backup-state,
+  .field-label {
+    margin: 0 0 4px;
+    overflow: hidden;
+    color: var(--qfg2);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ok {
+    color: var(--qok);
+  }
+
+  .field {
+    margin: 0 0 8px;
+    padding: 6px 8px;
+    overflow: hidden;
+    border-radius: 4px;
+    background: var(--qfield);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--qsep);
+    border-radius: 5px;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    font-size: 11px;
+    cursor: default;
+    transition: background-color 120ms ease-out;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .chip:hover {
+      background: var(--qhov);
+    }
+  }
+
+
+  /* Native height is 28px, which is right for the replica. The hit area is
+     grown to 44px without moving anything. */
+  .disclosure summary {
+    position: relative;
+  }
+
+  .disclosure summary::before {
+    position: absolute;
+    inset: -8px -6px;
+    content: '';
+  }
+
+  /* Native height is 24px, which is right for the replica. The hit area is
+     grown to 44px without moving anything. */
+  .chip {
+    position: relative;
+  }
+
+  .chip::before {
+    position: absolute;
+    inset: -8px -6px;
+    content: '';
+  }
+</style>

@@ -699,15 +699,46 @@ omit active work, projects, connection state, or backup.
 
 Required repair copy for rejected credentials:
 
-`Local credentials were rejected. Run pimpampum install to repair them.`
+Credentials rejected are presented as a recoverable setup state rather than a raw inline error:
+
+- Headline `Authentication required` in bold body text.
+- Explanation `The saved credentials no longer match the local daemon.` in caption text.
+- The repair command `pimpampum install` on its own translucent foreground surface, following
+  the same wrapping and alignment rules as the no-workspaces command.
 
 Never expose the token or raw stderr.
 
+### 11.3.1 Updates
+
+- `pimpampum update:check` queries the canonical npm registry metadata and never changes state.
+- `pimpampum update` installs the latest stable package globally, then invokes that newly installed
+  CLI's idempotent installer so the daemon and desktop integration move together.
+- Updates preserve the database, token, settings, logs, backups, exports, and registered workspaces.
+- An already-current update still reconciles the installation and reports `updated: false`.
+- Registry and reconciliation failures are retryable `unavailable` errors and never expose raw npm
+  stderr, tokens, or registry configuration.
+- Desktop help surfaces name both commands. Omarchy Settings also provides a manual check and a
+  single install action when a release is available. It does not poll the network or update
+  silently.
+
 ### 11.4 Empty states
 
-- No workspaces: `No workspaces. Run: pimpampum workspace:add`.
-- Workspaces but no projects: `No projects`.
+Amended 2026-08-30. An empty popout is a first-run screen, not an error report, so each state
+carries a headline, one line of explanation, and — only where a single command resolves it —
+that command on its own surface.
+
+- No workspaces:
+  - Headline `No workspaces` in bold body text.
+  - Explanation `Register a folder as a workspace to start tracking projects.` in caption text
+    at the same reduced opacity as the header's connection label.
+  - The command `pimpampum workspace:add` on a translucent foreground surface, so the shell
+    verb is never read as prose. It wraps rather than elides; a truncated command is useless.
+- Workspaces but no projects:
+  - Headline `No projects`, explanation `Projects appear here as your agents create them.`
+  - No command surface: project creation needs arguments the popout does not have.
 - Use ordinary body text, not a large illustration.
+- Keep the block left-aligned on the panel's text column; centring it alone would break the
+  alignment every other section follows.
 
 ### 11.5 Active work
 

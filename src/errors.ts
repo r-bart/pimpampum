@@ -6,6 +6,7 @@ export type ErrorCode =
   | 'invalid_state'
   | 'unauthorized'
   | 'payload_too_large'
+  | 'unavailable'
   | 'internal_error';
 
 export class AppError extends Error {

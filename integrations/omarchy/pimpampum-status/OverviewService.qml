@@ -95,9 +95,13 @@ Item {
   function validateEnvelope(envelope) {
     if (!isObject(envelope)) return "invalid"
     var data = envelope
-    if (isObject(envelope.meta) || isObject(envelope.data)) {
-      if (!isObject(envelope.meta) || !isObject(envelope.data)) return "invalid"
+    if (isObject(envelope.meta)) {
+      // HTTP envelope: {meta, data}, independently versioned.
+      if (!isObject(envelope.data)) return "invalid"
       if (envelope.meta.schemaVersion !== 2) return "incompatible"
+      data = envelope.data
+    } else if (isObject(envelope.data)) {
+      // CLI envelope: {data}. A bare overview payload never carries a data key.
       data = envelope.data
     }
     if (["active", "available", "complete", "draft", "paused", "empty"].indexOf(data.status) === -1) return "invalid"
@@ -138,7 +142,7 @@ Item {
       return
     }
 
-    overview = isObject(parsed.meta) && isObject(parsed.data) ? parsed.data : parsed
+    overview = isObject(parsed.data) ? parsed.data : parsed
     connectionState = "online"
     errorMessage = ""
     lastSuccessMs = Date.now()
@@ -167,7 +171,7 @@ Item {
         || error.indexOf("credential") !== -1
         || /(^|[^0-9])(401|403)([^0-9]|$)/.test(error)
       if (credentialsRejected) {
-        fail("credentials", "Local credentials were rejected. Run pimpampum install to repair them.")
+        fail("credentials", "The saved credentials no longer match the local daemon.")
       } else fail("offline", "Pimpampum is offline")
       return
     }

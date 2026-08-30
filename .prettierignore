@@ -8,3 +8,8 @@ test/backup-settings-ui.acceptance.test.ts
 thoughts/design/handoff-pimpampum-escritorio/*.dc.html
 thoughts/design/handoff-pimpampum-escritorio/doc-page.js
 thoughts/design/handoff-pimpampum-escritorio/support.js
+site/node_modules
+site/dist
+site/.astro
+site/package-lock.json
+site/.vercel

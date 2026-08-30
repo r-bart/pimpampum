@@ -18,8 +18,9 @@ Recorded on 2026-08-26 for the native macOS menu bar application.
 - `BackupSettingsModels.swift`: strict backup state vocabulary and presentation metadata.
 - `BackupSettingsClient.swift`: authenticated requests, exact response decoding, semantic validation, redaction, and bounded errors.
 - `BackupSettingsStore.swift`: operation serialization, state publication, cancellation, and stable failure messages.
+- `UpdateSettingsStore.swift`: receipt trust, executable-path validation, operation selection, CLI failure-envelope propagation, relaunch derivation, and every panel copy decision.
 
-The current result is 552/552 regions, 141/141 functions, and 1009/1009 lines. The suite executes 78 tests across thirteen suites.
+The current result is 698/698 regions, 204/204 functions, and 1315/1315 lines. The suite executes 122 tests across nineteen suites.
 
 Any deterministic behavior added to the macOS application must live in one of these files or be added explicitly to the coverage manifest in the gate script.
 
@@ -28,6 +29,8 @@ Any deterministic behavior added to the macOS application must live in one of th
 - `App.swift`: SwiftUI application scene and `NSApplicationDelegate` lifecycle wiring only.
 - `StatusPopover.swift`: declarative SwiftUI view composition only; all extracted presentation decisions are enforced through `StatusPresentation.swift`.
 - `BackupSettingsView.swift`: declarative SwiftUI composition only. Native tests compose every health-state branch and exercise its injected store, picker, and opener boundaries; deterministic client and state behavior remains in the covered core.
+- `UpdateSettingsView.swift`: declarative SwiftUI composition only. Every copy, version line, relaunch notice, and button state comes from the covered `UpdateSettingsPresentation` in `UpdateSettingsStore.swift`; a native test composes its body.
+- `UpdateSettingsSystemAdapter.swift`: one `Process` adapter. It returns the exit code and stdout unchanged so the covered store, not this file, decides what the user reads. `UpdateCommandRunnerTests` drives it with real processes, including one that floods the ignored stream.
 - `BackupDirectoryPicker.swift`: thin `NSOpenPanel`, `FileManager`, and `NSWorkspace` adapters. Its injected selection, path validation, standardization, availability, and open outcomes are exercised by native tests.
 - `ApplicationConfigurationSystemAdapter.swift`: one `Data(contentsOf:)` call.
 - `LoginItemSystemAdapters.swift`: thin `SMAppService`, private atomic-file, and System Settings adapters.

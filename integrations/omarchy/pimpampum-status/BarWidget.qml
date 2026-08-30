@@ -18,10 +18,12 @@ BarWidget {
   readonly property string serviceHelperPath: decodeURIComponent(
     Qt.resolvedUrl("pimpampum-service").toString().replace(/^file:\/\//, "")
   )
+  readonly property string updateHelperPath: decodeURIComponent(
+    Qt.resolvedUrl("pimpampum-update").toString().replace(/^file:\/\//, "")
+  )
   readonly property bool isVertical: bar ? bar.vertical : false
   // Contrast-aware for transparent bars and changing wallpapers/themes.
   readonly property color themeForeground: bar ? bar.barForeground : "white"
-  readonly property color themeBackground: bar ? bar.background : "#202020"
   readonly property color themeUrgent: bar ? bar.urgent : "#ff5f57"
   readonly property color activeBlue: "#3b82f6"
   readonly property color availableAmber: "#f59e0b"
@@ -85,6 +87,7 @@ BarWidget {
     helperPath: root.serviceHelperPath
     popoutOpen: popout.opened
   }
+  UpdateService { id: updateService; helperPath: root.updateHelperPath }
 
   StatusPopout {
     id: popout
@@ -94,6 +97,7 @@ BarWidget {
     backupService: backupService
     syncService: syncService
     serviceControl: serviceControl
+    updateService: updateService
   }
 
   PimpampumMark {
@@ -106,7 +110,6 @@ BarWidget {
     activeClaims: service.activeClaims
     showActiveCount: false
     foreground: root.themeForeground
-    contrastBackground: root.themeBackground
     urgent: root.themeUrgent
     activeColor: root.activeBlue
     availableColor: root.availableAmber

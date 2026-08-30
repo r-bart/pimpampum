@@ -21,6 +21,7 @@ import {
 } from './schemas.js';
 import type { PimpampumGateway, Spec, Task } from './types.js';
 import type { SyncGateway } from './syncContract.js';
+import { PIMPAMPUM_VERSION } from './version.js';
 
 const readOnly = {
   readOnlyHint: true,
@@ -142,7 +143,7 @@ async function completedManifest(gateway: PimpampumGateway, completed: Spec | Ta
 }
 
 export function buildMcpServer(gateway: PimpampumGateway, sync?: SyncGateway): McpServer {
-  const server = new McpServer({ name: 'pimpampum', version: '1.0.0' });
+  const server = new McpServer({ name: 'pimpampum', version: PIMPAMPUM_VERSION });
 
   server.registerTool(
     'workspace_list',

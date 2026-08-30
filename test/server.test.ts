@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeConfig } from '../src/config.js';
 import { startServer, type RunningServer } from '../src/server.js';
+import { PIMPAMPUM_VERSION } from '../src/version.js';
 import { canonicalJson, syncHash } from '../src/syncState.js';
 
 describe('server composition', () => {
@@ -41,7 +42,7 @@ describe('server composition', () => {
     running = await startServer({ ...config(), databasePath: ':memory:' });
     const address = running.server.address() as AddressInfo;
     const response = await fetch(`http://127.0.0.1:${address.port}/health`);
-    expect(await response.json()).toEqual({ status: 'ok', version: '1.0.0' });
+    expect(await response.json()).toEqual({ status: 'ok', version: PIMPAMPUM_VERSION });
     const shared = join(directory, 'shared');
     mkdirSync(shared);
     const syncResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/settings/sync`, {

@@ -243,12 +243,26 @@ function outputJson(command, label) {
   return json(Buffer.from(command.stdout), `${label}.stdout`);
 }
 
+/**
+ * Pimpampum CLI success is always exactly one {"data": ...} object. Evidence records the raw stdout,
+ * so the validator unwraps here rather than rewriting the transcript. Non-CLI probes (omarchy shell
+ * and plugin output) keep using `outputJson` directly.
+ */
+function cliOutputJson(command, label) {
+  const envelope = object(outputJson(command, label), `${label}.stdout`);
+  const keys = Object.keys(envelope);
+  if (keys.length !== 1 || !('data' in envelope)) {
+    fail(`${label}.stdout must be one data envelope`);
+  }
+  return envelope.data;
+}
+
 function argumentsEqual(command, expected, label) {
   if (!isDeepStrictEqual(command.arguments, expected)) fail(`${label} has unexpected arguments`);
 }
 
 function outputTrue(command, property, label) {
-  if (object(outputJson(command, label), `${label}.stdout`)[property] !== true) {
+  if (object(cliOutputJson(command, label), `${label}.stdout`)[property] !== true) {
     fail(`${label}.stdout must prove ${property}=true`);
   }
 }
@@ -662,7 +676,7 @@ argumentsEqual(
 );
 cli('seed-project', ['project:create', 'live', 'omarchy-plugin', 'Omarchy plugin']);
 const activeProject = object(
-  outputJson(commands['seed-project'], 'seed-project'),
+  cliOutputJson(commands['seed-project'], 'seed-project'),
   'seed-project.stdout',
 );
 const activeProjectId = scalar(activeProject.id, 'seed-project.stdout.id');
@@ -670,7 +684,7 @@ const activeRevision = scalar(activeProject.revision, 'seed-project.stdout.revis
 const specBodyPath = resolve(dirname(cliPath), '..', 'README.md');
 cli('seed-active-spec', ['spec:create', activeProjectId, 'widget-v1', 'Widget V1', specBodyPath]);
 const activeSpec = object(
-  outputJson(commands['seed-active-spec'], 'seed-active-spec'),
+  cliOutputJson(commands['seed-active-spec'], 'seed-active-spec'),
   'seed-active-spec.stdout',
 );
 const activeSpecId = scalar(activeSpec.id, 'seed-active-spec.stdout.id');
@@ -683,13 +697,13 @@ const taskId =
   taskOutput === ''
     ? 'task-id'
     : scalar(
-        object(outputJson(commands['seed-task'], 'seed-task'), 'seed-task.stdout').id,
+        object(cliOutputJson(commands['seed-task'], 'seed-task'), 'seed-task.stdout').id,
         'seed-task.stdout.id',
       );
 cli('seed-claim', ['work:start', 'task', taskId, 'live-agent']);
 cli('seed-completed-project', ['project:create', 'live', 'completed', 'Completed']);
 const completedProject = object(
-  outputJson(commands['seed-completed-project'], 'seed-completed-project'),
+  cliOutputJson(commands['seed-completed-project'], 'seed-completed-project'),
   'seed-completed-project.stdout',
 );
 const completedProjectId = scalar(completedProject.id, 'seed-completed-project.stdout.id');
@@ -705,24 +719,24 @@ cli('seed-completed-spec', [
   specBodyPath,
 ]);
 const completedSpec = object(
-  outputJson(commands['seed-completed-spec'], 'seed-completed-spec'),
+  cliOutputJson(commands['seed-completed-spec'], 'seed-completed-spec'),
   'seed-completed-spec.stdout',
 );
 const completedSpecId = scalar(completedSpec.id, 'seed-completed-spec.stdout.id');
 const completedSpecRevision = scalar(completedSpec.revision, 'seed-completed-spec.stdout.revision');
 cli('ready-completed-spec', ['spec:ready', completedSpecId, completedSpecRevision]);
 const completedReady = object(
-  outputJson(commands['ready-completed-spec'], 'ready-completed-spec'),
+  cliOutputJson(commands['ready-completed-spec'], 'ready-completed-spec'),
   'ready-completed-spec.stdout',
 );
 cli('open-completed-project', ['project:open', completedProjectId, completedRevision]);
 const completedOpen = object(
-  outputJson(commands['open-completed-project'], 'open-completed-project'),
+  cliOutputJson(commands['open-completed-project'], 'open-completed-project'),
   'open-completed-project.stdout',
 );
 cli('start-completed-spec', ['work:start', 'spec', completedSpecId, 'completion-agent']);
 const completedClaim = object(
-  outputJson(commands['start-completed-spec'], 'start-completed-spec'),
+  cliOutputJson(commands['start-completed-spec'], 'start-completed-spec'),
   'start-completed-spec.stdout',
 );
 const claimedRevision = scalar(
@@ -796,7 +810,7 @@ outputTrue(commands['status-online'], 'running', 'status-online');
 outputTrue(commands['status-recovered'], 'running', 'status-recovered');
 outputTrue(commands.uninstall, 'uninstalled', 'uninstall');
 const overview = object(
-  outputJson(commands['overview-active-and-complete'], 'overview'),
+  cliOutputJson(commands['overview-active-and-complete'], 'overview'),
   'overview.stdout',
 );
 if (

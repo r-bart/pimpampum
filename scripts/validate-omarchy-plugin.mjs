@@ -149,8 +149,8 @@ for (const expected of [
   'ServiceControl.qml',
   'StatusPopout.qml',
   'SyncService.qml',
+  'UpdateService.qml',
   'assets/pimpampum-compact.svg',
-  'assets/pimpampum-compact-white.svg',
   'README.md',
   'install.sh',
   'manifest.json',
@@ -158,6 +158,7 @@ for (const expected of [
   'pimpampum-overview',
   'pimpampum-service',
   'pimpampum-sync',
+  'pimpampum-update',
   'uninstall.sh',
 ]) {
   invariant(relativeFiles.has(expected), `missing plugin file: ${expected}`);
@@ -173,16 +174,11 @@ invariant(
 );
 const canonicalCompactMark = read(canonicalCompactMarkPath);
 const pluginCompactMark = read(join(pluginRoot, 'assets/pimpampum-compact.svg'));
-const pluginCompactMarkWhite = read(join(pluginRoot, 'assets/pimpampum-compact-white.svg'));
 validateCompactSVG(canonicalCompactMark, 'canonical compact-mark SVG');
 validateCompactSVG(pluginCompactMark, 'plugin compact-mark SVG');
 invariant(
   pluginCompactMark === canonicalCompactMark,
   'plugin compact-mark SVG differs from the reviewed canonical master',
-);
-invariant(
-  pluginCompactMarkWhite === canonicalCompactMark.replace('#000000', '#ffffff'),
-  'white compact-mark SVG must differ from the canonical master only by fill color',
 );
 
 const manifest = JSON.parse(read(join(pluginRoot, 'manifest.json')));
@@ -235,10 +231,13 @@ const pimpampumActionArea = read(join(pluginRoot, 'PimpampumActionArea.qml'));
 const pimpampumMark = read(join(pluginRoot, 'PimpampumMark.qml'));
 const settingsButton = read(join(pluginRoot, 'PimpampumSettingsButton.qml'));
 const statusPopout = read(join(pluginRoot, 'StatusPopout.qml'));
+const overviewService = read(join(pluginRoot, 'OverviewService.qml'));
 const serviceControl = read(join(pluginRoot, 'ServiceControl.qml'));
 const serviceHelper = read(join(pluginRoot, 'pimpampum-service'));
+// `background` is deliberately absent: on a transparent bar Omarchy resolves it to the
+// foreground, so reading it as a background inverts every contrast decision. Any use now
+// fails as an undocumented member.
 const documentedBarMembers = new Set([
-  'background',
   'barSize',
   'barForeground',
   'fontFamily',
@@ -254,17 +253,25 @@ const documentedBarMembers = new Set([
 for (const match of qml.matchAll(/(?:^|[^.\w])bar\.([A-Za-z_]\w*)/gmu)) {
   invariant(documentedBarMembers.has(match[1]), `undocumented injected bar member: ${match[1]}`);
 }
+invariant(
+  statusPopout.includes('Color.popups.text') && statusPopout.includes('Color.popups.background'),
+  'popout content must use the popup card tokens, not the bar foreground resolved against the wallpaper',
+);
+invariant(
+  statusPopout.includes('"Register a folder as a workspace to start tracking projects."') &&
+    statusPopout.includes('"Projects appear here as your agents create them."') &&
+    statusPopout.includes('text: "pimpampum workspace:add"'),
+  'empty states must teach: headline, explanation, and the resolving command on its own surface',
+);
+invariant(
+  statusPopout.includes('text: "Authentication required"') &&
+    statusPopout.includes('text: "pimpampum install"') &&
+    overviewService.includes('"The saved credentials no longer match the local daemon."'),
+  'rejected credentials must explain the mismatch and present the repair command separately',
+);
 invariant(qml.includes('bar.requestPopout'), 'native popout request is missing');
 invariant(qml.includes('bar.releasePopout'), 'native popout release is missing');
-for (const member of [
-  'barForeground',
-  'background',
-  'urgent',
-  'fontFamily',
-  'position',
-  'vertical',
-  'barSize',
-]) {
+for (const member of ['barForeground', 'urgent', 'fontFamily', 'position', 'vertical', 'barSize']) {
   invariant(qml.includes(`bar.${member}`), `theme/bar member is not inherited: ${member}`);
 }
 invariant(
@@ -302,7 +309,7 @@ invariant(
   'QML must not contain credential values',
 );
 invariant(
-  qml.includes('fail("credentials"') && qml.includes('Run pimpampum install'),
+  qml.includes('fail("credentials"') && qml.includes('text: "pimpampum install"'),
   'credential rejection must remain distinct and actionable',
 );
 invariant(
@@ -314,11 +321,23 @@ invariant(
   'bar widget must use the fixed Pimpampum mark instead of status identity glyphs',
 );
 invariant(
-  pimpampumMark.includes('assets/pimpampum-compact-white.svg') &&
-    pimpampumMark.includes('assets/pimpampum-compact.svg') &&
-    pimpampumMark.includes('root.useLightAsset') &&
-    pimpampumMark.includes('contrastBackground.r'),
-  'fixed mark must select an explicit high-contrast light or dark asset',
+  pimpampumMark.includes('fillColor: root.foreground') &&
+    pimpampumMark.includes('fillRule: ShapePath.OddEvenFill') &&
+    !pimpampumMark.includes('contrastBackground') &&
+    !pimpampumMark.includes('MultiEffect {'),
+  'fixed mark must fill from the bar foreground, never picked from the theme background ' +
+    'and never tinted through a layer, whose cached texture keeps the first color',
+);
+// The mark is drawn from the reviewed master's own path data, so the identity cannot drift
+// between the canonical SVG and what the bar actually paints.
+const canonicalMarkPath = /\sd="([^"]+)"/u.exec(canonicalCompactMark)?.[1];
+invariant(
+  typeof canonicalMarkPath === 'string' && canonicalMarkPath.length > 0,
+  'canonical compact-mark SVG has no path data',
+);
+invariant(
+  pimpampumMark.includes(`path: "${canonicalMarkPath}"`),
+  'fixed mark path must match the canonical master SVG exactly',
 );
 invariant(
   pimpampumMark.includes('id: badge') &&
@@ -370,8 +389,8 @@ invariant(
 );
 const popoutOrder = [
   'text: root.helpView ? "Help" : root.settingsView ? "Settings" : "Pimpampum"',
-  'visible: !root.settingsView && root.service.connectionState !== "online"',
-  'No workspaces. Run: pimpampum workspace:add',
+  '&& root.service.connectionState !== "credentials"',
+  '? "No workspaces" : "No projects"',
   'text: "Active work ("',
   'text: "Specs in progress ("',
   'text: "Projects ("',

@@ -59,6 +59,7 @@ const errorCodes = new Set<ErrorCode>([
   'invalid_state',
   'unauthorized',
   'payload_too_large',
+  'unavailable',
   'internal_error',
 ]);
 
@@ -68,6 +69,7 @@ function errorCode(value: string | undefined, status: number): ErrorCode {
   if (status === 404) return 'not_found';
   if (status === 409) return 'conflict';
   if (status === 413) return 'payload_too_large';
+  if (status === 503) return 'unavailable';
   if (status >= 500) return 'internal_error';
   return 'bad_request';
 }
@@ -527,7 +529,12 @@ export class PimpampumHttpClient implements PimpampumGateway {
     try {
       response = await fetch(new URL(path, this.baseUrl), requestInit);
     } catch {
-      throw new AppError('internal_error', 'Pimpampum is unavailable', 503, true);
+      throw new AppError(
+        'unavailable',
+        'The Pimpampum daemon did not answer on its local address',
+        503,
+        true,
+      );
     }
 
     const text = await response.text();
