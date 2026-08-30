@@ -9,6 +9,9 @@ import { fileURLToPath } from 'node:url';
 import { macosSourceHash, sourcePaths } from './macosSourceHash.mjs';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const packageVersion = JSON.parse(
+  readFileSync(join(repositoryRoot, 'package.json'), 'utf8'),
+).version;
 const appRoot = resolve(process.argv[2] ?? 'platforms/macos/dist/PimpampumMenuBar.app');
 const canonicalAppRoot = join(repositoryRoot, 'platforms/macos/dist/PimpampumMenuBar.app');
 const approve = process.argv.includes('--approve');
@@ -174,8 +177,8 @@ function validateCanonicalPlist(plistBytes) {
   invariant(parsed.CFBundleIconFile === 'Pimpampum', 'The packaged app icon file is missing.');
   invariant(parsed.CFBundleIconName === 'Pimpampum', 'The packaged app icon name is missing.');
   invariant(
-    parsed.CFBundleShortVersionString === '1.0.0',
-    'The packaged app must use the package release version 1.0.0.',
+    parsed.CFBundleShortVersionString === packageVersion,
+    `The packaged app must use the package release version ${packageVersion}.`,
   );
 }
 
@@ -245,7 +248,7 @@ const metadata = {
   executable: 'PimpampumMenuBar',
   appBundle: 'PimpampumMenuBar.app',
   appName: 'pim • pam • pum',
-  appVersion: '1.0.0',
+  appVersion: packageVersion,
 };
 
 if (approve) {

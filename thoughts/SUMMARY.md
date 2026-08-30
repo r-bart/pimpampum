@@ -15,6 +15,8 @@
 - Added validator and unit coverage for popup colors, empty-state copy, repair commands, and
   portfolio ordering.
 - Bumped the package to `1.1.0` and removed hardcoded version expectations from HTTP/server tests.
+- Aligned the CLI service receipt, macOS bundle, Omarchy manifest, MCP registry metadata, README,
+  and website with `1.1.0`; Node release validation now derives the version from `package.json`.
 - Reinstalled the local service and plugin, synchronized credentials, restarted the daemon and
   Omarchy shell, and verified the installed overview helper returns an authenticated response.
 
@@ -36,8 +38,14 @@
 - 6 E2E tests pass.
 - 33 Omarchy plugin/service tests and the plugin validator pass.
 - All 8 frozen desktop-status contract artifacts pass.
+- The static website builds successfully and both root and site dependency audits report no known
+  vulnerabilities.
 - The installed daemon is active on version `1.1.0`; the installed plugin matches the source and
   its overview helper returns `status: empty` with valid authentication.
+
+The npm tarball is intentionally produced only after the release workflow rebuilds, signs, and
+approves the `1.1.0` macOS app on macOS. The checked-in `1.0.0` artifact is not rewritten or
+re-approved from Linux.
 
 ## Review Result
 

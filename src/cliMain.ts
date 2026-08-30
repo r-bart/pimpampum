@@ -14,6 +14,7 @@ import { createOmarchyAdapter, isCompatibleOmarchyVersion } from './service/omar
 import { findExecutable, runServiceCommand } from './service/platform.js';
 import { createSystemdAdapter } from './service/systemd.js';
 import { startServer } from './server.js';
+import { PIMPAMPUM_VERSION } from './version.js';
 
 function decodeToolInput(buffer: Buffer): string {
   try {
@@ -133,7 +134,7 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
     dataDirectory: config.dataDirectory,
     nodePath: process.execPath,
     cliPath: compiledCliPath,
-    version: '1.0.0',
+    version: PIMPAMPUM_VERSION,
     host: config.host,
     port: config.port,
     runCommand: runServiceCommand,
