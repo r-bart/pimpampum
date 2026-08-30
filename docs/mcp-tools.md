@@ -1,6 +1,6 @@
 # MCP tools
 
-Pimpampum exposes 32 domain tools plus four synchronization tools through one local daemon. MCP `tools/list` is the
+Pimpampum exposes 32 domain tools plus four HTTP-only synchronization tools through one local daemon. MCP `tools/list` is the
 canonical machine-readable contract: every tool declares a title, precise description, strict JSON
 Schema, defaults, bounds, and effect annotations.
 
@@ -14,7 +14,8 @@ Authorization: Bearer <token>
 ```
 
 For hosts that only support stdio, run `pimpampum-mcp` while the daemon is active. The bridge is
-stateless and forwards every operation to the same authenticated instance.
+stateless and forwards every operation to the same authenticated instance. It exposes the 32
+domain tools only; the four synchronization tools reach HTTP clients alone.
 
 ## Shell-only agents
 
@@ -102,7 +103,7 @@ Continue from `nextOffset` while `hasMore` is true. `work_list` is a live queue 
 ## Recommended agent workflow
 
 ```text
-sync_status
+sync_status                 # HTTP only; a stdio session starts at the next step
   → workspace_resolve
   → work_list
   → work_start
@@ -115,11 +116,12 @@ Use one stable `agentId` for Claim start, renewal, release, and completion. Rene
 `expiresAt`. Before an update, cancellation, or completion, read the bounded manifest and pass its
 current `revision` as `expectedRevision`.
 
-If synchronization is configured, call `sync_status` once during session orientation. Ordinary
-domain writes are exported automatically, so do not call `sync_now` after every write. A temporarily
-unavailable shared folder never invalidates local committed work. Never read, edit, rename, or delete
-snapshot files directly, and never configure, pause, resume, or forget synchronization unless the
-user explicitly asks for that administrative change.
+Over HTTP, call `sync_status` once during session orientation. A stdio session cannot: the bridge
+does not expose the synchronization tools. Ordinary domain writes are exported automatically, so do
+not call `sync_now` after every write. A temporarily unavailable shared folder never invalidates
+local committed work. Never read, edit, rename, or delete snapshot files directly, and never
+configure, pause, resume, or forget synchronization unless the user explicitly asks for that
+administrative change.
 
 ## Canonical catalog
 
