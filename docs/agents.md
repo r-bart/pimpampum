@@ -116,7 +116,7 @@ pimpampum work:start spec SPEC_ID agent-7 --lease-seconds 600
 pimpampum work:complete spec SPEC_ID agent-7 4 "Shipped" \
   --artifact https://github.com/owner/repo/pull/42 \
   --artifact /absolute/path/report.md
-pimpampum project:create vcomp auth "Authentication" --actor codex-thread-123
+pimpampum project:create storefront auth "Authentication" --actor codex-thread-123
 ```
 
 Use `--artifacts '[{"label":"PR","uri":"https://..."}]'` when a reference needs a

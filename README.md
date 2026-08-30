@@ -99,9 +99,9 @@ Agents in any registered repository
         SQLite + Markdown/JSON export
 ```
 
-The MCP stdio bridge is stateless: every operation reaches the same authenticated daemon. Codex,
-Claude, VCOMP, rdiaz racing, and anything else living under `100-projects` can share one
-coordination service without creating a tiny lonely database in every repository.
+The MCP stdio bridge is stateless: every operation reaches the same authenticated daemon. Every
+agent and every repository on one machine share that single coordination service, instead of each
+one growing a tiny lonely database of its own.
 
 ## Requirements
 
@@ -186,8 +186,8 @@ app, `SHA256SUMS`, and release notes. The macOS app is the recommended native do
 onboarding guides the user through the npm runtime installation and detects the daemon as soon as
 it is ready.
 
-GitHub downloads from a private repository require read access. The public npm package remains the
-canonical runtime channel because it carries the daemon, CLI, MCP bridge, and Omarchy integration.
+The npm package remains the canonical runtime channel because it carries the daemon, CLI, MCP
+bridge, and Omarchy integration.
 Source-built macOS apps are unsigned development artifacts; published V1 artifacts pass Developer
 ID signing, notarization, and Gatekeeper checks.
 
@@ -196,7 +196,7 @@ ID signing, notarization, and Gatekeeper checks.
 ### 1. Register a repository
 
 ```bash
-pimpampum workspace:add vcomp "VCOMP" /absolute/path/to/vcomp
+pimpampum workspace:add storefront "Storefront" /absolute/path/to/storefront
 pimpampum workspace:list
 ```
 
@@ -205,7 +205,7 @@ Nested directories resolve to the most specific registered Workspace.
 ### 2. Create the initiative and its first Spec
 
 ```bash
-pimpampum project:create vcomp authentication "Authentication"
+pimpampum project:create storefront authentication "Authentication"
 
 pimpampum spec:create \
   <project-id> \
@@ -238,7 +238,7 @@ agents claim available leaves.
 ### 4. Claim and finish work
 
 ```bash
-pimpampum work:list vcomp <project-id> <spec-id>
+pimpampum work:list storefront <project-id> <spec-id>
 pimpampum work:start task <task-id> codex-thread-123
 pimpampum work:renew task <task-id> codex-thread-123
 pimpampum work:complete task <task-id> codex-thread-123 <revision> "Delivery complete"
@@ -380,7 +380,7 @@ Call a tool with inline JSON, standard input, or a UTF-8 file:
 pimpampum call workspace_list
 
 pimpampum call work_list \
-  --input '{"workspaceId":"vcomp","projectId":null,"specId":null,"limit":20}'
+  --input '{"workspaceId":"storefront","projectId":null,"specId":null,"limit":20}'
 
 printf '%s' '{
   "projectId": "PROJECT_ID",
@@ -439,7 +439,7 @@ TOKEN="$(tr -d '\n' < ~/.pimpampum/token)"
 curl -X POST http://127.0.0.1:7337/api/v1/projects \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"workspaceId":"vcomp","slug":"authentication","title":"Authentication","actor":"human"}'
+  -d '{"workspaceId":"storefront","slug":"authentication","title":"Authentication","actor":"human"}'
 
 curl -X POST http://127.0.0.1:7337/api/v1/projects/PROJECT_ID/specs \
   -H "Authorization: Bearer $TOKEN" \
@@ -704,7 +704,7 @@ person runs it, and its absence does not block a tag (decision of 2026-08-28).
 
 ## Status
 
-The current release candidate is `1.1.3`: functional, local-first, and deliberately small. Every
+The current release is `1.1.3`: functional, local-first, and deliberately small. Every
 future feature has one admission test: does it improve coordination more than it increases surface
 area? If not, it can enjoy a fulfilling life in another product.
 
