@@ -181,6 +181,20 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
     annotations: { ...read, requiresDaemon: false },
   },
   {
+    name: 'update:check',
+    summary: 'Check npm for a newer Pimpampum release without changing the installation.',
+    arguments: [],
+    options: [],
+    annotations: localRead,
+  },
+  {
+    name: 'update',
+    summary: 'Install the latest npm release and reconcile the service and desktop integration.',
+    arguments: [],
+    options: [],
+    annotations: { ...idempotentWrite, requiresDaemon: false },
+  },
+  {
     name: 'uninstall',
     summary: 'Remove the background service. Preserves the database and the data directory.',
     arguments: [],

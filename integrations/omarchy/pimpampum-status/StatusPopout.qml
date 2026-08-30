@@ -1589,6 +1589,39 @@ Item {
 
           Rectangle {
             width: parent.width
+            height: helpUpdates.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            Column {
+              id: helpUpdates
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(14)
+              spacing: Style.space(6)
+              Text {
+                text: "Updates"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Run pimpampum update:check to check for a release, then pimpampum update to install it. Your local data is preserved."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
+          Rectangle {
+            width: parent.width
             height: helpRecovery.implicitHeight + Style.space(28)
             radius: Style.space(6)
             color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)

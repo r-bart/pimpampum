@@ -123,6 +123,16 @@ No root access and no terminal window kept alive as a shrine. Inspect it with `p
 remove only Pimpampum-owned runtime integrations with `pimpampum uninstall`. The database, token,
 logs, backups, and exports are preserved.
 
+Update in place without uninstalling or losing local data:
+
+```bash
+pimpampum update:check
+pimpampum update
+```
+
+`update:check` is read-only. `update` installs the latest published npm release and then runs that
+new CLI's idempotent installer to reconcile the background service and desktop integration.
+
 On macOS, you can instead download the signed menu-bar app from GitHub Releases. Its first-run
 screen copies the runtime command and opens Terminal for you:
 

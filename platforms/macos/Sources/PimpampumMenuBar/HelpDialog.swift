@@ -48,6 +48,11 @@ enum HelpDialogCopy {
       systemImage: "externaldrive",
       text: "Backup keeps a separate recovery copy; it does not synchronize other computers."
     ),
+    HelpDialogItem(
+      id: "updates",
+      systemImage: "arrow.down.circle",
+      text: "Run pimpampum update:check to check for a release, then pimpampum update to install it without deleting local data."
+    ),
   ]
 }
 

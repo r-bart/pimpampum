@@ -19,6 +19,9 @@
   and website with `1.1.0`; Node release validation now derives the version from `package.json`.
 - Reinstalled the local service and plugin, synchronized credentials, restarted the daemon and
   Omarchy shell, and verified the installed overview helper returns an authenticated response.
+- Added `update:check` and `update`: the first is read-only, while the second installs the latest
+  npm release and reconciles the service and desktop integration through the newly installed CLI.
+- Added update guidance to the Omarchy and macOS help surfaces and documented the in-place flow.
 
 ## Key Decisions
 
@@ -33,7 +36,7 @@
 ## Quality Status
 
 - Typecheck, lint, and formatting pass.
-- 462 unit/acceptance tests pass, with 4 skipped and 100% statement, branch, function, and line
+- 469 unit/acceptance tests pass, with 4 skipped and 100% statement, branch, function, and line
   coverage.
 - 6 E2E tests pass.
 - 33 Omarchy plugin/service tests and the plugin validator pass.

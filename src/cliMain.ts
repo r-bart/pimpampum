@@ -15,6 +15,7 @@ import { findExecutable, runServiceCommand } from './service/platform.js';
 import { createSystemdAdapter } from './service/systemd.js';
 import { startServer } from './server.js';
 import { PIMPAMPUM_VERSION } from './version.js';
+import { createUpdateManager } from './update.js';
 
 function decodeToolInput(buffer: Buffer): string {
   try {
@@ -192,6 +193,12 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
       },
     }),
     serviceManager,
+    updateManager: createUpdateManager({
+      currentVersion: PIMPAMPUM_VERSION,
+      npmPath: findExecutable('npm'),
+      nodePath: process.execPath,
+      runCommand: runServiceCommand,
+    }),
     ...(serviceOnlyManager ? { serviceOnlyManager } : {}),
     startServer: () => startServer(config),
     // The stdio bridge entry point wires its own signals and runs on import.

@@ -708,6 +708,17 @@ Credentials rejected are presented as a recoverable setup state rather than a ra
 
 Never expose the token or raw stderr.
 
+### 11.3.1 Updates
+
+- `pimpampum update:check` queries the canonical npm registry metadata and never changes state.
+- `pimpampum update` installs the latest stable package globally, then invokes that newly installed
+  CLI's idempotent installer so the daemon and desktop integration move together.
+- Updates preserve the database, token, settings, logs, backups, exports, and registered workspaces.
+- An already-current update still reconciles the installation and reports `updated: false`.
+- Registry and reconciliation failures are retryable `unavailable` errors and never expose raw npm
+  stderr, tokens, or registry configuration.
+- Desktop help surfaces name both commands. They do not poll the network or update silently.
+
 ### 11.4 Empty states
 
 Amended 2026-08-30. An empty popout is a first-run screen, not an error report, so each state

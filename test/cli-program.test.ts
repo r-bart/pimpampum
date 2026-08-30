@@ -90,6 +90,21 @@ function fixture() {
       })),
       uninstall: vi.fn(async () => ({ uninstalled: true, dataPreserved: true as const })),
     },
+    updateManager: {
+      check: vi.fn(async () => ({
+        currentVersion: '1.1.0',
+        latestVersion: '1.1.0',
+        updateAvailable: false,
+      })),
+      update: vi.fn(async () => ({
+        currentVersion: '1.1.0',
+        latestVersion: '1.1.0',
+        updateAvailable: false,
+        updated: false,
+        installedVersion: '1.1.0',
+        serviceReconciled: true,
+      })),
+    },
     serviceOnlyManager: {
       install: vi.fn(async () => ({
         installed: true as const,
@@ -125,6 +140,8 @@ describe('CLI program', () => {
       ['overview'],
       ['install'],
       ['status'],
+      ['update:check'],
+      ['update'],
       ['uninstall'],
       ['workspace:list'],
       ['workspace:add', 'ws', 'Workspace', 'root'],

@@ -97,6 +97,21 @@ function fixture() {
       })),
       uninstall: vi.fn(async () => ({ uninstalled: true, dataPreserved: true as const })),
     },
+    updateManager: {
+      check: vi.fn(async () => ({
+        currentVersion: '1.1.0',
+        latestVersion: '1.1.0',
+        updateAvailable: false,
+      })),
+      update: vi.fn(async () => ({
+        currentVersion: '1.1.0',
+        latestVersion: '1.1.0',
+        updateAvailable: false,
+        updated: false,
+        installedVersion: '1.1.0',
+        serviceReconciled: true,
+      })),
+    },
     startStdioBridge: vi.fn(async () => undefined),
     startServer: vi.fn(async () => ({
       config: { baseUrl: 'http://127.0.0.1:7337' },

@@ -17,6 +17,7 @@ import { AppError } from './errors.js';
 import { MAX_AGENT_INPUT_BYTES } from './limits.js';
 import type { ServiceManager } from './service/types.js';
 import type { ArtifactReference, TargetType } from './types.js';
+import type { UpdateManager } from './update.js';
 import { PIMPAMPUM_VERSION } from './version.js';
 
 export interface AgentCliConfiguration {
@@ -41,6 +42,7 @@ export interface CliRuntime {
   describeConfig(): AgentCliConfiguration;
   serviceManager: ServiceManager;
   serviceOnlyManager?: ServiceManager;
+  updateManager: UpdateManager;
   startServer(): Promise<{ config: { baseUrl: string }; close(): Promise<void> }>;
   startStdioBridge(): Promise<void>;
   readFile(path: string, maxBytes?: number): string;
@@ -411,6 +413,14 @@ async function executeCli(
   }
   if (command === 'status') {
     print(runtime, await runtime.serviceManager.status());
+    return null;
+  }
+  if (command === 'update:check') {
+    print(runtime, await runtime.updateManager.check());
+    return null;
+  }
+  if (command === 'update') {
+    print(runtime, await runtime.updateManager.update());
     return null;
   }
   if (command === 'uninstall') {
