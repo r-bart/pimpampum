@@ -80,6 +80,13 @@
   the SwiftUI composition and the window controller and is now a recorded exclusion.
 - Bumped the release to `1.1.3` and aligned the macOS bundle and brand fallback, the Omarchy
   manifest, the MCP registry metadata, the README, and the website.
+- Exercised `pimpampum update` against the real npm registry for the first time, on a real
+  machine, from an installed 1.1.2 to the published 1.1.3. It returned `updated: true` with
+  `serviceReconciled: true`, and `pimpampum status` then reported `launchd-macos-app`, `1.1.3`,
+  and `loginItem: enabled`. Every earlier exercise had used a stub npm on a copied Node.
+- The user's `.npmrc` carries two names for the same policy: `minimum-release-age`, which is
+  pnpm's and which npm rejects as an unknown config, and `min-release-age`, which npm applies.
+  Only `min-release-age=0` defeats it.
 - Readied the README for a public audience after 1.1.3 shipped. It still warned that Releases
   downloads need read access to a private repository, named private projects and a personal
   directory layout in its Architecture section, used `vcomp` as an example workspace that tells a
@@ -151,8 +158,11 @@ requirements issues. The changes are ready to commit and push.
 - `pimpampum update` cannot succeed on this machine: `minimum-release-age` in the user's `.npmrc`
   makes `npm install --global pimpampum@1.1.0` fail with `ETARGET`. The panel now quotes that
   reason. It is a local npm policy, not a defect.
-- The `unavailable` suggestion still names `pimpampum status` and `pimpampum install`, which does
-  not fit an npm failure. The desktop panels render `message` only, so no user sees it today.
+- The `unavailable` suggestion names `pimpampum status` and `pimpampum install`, which does not fit
+  an npm failure. This was recorded as invisible because the desktop panels render `message` only.
+  That was wrong: the CLI prints the whole envelope, and a real refusal on 2026-08-31 told a user
+  whose daemon was answering perfectly that it had not answered. The `message` beside it was
+  correct and quoted npm's own reason.
 - `UpdateSettingsStore` does not check `Task.isCancelled`, unlike `OverviewStore` and
   `BackupSettingsStore`. Nothing cancels it: the button owns an unowned `Task` and the runner uses
   `Task.detached`, which does not inherit cancellation.
