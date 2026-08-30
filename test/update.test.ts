@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { dirname } from 'node:path';
-import { createUpdateManager, isNewerVersion } from '../src/update.js';
+import { createUpdateManager, isNewerVersion, resolveNpmPath } from '../src/update.js';
 
 describe('update manager', () => {
+  it('finds npm next to Node when a graphical session has a sparse PATH', () => {
+    expect(resolveNpmPath('/mise/bin/node', '', () => false)).toBeNull();
+    expect(resolveNpmPath(process.execPath, '')).toMatch(/\/npm-cli\.js$/u);
+    expect(resolveNpmPath('/path/that/does/not/exist/node', '')).toBeNull();
+  });
+
   it('compares stable semantic versions', () => {
     expect(isNewerVersion('1.2.0', '1.1.9')).toBe(true);
     expect(isNewerVersion('1.1.0', '1.1.0')).toBe(false);
@@ -23,13 +29,19 @@ describe('update manager', () => {
       latestVersion: '1.2.0',
       updateAvailable: true,
     });
-    expect(runCommand).toHaveBeenCalledWith('/npm', ['view', 'pimpampum', 'version', '--json']);
+    expect(runCommand).toHaveBeenCalledWith('/node', [
+      '/npm',
+      'view',
+      'pimpampum',
+      'version',
+      '--json',
+    ]);
   });
 
   it('updates globally and reconciles through the newly installed CLI', async () => {
     const runCommand = vi.fn(async (_executable: string, args: string[]) => {
-      if (args[0] === 'view') return { exitCode: 0, stdout: '"1.2.0"', stderr: '' };
-      if (args[0] === 'root')
+      if (args[1] === 'view') return { exitCode: 0, stdout: '"1.2.0"', stderr: '' };
+      if (args[1] === 'root')
         return { exitCode: 0, stdout: '/global/lib/node_modules\n', stderr: '' };
       return { exitCode: 0, stdout: '{}', stderr: '' };
     });
@@ -41,11 +53,19 @@ describe('update manager', () => {
       pathExists: () => true,
     });
     await expect(manager.update()).resolves.toMatchObject({
+      currentVersion: '1.2.0',
+      latestVersion: '1.2.0',
+      updateAvailable: false,
       updated: true,
       installedVersion: '1.2.0',
       serviceReconciled: true,
     });
-    expect(runCommand).toHaveBeenCalledWith('/npm', ['install', '--global', 'pimpampum@1.2.0']);
+    expect(runCommand).toHaveBeenCalledWith(process.execPath, [
+      '/npm',
+      'install',
+      '--global',
+      'pimpampum@1.2.0',
+    ]);
     expect(runCommand).toHaveBeenCalledWith(process.execPath, [
       '/global/lib/node_modules/pimpampum/dist/cli.js',
       'install',
@@ -91,7 +111,7 @@ describe('update manager', () => {
 
   it('rejects missing updated CLIs and failed reconciliation', async () => {
     const responses = async (_executable: string, args: string[]) =>
-      args[0] === 'view'
+      args[1] === 'view'
         ? { exitCode: 0, stdout: '"1.1.0"', stderr: '' }
         : { exitCode: 0, stdout: '/missing', stderr: '' };
     const missing = createUpdateManager({
@@ -109,9 +129,9 @@ describe('update manager', () => {
       nodePath: '/node',
       pathExists: () => true,
       runCommand: vi.fn(async (_executable, args) =>
-        args[0] === 'view'
+        args[1] === 'view'
           ? { exitCode: 0, stdout: '"1.1.0"', stderr: '' }
-          : args[0] === 'root'
+          : args[1] === 'root'
             ? { exitCode: 0, stdout: '/global', stderr: '' }
             : { exitCode: 1, stdout: '', stderr: 'install failed' },
       ),
@@ -126,9 +146,9 @@ describe('update manager', () => {
       npmPath: '/npm',
       nodePath: '/node',
       runCommand: vi.fn(async (_executable, args) =>
-        args[0] === 'view'
+        args[1] === 'view'
           ? { exitCode: 0, stdout: '"1.1.0"', stderr: '' }
-          : args[0] === 'root'
+          : args[1] === 'root'
             ? { exitCode: 0, stdout: root, stderr: '' }
             : { exitCode: 0, stdout: '{}', stderr: '' },
       ),

@@ -407,6 +407,8 @@ describe('Omarchy Quattro plugin', () => {
     expect(popout).toContain('actionEnabled: !root.updateService.busy');
     expect(service).not.toContain('Timer {');
     expect(service).toContain('command = [helperPath, operation]');
+    expect(service).toContain('Qt.callLater(function() { root.handleExit(exitCode) })');
+    expect(service).toContain('helperPath.charAt(0) !== "/"');
     expect(helper).toContain('command_name=update:check');
     expect(helper).toContain('command_name=update');
     expect(helper).not.toMatch(/eval\b|bearer|token/iu);

@@ -1,6 +1,7 @@
-import { existsSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { accessSync, constants, existsSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute, join } from 'node:path';
 import { AppError } from './errors.js';
+import { findExecutable } from './service/platform.js';
 import type { RunCommand } from './service/types.js';
 
 export interface UpdateStatus {
@@ -18,6 +19,23 @@ export interface UpdateResult extends UpdateStatus {
 export interface UpdateManager {
   check(): Promise<UpdateStatus>;
   update(): Promise<UpdateResult>;
+}
+
+export function resolveNpmPath(
+  nodePath: string,
+  pathValue = process.env.PATH,
+  pathExists: (path: string) => boolean = (path) => {
+    try {
+      accessSync(path, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+): string | null {
+  const npmPath =
+    findExecutable('npm', pathValue) ?? [join(dirname(nodePath), 'npm')].find(pathExists);
+  return npmPath ? realpathSync(npmPath) : null;
 }
 
 function versionParts(version: string): number[] {
@@ -45,9 +63,14 @@ export function createUpdateManager(input: {
 }): UpdateManager {
   async function npm(arguments_: string[], operation: string): Promise<string> {
     if (!input.npmPath) {
-      throw new AppError('unavailable', 'npm is required to update Pimpampum', 503, false, {});
+      throw new AppError(
+        'unavailable',
+        'npm is required to update Pimpampum; install Node.js with npm and retry',
+        503,
+        false,
+      );
     }
-    const result = await input.runCommand(input.npmPath, arguments_);
+    const result = await input.runCommand(input.nodePath, [input.npmPath, ...arguments_]);
     if (result.exitCode !== 0) {
       throw new AppError('unavailable', `${operation} failed`, 503, true);
     }
@@ -94,7 +117,9 @@ export function createUpdateManager(input: {
         );
       }
       return {
-        ...status,
+        currentVersion: status.latestVersion,
+        latestVersion: status.latestVersion,
+        updateAvailable: false,
         updated: status.updateAvailable,
         installedVersion: status.latestVersion,
         serviceReconciled: true,
