@@ -73,6 +73,11 @@
   returned `updated: true` with `serviceReconciled: true`. The real npm was never invoked.
 - The deadlock fix was verified by reintroducing `Pipe()`: the runner test hangs past 90 seconds
   and passes in 0.2 seconds once stderr goes to `nullDevice`.
+- The panel was exercised in the installed app on macOS. The `1.1.0` tarball was installed
+  globally and reconciled to the `launchd-macos-app` adapter with `loginItem: enabled`. Settings >
+  Updates reported the idle copy, the `Checking…` state, and `1.1.0` installed and latest.
+- The install path stayed unreachable: `1.1.0` is the newest published release, so no run could
+  produce `Install update` or the relaunch notice against the real registry.
 
 The npm tarball is still produced only by the release workflow, which rebuilds, signs, notarizes,
 and re-approves the macOS app before publishing.
@@ -86,8 +91,10 @@ requirements issues. The changes are ready to commit and push.
 
 - `SyncSettings.swift` holds `SyncSettingsStore` next to its view and appears in neither the Swift
   coverage manifest nor the reviewed exclusions. It predates this work.
-- No live smoke covers the macOS Updates panel; `scripts/test-macos-live.mjs` still exercises only
-  the popover and the Settings window.
+- No automated live smoke covers the macOS Updates panel; `scripts/test-macos-live.mjs` still
+  exercises only the popover and the Settings window. The panel was verified by hand instead.
+- Nothing has ever run `Install update` against the real registry, on either platform. The next
+  published release is the first chance to exercise it end to end.
 - `thoughts/evidence/macos-live.json` is bound to the previous binary. Only `release.yml` runs
   `check:macos-evidence`, and it regenerates the evidence first, so the release is unaffected.
 - `pimpampum update` cannot succeed on this machine: `minimum-release-age` in the user's `.npmrc`
