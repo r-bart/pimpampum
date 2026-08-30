@@ -36,8 +36,12 @@ Item {
   readonly property bool folderDialogOpen: folderPicker.running
   readonly property bool folderDialogAvailable: pickerHelperPath.charAt(0) === "/"
 
-  readonly property color foreground: bar ? bar.barForeground : "white"
-  readonly property color background: bar ? bar.background : "#202020"
+  // The popout draws on the popup card Omarchy paints with Color.popups.background, not on
+  // the wallpaper. bar.barForeground is resolved against whatever is behind a transparent
+  // bar, and on a light wallpaper over a dark theme it equals the card's own background,
+  // which rendered every label invisible. The popup tokens are what native panels use.
+  readonly property color foreground: Color.popups.text
+  readonly property color background: Color.popups.background
   readonly property color urgent: bar ? bar.urgent : "#ff5f57"
   readonly property color accent: Color.accent
   readonly property string fontFamily: bar ? bar.fontFamily : "monospace"
@@ -389,7 +393,9 @@ Item {
         }
 
         Text {
-          visible: !root.settingsView && root.service.connectionState !== "online"
+          visible: !root.settingsView
+            && root.service.connectionState !== "online"
+            && root.service.connectionState !== "credentials"
           width: parent.width
           wrapMode: Text.Wrap
           maximumLineCount: 3
@@ -398,6 +404,66 @@ Item {
           color: root.urgent
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
+        }
+
+        Item {
+          visible: !root.settingsView && root.service.connectionState === "credentials"
+          width: parent.width
+          height: credentialsState.implicitHeight + Style.space(16)
+
+          Column {
+            id: credentialsState
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(8)
+
+            Column {
+              width: parent.width
+              spacing: Style.space(3)
+
+              Text {
+                text: "Authentication required"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: root.service.errorMessage
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            Rectangle {
+              width: parent.width
+              height: credentialsCommand.implicitHeight + Style.space(14)
+              radius: Style.space(4)
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+              border.width: 1
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+              Text {
+                id: credentialsCommand
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(10)
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                wrapMode: Text.WrapAnywhere
+                text: "pimpampum install"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+            }
+          }
         }
 
         Text {
@@ -412,14 +478,79 @@ Item {
           font.pixelSize: Style.font.bodySmall
         }
 
-        Text {
+        // A first run is not an error report: headline, one line of explanation, and the
+        // command that resolves it on its own surface, so the shell verb is never read as
+        // prose. The wrapper adds the breathing room a lone Text could not take from the
+        // column spacing.
+        Item {
           visible: !root.settingsView && root.service.overview && root.service.overview.counts.projects === 0
-          text: root.service.overview && root.service.overview.counts.workspaces === 0
-            ? "No workspaces. Run: pimpampum workspace:add"
-            : "No projects"
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
+          width: parent.width
+          height: emptyState.implicitHeight + Style.space(16)
+
+          Column {
+            id: emptyState
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            // Headline and explanation are one unit at the tight inner spacing; the command
+            // is a separate affordance and gets the wider outer gap.
+            spacing: Style.space(8)
+
+            readonly property bool noWorkspaces:
+              root.service.overview && root.service.overview.counts.workspaces === 0
+
+            Column {
+              width: parent.width
+              spacing: Style.space(3)
+
+              Text {
+                text: emptyState.noWorkspaces ? "No workspaces" : "No projects"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: emptyState.noWorkspaces
+                  ? "Register a folder as a workspace to start tracking projects."
+                  : "Projects appear here as your agents create them."
+                color: root.foreground
+                opacity: 0.72
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            // A translucent foreground fill composites over whatever popup background the
+            // theme paints, so one value works light and dark. The command wraps rather
+            // than elides: a truncated command is worse than a taller card.
+            Rectangle {
+              visible: emptyState.noWorkspaces
+              width: parent.width
+              height: emptyCommand.implicitHeight + Style.space(14)
+              radius: Style.space(4)
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+              border.width: 1
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+              Text {
+                id: emptyCommand
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(10)
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                wrapMode: Text.WrapAnywhere
+                text: "pimpampum workspace:add"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+            }
+          }
         }
 
         Text {

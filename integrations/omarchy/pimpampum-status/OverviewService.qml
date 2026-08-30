@@ -171,7 +171,7 @@ Item {
         || error.indexOf("credential") !== -1
         || /(^|[^0-9])(401|403)([^0-9]|$)/.test(error)
       if (credentialsRejected) {
-        fail("credentials", "Local credentials were rejected. Run pimpampum install to repair them.")
+        fail("credentials", "The saved credentials no longer match the local daemon.")
       } else fail("offline", "Pimpampum is offline")
       return
     }

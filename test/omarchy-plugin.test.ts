@@ -130,12 +130,28 @@ describe('Omarchy Quattro plugin', () => {
     expect(widget).toContain('Accessible.onPressAction: root.togglePanel()');
     expect(`${widget}\n${mark}`).not.toMatch(/["'](?:×|!|✓|wifi\.slash)["']/u);
     expect(service).toContain('fail("credentials"');
-    expect(service).toContain('Run pimpampum install');
+    expect(service).toContain('The saved credentials no longer match the local daemon.');
     expect(service).not.toMatch(/errorMessage\s*=\s*processError/u);
   });
 
   it('keeps the popout bounded, ordered, readable, and keyboard accessible', () => {
     const popout = readFileSync(join(pluginSource, 'StatusPopout.qml'), 'utf8');
+    // The popout is drawn on Omarchy's popup card, so it must read the popup tokens. Using
+    // bar.barForeground here painted every label in the card's own background colour on a
+    // light wallpaper over a dark theme, leaving the popout blank.
+    expect(popout).toContain('Color.popups.text');
+    expect(popout).toContain('Color.popups.background');
+    expect(popout).not.toContain('bar.background');
+    // The empty popout is a first-run screen: headline, explanation, and the command that
+    // resolves it on its own surface, never one sentence with the shell verb buried in prose.
+    expect(popout).toContain('"Register a folder as a workspace to start tracking projects."');
+    expect(popout).toContain('"Projects appear here as your agents create them."');
+    expect(popout).toContain('text: "pimpampum workspace:add"');
+    expect(popout).not.toContain('No workspaces. Run:');
+    expect(popout).toContain('text: "Authentication required"');
+    expect(popout).toContain('text: "pimpampum install"');
+    expect(popout).toContain('root.service.connectionState !== "credentials"');
+    expect(popout).not.toContain('Local credentials were rejected. Run');
     const actionArea = readFileSync(join(pluginSource, 'PimpampumActionArea.qml'), 'utf8');
     const settingsButton = readFileSync(join(pluginSource, 'PimpampumSettingsButton.qml'), 'utf8');
 
@@ -148,8 +164,8 @@ describe('Omarchy Quattro plugin', () => {
 
     const ordered = [
       'text: root.helpView ? "Help" : root.settingsView ? "Settings" : "Pimpampum"',
-      'visible: !root.settingsView && root.service.connectionState !== "online"',
-      'No workspaces. Run: pimpampum workspace:add',
+      '&& root.service.connectionState !== "credentials"',
+      '? "No workspaces" : "No projects"',
       'text: "Active work ("',
       'text: "Specs in progress ("',
       'text: "Projects ("',

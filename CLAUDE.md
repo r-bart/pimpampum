@@ -84,7 +84,7 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER print `asAppError` output from the CLI entrypoint; use `createLocalErrorEnvelope` so install/uninstall failures keep their real message and cause chain locally (HTTP/MCP stay flattened).
 - ALWAYS print CLI success through `print`, which wraps in `{data}`; only `call` uses `printEnvelope`, because the daemon already enveloped that payload.
 - ALWAYS declare a new CLI verb in `src/cliCommands.ts`; `pimpampum help` and `pimpampum commands` are both generated from that table and must never be hand-edited.
-- NEVER hardcode a version string; import `PIMPAMPUM_VERSION` from `src/version.ts`, which reads `package.json`.
+- NEVER hardcode a version string, tests included; import `PIMPAMPUM_VERSION` from `src/version.ts`, which reads `package.json`. A release bump breaks any test that spelled the old one.
 - NEVER map a transport failure to `internal_error`; use `unavailable`, whose suggestion names `pimpampum status` and `pimpampum install`.
 - ALWAYS keep the Omarchy QML readers tolerant of both the bare payload and the `{data}` envelope, so an installed plugin survives a CLI upgrade.
 - ALWAYS amend the spec first and then refresh the digest in `scripts/check-desktop-status-contract.mjs` when a frozen acceptance test must change.
@@ -93,8 +93,10 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER give CLI failures distinct exit codes; the Omarchy helpers `exec` the CLI and already reserve 64 and 127, and every consumer branches on non-zero then parses the envelope.
 - ALWAYS sweep `scripts/` as well as `integrations/` and `platforms/` when changing CLI output; the live runners and the evidence validator parse it too.
 - NEVER pick a desktop asset or color from `bar.background`; on a transparent bar Omarchy resolves it to the foreground via `omarchy-bar-text-color`, so paint from `bar.barForeground`.
+- NEVER paint popout content from `bar.barForeground`; the popout draws on Omarchy's popup card, so read `Color.popups.text` and `Color.popups.background` or the labels vanish into the card on a light wallpaper.
 - NEVER tint a bar icon through a `MultiEffect` over a `layer.enabled` source; the cached texture keeps its first color and survives a wallpaper change. Draw it with `Shape`/`ShapePath` and `fillColor`.
 - ALWAYS restart the shell (`omarchy restart shell`) to verify a plugin QML change; `rescanPlugins` reloads the plugin but the QML engine keeps the already-compiled components, so edits appear to do nothing.
+- ALWAYS preview an Omarchy popout layout change in a `qml6` harness with stubbed `Style`/`Color` tokens and `grabToImage`; nothing opens the popout from the CLI, so a shell restart alone proves only that it parses.
 
 ## Self-Improvement
 

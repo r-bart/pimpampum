@@ -229,10 +229,13 @@ const pimpampumActionArea = read(join(pluginRoot, 'PimpampumActionArea.qml'));
 const pimpampumMark = read(join(pluginRoot, 'PimpampumMark.qml'));
 const settingsButton = read(join(pluginRoot, 'PimpampumSettingsButton.qml'));
 const statusPopout = read(join(pluginRoot, 'StatusPopout.qml'));
+const overviewService = read(join(pluginRoot, 'OverviewService.qml'));
 const serviceControl = read(join(pluginRoot, 'ServiceControl.qml'));
 const serviceHelper = read(join(pluginRoot, 'pimpampum-service'));
+// `background` is deliberately absent: on a transparent bar Omarchy resolves it to the
+// foreground, so reading it as a background inverts every contrast decision. Any use now
+// fails as an undocumented member.
 const documentedBarMembers = new Set([
-  'background',
   'barSize',
   'barForeground',
   'fontFamily',
@@ -248,17 +251,25 @@ const documentedBarMembers = new Set([
 for (const match of qml.matchAll(/(?:^|[^.\w])bar\.([A-Za-z_]\w*)/gmu)) {
   invariant(documentedBarMembers.has(match[1]), `undocumented injected bar member: ${match[1]}`);
 }
+invariant(
+  statusPopout.includes('Color.popups.text') && statusPopout.includes('Color.popups.background'),
+  'popout content must use the popup card tokens, not the bar foreground resolved against the wallpaper',
+);
+invariant(
+  statusPopout.includes('"Register a folder as a workspace to start tracking projects."') &&
+    statusPopout.includes('"Projects appear here as your agents create them."') &&
+    statusPopout.includes('text: "pimpampum workspace:add"'),
+  'empty states must teach: headline, explanation, and the resolving command on its own surface',
+);
+invariant(
+  statusPopout.includes('text: "Authentication required"') &&
+    statusPopout.includes('text: "pimpampum install"') &&
+    overviewService.includes('"The saved credentials no longer match the local daemon."'),
+  'rejected credentials must explain the mismatch and present the repair command separately',
+);
 invariant(qml.includes('bar.requestPopout'), 'native popout request is missing');
 invariant(qml.includes('bar.releasePopout'), 'native popout release is missing');
-for (const member of [
-  'barForeground',
-  'background',
-  'urgent',
-  'fontFamily',
-  'position',
-  'vertical',
-  'barSize',
-]) {
+for (const member of ['barForeground', 'urgent', 'fontFamily', 'position', 'vertical', 'barSize']) {
   invariant(qml.includes(`bar.${member}`), `theme/bar member is not inherited: ${member}`);
 }
 invariant(
@@ -296,7 +307,7 @@ invariant(
   'QML must not contain credential values',
 );
 invariant(
-  qml.includes('fail("credentials"') && qml.includes('Run pimpampum install'),
+  qml.includes('fail("credentials"') && qml.includes('text: "pimpampum install"'),
   'credential rejection must remain distinct and actionable',
 );
 invariant(
@@ -376,8 +387,8 @@ invariant(
 );
 const popoutOrder = [
   'text: root.helpView ? "Help" : root.settingsView ? "Settings" : "Pimpampum"',
-  'visible: !root.settingsView && root.service.connectionState !== "online"',
-  'No workspaces. Run: pimpampum workspace:add',
+  '&& root.service.connectionState !== "credentials"',
+  '? "No workspaces" : "No projects"',
   'text: "Active work ("',
   'text: "Specs in progress ("',
   'text: "Projects ("',
