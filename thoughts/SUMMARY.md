@@ -67,6 +67,19 @@
   now states both counts and where each applies.
 - Corrected the OpenAPI paragraph, which claimed to list every documented operation and omitted
   the portfolio overview and synchronization. The live document exposes 44 paths.
+- Corrected `docs/mcp-tools.md`, which opened its recommended agent workflow with `sync_status`.
+  A stdio host does not have that tool, so the guide failed at its own first step.
+- Bounded the update check on both platforms. `UpdateOperation` now declares a 90-second deadline
+  for `check` and none for `install`, because killing a half-finished install is worse than
+  waiting for it. The macOS adapter enforces the deadline with a watchdog that terminates the
+  child, and `UpdateService.qml` settles the error state in the timer itself, so a terminated
+  child that never reports an exit cannot strand the popout on "Checking…".
+- Split `SyncSettings.swift`, which held models, an HTTP client, a store, and three views in one
+  596-line file. `SyncSettingsModels.swift`, `SyncSettingsClient.swift`, and
+  `SyncSettingsStore.swift` joined the Swift coverage manifest at 100%; the remaining file keeps
+  the SwiftUI composition and the window controller and is now a recorded exclusion.
+- Bumped the release to `1.1.3` and aligned the macOS bundle and brand fallback, the Omarchy
+  manifest, the MCP registry metadata, the README, and the website.
 
 ## Key Decisions
 
@@ -87,12 +100,12 @@
 ## Quality Status
 
 - Typecheck, lint, and formatting pass.
-- 478 unit/acceptance tests pass with 100% statement, branch, function, and line coverage.
+- 480 unit/acceptance tests pass with 100% statement, branch, function, and line coverage.
 - 6 E2E tests pass.
-- 34 Omarchy plugin/service tests and the plugin validator pass.
+- 35 Omarchy plugin/service tests and the plugin validator pass.
 - All 8 frozen desktop-status contract artifacts pass.
-- 122 Swift tests pass across nineteen suites, at 100% region, function, and line coverage for the
-  enforced core.
+- 142 Swift tests pass across twenty suites, at 100% region, function, and line coverage for the
+  enforced core, which now includes the three extracted synchronization files.
 - The macOS artifact gate passes against a `1.1.0` bundle rebuilt and approved from macOS.
 - `pimpampum update:check` was exercised against the live npm registry on macOS and returned
   `updateAvailable: false` for `1.1.0`.
@@ -116,8 +129,6 @@ requirements issues. The changes are ready to commit and push.
 
 ## Known Gaps
 
-- `SyncSettings.swift` holds `SyncSettingsStore` next to its view and appears in neither the Swift
-  coverage manifest nor the reviewed exclusions. It predates this work.
 - No automated live smoke covers the macOS Updates panel; `scripts/test-macos-live.mjs` still
   exercises only the popover and the Settings window. The panel was verified by hand instead.
 - Nothing has ever run `Install update` against the real registry, on either platform. The next
@@ -129,9 +140,6 @@ requirements issues. The changes are ready to commit and push.
   reason. It is a local npm policy, not a defect.
 - The `unavailable` suggestion still names `pimpampum status` and `pimpampum install`, which does
   not fit an npm failure. The desktop panels render `message` only, so no user sees it today.
-- Neither platform bounds how long an update command may run. A hung `npm view` leaves the control
-  disabled until the app restarts. A timeout would have to cover `check` only, because killing a
-  half-finished `update` is worse than waiting.
 - `UpdateSettingsStore` does not check `Task.isCancelled`, unlike `OverviewStore` and
   `BackupSettingsStore`. Nothing cancels it: the button owns an unowned `Task` and the runner uses
   `Task.detached`, which does not inherit cancellation.
