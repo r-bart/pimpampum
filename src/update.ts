@@ -33,8 +33,8 @@ export function resolveNpmPath(
     }
   },
 ): string | null {
-  const npmPath =
-    findExecutable('npm', pathValue) ?? [join(dirname(nodePath), 'npm')].find(pathExists);
+  const siblingNpmPath = join(dirname(nodePath), 'npm');
+  const npmPath = pathExists(siblingNpmPath) ? siblingNpmPath : findExecutable('npm', pathValue);
   return npmPath ? realpathSync(npmPath) : null;
 }
 

@@ -9,6 +9,12 @@ describe('update manager', () => {
     expect(resolveNpmPath('/path/that/does/not/exist/node', '')).toBeNull();
   });
 
+  it("prefers Node's sibling npm over a version-manager shim on PATH", () => {
+    expect(resolveNpmPath(process.execPath, `${process.env.HOME}/.local/share/mise/shims`)).toMatch(
+      /\/npm-cli\.js$/u,
+    );
+  });
+
   it('compares stable semantic versions', () => {
     expect(isNewerVersion('1.2.0', '1.1.9')).toBe(true);
     expect(isNewerVersion('1.1.0', '1.1.0')).toBe(false);
