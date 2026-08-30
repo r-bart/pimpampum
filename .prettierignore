@@ -12,3 +12,4 @@ site/node_modules
 site/dist
 site/.astro
 site/package-lock.json
+site/.vercel

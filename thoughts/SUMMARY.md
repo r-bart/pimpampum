@@ -24,6 +24,22 @@
 - Added update guidance to the Omarchy and macOS help surfaces and documented the in-place flow.
 - Added an Omarchy Settings update card with explicit check/install actions, stable loading/error/
   current/available states, and a receipt-bound helper that cannot drift to a different CLI.
+- Added the macOS Settings > Updates panel and brought it to Omarchy parity: it surfaces the CLI's
+  typed failure envelope, names the running operation, and asks for a relaunch after an install.
+- Split `UpdateSettings.swift` into a covered store, a thin `Process` adapter, and a declarative
+  view, then added `UpdateSettingsStore.swift` to the Swift coverage manifest.
+- Rebuilt and re-approved the checked-in macOS artifact from macOS, so the local gate matches the
+  reviewed sources instead of the `1.0.0` bundle.
+- Sent the update runner's stderr to `FileHandle.nullDevice`. An unread `Pipe` blocks npm once its
+  warnings fill the pipe buffer, and stdout then never reaches EOF.
+- Bounded the npm version quoted in `npm returned an invalid Pimpampum version`, and clamped what
+  the macOS panel renders. `runServiceCommand` accepts 1 MB of stdout and that text is now shown.
+- Quoted npm's own reason in `Update check failed` and `Pimpampum update failed`. A registry
+  policy, a permission error, and an offline machine used to be one indistinguishable failure.
+- Mapped a `bad_request` reply to the reinstall notice. Only an app newer than the CLI beside it
+  can produce one, and "Unknown command: update:check" is not something a user can act on.
+- Added `UpdateCommandRunnerTests`: real processes that prove the exit code and stdout survive a
+  failing run and that a child flooding stderr cannot deadlock the read.
 
 ## Key Decisions
 
@@ -34,25 +50,54 @@
 - Commands wrap instead of eliding because a truncated repair command is unusable.
 - Project creation is not suggested in the no-projects state because it requires arguments the
   popout does not own.
+- The macOS update runner returns the exit code and stdout unchanged. Collapsing a non-zero exit
+  into one message would report a failed service reconciliation as a connection problem.
+- Every Updates copy decision lives in `UpdateSettingsPresentation`, so the wording is enforced by
+  tests rather than by reading a SwiftUI body.
+- An install marks the app for relaunch. `afterInstall` only activates the already-running
+  instance, so the new menu app appears after the user quits and reopens this one.
 
 ## Quality Status
 
 - Typecheck, lint, and formatting pass.
-- 469 unit/acceptance tests pass, with 4 skipped and 100% statement, branch, function, and line
-  coverage.
+- 478 unit/acceptance tests pass with 100% statement, branch, function, and line coverage.
 - 6 E2E tests pass.
-- 33 Omarchy plugin/service tests and the plugin validator pass.
+- 34 Omarchy plugin/service tests and the plugin validator pass.
 - All 8 frozen desktop-status contract artifacts pass.
-- The static website builds successfully and both root and site dependency audits report no known
-  vulnerabilities.
-- The installed daemon is active on version `1.1.0`; the installed plugin matches the source and
-  its overview helper returns `status: empty` with valid authentication.
+- 122 Swift tests pass across nineteen suites, at 100% region, function, and line coverage for the
+  enforced core.
+- The macOS artifact gate passes against a `1.1.0` bundle rebuilt and approved from macOS.
+- `pimpampum update:check` was exercised against the live npm registry on macOS and returned
+  `updateAvailable: false` for `1.1.0`.
+- `pimpampum update` was exercised end to end on macOS against a stub npm on a copied Node, and
+  returned `updated: true` with `serviceReconciled: true`. The real npm was never invoked.
+- The deadlock fix was verified by reintroducing `Pipe()`: the runner test hangs past 90 seconds
+  and passes in 0.2 seconds once stderr goes to `nullDevice`.
 
-The npm tarball is intentionally produced only after the release workflow rebuilds, signs, and
-approves the `1.1.0` macOS app on macOS. The checked-in `1.0.0` artifact is not rewritten or
-re-approved from Linux.
+The npm tarball is still produced only by the release workflow, which rebuilds, signs, notarizes,
+and re-approves the macOS app before publishing.
 
 ## Review Result
 
 Strict post-review found no remaining correctness, security, architecture, accessibility, or
 requirements issues. The changes are ready to commit and push.
+
+## Known Gaps
+
+- `SyncSettings.swift` holds `SyncSettingsStore` next to its view and appears in neither the Swift
+  coverage manifest nor the reviewed exclusions. It predates this work.
+- No live smoke covers the macOS Updates panel; `scripts/test-macos-live.mjs` still exercises only
+  the popover and the Settings window.
+- `thoughts/evidence/macos-live.json` is bound to the previous binary. Only `release.yml` runs
+  `check:macos-evidence`, and it regenerates the evidence first, so the release is unaffected.
+- `pimpampum update` cannot succeed on this machine: `minimum-release-age` in the user's `.npmrc`
+  makes `npm install --global pimpampum@1.1.0` fail with `ETARGET`. The panel now quotes that
+  reason. It is a local npm policy, not a defect.
+- The `unavailable` suggestion still names `pimpampum status` and `pimpampum install`, which does
+  not fit an npm failure. The desktop panels render `message` only, so no user sees it today.
+- Neither platform bounds how long an update command may run. A hung `npm view` leaves the control
+  disabled until the app restarts. A timeout would have to cover `check` only, because killing a
+  half-finished `update` is worse than waiting.
+- `UpdateSettingsStore` does not check `Task.isCancelled`, unlike `OverviewStore` and
+  `BackupSettingsStore`. Nothing cancels it: the button owns an unowned `Task` and the runner uses
+  `Task.detached`, which does not inherit cancellation.

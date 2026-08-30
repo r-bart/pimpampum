@@ -97,6 +97,14 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER tint a bar icon through a `MultiEffect` over a `layer.enabled` source; the cached texture keeps its first color and survives a wallpaper change. Draw it with `Shape`/`ShapePath` and `fillColor`.
 - ALWAYS restart the shell (`omarchy restart shell`) to verify a plugin QML change; `rescanPlugins` reloads the plugin but the QML engine keeps the already-compiled components, so edits appear to do nothing.
 - ALWAYS preview an Omarchy popout layout change in a `qml6` harness with stubbed `Style`/`Color` tokens and `grabToImage`; nothing opens the popout from the CLI, so a shell restart alone proves only that it parses.
+- NEVER discard a failing CLI process's stdout in a desktop adapter; the typed envelope on stdout is the real cause, and collapsing it reports a failed service reconciliation as a connection problem.
+- ALWAYS read a `Process` pipe to EOF before `waitUntilExit()`; the reverse order deadlocks once output exceeds the pipe buffer.
+- NEVER give a `Process` an unread `Pipe` for a stream you ignore; use `FileHandle.nullDevice`, or the child blocks once it fills the pipe buffer and the stream you do read never reaches EOF.
+- NEVER collapse a failed `npm` invocation to `"<operation> failed"`; quote a bounded line from its stderr, or a registry policy, a permission error, and an offline machine become one message.
+- ALWAYS put macOS copy decisions in a covered presentation type, never in a SwiftUI body; `scripts/check-swift-coverage.sh` demands 100% and its manifest cannot include a view.
+- ALWAYS commit macOS build inputs before `npm run approve:macos`; the gate records `sourceGitCommit` and refuses a dirty tree.
+- NEVER derive a test fixture path from `process.cwd()`'s parent; it silently binds the test to the checkout directory name. Build a temporary directory instead.
+- ALWAYS mirror a new `HelpDialogCopy.items` entry in `HelpDialogTests`; that list is frozen copy and the macOS CI job runs `npm run test:macos`.
 
 ## Self-Improvement
 

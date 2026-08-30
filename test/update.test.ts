@@ -1,6 +1,24 @@
-import { describe, expect, it, vi } from 'vitest';
-import { dirname } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createUpdateManager, isNewerVersion, resolveNpmPath } from '../src/update.js';
+
+const globalRoots: string[] = [];
+
+// A real global npm root, so the default `existsSync` probe runs against a layout this test
+// owns. Deriving one from `process.cwd()` would depend on the checkout directory name.
+function installedGlobalRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), 'pimpampum-global-root-'));
+  globalRoots.push(root);
+  mkdirSync(join(root, 'pimpampum', 'dist'), { recursive: true });
+  writeFileSync(join(root, 'pimpampum', 'dist', 'cli.js'), '');
+  return root;
+}
+
+afterEach(() => {
+  for (const root of globalRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe('update manager', () => {
   it('finds npm next to Node when a graphical session has a sparse PATH', () => {
@@ -13,6 +31,57 @@ describe('update manager', () => {
     expect(resolveNpmPath(process.execPath, `${process.env.HOME}/.local/share/mise/shims`)).toMatch(
       /\/npm-cli\.js$/u,
     );
+  });
+
+  it('quotes only a bounded prefix of an oversized npm version', () => {
+    // `runServiceCommand` accepts 1 MB of stdout and this message reaches a desktop panel.
+    expect(() => isNewerVersion('x'.repeat(500), '1.1.0')).toThrow(
+      `npm returned an invalid Pimpampum version: ${'x'.repeat(40)}\u2026`,
+    );
+    expect(() => isNewerVersion('1.1', '1.1.0')).toThrow(
+      'npm returned an invalid Pimpampum version: 1.1',
+    );
+  });
+
+  it('names the real npm cause instead of a bare failure', async () => {
+    const registryPolicy = createUpdateManager({
+      currentVersion: '1.1.0',
+      npmPath: '/npm',
+      nodePath: '/node',
+      runCommand: vi.fn(async () => ({
+        exitCode: 1,
+        stdout: '',
+        stderr: [
+          'npm warn Unknown user config "minimum-release-age".',
+          'npm error code ETARGET',
+          'npm error notarget No matching version found for pimpampum@1.2.0 with a date before 8/23/2026.',
+          'npm error A complete log of this run can be found in: /tmp/log',
+        ].join('\n'),
+      })),
+    });
+    await expect(registryPolicy.check()).rejects.toThrow(
+      'Update check failed: notarget No matching version found for pimpampum@1.2.0 with a date before 8/23/2026.',
+    );
+
+    const silent = createUpdateManager({
+      currentVersion: '1.1.0',
+      npmPath: '/npm',
+      nodePath: '/node',
+      runCommand: vi.fn(async () => ({ exitCode: 1, stdout: '', stderr: 'npm error code E404' })),
+    });
+    await expect(silent.check()).rejects.toThrow(/Update check failed$/u);
+
+    const verbose = createUpdateManager({
+      currentVersion: '1.1.0',
+      npmPath: '/npm',
+      nodePath: '/node',
+      runCommand: vi.fn(async () => ({
+        exitCode: 1,
+        stdout: '',
+        stderr: `npm error notarget ${'reason '.repeat(60)}`,
+      })),
+    });
+    await expect(verbose.check()).rejects.toThrow('…');
   });
 
   it('compares stable semantic versions', () => {
@@ -157,7 +226,7 @@ describe('update manager', () => {
   });
 
   it('uses the filesystem check by default for an existing installed CLI', async () => {
-    const root = dirname(process.cwd());
+    const root = installedGlobalRoot();
     const manager = createUpdateManager({
       currentVersion: '1.1.0',
       npmPath: '/npm',

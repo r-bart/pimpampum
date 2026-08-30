@@ -38,9 +38,36 @@ export function resolveNpmPath(
   return npmPath ? realpathSync(npmPath) : null;
 }
 
+// npm output reaches these messages, and the messages reach a desktop panel. `runServiceCommand`
+// accepts up to 1 MB of each stream, so quote a bounded prefix instead of the whole response.
+const MAX_REPORTED_VERSION_LENGTH = 40;
+const MAX_REPORTED_REASON_LENGTH = 160;
+
+function quoted(value: string, limit = MAX_REPORTED_VERSION_LENGTH): string {
+  return value.length <= limit ? value : `${value.slice(0, limit)}…`;
+}
+
+// npm reports the actual cause on stderr and only its exit code to us. Without this, a registry
+// policy, a permission error, and an offline machine are one indistinguishable "failed".
+function npmReason(stderr: string): string {
+  const reason = stderr
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('npm error '))
+    .map((line) => line.slice('npm error '.length).trim())
+    .filter((line) => !line.startsWith('A complete log'))
+    // npm opens with a bare `code ETARGET` line; the sentence after it names the real cause.
+    .find((line) => line.split(/\s+/u).length > 3);
+  return reason ? `: ${quoted(reason, MAX_REPORTED_REASON_LENGTH)}` : '';
+}
+
 function versionParts(version: string): { core: number[]; prerelease: string[] } {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version)) {
-    throw new AppError('unavailable', `npm returned an invalid Pimpampum version: ${version}`, 503);
+    throw new AppError(
+      'unavailable',
+      `npm returned an invalid Pimpampum version: ${quoted(version)}`,
+      503,
+    );
   }
   const [core, prerelease = ''] = version.split('-', 2);
   return {
@@ -92,7 +119,12 @@ export function createUpdateManager(input: {
     }
     const result = await input.runCommand(input.nodePath, [input.npmPath, ...arguments_]);
     if (result.exitCode !== 0) {
-      throw new AppError('unavailable', `${operation} failed`, 503, true);
+      throw new AppError(
+        'unavailable',
+        `${operation} failed${npmReason(result.stderr)}`,
+        503,
+        true,
+      );
     }
     return result.stdout.trim();
   }

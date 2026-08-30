@@ -20,6 +20,7 @@ struct HelpDialogTests {
         "Clicking a project opens its workspace in Finder.",
         "Synchronization shares portfolio changes through a folder managed by your sync provider.",
         "Backup keeps a separate recovery copy; it does not synchronize other computers.",
+        "Check and install releases from Settings > Updates without deleting local data. The same actions are available as pimpampum update:check and pimpampum update.",
       ])
     #expect(Set(HelpDialogCopy.items.map(\.id)).count == HelpDialogCopy.items.count)
     #expect(HelpDialogCopy.items.allSatisfy { !$0.systemImage.isEmpty })
