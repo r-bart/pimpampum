@@ -18,6 +18,16 @@ describe('settings desktop surfaces', () => {
       join(root, 'platforms/macos/Sources/PimpampumMenuBar/SyncSettings.swift'),
       'utf8',
     );
+    // The deterministic half of the synchronization panel lives in its own covered files, so this
+    // acceptance test names where each rule belongs instead of reading one mixed file.
+    const syncModels = readFileSync(
+      join(root, 'platforms/macos/Sources/PimpampumMenuBar/SyncSettingsModels.swift'),
+      'utf8',
+    );
+    const syncClient = readFileSync(
+      join(root, 'platforms/macos/Sources/PimpampumMenuBar/SyncSettingsClient.swift'),
+      'utf8',
+    );
 
     expect(app).toContain('@StateObject private var settingsWindowController');
     expect(app).toContain('syncStore: syncSettingsStore');
@@ -43,12 +53,12 @@ describe('settings desktop surfaces', () => {
     expect(settings).toContain('Button("Open in Finder")');
     expect(settings).toContain('Pending snapshots:');
     expect(settings).toContain('Last sync:');
-    expect(settings).toContain('.withFractionalSeconds');
+    expect(syncClient).toContain('.withFractionalSeconds');
     expect(settings).toContain('deviceIdentifier(ProcessInfo.processInfo.hostName)');
     expect(settings).toContain('static func isValidDeviceIdentifier(_ value: String)');
-    expect(settings).toContain('func pause() async throws');
-    expect(settings).toContain('func resume() async throws');
-    expect(settings).toContain('static func isValid(_ settings: SyncSettings)');
+    expect(syncModels).toContain('func pause() async throws');
+    expect(syncModels).toContain('func resume() async throws');
+    expect(syncClient).toContain('static func isValid(_ settings: SyncSettings)');
   });
 
   it('ships Quattro settings with a native folder picker and safe helper arguments', () => {
