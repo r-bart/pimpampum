@@ -717,7 +717,9 @@ Never expose the token or raw stderr.
 - An already-current update still reconciles the installation and reports `updated: false`.
 - Registry and reconciliation failures are retryable `unavailable` errors and never expose raw npm
   stderr, tokens, or registry configuration.
-- Desktop help surfaces name both commands. They do not poll the network or update silently.
+- Desktop help surfaces name both commands. Omarchy Settings also provides a manual check and a
+  single install action when a release is available. It does not poll the network or update
+  silently.
 
 ### 11.4 Empty states
 

@@ -149,6 +149,7 @@ for (const expected of [
   'ServiceControl.qml',
   'StatusPopout.qml',
   'SyncService.qml',
+  'UpdateService.qml',
   'assets/pimpampum-compact.svg',
   'README.md',
   'install.sh',
@@ -157,6 +158,7 @@ for (const expected of [
   'pimpampum-overview',
   'pimpampum-service',
   'pimpampum-sync',
+  'pimpampum-update',
   'uninstall.sh',
 ]) {
   invariant(relativeFiles.has(expected), `missing plugin file: ${expected}`);

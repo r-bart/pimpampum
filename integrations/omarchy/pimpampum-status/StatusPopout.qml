@@ -12,6 +12,7 @@ Item {
   required property var backupService
   required property var syncService
   required property var serviceControl
+  required property var updateService
   property bool opened: false
   property bool settingsView: false
   property bool helpView: false
@@ -905,6 +906,38 @@ Item {
           visible: root.settingsView && !root.helpView
           width: parent.width
           spacing: Style.space(10)
+
+          Rectangle {
+            width: parent.width
+            height: updateCard.implicitHeight + Style.space(28)
+            radius: Style.space(6)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            Column {
+              id: updateCard
+              anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+              anchors.margins: Style.space(14); spacing: Style.space(8)
+              Text { text: "Updates"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true }
+              Text {
+                width: parent.width; wrapMode: Text.Wrap; color: root.foreground; opacity: 0.72
+                font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                text: root.updateService.state === "available" ? "Pimpampum " + root.updateService.latestVersion + " is available."
+                  : root.updateService.state === "current" ? "Pimpampum is up to date."
+                  : root.updateService.state === "installing" ? "Installing and restarting Pimpampum…"
+                  : root.updateService.errorMessage !== "" ? root.updateService.errorMessage
+                  : "Check npm for a newer release. Nothing changes until you install it."
+              }
+              PimpampumSettingsButton {
+                width: parent.width; height: implicitHeight
+                label: root.updateService.updateAvailable ? "Install update" : root.updateService.busy ? "Checking…" : "Check for updates"
+                primary: root.updateService.updateAvailable
+                foreground: root.foreground; background: root.background; accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+                actionEnabled: !root.updateService.busy
+                onTriggered: root.updateService.run(root.updateService.updateAvailable ? "install" : "check")
+              }
+            }
+          }
 
           Rectangle {
             width: parent.width

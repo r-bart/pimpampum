@@ -396,6 +396,22 @@ describe('Omarchy Quattro plugin', () => {
     expect(helper).not.toMatch(/eval\b|sh\s+-c|bash\s+-c|bearer|token/iu);
   });
 
+  it('checks and installs updates only after an explicit accessible action', () => {
+    const widget = readFileSync(join(pluginSource, 'BarWidget.qml'), 'utf8');
+    const popout = readFileSync(join(pluginSource, 'StatusPopout.qml'), 'utf8');
+    const service = readFileSync(join(pluginSource, 'UpdateService.qml'), 'utf8');
+    const helper = readFileSync(join(pluginSource, 'pimpampum-update'), 'utf8');
+    expect(widget).toContain('UpdateService {');
+    expect(popout).toContain('"Check for updates"');
+    expect(popout).toContain('"Install update"');
+    expect(popout).toContain('actionEnabled: !root.updateService.busy');
+    expect(service).not.toContain('Timer {');
+    expect(service).toContain('command = [helperPath, operation]');
+    expect(helper).toContain('command_name=update:check');
+    expect(helper).toContain('command_name=update');
+    expect(helper).not.toMatch(/eval\b|bearer|token/iu);
+  });
+
   it('delegates install and uninstall to the single Pimpampum lifecycle', () => {
     const fake = fakeLifecycle('wrappers');
     const before = readdirSync(fake.untouched);

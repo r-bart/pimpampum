@@ -22,6 +22,8 @@
 - Added `update:check` and `update`: the first is read-only, while the second installs the latest
   npm release and reconciles the service and desktop integration through the newly installed CLI.
 - Added update guidance to the Omarchy and macOS help surfaces and documented the in-place flow.
+- Added an Omarchy Settings update card with explicit check/install actions, stable loading/error/
+  current/available states, and a receipt-bound helper that cannot drift to a different CLI.
 
 ## Key Decisions
 

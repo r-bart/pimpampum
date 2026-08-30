@@ -176,6 +176,21 @@ exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cli
 `;
 }
 
+function renderUpdateHelper(context: ServiceAdapterContext): string {
+  return `#!/bin/bash
+set -euo pipefail
+
+case \${1:-} in
+  check) command_name=update:check ;;
+  install) command_name=update ;;
+  *) printf '%s\\n' 'pimpampum-update: expected check or install' >&2; exit 64 ;;
+esac
+
+export PIMPAMPUM_DATA_DIR=${shellQuote(context.dataDirectory, 'Pimpampum data directory')}
+exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cliPath, 'Pimpampum CLI')} "$command_name"
+`;
+}
+
 function renderServiceHelper(): string {
   return `#!/bin/bash
 set -euo pipefail
@@ -228,6 +243,7 @@ function pluginArtifacts(sourceRoot: string, context: ServiceAdapterContext): Se
       'pimpampum-overview',
       'pimpampum-service',
       'pimpampum-sync',
+      'pimpampum-update',
     ].includes(child);
     return {
       path: join(target, child),
@@ -240,7 +256,9 @@ function pluginArtifacts(sourceRoot: string, context: ServiceAdapterContext): Se
               ? renderServiceHelper()
               : child === 'pimpampum-sync'
                 ? renderSyncHelper(context)
-                : readFileSync(sourcePath),
+                : child === 'pimpampum-update'
+                  ? renderUpdateHelper(context)
+                  : readFileSync(sourcePath),
       mode: executable ? 0o755 : 0o644,
     };
   });
