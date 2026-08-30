@@ -604,22 +604,24 @@ pimpampum backup retry --json
 pimpampum backup disable --json
 ```
 
-The schema-v2 portable export is deterministic and readable:
+The schema-v2 portable export is deterministic and readable. `pimpampum export <directory>` creates
+one timestamped directory inside the directory you name, and returns that exact path as `data.path`:
 
 ```text
-manifest.json                    schemaVersion: 2
-workspaces.json
-workspaces/<workspace-id>/
-  context.json
-  context/*.md
-  projects/<project-slug>/
-    project.json
+pimpampum-export-<timestamp>-<id>/
+  manifest.json                  schemaVersion: 2
+  workspaces.json
+  workspaces/<workspace-id>/
     context.json
     context/*.md
-    specs/<spec-slug>/
-      spec.json
-      spec.md
-      tasks.json
+    projects/<project-slug>/
+      project.json
+      context.json
+      context/*.md
+      specs/<spec-slug>/
+        spec.json
+        spec.md
+        tasks.json
 ```
 
 To restore a SQLite backup: stop the daemon, preserve the token, move the failed database aside,
