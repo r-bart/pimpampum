@@ -1,8 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { PimpampumHttpClient } from '../src/client.js';
 import {
   CLI_COMMANDS,
   describeCommands,
+  renderUsage,
   renderUsageLine,
   type CliCommand,
 } from '../src/cliCommands.js';
@@ -238,6 +240,16 @@ describe('CLI agent surface', () => {
     for (const command of data.commands) {
       expect(banner.output.join(''), command.name).toContain(command.usage);
     }
+  });
+
+  // The README ships a copy of this banner under "CLI reference". `update:check` and `update`
+  // reached the catalog and the copy kept the old list, so the reference documented a CLI that no
+  // longer existed. Comparing the whole block is the only way that drift cannot pass again.
+  it('keeps the README CLI reference identical to the generated banner', () => {
+    const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+    const block = /```text\n(Pimpampum [\s\S]*?)\n```/u.exec(readme);
+
+    expect(block?.[1]).toBe(renderUsage(PIMPAMPUM_VERSION).trimEnd());
   });
 
   it('dispatches every command the catalog declares', async () => {

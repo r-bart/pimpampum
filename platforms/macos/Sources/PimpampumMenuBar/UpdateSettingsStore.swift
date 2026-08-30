@@ -24,7 +24,8 @@ struct UpdateCommandOutput: Equatable, Sendable {
 }
 
 protocol UpdateCommandRunning: Sendable {
-  func run(executable: URL, arguments: [String]) async throws -> UpdateCommandOutput
+  func run(executable: URL, arguments: [String], timeout: Duration?) async throws
+    -> UpdateCommandOutput
 }
 
 enum UpdateOperation: String, Equatable, Sendable {
@@ -36,6 +37,16 @@ enum UpdateOperation: String, Equatable, Sendable {
     switch self {
     case .check: "Could not check for updates. Check your connection and retry."
     case .install: "Could not install the update. Check your connection and retry."
+    }
+  }
+
+  // A hung `npm view` used to disable the panel until the app restarted. Only the read-only check
+  // is bounded: killing a half-finished install is worse than waiting, because npm may already
+  // have replaced the package it is reconciling.
+  var timeout: Duration? {
+    switch self {
+    case .check: .seconds(90)
+    case .install: nil
     }
   }
 }
@@ -53,6 +64,7 @@ enum UpdateSettingsError: Error, Equatable {
   case incompatibleReceipt
   case commandFailed(String)
   case invalidResponse
+  case timedOut
 
   var message: String {
     switch self {
@@ -60,6 +72,7 @@ enum UpdateSettingsError: Error, Equatable {
     case .incompatibleReceipt: "The Pimpampum installation is incompatible with this app."
     case .commandFailed(let message): message
     case .invalidResponse: "Pimpampum returned an invalid update response."
+    case .timedOut: "The update check took too long. Retry when the network responds."
     }
   }
 }
@@ -176,7 +189,8 @@ final class UpdateSettingsStore: ObservableObject {
       let receipt = try loadReceipt()
       let output = try await runner.run(
         executable: URL(fileURLWithPath: receipt.nodePath),
-        arguments: [receipt.cliPath, operation.rawValue]
+        arguments: [receipt.cliPath, operation.rawValue],
+        timeout: operation.timeout
       )
       guard output.exitCode == 0 else {
         throw UpdateSettingsError.commandFailed(

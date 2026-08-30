@@ -405,7 +405,13 @@ describe('Omarchy Quattro plugin', () => {
     expect(popout).toContain('"Check for updates"');
     expect(popout).toContain('"Install update"');
     expect(popout).toContain('actionEnabled: !root.updateService.busy');
-    expect(service).not.toContain('Timer {');
+    // The service owns exactly one Timer, and it is a deadline for a check the user started.
+    // A repeating timer here would turn the popout into a background updater, which is the
+    // behaviour this test exists to forbid.
+    expect(service.match(/Timer \{/gu)).toHaveLength(1);
+    expect(service).toContain('id: checkDeadline');
+    expect(service).toContain('repeat: false');
+    expect(service).not.toMatch(/repeat:\s*true/u);
     expect(service).toContain('command = [helperPath, operation]');
     expect(service).toContain('Qt.callLater(function() { root.handleExit(exitCode) })');
     expect(service).toContain('helperPath.charAt(0) !== "/"');
@@ -421,6 +427,22 @@ describe('Omarchy Quattro plugin', () => {
     expect(helper).toContain('command_name=update:check');
     expect(helper).toContain('command_name=update');
     expect(helper).not.toMatch(/eval\b|bearer|token/iu);
+  });
+
+  // A hung `npm view` used to leave the popout on "Checking…" until the shell restarted. Only the
+  // read-only check is bounded: killing a half-finished install is worse than waiting for it.
+  it('bounds a running update check and leaves an install unbounded', () => {
+    const service = readFileSync(join(pluginSource, 'UpdateService.qml'), 'utf8');
+
+    expect(service).toContain('readonly property int checkTimeoutMs: 90000');
+    expect(service).toContain('if (operation !== "install") checkDeadline.restart()');
+    expect(service).toContain('checkDeadline.stop()');
+    // The deadline settles the state itself, so a terminated child that never reports an exit
+    // cannot strand the popout.
+    expect(service).toContain(
+      'root.errorMessage = "The update check took too long. Retry when the network responds."',
+    );
+    expect(service).toContain('if (root.timedOut) return');
   });
 
   it('delegates install and uninstall to the single Pimpampum lifecycle', () => {

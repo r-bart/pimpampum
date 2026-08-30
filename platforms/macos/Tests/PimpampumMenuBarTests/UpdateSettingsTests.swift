@@ -14,12 +14,36 @@ private struct FailingReceiptReader: OverviewFileReading {
 
 private struct UpdateRunner: UpdateCommandRunning {
   let output: UpdateCommandOutput
-  func run(executable: URL, arguments: [String]) async throws -> UpdateCommandOutput { output }
+  func run(executable: URL, arguments: [String], timeout: Duration?) async throws
+    -> UpdateCommandOutput { output }
 }
 
 private struct FailingRunner: UpdateCommandRunning {
-  func run(executable: URL, arguments: [String]) async throws -> UpdateCommandOutput {
+  func run(executable: URL, arguments: [String], timeout: Duration?) async throws
+    -> UpdateCommandOutput {
     throw CocoaError(.fileNoSuchFile)
+  }
+}
+
+private struct TimingOutRunner: UpdateCommandRunning {
+  func run(executable: URL, arguments: [String], timeout: Duration?) async throws
+    -> UpdateCommandOutput {
+    throw UpdateSettingsError.timedOut
+  }
+}
+
+private actor DeadlineLog {
+  private(set) var deadlines: [Duration?] = []
+  func record(_ timeout: Duration?) { deadlines.append(timeout) }
+}
+
+private struct RecordingRunner: UpdateCommandRunning {
+  let log: DeadlineLog
+  let output: UpdateCommandOutput
+  func run(executable: URL, arguments: [String], timeout: Duration?) async throws
+    -> UpdateCommandOutput {
+    await log.record(timeout)
+    return output
   }
 }
 
@@ -42,7 +66,8 @@ private actor RunnerGate {
 private struct GatedRunner: UpdateCommandRunning {
   let gate: RunnerGate
   let output: UpdateCommandOutput
-  func run(executable: URL, arguments: [String]) async throws -> UpdateCommandOutput {
+  func run(executable: URL, arguments: [String], timeout: Duration?) async throws
+    -> UpdateCommandOutput {
     await gate.wait()
     return output
   }
@@ -52,7 +77,8 @@ private struct ScriptedRunner: UpdateCommandRunning {
   let gate: RunnerGate
   let checked: UpdateCommandOutput
   let installed: UpdateCommandOutput
-  func run(executable: URL, arguments: [String]) async throws -> UpdateCommandOutput {
+  func run(executable: URL, arguments: [String], timeout: Duration?) async throws
+    -> UpdateCommandOutput {
     guard arguments.last == UpdateOperation.install.rawValue else { return checked }
     await gate.wait()
     return installed
@@ -514,5 +540,44 @@ struct UpdateSettingsTests {
       UpdateCommandOutput(exitCode: 0, standardOutput: Data())
         != UpdateCommandOutput(exitCode: 1, standardOutput: Data())
     )
+  }
+
+  // Only the read-only check carries a deadline. An install that npm has already started is worse
+  // to kill than to wait for, so it runs unbounded.
+  @Test
+  func boundsTheCheckAndLeavesTheInstallUnbounded() async {
+    #expect(UpdateOperation.check.timeout == .seconds(90))
+    #expect(UpdateOperation.install.timeout == nil)
+
+    let log = DeadlineLog()
+    let checked = store(
+      RecordingRunner(
+        log: log,
+        output: succeeded(
+          #"{"data":{"currentVersion":"1.1.0","latestVersion":"1.2.0","updateAvailable":true}}"#
+        )
+      )
+    )
+
+    await checked.check()
+    await checked.install()
+
+    #expect(await log.deadlines == [.seconds(90), nil])
+  }
+
+  // A hung check used to leave the panel disabled until the app restarted. The store reports the
+  // expiry as its own cause and returns the button to the user.
+  @Test
+  func reportsAnExpiredDeadlineAndReleasesTheButton() async {
+    let timedOut = store(TimingOutRunner())
+
+    await timedOut.check()
+
+    #expect(
+      timedOut.presentation.errorMessage
+        == "The update check took too long. Retry when the network responds."
+    )
+    #expect(timedOut.presentation.actionEnabled)
+    #expect(timedOut.activity == .idle)
   }
 }

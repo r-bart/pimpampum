@@ -11,6 +11,10 @@ Item {
   property string errorMessage: ""
   property string operation: ""
   property string processError: ""
+  // Only the read-only check is bounded. Killing a half-finished install is worse than waiting,
+  // because npm may already have replaced the package it is reconciling.
+  readonly property int checkTimeoutMs: 90000
+  property bool timedOut: false
   readonly property bool busy: process.running
   readonly property bool updateAvailable: state === "available"
 
@@ -24,10 +28,27 @@ Item {
     errorMessage = ""
     processOutput = ""
     processError = ""
+    timedOut = false
     root.operation = operation
     process.command = [helperPath, operation]
     state = operation === "install" ? "installing" : "checking"
     process.running = true
+    if (operation !== "install") checkDeadline.restart()
+  }
+
+  Timer {
+    id: checkDeadline
+    interval: root.checkTimeoutMs
+    repeat: false
+    // The state is settled here rather than in handleExit, so a terminated child that never
+    // reports an exit cannot leave the popout stuck on "Checking…".
+    onTriggered: {
+      if (!process.running) return
+      root.timedOut = true
+      root.state = "error"
+      root.errorMessage = "The update check took too long. Retry when the network responds."
+      process.running = false
+    }
   }
   property string processOutput: ""
   Process {
@@ -63,6 +84,9 @@ Item {
   }
 
   function handleExit(exitCode) {
+    checkDeadline.stop()
+    // The deadline already published the cause; a terminated child also exits non-zero.
+    if (root.timedOut) return
     if (exitCode !== 0) {
       root.state = "error"
       var fallback = root.operation === "install"

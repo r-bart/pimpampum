@@ -1,6 +1,7 @@
 # Swift Coverage Boundary
 
-Recorded on 2026-08-26 for the native macOS menu bar application.
+Recorded on 2026-08-26 for the native macOS menu bar application. Updated on 2026-08-30,
+when `SyncSettings.swift` was split so its deterministic half could join the enforced core.
 
 ## Enforced core
 
@@ -18,9 +19,12 @@ Recorded on 2026-08-26 for the native macOS menu bar application.
 - `BackupSettingsModels.swift`: strict backup state vocabulary and presentation metadata.
 - `BackupSettingsClient.swift`: authenticated requests, exact response decoding, semantic validation, redaction, and bounded errors.
 - `BackupSettingsStore.swift`: operation serialization, state publication, cancellation, and stable failure messages.
-- `UpdateSettingsStore.swift`: receipt trust, executable-path validation, operation selection, CLI failure-envelope propagation, relaunch derivation, and every panel copy decision.
+- `UpdateSettingsStore.swift`: receipt trust, executable-path validation, operation selection, per-operation deadlines, CLI failure-envelope propagation, relaunch derivation, and every panel copy decision.
+- `SyncSettingsModels.swift`: the synchronization state vocabulary and every failure description.
+- `SyncSettingsClient.swift`: authenticated requests, strict envelope decoding, timestamp parsing, semantic validation, token redaction, and bounded server messages.
+- `SyncSettingsStore.swift`: operation serialization, state publication, cancellation, and stable failure messages.
 
-The current result is 698/698 regions, 204/204 functions, and 1315/1315 lines. The suite executes 122 tests across nineteen suites.
+The current result is 856/856 regions, 250/250 functions, and 1573/1573 lines. The suite executes 142 tests across twenty suites.
 
 Any deterministic behavior added to the macOS application must live in one of these files or be added explicitly to the coverage manifest in the gate script.
 
@@ -30,7 +34,8 @@ Any deterministic behavior added to the macOS application must live in one of th
 - `StatusPopover.swift`: declarative SwiftUI view composition only; all extracted presentation decisions are enforced through `StatusPresentation.swift`.
 - `BackupSettingsView.swift`: declarative SwiftUI composition only. Native tests compose every health-state branch and exercise its injected store, picker, and opener boundaries; deterministic client and state behavior remains in the covered core.
 - `UpdateSettingsView.swift`: declarative SwiftUI composition only. Every copy, version line, relaunch notice, and button state comes from the covered `UpdateSettingsPresentation` in `UpdateSettingsStore.swift`; a native test composes its body.
-- `UpdateSettingsSystemAdapter.swift`: one `Process` adapter. It returns the exit code and stdout unchanged so the covered store, not this file, decides what the user reads. `UpdateCommandRunnerTests` drives it with real processes, including one that floods the ignored stream.
+- `UpdateSettingsSystemAdapter.swift`: one `Process` adapter. It returns the exit code and both streams unchanged so the covered store, not this file, decides what the user reads, and it enforces the deadline the covered `UpdateOperation` declares. `UpdateCommandRunnerTests` drives it with real processes, including one that floods a stream and one that outlives its deadline.
+- `SyncSettings.swift`: declarative SwiftUI composition and the `NSWindow` controller only. Its models, client, and store were extracted on 2026-08-30 into the three covered files above; `SyncSettingsView.recoveryGuidance` remains under test.
 - `BackupDirectoryPicker.swift`: thin `NSOpenPanel`, `FileManager`, and `NSWorkspace` adapters. Its injected selection, path validation, standardization, availability, and open outcomes are exercised by native tests.
 - `ApplicationConfigurationSystemAdapter.swift`: one `Data(contentsOf:)` call.
 - `LoginItemSystemAdapters.swift`: thin `SMAppService`, private atomic-file, and System Settings adapters.
