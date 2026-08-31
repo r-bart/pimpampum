@@ -3,7 +3,7 @@
   "name": "io.github.r-bart/pimpampum",
   "title": "Pimpampum",
   "description": "Local, agent-first project manager for solopreneurs. Discover claimable work, claim it atomically with an expiring lease, and complete it with a durable summary. Specs and context stay readable Markdown; state stays in local SQLite.",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "websiteUrl": "https://github.com/r-bart/pimpampum#readme",
   "repository": {
     "url": "https://github.com/r-bart/pimpampum",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "pimpampum",
-      "version": "1.2.7",
+      "version": "1.2.8",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
