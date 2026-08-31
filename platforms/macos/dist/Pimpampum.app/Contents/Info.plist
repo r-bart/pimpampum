@@ -11,17 +11,17 @@
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleDisplayName</key>
-  <string>pim • pam • pum</string>
+  <string>Pimpampum</string>
   <key>CFBundleIconFile</key>
   <string>Pimpampum</string>
   <key>CFBundleIconName</key>
   <string>Pimpampum</string>
   <key>CFBundleName</key>
-  <string>pim • pam • pum</string>
+  <string>Pimpampum</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.2.9</string>
+  <string>1.2.10</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSMinimumSystemVersion</key>

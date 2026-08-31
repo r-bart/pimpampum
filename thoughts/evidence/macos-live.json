@@ -1,13 +1,59 @@
 {
-  "schemaVersion": 2,
-  "testedAt": "2026-08-30T21:41:00.858Z",
+  "schemaVersion": 3,
+  "status": "passed",
+  "testedAt": "2026-08-31T20:54:58.303Z",
+  "durationMilliseconds": 72721,
   "platform": "macOS",
   "architecture": "arm64",
-  "gitCommit": "58ca5ae3a3a0f458cc28421e1562760eaa4b7791",
-  "sourceInputSha256": "ddccb6537d2d47159e141240d98e687d78d82659afaf081c8557e871e89e1ab0",
-  "appSha256": "7aea24abc96c472cef49c00907ff67ad7392ebbfc7179634ef3e4cfb429ff0ca",
-  "compactMarkSha256": "5d9f558de031b9a3c4ed1052e093fb235f9a077d077c9a027286975d4a84f463",
+  "gitCommit": "99747317aa0ae9c2463fd3fc7127d3c222a318d1",
+  "sourceInputSha256": "092c5b8ffad9e4bf29504ba300dbdc0ed75d41bb4c5e4b69a5be0d6ddcd66fdb",
+  "releaseSequence": [
+    "sign-nested-runtime",
+    "sign-outer-app",
+    "notarize",
+    "staple",
+    "approve"
+  ],
   "loginItem": "enabled",
+  "versions": {
+    "pimpampum": "1.2.10",
+    "node": "v24.19.0",
+    "macOS": "26.6.2",
+    "codex": "codex-cli 1.0.0",
+    "claudeCode": "1.0.0 (Claude Code)"
+  },
+  "artifactHashes": {
+    "artifactMetadataSha256": "9bf51a5bac060b9670638e158719bbf2300395fd2b63493a4362c824d2ea37a4",
+    "appBundleSha256": "33866e28f93c0aeacecd60feb50e8a579b8d7468b68b7ced97ad26024260764c",
+    "appBinarySha256": "bc8e793f65e50c0dfbc7aed6e64284f94ca99d00d8b87430ed28fa11587a100c",
+    "compactMarkSha256": "5d9f558de031b9a3c4ed1052e093fb235f9a077d077c9a027286975d4a84f463",
+    "runtimeManifestSha256": "680e87ff1fd41fb0bdd141341027020cce3074b2a109911b4328caa258f704bd",
+    "runtimeInventorySha256": "d792e2807be032b7a1aecff59db3842db5765a98b88c8bd083fc417373418200",
+    "runtimeSbomSha256": "34b6f30f85ad97954070b3c4b7361f7a71d996957b03784f332ae5e3dca8e824",
+    "runtimeNodeSha256": "27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+    "runtimeAddonSha256": "98e0e8acd01c632fe5615243e1296af0372826f8783b18fc31c506f73c47459c"
+  },
+  "scenarios": {
+    "cleanNoNode": true,
+    "guidedSetupPopover": true,
+    "legacyNpmMigration": true,
+    "noAgent": true,
+    "oneAgent": true,
+    "twoAgents": true,
+    "partialFailure": true,
+    "conflictDecision": true,
+    "popoverRestartResume": true,
+    "packagedUpdate": true,
+    "disconnect": true,
+    "removal": true
+  },
+  "sessionRestart": {
+    "required": true,
+    "observedAfterNewSession": true,
+    "connectors": [
+      "codex"
+    ]
+  },
   "checks": {
     "empty": true,
     "activeClaim": true,
@@ -15,6 +61,7 @@
     "offlineWithoutCache": true,
     "daemonOffline": true,
     "nativePopoverRendering": true,
+    "guidedSetupPopover": true,
     "fixedMarkResource": true,
     "externalSemanticBadge": true,
     "cappedVisibleCount": true,
@@ -38,6 +85,7 @@
     "uninstallCleanup": true
   },
   "renderings": {
+    "setupRequired": "6f65fb3507950b7802c7abc27fc03be01721f7306cd36e4426f50ce07c339fb6",
     "empty": "3e6ef687ea237af0a8baadae409ee037f0bf8fcc381dc0dca6590df4980110c1",
     "active": "1b2cd7c2c7b1146f55518c12b7125188689385bdf2c029ea5bf27a28a1286cab",
     "cappedCount": "1b2cd7c2c7b1146f55518c12b7125188689385bdf2c029ea5bf27a28a1286cab",
