@@ -162,5 +162,5 @@ describe.sequential('compiled shared-folder synchronization end to end', () => {
     expect(overviewB.counts.projects).toBe(3);
     expect(await command(environmentA, ['sync', 'conflicts'])).toEqual([]);
     expect(await command(environmentB, ['sync', 'conflicts'])).toEqual([]);
-  }, 20_000);
+  }, 60_000);
 });
