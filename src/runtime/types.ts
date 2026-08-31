@@ -67,3 +67,34 @@ export interface RuntimeInstallation {
   mcpLauncherPath: string;
   previousVersion: string | null;
 }
+
+export interface RuntimeLauncherInput {
+  nodePath: string;
+  cliPath: string;
+  mcpPath: string;
+}
+
+export interface RuntimeLaunchers {
+  control: string;
+  mcp: string;
+}
+
+export interface RuntimeOwnedVersion {
+  version: string;
+  targetId: RuntimeTargetId;
+  directory: string;
+}
+
+export interface RuntimeInstallReceipt {
+  schemaVersion: 1;
+  currentVersion: string;
+  targetId: RuntimeTargetId;
+  nodePath: string;
+  cliPath: string;
+  mcpPath: string;
+  controlLauncherPath: string;
+  controlLauncherSha256: string;
+  mcpLauncherPath: string;
+  mcpLauncherSha256: string;
+  ownedVersions: RuntimeOwnedVersion[];
+}
