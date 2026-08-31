@@ -298,22 +298,15 @@ struct StatusPopoverTests {
   }
 
   @Test
-  func setupAssistantCopiesTheExactCommandBeforeOpeningTerminal() {
+  func setupAssistantKeepsLoginRegistrationAsASeparateSystemAction() {
     var events: [String] = []
     let assistant = SetupAssistant(
-      registerLoginItem: { events.append("register") },
-      copyCommand: { events.append("copy:\($0)") },
-      openTerminal: {
-        events.append("open")
-        return true
-      }
+      registerLoginItem: { events.append("register") }
     )
 
-    #expect(assistant.begin())
-    #expect(events == ["register", "copy:\(SetupOnboardingCopy.command)", "open"])
-    #expect(SetupOnboardingCopy.command.contains("--service-only"))
     assistant.prepareApp()
-    #expect(events.last == "register")
+    #expect(events == ["register"])
+    #expect(SetupOnboardingCopy.title == "One private home for agent context")
     _ = SetupOnboardingView(assistant: assistant, onCheckAgain: {})
   }
 
@@ -388,12 +381,13 @@ private func makeProject(
   availableWorkCount: Int,
   lifecycleState: ProjectLifecycleState? = nil
 ) -> OverviewProject {
-  let defaultLifecycle: ProjectLifecycleState = switch status {
-  case .active, .available: .open
-  case .draft: .draft
-  case .paused: .paused
-  case .complete: .done
-  }
+  let defaultLifecycle: ProjectLifecycleState =
+    switch status {
+    case .active, .available: .open
+    case .draft: .draft
+    case .paused: .paused
+    case .complete: .done
+    }
   return OverviewProject(
     id: "project",
     workspace: OverviewWorkspace(

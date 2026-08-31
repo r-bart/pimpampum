@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+enum GuidedSetupRecoveryCopy {
+  static let retry = "Try again"
+  static let newSession = "Open a new agent session to use shared project memory."
+}
+
 @MainActor
 struct StatusIndicator: View {
   let state: StatusVisualState
@@ -152,14 +157,14 @@ struct StatusPopover: View {
         loginItemState == .requiresApproval ? "Login approval required" : "Start at login",
         systemImage: "person.badge.key"
       )
-        .font(.subheadline.weight(.semibold))
+      .font(.subheadline.weight(.semibold))
       Text(
         loginItemState == .requiresApproval
           ? "Allow \(PimpampumBrand.displayName) in Login Items to start it automatically."
           : "Add \(PimpampumBrand.displayName) to Login Items so the menu stays available after a restart."
       )
-        .font(.caption)
-        .foregroundStyle(.secondary)
+      .font(.caption)
+      .foregroundStyle(.secondary)
       if loginItemState == .requiresApproval {
         Button("Open Login Items Settings", action: openLoginSettings)
       } else {

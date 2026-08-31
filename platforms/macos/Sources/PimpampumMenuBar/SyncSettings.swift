@@ -206,6 +206,7 @@ private enum DesktopSettingsSection: String, CaseIterable, Identifiable {
   case synchronization = "Synchronization"
   case backup = "Backup"
   case updates = "Updates"
+  case agents = "Agents"
   var id: Self { self }
 }
 
@@ -214,17 +215,20 @@ private struct DesktopSettingsView: View {
   @ObservedObject var syncStore: SyncSettingsStore
   @ObservedObject var backupStore: BackupSettingsStore
   @ObservedObject var updateStore: UpdateSettingsStore
+  @ObservedObject var agentStore: AgentSettingsStore
   @State private var selection: DesktopSettingsSection
 
   init(
     syncStore: SyncSettingsStore,
     backupStore: BackupSettingsStore,
     updateStore: UpdateSettingsStore,
+    agentStore: AgentSettingsStore,
     showBackupInitially: Bool
   ) {
     self.syncStore = syncStore
     self.backupStore = backupStore
     self.updateStore = updateStore
+    self.agentStore = agentStore
     _selection = State(initialValue: showBackupInitially ? .backup : .synchronization)
   }
 
@@ -244,6 +248,7 @@ private struct DesktopSettingsView: View {
         case .synchronization: SyncSettingsView(store: syncStore)
         case .backup: BackupSettingsView(store: backupStore)
         case .updates: UpdateSettingsView(store: updateStore)
+        case .agents: AgentSettingsView(store: agentStore)
         }
       }
     }
@@ -257,17 +262,20 @@ final class SyncSettingsWindowController: ObservableObject, SettingsWindowOpenin
   private let syncStore: SyncSettingsStore
   private let backupStore: BackupSettingsStore
   private let updateStore: UpdateSettingsStore
+  private let agentStore: AgentSettingsStore
   private let showBackupInitially: Bool
   private var windowController: NSWindowController?
   init(
     syncStore: SyncSettingsStore,
     backupStore: BackupSettingsStore,
     updateStore: UpdateSettingsStore,
+    agentStore: AgentSettingsStore? = nil,
     showBackupInitially: Bool = false
   ) {
     self.syncStore = syncStore
     self.backupStore = backupStore
     self.updateStore = updateStore
+    self.agentStore = agentStore ?? AgentSettingsStore.bundled()
     self.showBackupInitially = showBackupInitially
   }
   func openSettings() {
@@ -276,6 +284,7 @@ final class SyncSettingsWindowController: ObservableObject, SettingsWindowOpenin
         syncStore: syncStore,
         backupStore: backupStore,
         updateStore: updateStore,
+        agentStore: agentStore,
         showBackupInitially: showBackupInitially
       )
       let window = NSWindow(contentViewController: NSHostingController(rootView: view))
@@ -293,7 +302,8 @@ final class SyncSettingsWindowController: ObservableObject, SettingsWindowOpenin
     Task {
       async let syncLoad: Void = syncStore.load()
       async let backupLoad: Void = backupStore.load()
-      _ = await (syncLoad, backupLoad)
+      async let agentLoad: Void = agentStore.load()
+      _ = await (syncLoad, backupLoad, agentLoad)
     }
   }
 }
