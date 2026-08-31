@@ -43,6 +43,69 @@ formats are excellent colleagues.
 | Work on the same portfolio on several computers | Immutable JSON snapshots through any shared folder        | **Settings…** or `pimpampum sync configure`  |
 | Keep a recovery copy                            | Automatic SQLite backup to a local or synchronized folder | `pimpampum backup configure`                 |
 
+## Install and connect
+
+Pimpampum ships the private service and agent connection it needs. The normal setup does not ask
+you to install Node.js, open Terminal, copy a token, or edit an MCP configuration file.
+
+### macOS — download the app
+
+1. Download `PimpampumMenuBar-<version>-macos-arm64.zip` from
+   [GitHub Releases](https://github.com/r-bart/pimpampum/releases), expand it, and open
+   **PimpampumMenuBar**. Published builds are signed, notarized, and support Apple Silicon Macs
+   running macOS 13 or newer.
+2. Choose **Continue**. Pimpampum detects Codex and Claude Code locally and selects the supported
+   agents it found.
+3. Review the exact changes, adjust the selection if needed, then choose **Review & set up**. This
+   is the one confirmation that installs and verifies the private service, enables start at
+   sign-in, and connects the selected agents.
+4. If macOS asks for Login Items approval, use **Open Login Items Settings**, approve Pimpampum,
+   and return to the setup view. Setup progress is durable, so closing and reopening the menu does
+   not corrupt it.
+5. When an agent says **New session required**, open a new Codex or Claude Code session. Existing
+   sessions may not reload newly connected tools.
+
+The service keeps running when the menu app closes. It stays private to your account and keeps its
+database on this Mac.
+
+### Omarchy Quattro — install the plugin
+
+Install and enable the Pimpampum Status plugin through Omarchy's supported plugin flow:
+
+```bash
+omarchy plugin add https://github.com/r-bart/pimpampum-omarchy.git --enable --yes
+```
+
+Open its widget, choose **Get started**, review the detected agents, and choose **Connect selected
+agents**. The plugin downloads the exact pinned runtime for the current Linux architecture,
+verifies it, and installs the `systemd --user` service without a separate Node.js or npm
+installation. Start a new agent session whenever the completed card requests one. Do not copy the
+plugin directory or edit Quickshell configuration by hand.
+
+### Manage agent connections
+
+On macOS, open **Settings… → Agents**. On Omarchy, open **Settings → Agents** in the Pimpampum
+popout. The service, Codex, and Claude Code are reported independently, and only actions valid for
+the current state are shown:
+
+- **Connect** adds that agent after confirmation; **Test** verifies it without changing it.
+- **Repair** reconciles a Pimpampum-managed connection; **Open** launches the installed agent.
+- **Disconnect** removes only the selected agent connection. The daemon, other agents, and all
+  local data remain in place.
+- **Advanced** on macOS shows the stable launcher path, stdio transport, last verification, and
+  tokenless manual guidance when an administrator needs the underlying details.
+
+If an existing entry named `pimpampum` is different, setup stops before changing it. Review the
+redacted comparison and choose **Keep existing**, **Replace**, or **Cancel**. Replacement is a
+separate decision and applies only to the reviewed entry. A partial failure leaves verified agents
+connected and offers **Try again** for the one that failed.
+
+Updates are available under **Settings… → Updates** on macOS and **Settings → Updates** on
+Omarchy. **Check for updates** is read-only; **Install update** verifies and reconciles the packaged
+runtime, service, and managed connections while preserving local data. See
+[Advanced lifecycle commands](#advanced-lifecycle-commands) for non-graphical repair, update, and
+removal.
+
 ## The deliberately small model
 
 ```text
@@ -102,94 +165,6 @@ Agents in any registered repository
 The MCP stdio bridge is stateless: every operation reaches the same authenticated daemon. Every
 agent and every repository on one machine share that single coordination service, instead of each
 one growing a tiny lonely database of its own.
-
-## Requirements
-
-- Node.js 22 or newer.
-- macOS 13+ on Apple Silicon for the menu-bar app.
-- Omarchy Quattro for the dedicated Quickshell widget.
-
-## Install once
-
-The quickest cross-platform installation is:
-
-```bash
-npm install --global pimpampum
-pimpampum install
-```
-
-`pimpampum install` installs one per-user background service and starts the local daemon at login.
-No root access and no terminal window kept alive as a shrine. Inspect it with `pimpampum status`;
-remove only Pimpampum-owned runtime integrations with `pimpampum uninstall`. The database, token,
-logs, backups, and exports are preserved.
-
-Update in place without uninstalling or losing local data:
-
-```bash
-pimpampum update:check
-pimpampum update
-```
-
-`update:check` is read-only. `update` installs the latest published npm release and then runs that
-new CLI's idempotent installer to reconcile the background service and desktop integration. The
-same manual controls are available under **Settings → Updates** on macOS and in the Pimpampum
-settings popout on Omarchy. On macOS the panel asks you to quit and reopen the menu-bar app after
-an install, because the reconciliation only reactivates the instance that is already running.
-
-On macOS, you can instead download the signed menu-bar app from GitHub Releases. Its first-run
-screen copies the runtime command and opens Terminal for you:
-
-```bash
-npm install --global pimpampum && pimpampum install --service-only
-```
-
-`--service-only` creates the daemon, CLI and MCP integration without copying or replacing the app
-you downloaded. The onboarding registers that app in Login Items; if macOS requires approval, the
-normal status view links directly to the relevant System Settings page. If macOS rejects the
-registration outright, the install still completes with `loginItem: "error"` in its receipt, and
-the status view shows a notice from which it can be retried. On Omarchy, use the
-standard `pimpampum install` flow so the npm package can add both the systemd user service and
-Quattro widget.
-
-To install a development checkout instead:
-
-```bash
-gh repo clone r-bart/pimpampum
-cd pimpampum
-npm ci
-npm run build
-npm run build:macos # macOS only
-npm run cli -- install
-```
-
-When running from source, replace `pimpampum <command>` below with
-`npm run cli -- <command>`.
-
-The daemon listens on `http://127.0.0.1:7337` and creates:
-
-```text
-~/.pimpampum/
-  pimpampum.sqlite
-  settings.json     # after automatic backup is configured
-  token
-  .instance.lock
-  logs/
-```
-
-Run only the foreground development daemon with `npm run dev`.
-
-## Downloads and release artifacts
-
-Tagged versions are published under [GitHub Releases](https://github.com/r-bart/pimpampum/releases).
-Each release contains the installable npm tarball, the signed and notarized Apple Silicon menu-bar
-app, `SHA256SUMS`, and release notes. The macOS app is the recommended native download; its Quiet
-onboarding guides the user through the npm runtime installation and detects the daemon as soon as
-it is ready.
-
-The npm package remains the canonical runtime channel because it carries the daemon, CLI, MCP
-bridge, and Omarchy integration.
-Source-built macOS apps are unsigned development artifacts; published V1 artifacts pass Developer
-ID signing, notarization, and Gatekeeper checks.
 
 ## A complete first workflow
 
@@ -264,9 +239,9 @@ its non-terminal descendants and releases their Claims while preserving history.
 
 ## Using Pimpampum from agents
 
-The short version lives in [docs/agents.md](docs/agents.md): install, MCP
-configuration, the three calls, the model, and the rules an agent must respect.
-Give an agent that file, or this brief:
+After Guided setup connects an agent, start a new agent session if requested. The short contract in
+[docs/agents.md](docs/agents.md) begins at that point: resolve the current Workspace, claim work,
+and leave a durable result. Give an agent that file, or this brief:
 
 ```text
 Use Pimpampum as the shared project memory.
@@ -275,9 +250,15 @@ Read only the relevant Spec, Task, and explicitly scoped Context documents.
 When finished, complete or release the Claim with a concise summary and artifact references.
 ```
 
-That is the workflow. The rest is wiring.
+If the Pimpampum tools are absent, do not hand the agent a token or ask it to edit host settings.
+Open Pimpampum's **Agents** settings, use **Connect**, **Test**, or **Repair**, then start a new
+agent session.
 
 ### MCP
+
+Guided setup registers the tokenless local route for Codex and Claude Code and verifies its tool
+catalog. Nothing in the normal path requires an MCP URL or configuration fragment. The details
+below are for administrators and hosts without a supported connector.
 
 Streamable HTTP:
 
@@ -286,19 +267,20 @@ POST http://127.0.0.1:7337/mcp
 Authorization: Bearer <local-token>
 ```
 
-For MCP hosts that only support stdio, this is the whole configuration:
+For an unsupported MCP host that only supports stdio, use the stable absolute launcher shown under
+**Settings… → Agents → Advanced**. Its equivalent shape is:
 
 ```json
 {
   "mcpServers": {
-    "pimpampum": { "command": "pimpampum-mcp" }
+    "pimpampum": { "command": "/absolute/path/to/pimpampum-mcp", "args": [] }
   }
 }
 ```
 
-The stdio bridge resolves its own credentials from the local data directory, so
-the agent never handles a token. Hosts that expect only the inner object want
-`{ "command": "pimpampum-mcp", "args": [] }`.
+The stdio bridge resolves its own credentials from the local data directory, so the agent never
+handles a token. Run `pimpampum connect --instructions` for bounded, tokenless manual guidance
+matched to the installed runtime.
 
 `pimpampum mcp` starts the same bridge through the main binary. That is the route MCP registry
 clients use (`npx pimpampum mcp`), because `npx pimpampum` alone resolves to the CLI. Both routes
@@ -355,11 +337,10 @@ reference is [docs/mcp-tools.md](docs/mcp-tools.md).
 
 ### Agent-first CLI
 
-MCP is preferred. A shell-only agent can still install, configure, discover, and call the exact
-same contract without hard-coding HTTP routes:
+MCP through Guided setup is preferred. A shell-only agent or administrator can still inspect and
+call the exact same contract without hard-coding HTTP routes:
 
 ```bash
-pimpampum install
 pimpampum status
 pimpampum commands
 pimpampum config
@@ -401,6 +382,39 @@ actionable `{ "error": ... }` envelope to stderr and exits non-zero. `help` is t
 it prints the text banner. Errors carry a stable `code`, a `retryable` boolean, and a `suggestion`.
 When the daemon does not answer, the code is `unavailable` and the suggestion names the recovery
 command, so an agent never has to guess whether the failure is transport or domain.
+
+### Advanced lifecycle commands
+
+These commands are the non-graphical alternative to Guided setup and native Settings. Mutations
+require explicit confirmation and use the same receipt ownership, verification, rollback, and
+redaction boundaries:
+
+```bash
+pimpampum setup plan --connector codex --connector claude-code
+pimpampum setup apply <operation-id> <revision> --yes
+pimpampum setup status
+pimpampum setup resume
+
+pimpampum connections
+pimpampum connect codex --yes
+pimpampum connect claude-code --yes
+pimpampum repair codex --yes
+pimpampum disconnect codex --yes
+pimpampum connect --instructions
+
+pimpampum update:check
+pimpampum update
+pimpampum uninstall
+```
+
+`setup plan` does not change the service or agent settings; it stores a bounded reviewed plan and
+returns the operation ID, exact revision, detected agents, and any conflict. Apply only that
+reviewed revision. A conflict remains a no-op unless the operator reviews it and repeats
+`setup apply` with `--replace <connector>` or uses `--replace` on the individual connect/repair
+command. `disconnect` removes only a receipt-proven connection. `uninstall` removes
+Pimpampum-owned service, runtime, native integration, and proven connector entries while preserving
+the database, token, logs, backups, exports, and synchronized snapshots. If ownership cannot be
+proved, it leaves the entry unchanged and returns manual guidance.
 
 ## HTTP and OpenAPI
 
@@ -538,23 +552,23 @@ as the canonical shell fallback for agents.
 The daemon is meant to disappear into the machine, not become a new pet process you check every
 morning.
 
-On **macOS 13+ on Apple Silicon**, download the signed menu-bar app and follow its one-command npm
-setup, or install the complete bundle directly with `pimpampum install`. The menu shows portfolio
-status, active Claims, current Spec/Task work, and every Project. Green means the
+On **macOS 13+ on Apple Silicon**, download the signed menu-bar app and follow Guided setup. The
+menu shows portfolio status, active Claims, current Spec/Task work, and every Project. Green means the
 portfolio is terminal; an active badge means an agent owns work; an error means the daemon needs
-attention. Click a Project to open its Workspace in Finder. **Settings…** configures updates,
-automatic synchronization, and backup. **Quit** closes the menu app and deliberately leaves the
-daemon running.
+attention. Click a Project to open its Workspace in Finder. **Settings…** configures agents,
+updates, automatic synchronization, and backup. **Quit** closes the menu app and deliberately
+leaves the daemon running.
 The published app is signed and notarized; a locally built development app is not. The app has no
 Dock icon. It knows its place.
 
-On **Omarchy Quattro**, installation adds a dedicated Quickshell widget and systemd user service.
-The bar shows the same portfolio state and Claim count. Its popout lists current work and Projects,
-opens Workspaces with `xdg-open`, and exposes the same update and backup controls. Other Linux
-desktops receive the background service without the Quattro widget.
+On **Omarchy Quattro**, the enabled plugin bootstraps a dedicated Quickshell widget and systemd
+user service. The bar shows the same portfolio state and Claim count. Its popout lists current work
+and Projects, opens Workspaces with `xdg-open`, and exposes agent, update, synchronization, backup,
+and service controls.
 
-Both status clients are read-only apart from update, synchronization, and backup settings. Agents
-do the work; the status bar simply tells you whether they are doing it.
+Portfolio content remains read-only in both native clients. Their bounded writes are explicit
+agent connection, update, synchronization, backup, and service lifecycle actions; project work
+still goes through the domain tools.
 
 ## Persistence, backup, and export
 
@@ -648,6 +662,37 @@ stale `-wal` or `-shm` companions, restart, and verify `/health` plus a represen
 The host must be loopback. A manually configured token must contain at least 32 printable ASCII
 characters without spaces. One instance lock prevents two daemons from owning the same data
 directory.
+
+## Advanced installation and development
+
+The signed macOS app and Omarchy plugin are the recommended installation paths. For automation or
+another supported Linux desktop, the packaged CLI remains available as an advanced alternative and
+requires Node.js 22 or newer:
+
+```bash
+npm install --global pimpampum
+pimpampum install
+```
+
+`pimpampum install` installs the per-user service without root access. `pimpampum status` verifies
+it. On macOS, `pimpampum install --service-only` deliberately leaves the separately downloaded app
+in place.
+
+To run a development checkout:
+
+```bash
+gh repo clone r-bart/pimpampum
+cd pimpampum
+npm ci
+npm run build
+npm run build:macos # macOS only
+npm run cli -- install
+```
+
+When running from source, replace `pimpampum <command>` with `npm run cli -- <command>`. Run only
+the foreground development daemon with `npm run dev`. Source-built macOS apps are unsigned
+development artifacts; only the published release app carries the signing and notarization
+guarantees described above.
 
 ## Deliberate omissions
 

@@ -6,16 +6,38 @@ Schema, defaults, bounds, and effect annotations.
 
 ## Connect
 
-Streamable HTTP:
+For Codex and Claude Code, complete Pimpampum's Guided setup, then start a new agent session if the
+connection reports **New session required**. Guided setup installs and verifies the local route;
+the agent does not need a token, URL, Terminal command, or hand-edited MCP configuration.
+
+If the tools are missing or verification fails, use **Settings… → Agents** on macOS or
+**Settings → Agents** on Omarchy. **Test** is read-only, **Repair** reconciles a Pimpampum-managed
+entry, and **Disconnect** removes only the selected connection while preserving the service and
+data. An unknown entry named `pimpampum` is never overwritten without a separately reviewed
+**Replace** decision.
+
+### Advanced manual connection
+
+For an MCP host without a supported connector, expand **Settings… → Agents → Advanced** to obtain
+the installed absolute launcher path and tokenless manual guidance. The equivalent CLI command is:
+
+```bash
+pimpampum connect --instructions
+```
+
+The stdio registration uses a server named `pimpampum`, that absolute launcher, and an empty
+argument array. The bridge resolves credentials from the private local data directory and never
+places a bearer token in host configuration or process arguments.
+
+Administrators of streamable HTTP hosts can use:
 
 ```text
 POST http://127.0.0.1:7337/mcp
 Authorization: Bearer <token>
 ```
 
-For hosts that only support stdio, run `pimpampum-mcp` while the daemon is active. The bridge is
-stateless and forwards every operation to the same authenticated instance. It exposes the 32
-domain tools only; the four synchronization tools reach HTTP clients alone.
+The stdio bridge is stateless and forwards every operation to the same authenticated instance. It
+exposes the 32 domain tools only; the four synchronization tools reach HTTP clients alone.
 
 ## Shell-only agents
 
@@ -28,8 +50,9 @@ pimpampum tools
 pimpampum call workspace_resolve --input '{"path":"/absolute/project/path"}'
 ```
 
-`pimpampum mcp` runs the stdio bridge through the main binary, which is what MCP registry clients
-invoke (`npx pimpampum mcp`); `pimpampum-mcp` is the same bridge under its own bin name.
+`pimpampum mcp` runs the stdio bridge through the main binary; `pimpampum-mcp` is the same bridge
+under its own packaged bin name. Prefer the stable launcher reported by the installed runtime over
+a mutable PATH or `npx` command.
 
 `commands` describes the CLI itself: every verb with its arguments, options, usage line, and effect
 annotations. It works offline, like `config`.
