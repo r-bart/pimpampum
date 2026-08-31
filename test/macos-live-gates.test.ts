@@ -259,7 +259,11 @@ describe('expanded macOS live release gates', () => {
     for (const workflow of [quality, release]) {
       expect(workflow).toContain('include-hidden-files: true');
       expect(workflow).toContain('pimpampum-runtime-$version-darwin-arm64');
+      expect(workflow).toContain('Pack mode-preserving runtime transport');
+      expect(workflow).toContain('runtime-${{ matrix.target }}.tar.gz');
     }
+    expect(quality).toContain('Unpack mode-preserving runtime transport');
     expect(release).toContain('merge-multiple: true');
+    expect(release).toContain('Unpack mode-preserving runtime transports');
   });
 });

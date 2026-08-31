@@ -64,10 +64,16 @@ jobs:
             "$RUNNER_TEMP/runtime/pimpampum-runtime-$version-${{ matrix.target }}" \
             --target "${{ matrix.target }}" \
             --lockfile package-lock.json
+      - name: Pack mode-preserving runtime transport
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          bundle="pimpampum-runtime-$version-${{ matrix.target }}"
+          /usr/bin/tar -czf "$RUNNER_TEMP/runtime-${{ matrix.target }}.tar.gz" \
+            -C "$RUNNER_TEMP/runtime" "$bundle"
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-${{ matrix.target }}
-          path: ${{ runner.temp }}/runtime/pimpampum-runtime-*-${{ matrix.target }}
+          path: ${{ runner.temp }}/runtime-${{ matrix.target }}.tar.gz
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
@@ -91,6 +97,12 @@ jobs:
           pattern: runtime-*
           path: ${{ runner.temp }}/runtime-bundles
           merge-multiple: true
+      - name: Unpack mode-preserving runtime transports
+        run: |
+          for target in linux-arm64 linux-x64 darwin-arm64; do
+            /usr/bin/tar -xzf "$RUNNER_TEMP/runtime-bundles/runtime-$target.tar.gz" \
+              -C "$RUNNER_TEMP/runtime-bundles"
+          done
       - run: npm run test:macos
       - name: Import Developer ID certificate
         env:

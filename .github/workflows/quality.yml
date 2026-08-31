@@ -71,10 +71,16 @@ jobs:
               "$payload/bin/node" --input-type=module --eval \
               "import Database from 'better-sqlite3'; const db=new Database(':memory:'); db.prepare('select 1').get(); db.close();"
           )
+      - name: Pack mode-preserving runtime transport
+        run: |
+          version=$(node -p "require('./package.json').version")
+          bundle="pimpampum-runtime-$version-${{ matrix.target }}"
+          /usr/bin/tar -czf "$RUNNER_TEMP/runtime-${{ matrix.target }}.tar.gz" \
+            -C "$RUNNER_TEMP/runtime" "$bundle"
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-${{ matrix.target }}
-          path: ${{ runner.temp }}/runtime/pimpampum-runtime-*-${{ matrix.target }}
+          path: ${{ runner.temp }}/runtime-${{ matrix.target }}.tar.gz
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
@@ -94,6 +100,10 @@ jobs:
         with:
           name: runtime-darwin-arm64
           path: ${{ runner.temp }}/runtime-darwin-arm64
+      - name: Unpack mode-preserving runtime transport
+        run: |
+          /usr/bin/tar -xzf "$RUNNER_TEMP/runtime-darwin-arm64/runtime-darwin-arm64.tar.gz" \
+            -C "$RUNNER_TEMP/runtime-darwin-arm64"
       - name: Build app with the reviewed runtime
         run: |
           version=$(node -p "require('./package.json').version")
