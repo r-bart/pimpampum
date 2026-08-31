@@ -81,6 +81,28 @@ describe('agent protocol', () => {
     });
   });
 
+  it('keeps bounded aggregate members and their causes in the local CLI envelope', () => {
+    const error = new AggregateError(
+      [
+        new Error('daemon did not become healthy', { cause: new Error('connection refused') }),
+        new Error('launchctl rollback bootout failed'),
+        new AggregateError([new Error('nested cleanup failure')], 'nested rollback failed'),
+      ],
+      'Service installation and rollback failed',
+    );
+
+    expect(createLocalErrorEnvelope(error).error.details).toEqual({
+      name: 'AggregateError',
+      causes: [
+        'daemon did not become healthy',
+        'launchctl rollback bootout failed',
+        'nested rollback failed',
+        'nested cleanup failure',
+        'connection refused',
+      ],
+    });
+  });
+
   it('routes typed and non-Error failures through the shared envelope locally', () => {
     const typed = new AppError('not_found', 'Missing', 404, false, { id: 'x' });
     expect(createLocalErrorEnvelope(typed)).toEqual(createAgentErrorEnvelope(typed));

@@ -3,6 +3,7 @@ import {
   createAgentSuccessEnvelope,
   createLocalErrorEnvelope,
   extractAgentEnvelope,
+  localErrorDetails,
   type AgentErrorEnvelope,
 } from './agentProtocol.js';
 import type { PimpampumHttpClient } from './client.js';
@@ -338,7 +339,15 @@ async function callBoundary<T>(operation: () => Promise<T>): Promise<T> {
     if (/CONFLICT/iu.test(code) || /conflict|requires a decision/iu.test(message)) {
       throw new AppError('conflict', message || 'An explicit conflict decision is required', 409);
     }
-    throw new AppError('internal_error', message || 'The local operation failed', 500);
+    throw new AppError(
+      'internal_error',
+      message || 'The local operation failed',
+      500,
+      false,
+      error instanceof Error
+        ? (redactBoundaryValue(localErrorDetails(error)) as Record<string, unknown>)
+        : {},
+    );
   }
 }
 

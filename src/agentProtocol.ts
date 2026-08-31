@@ -53,12 +53,23 @@ export function createAgentErrorEnvelope(error: unknown): AgentErrorEnvelope {
 
 function causeChain(error: Error): string[] {
   const chain: string[] = [];
-  let current: unknown = error.cause;
-  while (current instanceof Error && chain.length < 8) {
+  const pending: unknown[] = [
+    ...(error instanceof AggregateError ? error.errors : []),
+    error.cause,
+  ];
+  while (pending.length > 0 && chain.length < 8) {
+    const current = pending.shift();
+    if (!(current instanceof Error)) continue;
     chain.push(current.message);
-    current = current.cause;
+    if (current instanceof AggregateError) pending.unshift(...current.errors);
+    if (current.cause !== undefined) pending.push(current.cause);
   }
   return chain;
+}
+
+export function localErrorDetails(error: Error): Record<string, unknown> {
+  const chain = causeChain(error);
+  return { name: error.name, ...(chain.length > 0 ? { causes: chain } : {}) };
 }
 
 /**
@@ -70,13 +81,12 @@ export function createLocalErrorEnvelope(error: unknown): AgentErrorEnvelope {
   if (error instanceof AppError || !(error instanceof Error)) {
     return createAgentErrorEnvelope(error);
   }
-  const chain = causeChain(error);
   return {
     error: {
       code: 'internal_error',
       message: error.message,
       retryable: false,
-      details: { name: error.name, ...(chain.length > 0 ? { causes: chain } : {}) },
+      details: localErrorDetails(error),
       suggestion: fallbackGuidance,
     },
   };

@@ -206,8 +206,7 @@ async function restoreLaunchdState(input: {
 }): Promise<void> {
   const current = await input.context.runCommand(input.launchctlPath, [
     'bootout',
-    input.guiDomain,
-    input.artifactPath,
+    `${input.guiDomain}/${LAUNCH_AGENT_LABEL}`,
   ]);
   if (current.exitCode !== 0 && !isMissingRegistration(current)) {
     throw launchctlError('rollback bootout', current);

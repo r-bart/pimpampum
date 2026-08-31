@@ -63,6 +63,7 @@ if [ -n "${PIMPAMPUM_SIGNING_IDENTITY:-}" ]; then
   runtime_node="$runtime_resources/payload/bin/node"
   runtime_addon="$runtime_resources/payload/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
   /usr/bin/codesign --force --options runtime --timestamp \
+    --entitlements "$package_root/Resources/Node.entitlements" \
     --sign "$PIMPAMPUM_SIGNING_IDENTITY" "$runtime_node"
   /usr/bin/codesign --force --options runtime --timestamp \
     --sign "$PIMPAMPUM_SIGNING_IDENTITY" "$runtime_addon"

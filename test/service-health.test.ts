@@ -21,7 +21,7 @@ describe('bounded service health verification', () => {
     });
 
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
-    expect(sleep).toHaveBeenCalledWith(50);
+    expect(sleep).toHaveBeenCalledWith(100);
     expect(fetchImplementation).toHaveBeenLastCalledWith(
       new URL('http://127.0.0.1:7337/health'),
       expect.objectContaining({
