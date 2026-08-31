@@ -169,6 +169,7 @@ esac
 set -eu
 state=${JSON.stringify(join(state, 'claude'))}
 fail=${JSON.stringify(join(state, 'claude-fail'))}
+config="$HOME/.claude.json"
 if [ "\${1:-}" = "--version" ]; then printf '1.0.0 (Claude Code)\\n'; exit 0; fi
 if [ "\${1:-}" != "mcp" ]; then exit 2; fi
 case "\${2:-}" in
@@ -185,10 +186,11 @@ case "\${2:-}" in
     command_path=$(printf '%s' "$json" | sed -n 's/.*"command":"\\([^"]*\\)".*/\\1/p')
     [ -n "$command_path" ] || exit 2
     printf '%s' "$command_path" > "$state"
+    printf '{"mcpServers":{"pimpampum":{"type":"stdio","command":"%s","args":[],"env":{}}}}\\n' "$command_path" > "$config"
     ;;
   remove)
     if [ "\${3:-}" = "--help" ]; then printf '%s\\n' '--scope'; exit 0; fi
-    rm -f "$state"
+    rm -f "$state" "$config"
     ;;
   *) exit 2 ;;
 esac
