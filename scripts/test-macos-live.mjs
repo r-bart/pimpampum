@@ -169,6 +169,7 @@ esac
 set -eu
 state=${JSON.stringify(join(state, 'claude'))}
 fail=${JSON.stringify(join(state, 'claude-fail'))}
+config="$HOME/.claude.json"
 if [ "\${1:-}" = "--version" ]; then printf '1.0.0 (Claude Code)\\n'; exit 0; fi
 if [ "\${1:-}" != "mcp" ]; then exit 2; fi
 case "\${2:-}" in
@@ -185,10 +186,11 @@ case "\${2:-}" in
     command_path=$(printf '%s' "$json" | sed -n 's/.*"command":"\\([^"]*\\)".*/\\1/p')
     [ -n "$command_path" ] || exit 2
     printf '%s' "$command_path" > "$state"
+    printf '{"mcpServers":{"pimpampum":{"type":"stdio","command":"%s","args":[],"env":{}}}}\\n' "$command_path" > "$config"
     ;;
   remove)
     if [ "\${3:-}" = "--help" ]; then printf '%s\\n' '--scope'; exit 0; fi
-    rm -f "$state"
+    rm -f "$state" "$config"
     ;;
   *) exit 2 ;;
 esac
@@ -439,6 +441,14 @@ try {
   const preservedHashes = Object.fromEntries(preservedPaths.map((path) => [path, sha256(path)]));
   controlNode = join(embeddedPayload, 'bin/node');
   cli = join(embeddedPayload, 'dist/cli.js');
+  const installedRuntimeRoot = join(
+    liveHome,
+    'Library/Application Support/Pimpampum/Runtime',
+    cleanVersion.version,
+    'darwin-arm64',
+  );
+  const installedRuntimeNode = join(installedRuntimeRoot, 'bin/node');
+  const installedRuntimeCli = join(installedRuntimeRoot, 'dist/cli.js');
   const migrationPlan = runCli('setup', 'plan');
   const migration = runCli(
     'setup',
@@ -452,10 +462,24 @@ try {
   );
   if (
     migration.status !== 'complete' ||
-    migratedReceipt.nodePath !== controlNode ||
+    migratedReceipt.adapter !== 'launchd-macos-app' ||
+    migratedReceipt.nodePath !== installedRuntimeNode ||
+    migratedReceipt.cliPath !== installedRuntimeCli ||
     !Object.entries(preservedHashes).every(([path, hash]) => sha256(path) === hash)
   ) {
-    throw new Error('Legacy npm migration did not preserve data and activate the packaged node.');
+    throw new Error(
+      `Legacy npm migration did not preserve data and activate the native packaged service: ${JSON.stringify(
+        {
+          status: migration.status,
+          adapter: migratedReceipt.adapter,
+          nodePathMatches: migratedReceipt.nodePath === installedRuntimeNode,
+          cliPathMatches: migratedReceipt.cliPath === installedRuntimeCli,
+          preservedData: Object.entries(preservedHashes).every(
+            ([path, hash]) => sha256(path) === hash,
+          ),
+        },
+      )}`,
+    );
   }
   scenarios.legacyNpmMigration = true;
   empty = await runCliEventually(['overview']);
@@ -469,6 +493,10 @@ try {
   ) {
     throw new Error(`One-agent setup failed: ${JSON.stringify(oneAgent.result)}`);
   }
+  // The release budget is download/artifact preflight through the first verified agent. The
+  // remaining fault injection, UI rendering, update and removal cases are exhaustive release
+  // validation, not part of the guided setup time shown to a user.
+  const durationMilliseconds = Date.now() - liveStartedAt;
   scenarios.oneAgent = true;
   runCli('disconnect', 'codex', '--yes');
 
@@ -545,7 +573,9 @@ try {
   scenarios.conflictDecision = true;
   const sessionConnections = runCli('connections');
   const sessionRestart = {
-    required: replaced.nextAction === 'new-session' || oneAgent.result.nextAction === 'new-session',
+    required: [replaced, oneAgent.result].some((result) =>
+      result.connectors.some((connector) => connector.newSessionRequired),
+    ),
     observedAfterNewSession: sessionConnections.some(
       (connection) => connection.id === 'codex' && connection.available === true,
     ),
@@ -709,7 +739,7 @@ try {
 
   rmSync(backupDirectory, { recursive: true });
   writeFileSync(backupDirectory, 'blocked by the reversible live smoke\n', { mode: 0o600 });
-  const failedRetryCommand = spawnSync(process.execPath, [cli, 'backup', 'retry'], {
+  const failedRetryCommand = spawnSync(controlNode, [cli, 'backup', 'retry'], {
     cwd: repositoryRoot,
     env: environment,
     encoding: 'utf8',
@@ -797,7 +827,9 @@ try {
   scenarios.packagedUpdate =
     recovered.reconciled === true &&
     recoveredReceipt.updateProvider === 'packaged-release' &&
-    recoveredReceipt.nodePath === controlNode;
+    recoveredReceipt.adapter === 'launchd-macos-app' &&
+    recoveredReceipt.nodePath === installedRuntimeNode &&
+    recoveredReceipt.cliPath === installedRuntimeCli;
   const recoveredUI = uiSnapshot('recovered');
   if (
     recoveredUI.visualState !== 'All complete' ||
@@ -850,10 +882,11 @@ try {
     throw new Error(`macOS live setup missed required scenarios: ${missingScenarios.join(', ')}.`);
   }
   if (!sessionRestart.required || !sessionRestart.observedAfterNewSession) {
-    throw new Error('A new agent session was not both required and observed after connection.');
+    throw new Error(
+      `A new agent session was not both required and observed after connection: ${JSON.stringify(sessionRestart)}`,
+    );
   }
 
-  const durationMilliseconds = Date.now() - liveStartedAt;
   if (durationMilliseconds >= 120_000) {
     throw new Error(`macOS live setup exceeded two minutes: ${durationMilliseconds}ms.`);
   }

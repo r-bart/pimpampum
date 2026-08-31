@@ -42,7 +42,7 @@ describe('bounded service health verification', () => {
         dataDirectory,
         nodePath: process.execPath,
         cliPath: join(process.cwd(), 'dist/cli.js'),
-        version: '1.2.6',
+        version: '1.2.7',
         runCommand: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
         adapters: { linux: adapter },
       },
@@ -53,7 +53,7 @@ describe('bounded service health verification', () => {
     expect(healthVerifier).toHaveBeenCalledOnce();
     expect(healthVerifier).toHaveBeenCalledWith({
       baseUrl: 'http://127.0.0.1:7337',
-      version: '1.2.6',
+      version: '1.2.7',
     });
   });
 
