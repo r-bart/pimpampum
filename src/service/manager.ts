@@ -172,6 +172,18 @@ function requireReceiptAdapter(
   return requireAdapter(input, receipt.adapter);
 }
 
+function adapterForInstall(
+  input: PlatformServiceManagerInput,
+  existing: InstallReceipt | null,
+  defaultAdapter: PlatformServiceAdapter,
+): PlatformServiceAdapter {
+  if (existing === null) return defaultAdapter;
+  const receiptAdapter = requireReceiptAdapter(input, existing);
+  const legacyRuntime =
+    existing.packagedRuntime === undefined && existing.updateProvider !== 'packaged-release';
+  return input.packagedRuntime !== undefined && legacyRuntime ? defaultAdapter : receiptAdapter;
+}
+
 function adapterContext(input: PlatformServiceManagerInput): ServiceAdapterContext {
   const dataDirectory = safeExistingDirectory(input.dataDirectory, 'Data directory');
   const host = input.host ?? '127.0.0.1';
@@ -537,7 +549,10 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
       const context = adapterContext(input);
       return withLifecycleLock(context, async () => {
         const existing = readInstallReceipt(receiptPath, context.dataDirectory);
-        const adapter = existing ? requireReceiptAdapter(input, existing) : defaultAdapter;
+        // A private-runtime setup is also the explicit migration boundary from the legacy npm
+        // service. Promote that receipt to the currently selected native adapter so macOS gains
+        // the app/login item and Omarchy gains its plugin integration in the same transaction.
+        const adapter = adapterForInstall(input, existing, defaultAdapter);
         const artifacts = adapter.artifacts(context);
         validateArtifacts(context, artifacts);
         const ownedRoots = validateOwnedArtifactRoots(adapter, context);

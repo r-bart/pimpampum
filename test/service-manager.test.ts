@@ -1465,6 +1465,76 @@ describe('platform-neutral service manager', () => {
     expect(postActivationVerifier).toHaveBeenCalledTimes(2);
   });
 
+  it('promotes a legacy service receipt to the selected packaged adapter', async () => {
+    const root = testRoot('legacy-packaged-adapter-migration');
+    const servicePath = join(root.homeDirectory, '.config', 'pimpampum', 'service');
+    const applicationPath = join(root.homeDirectory, '.local', 'share', 'pimpampum', 'app');
+    const legacyActivate = vi.fn(async () => undefined);
+    const packagedActivate = vi.fn(async () => undefined);
+    const legacyAdapter = testAdapter(root, {
+      id: 'legacy-daemon',
+      artifacts: () => [{ path: servicePath, content: 'legacy-service', mode: 0o600 }],
+      activate: legacyActivate,
+    });
+    await createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        adapters: { linux: legacyAdapter },
+      }),
+    ).install();
+
+    const runtimeDirectory = join(
+      root.homeDirectory,
+      '.local',
+      'share',
+      'pimpampum',
+      'runtime',
+      '1.0.0',
+    );
+    const nodePath = join(runtimeDirectory, 'bin', 'node');
+    const cliPath = join(runtimeDirectory, 'dist', 'cli.js');
+    mkdirSync(join(runtimeDirectory, 'bin'), { recursive: true });
+    mkdirSync(join(runtimeDirectory, 'dist'), { recursive: true });
+    writeFileSync(nodePath, 'node');
+    writeFileSync(cliPath, 'cli');
+    const packagedAdapter = testAdapter(root, {
+      id: 'packaged-desktop',
+      artifacts: () => [
+        { path: servicePath, content: 'packaged-service', mode: 0o600 },
+        { path: applicationPath, content: 'packaged-app', mode: 0o600 },
+      ],
+      activate: packagedActivate,
+    });
+    const dataBefore = readFileSync(join(root.dataDirectory, 'pimpampum.sqlite'));
+
+    await expect(
+      createPlatformServiceManager(
+        managerInput(root, async () => success(), {
+          platform: 'linux',
+          nodePath,
+          cliPath,
+          packagedRuntime: { version: '1.0.0', target: 'linux-x64', runtimeDirectory },
+          adapters: { linux: packagedAdapter },
+          receiptAdapters: { [legacyAdapter.id]: legacyAdapter },
+        }),
+      ).install(),
+    ).resolves.toMatchObject({ installed: true, reconciled: true });
+
+    expect(legacyActivate).toHaveBeenCalledOnce();
+    expect(packagedActivate).toHaveBeenCalledOnce();
+    expect(readFileSync(servicePath, 'utf8')).toBe('packaged-service');
+    expect(readFileSync(applicationPath, 'utf8')).toBe('packaged-app');
+    expect(readFileSync(join(root.dataDirectory, 'pimpampum.sqlite'))).toEqual(dataBefore);
+    expect(
+      readInstallReceipt(installReceiptPath(root.dataDirectory), root.dataDirectory),
+    ).toMatchObject({
+      adapter: 'packaged-desktop',
+      nodePath,
+      cliPath,
+      packagedRuntime: { version: '1.0.0', target: 'linux-x64', runtimeDirectory },
+    });
+  });
+
   it('restores receipt, artifacts, logs and external state when health verification fails', async () => {
     const root = testRoot('post-activation-rollback');
     const artifactPath = join(root.homeDirectory, '.config', 'pimpampum', 'service');

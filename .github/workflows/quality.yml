@@ -109,3 +109,19 @@ jobs:
           version=$(node -p "require('./package.json').version")
           PIMPAMPUM_RUNTIME_BUNDLE="$RUNNER_TEMP/runtime-darwin-arm64/pimpampum-runtime-$version-darwin-arm64" \
             npm run build:macos
+      - name: Exercise the complete macOS lifecycle before release
+        env:
+          TMPDIR: ${{ runner.temp }}/macos-live
+        run: |
+          mkdir -p "$TMPDIR"
+          node scripts/check-macos-artifact.mjs \
+            platforms/macos/dist/PimpampumMenuBar.app --approve
+          PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
+      - name: Upload live-smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-pr-live-smoke-diagnostics
+          path: ${{ runner.temp }}/macos-live
+          if-no-files-found: warn
+          retention-days: 7

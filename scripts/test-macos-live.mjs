@@ -439,6 +439,14 @@ try {
   const preservedHashes = Object.fromEntries(preservedPaths.map((path) => [path, sha256(path)]));
   controlNode = join(embeddedPayload, 'bin/node');
   cli = join(embeddedPayload, 'dist/cli.js');
+  const installedRuntimeRoot = join(
+    liveHome,
+    'Library/Application Support/Pimpampum/Runtime',
+    cleanVersion.version,
+    'darwin-arm64',
+  );
+  const installedRuntimeNode = join(installedRuntimeRoot, 'bin/node');
+  const installedRuntimeCli = join(installedRuntimeRoot, 'dist/cli.js');
   const migrationPlan = runCli('setup', 'plan');
   const migration = runCli(
     'setup',
@@ -452,10 +460,24 @@ try {
   );
   if (
     migration.status !== 'complete' ||
-    migratedReceipt.nodePath !== controlNode ||
+    migratedReceipt.adapter !== 'launchd-macos-app' ||
+    migratedReceipt.nodePath !== installedRuntimeNode ||
+    migratedReceipt.cliPath !== installedRuntimeCli ||
     !Object.entries(preservedHashes).every(([path, hash]) => sha256(path) === hash)
   ) {
-    throw new Error('Legacy npm migration did not preserve data and activate the packaged node.');
+    throw new Error(
+      `Legacy npm migration did not preserve data and activate the native packaged service: ${JSON.stringify(
+        {
+          status: migration.status,
+          adapter: migratedReceipt.adapter,
+          nodePathMatches: migratedReceipt.nodePath === installedRuntimeNode,
+          cliPathMatches: migratedReceipt.cliPath === installedRuntimeCli,
+          preservedData: Object.entries(preservedHashes).every(
+            ([path, hash]) => sha256(path) === hash,
+          ),
+        },
+      )}`,
+    );
   }
   scenarios.legacyNpmMigration = true;
   empty = await runCliEventually(['overview']);
@@ -797,7 +819,9 @@ try {
   scenarios.packagedUpdate =
     recovered.reconciled === true &&
     recoveredReceipt.updateProvider === 'packaged-release' &&
-    recoveredReceipt.nodePath === controlNode;
+    recoveredReceipt.adapter === 'launchd-macos-app' &&
+    recoveredReceipt.nodePath === installedRuntimeNode &&
+    recoveredReceipt.cliPath === installedRuntimeCli;
   const recoveredUI = uiSnapshot('recovered');
   if (
     recoveredUI.visualState !== 'All complete' ||
