@@ -95,19 +95,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function createHealthVerifiedServiceManager(input: PlatformServiceManagerInput): ServiceManager {
-  let manager: ServiceManager;
-  manager = createPlatformServiceManager({
+export function createHealthVerifiedServiceManager(
+  input: PlatformServiceManagerInput,
+  healthVerifier: typeof verifyServiceHealth = verifyServiceHealth,
+): ServiceManager {
+  return createPlatformServiceManager({
     ...input,
     postActivationVerifier: async ({ receipt }) => {
-      const status = await manager.status();
-      if (!status.installed || !status.running || status.version !== receipt.version) {
-        throw new Error('Installed Pimpampum service failed health verification');
-      }
-      await verifyServiceHealth({ baseUrl: receipt.baseUrl, version: receipt.version });
+      // The service manager already holds its lifecycle lock here and has verified the exact
+      // receipt. Re-entering manager.status() would deadlock against that same process-owned lock;
+      // the versioned loopback health response is the authoritative running check.
+      await healthVerifier({ baseUrl: receipt.baseUrl, version: receipt.version });
     },
   });
-  return manager;
 }
 
 function parseConnectionReceipt(value: unknown, connectorId: ConnectorId): ConnectionReceipt {

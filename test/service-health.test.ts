@@ -1,10 +1,62 @@
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createHealthVerifiedServiceManager } from '../src/cliMain.js';
 import { verifyServiceHealth } from '../src/service/health.js';
+import type { PlatformServiceAdapter } from '../src/service/types.js';
 
-afterEach(() => vi.unstubAllGlobals());
+const roots: string[] = [];
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe('bounded service health verification', () => {
+  it('verifies a fresh install without re-entering the service lifecycle lock', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'pimpampum-health-manager-'));
+    roots.push(root);
+    const homeDirectory = join(root, 'home');
+    const dataDirectory = join(root, 'data');
+    mkdirSync(homeDirectory);
+    mkdirSync(dataDirectory);
+    const healthVerifier = vi.fn(async () => undefined);
+    const adapter: PlatformServiceAdapter = {
+      id: 'health-test',
+      platform: 'linux',
+      artifacts: () => [
+        { path: join(homeDirectory, 'service.unit'), content: 'service', mode: 0o600 },
+      ],
+      activate: async () => undefined,
+      deactivate: async () => undefined,
+      isRunning: async () => {
+        throw new Error('status re-entered during installation');
+      },
+    };
+    const manager = createHealthVerifiedServiceManager(
+      {
+        platform: 'linux',
+        homeDirectory,
+        dataDirectory,
+        nodePath: process.execPath,
+        cliPath: join(process.cwd(), 'dist/cli.js'),
+        version: '1.2.4',
+        runCommand: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        adapters: { linux: adapter },
+      },
+      healthVerifier,
+    );
+
+    await expect(manager.install()).resolves.toMatchObject({ installed: true });
+    expect(healthVerifier).toHaveBeenCalledOnce();
+    expect(healthVerifier).toHaveBeenCalledWith({
+      baseUrl: 'http://127.0.0.1:7337',
+      version: '1.2.4',
+    });
+  });
+
   it('retries loopback health until the exact installed version is ready', async () => {
     const fetchImplementation = vi
       .fn<typeof fetch>()
