@@ -17,6 +17,7 @@ import type {
 
 function launchAgentInput(overrides: Partial<LaunchAgentInput> = {}): LaunchAgentInput {
   return {
+    homeDirectory: '/Users/example/Home With Spaces & ü',
     nodePath: '/opt/Pimpampum & Runtime/bin/node',
     cliPath: '/opt/Pimpampum Runtime/dist/<cli> "quoted" \'single\'.js',
     dataDirectory: '/Users/example/Pimpampum Data ñ',
@@ -53,6 +54,9 @@ describe('LaunchAgent rendering', () => {
     expect(plist).toMatch(/<key>ProgramArguments<\/key>\s*<array>/);
     expect(plist).toContain('/opt/Pimpampum &amp; Runtime/bin/node');
     expect(plist).toContain('&lt;cli&gt; &quot;quoted&quot; &apos;single&apos;.js');
+    expect(plist).toMatch(
+      /<key>HOME<\/key>\s*<string>\/Users\/example\/Home With Spaces &amp; ü<\/string>/,
+    );
     expect(plist).toContain('/logs &amp; private/daemon.stdout.log');
     expect(plist).toContain('/logs &amp; private/daemon.stderr.log');
     expect(plist).toContain('<key>PIMPAMPUM_HOST</key>');
@@ -83,6 +87,7 @@ describe('LaunchAgent rendering', () => {
     for (const [field, value] of [
       ['nodePath', 'relative-node'],
       ['cliPath', 'relative-cli'],
+      ['homeDirectory', 'relative-home'],
       ['dataDirectory', 'relative-data'],
       ['logDirectory', 'relative-logs'],
     ] as const) {

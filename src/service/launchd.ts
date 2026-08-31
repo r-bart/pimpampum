@@ -10,6 +10,7 @@ import type {
 export const LAUNCH_AGENT_LABEL = 'dev.pimpampum.daemon';
 
 export interface LaunchAgentInput {
+  homeDirectory?: string;
   nodePath: string;
   cliPath: string;
   dataDirectory: string;
@@ -55,6 +56,9 @@ function validateLogDirectory(dataDirectory: string, logDirectory: string): void
 }
 
 export function renderLaunchAgent(input: LaunchAgentInput): string {
+  if (input.homeDirectory !== undefined) {
+    validateAbsolutePath(input.homeDirectory, 'Home directory');
+  }
   validateAbsolutePath(input.nodePath, 'Node path');
   validateAbsolutePath(input.cliPath, 'CLI path');
   validateAbsolutePath(input.dataDirectory, 'Data directory');
@@ -79,7 +83,13 @@ export function renderLaunchAgent(input: LaunchAgentInput): string {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PIMPAMPUM_DATA_DIR</key>
+${
+  input.homeDirectory === undefined
+    ? ''
+    : `    <key>HOME</key>
+    <string>${xml(input.homeDirectory)}</string>
+`
+}    <key>PIMPAMPUM_DATA_DIR</key>
     <string>${xml(input.dataDirectory)}</string>
     <key>PIMPAMPUM_HOST</key>
     <string>${xml(input.host)}</string>
@@ -124,6 +134,7 @@ function requireArtifact(artifacts: ServiceArtifact[]): ServiceArtifact {
 
 function contextInput(context: ServiceAdapterContext): LaunchAgentInput {
   return {
+    homeDirectory: context.homeDirectory,
     nodePath: context.nodePath,
     cliPath: context.cliPath,
     dataDirectory: context.dataDirectory,
