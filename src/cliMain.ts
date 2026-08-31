@@ -19,6 +19,7 @@ import {
   replaceHostConfigurationEntry,
 } from './connectors/process.js';
 import { createConnectorRegistry } from './connectors/registry.js';
+import { fingerprintCommand } from './connectors/receipt.js';
 import type {
   ConnectionReceipt,
   ConnectorId,
@@ -369,13 +370,27 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
             return {
               state: inspected.state,
               ...(inspected.state === 'conflict'
-                ? { comparison: 'An existing entry differs from the Pimpampum-owned launcher.' }
+                ? {
+                    comparison: 'An existing entry differs from the Pimpampum-owned launcher.',
+                    ...(inspected.entry === null
+                      ? {}
+                      : {
+                          revision: fingerprintCommand(inspected.entry),
+                          replacementSupported: inspected.entry.restorable !== false,
+                        }),
+                  }
                 : {}),
             };
           },
-          connect: async () => {
-            const plan = await connector.plan();
-            if (plan.state === 'conflict') {
+          connect: async (input?: {
+            conflictDecision?: 'keep' | 'replace' | 'cancel';
+            reviewedEntryFingerprint?: string;
+          }) => {
+            const plan = await connector.plan(input);
+            if (
+              plan.state === 'conflict' &&
+              (plan.conflictDecision !== 'replace' || plan.mutations.length === 0)
+            ) {
               throw Object.assign(new Error('The existing connector entry requires a decision'), {
                 code: 'CONNECTOR_CONFLICT',
               });

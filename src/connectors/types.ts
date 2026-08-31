@@ -15,6 +15,7 @@ export type ConnectorState =
 export type ConnectorScope = 'user' | 'project' | 'local' | 'global';
 export type OwnedConnectorScope = Extract<ConnectorScope, 'user' | 'global'>;
 export type ConnectorApprovalPolicy = 'hostDefault' | 'promptForWrites';
+export type ConnectorConflictDecision = 'keep' | 'replace' | 'cancel';
 
 export interface CommandInvocation {
   executable: string;
@@ -27,6 +28,8 @@ export interface HostEntry {
   command: string;
   arguments: string[];
   scope: ConnectorScope;
+  /** False when the official host CLI cannot faithfully restore this inspected entry. */
+  restorable?: boolean;
 }
 
 export interface ConnectorCapabilities {
@@ -69,6 +72,8 @@ export interface ConnectionPlan {
   selectedByDefault: boolean;
   mutations: CommandInvocation[];
   requiresConflictDecision: boolean;
+  conflictDecision?: ConnectorConflictDecision;
+  reviewedEntryFingerprint?: string;
   newSessionRequired: boolean;
   approvalPolicy: ConnectorApprovalPolicy;
   summary: string;
@@ -107,7 +112,10 @@ export interface HostConnector {
   readonly displayName: string;
   detect(): Promise<ConnectorDetection>;
   inspect(): Promise<ConnectorInspection>;
-  plan(): Promise<ConnectionPlan>;
+  plan(input?: {
+    conflictDecision?: ConnectorConflictDecision;
+    reviewedEntryFingerprint?: string;
+  }): Promise<ConnectionPlan>;
   connect(plan: ConnectionPlan): Promise<ConnectorActionResult>;
   verify(): Promise<ConnectorVerification>;
   repair(plan: ConnectionPlan): Promise<ConnectorActionResult>;

@@ -117,6 +117,23 @@ function parseSetupJournal(value: unknown): SetupJournal {
     conflictDecisions[id as keyof typeof conflictDecisions] = decision as
       'keep' | 'replace' | 'cancel';
   }
+  const reviewedConflictFingerprints: NonNullable<SetupJournal['reviewedConflictFingerprints']> =
+    {};
+  if (value.reviewedConflictFingerprints !== undefined) {
+    if (!isRecord(value.reviewedConflictFingerprints)) {
+      throw new Error('Invalid reviewed setup conflict fingerprints');
+    }
+    for (const [id, fingerprint] of Object.entries(value.reviewedConflictFingerprints)) {
+      if (
+        !SETUP_CONNECTOR_IDS.includes(id as never) ||
+        typeof fingerprint !== 'string' ||
+        !/^[a-f0-9]{64}$/u.test(fingerprint)
+      ) {
+        throw new Error('Invalid reviewed setup conflict fingerprint');
+      }
+      reviewedConflictFingerprints[id as keyof typeof reviewedConflictFingerprints] = fingerprint;
+    }
+  }
   if (!Array.isArray(value.connectors) || value.connectors.length > SETUP_CONNECTOR_IDS.length) {
     throw new Error('Invalid setup connector results');
   }
@@ -156,6 +173,9 @@ function parseSetupJournal(value: unknown): SetupJournal {
     phase: value.phase,
     selectedConnectors: value.selectedConnectors as SetupJournal['selectedConnectors'],
     conflictDecisions,
+    ...(Object.keys(reviewedConflictFingerprints).length === 0
+      ? {}
+      : { reviewedConflictFingerprints }),
     completedPhases: [...value.completedPhases],
     diagnostics: [...value.diagnostics],
     service: {
@@ -219,6 +239,21 @@ function parseSetupPlan(value: unknown): SetupPlan {
     return {
       connectorId: conflict.connectorId as SetupPlan['conflicts'][number]['connectorId'],
       comparison: boundedString(conflict.comparison, 'conflict comparison', 512),
+      ...(conflict.entryFingerprint === undefined
+        ? {}
+        : {
+            entryFingerprint: (() => {
+              const fingerprint = boundedString(
+                conflict.entryFingerprint,
+                'conflict fingerprint',
+                64,
+              );
+              if (!/^[a-f0-9]{64}$/u.test(fingerprint)) {
+                throw new Error('Invalid durable setup plan conflict fingerprint');
+              }
+              return fingerprint;
+            })(),
+          }),
     };
   });
   const revision = boundedString(value.revision, 'revision', 64);

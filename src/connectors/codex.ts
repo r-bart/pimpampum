@@ -86,6 +86,8 @@ export function planCodexConnection(input: {
   launcherPath: string;
   inspection: HostEntry | null;
   receipt: ConnectionReceipt | null;
+  conflictDecision?: 'keep' | 'replace' | 'cancel';
+  reviewedEntryFingerprint?: string;
 }): ConnectionPlan {
   const expected = expectedEntry(input.launcherPath);
   if (input.executable === null) {
@@ -134,10 +136,36 @@ export function planCodexConnection(input: {
     };
   }
   if (state === 'conflict') {
+    const reviewedEntryFingerprint =
+      input.inspection === null ? undefined : fingerprintCommand(input.inspection);
+    if (
+      input.conflictDecision === 'replace' &&
+      input.inspection?.restorable !== false &&
+      (input.reviewedEntryFingerprint === undefined ||
+        input.reviewedEntryFingerprint === reviewedEntryFingerprint)
+    ) {
+      return {
+        ...plan,
+        conflictDecision: 'replace',
+        ...(reviewedEntryFingerprint === undefined ? {} : { reviewedEntryFingerprint }),
+        mutations: [
+          removeInvocation(input.executable),
+          addInvocation(input.executable, input.launcherPath),
+        ],
+        requiresConflictDecision: false,
+        newSessionRequired: true,
+        summary: 'Replace the reviewed Codex MCP entry and preserve it for rollback.',
+      };
+    }
     return {
       ...plan,
-      requiresConflictDecision: true,
-      summary: 'Codex already has a different entry named pimpampum. Review it before replacing.',
+      ...(input.conflictDecision === undefined ? {} : { conflictDecision: input.conflictDecision }),
+      ...(reviewedEntryFingerprint === undefined ? {} : { reviewedEntryFingerprint }),
+      requiresConflictDecision: input.conflictDecision === undefined,
+      summary:
+        input.conflictDecision === 'replace'
+          ? 'Codex entry cannot be restored safely through the official CLI; no changes are planned.'
+          : 'Codex already has a different entry named pimpampum. Review it before replacing.',
     };
   }
   return { ...plan, summary: 'Codex is connected through the current private launcher.' };
@@ -169,15 +197,44 @@ export function parseCodexMcpEntry(value: unknown): HostEntry | null {
   const candidate = value as Record<string, unknown>;
   const transport = candidate.transport;
   if (typeof transport !== 'object' || transport === null) {
-    return { command: '[unsupported Codex transport]', arguments: [], scope: CODEX_SCOPE };
+    return {
+      command: '[unsupported Codex transport]',
+      arguments: [],
+      scope: CODEX_SCOPE,
+      restorable: false,
+    };
   }
   const record = transport as Record<string, unknown>;
   if (record.type !== 'stdio' || typeof record.command !== 'string') {
-    return { command: '[unsupported Codex transport]', arguments: [], scope: CODEX_SCOPE };
+    return {
+      command: '[unsupported Codex transport]',
+      arguments: [],
+      scope: CODEX_SCOPE,
+      restorable: false,
+    };
   }
   const arguments_ = parseStringArray(record.args);
   if (arguments_ === null) {
-    return { command: '[invalid Codex stdio entry]', arguments: [], scope: CODEX_SCOPE };
+    return {
+      command: '[invalid Codex stdio entry]',
+      arguments: [],
+      scope: CODEX_SCOPE,
+      restorable: false,
+    };
+  }
+  if (
+    record.env !== undefined &&
+    record.env !== null &&
+    (typeof record.env !== 'object' ||
+      Array.isArray(record.env) ||
+      Object.keys(record.env).length > 0)
+  ) {
+    return {
+      command: '[Codex stdio entry with private environment]',
+      arguments: [],
+      scope: CODEX_SCOPE,
+      restorable: false,
+    };
   }
   return { command: record.command, arguments: arguments_, scope: CODEX_SCOPE };
 }
@@ -365,7 +422,10 @@ export function createCodexConnector(dependencies: CodexConnectorDependencies): 
     };
   };
 
-  const plan = async (): Promise<ConnectionPlan> => {
+  const plan = async (input?: {
+    conflictDecision?: 'keep' | 'replace' | 'cancel';
+    reviewedEntryFingerprint?: string;
+  }): Promise<ConnectionPlan> => {
     const detected = await detect();
     const receipt = await dependencies.receipt.read();
     const entry =
@@ -378,6 +438,12 @@ export function createCodexConnector(dependencies: CodexConnectorDependencies): 
       launcherPath: dependencies.launcherPath,
       inspection: entry,
       receipt,
+      ...(input?.conflictDecision === undefined
+        ? {}
+        : { conflictDecision: input.conflictDecision }),
+      ...(input?.reviewedEntryFingerprint === undefined
+        ? {}
+        : { reviewedEntryFingerprint: input.reviewedEntryFingerprint }),
     });
   };
 
@@ -399,6 +465,13 @@ export function createCodexConnector(dependencies: CodexConnectorDependencies): 
       throw new Error('Codex is unavailable while restoring its MCP entry');
     }
     const current = await inspectEntry(detected.executable);
+    if (
+      current !== null &&
+      snapshot.entry !== null &&
+      fingerprintCommand(current) === fingerprintCommand(snapshot.entry)
+    ) {
+      return;
+    }
     if (current !== null && fingerprintCommand(current) !== fingerprintCommand(expected)) {
       throw new Error('Codex MCP configuration changed concurrently; it was not replaced');
     }
@@ -407,6 +480,9 @@ export function createCodexConnector(dependencies: CodexConnectorDependencies): 
       if (removed.exitCode !== 0) throw new Error('Codex could not restore its previous MCP entry');
     }
     if (snapshot.entry !== null) {
+      if (snapshot.entry.restorable === false) {
+        throw new Error('Codex cannot safely restore the reviewed MCP entry');
+      }
       const restored = await invoke({
         executable: detected.executable,
         arguments: [
@@ -426,18 +502,24 @@ export function createCodexConnector(dependencies: CodexConnectorDependencies): 
   const applyPlan = async (connectionPlan: ConnectionPlan): Promise<ConnectorActionResult> => {
     if (connectionPlan.connectorId !== CODEX_ID)
       throw new Error('The connection plan is not for Codex');
-    const currentPlan = await plan();
-    if (
-      currentPlan.state !== connectionPlan.state ||
-      JSON.stringify(currentPlan.mutations) !== JSON.stringify(connectionPlan.mutations)
-    ) {
+    const currentPlan = await plan(
+      connectionPlan.conflictDecision === undefined
+        ? {}
+        : {
+            conflictDecision: connectionPlan.conflictDecision,
+            ...(connectionPlan.reviewedEntryFingerprint === undefined
+              ? {}
+              : { reviewedEntryFingerprint: connectionPlan.reviewedEntryFingerprint }),
+          },
+    );
+    if (JSON.stringify(currentPlan) !== JSON.stringify(connectionPlan)) {
       throw new Error('Codex MCP configuration changed after the connection plan was reviewed');
     }
     connectionPlan = currentPlan;
     if (
       connectionPlan.state === 'notInstalled' ||
       connectionPlan.state === 'unsupportedVersion' ||
-      connectionPlan.state === 'conflict' ||
+      (connectionPlan.state === 'conflict' && connectionPlan.conflictDecision !== 'replace') ||
       connectionPlan.state === 'unavailable'
     ) {
       throw new Error('Codex cannot be connected from its current state');

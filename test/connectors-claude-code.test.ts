@@ -363,4 +363,65 @@ describe('Claude Code connector', () => {
     expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({ mcpServers: {} });
     expect(storedReceipt).toBeNull();
   });
+
+  it('restores a reviewed unknown entry when explicit replacement verification fails', async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    const executable = join(bin, 'claude');
+    const configPath = join(root, '.claude.json');
+    const previous = { command: '/opt/acme/private-memory', args: ['--reviewed'], env: {} };
+    writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(configPath, JSON.stringify({ mcpServers: { pimpampum: previous } }));
+    const run = vi.fn(async (invocation: CommandInvocation) => {
+      if (invocation.arguments[0] === '--version') {
+        return { exitCode: 0, stdout: '2.1.251', stderr: '', signal: null };
+      }
+      if (invocation.arguments.at(-1) === '--help') {
+        return { exitCode: 0, stdout: '--scope user', stderr: '', signal: null };
+      }
+      if (invocation.arguments[1] === 'remove') {
+        writeFileSync(configPath, JSON.stringify({ mcpServers: {} }));
+      }
+      if (invocation.arguments[1] === 'add-json') {
+        writeFileSync(
+          configPath,
+          JSON.stringify({
+            mcpServers: { pimpampum: JSON.parse(invocation.arguments.at(-1)!) as unknown },
+          }),
+        );
+      }
+      return { exitCode: 0, stdout: '', stderr: '', signal: null };
+    });
+    const connector = createClaudeCodeConnector({
+      launcherPath: launcher,
+      userConfigPath: configPath,
+      boundedExecutableLocations: [bin],
+      pathValue: bin,
+      runCommand: run,
+      verifyRoute: async () => verification(false),
+      receiptStore: {
+        read: async () => null,
+        write: async () => undefined,
+        remove: async () => undefined,
+      },
+    });
+
+    await expect(connector.plan()).resolves.toMatchObject({
+      state: 'conflict',
+      mutations: [],
+    });
+    const replacement = await connector.plan({ conflictDecision: 'replace' });
+    expect(replacement).toMatchObject({
+      conflictDecision: 'replace',
+      mutations: [
+        { arguments: ['mcp', 'remove', '--scope', 'user', 'pimpampum'] },
+        { arguments: ['mcp', 'add-json', '--scope', 'user', 'pimpampum', expect.any(String)] },
+      ],
+    });
+    await expect(connector.connect(replacement)).rejects.toThrow(/verification/iu);
+    expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({
+      mcpServers: { pimpampum: { type: 'stdio', ...previous } },
+    });
+  });
 });

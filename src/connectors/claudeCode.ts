@@ -31,6 +31,7 @@ const opaqueConflictEntry: HostEntry = {
   command: '[unrecognized Claude Code entry]',
   arguments: [],
   scope: 'user',
+  restorable: false,
 };
 
 export interface ClaudeCodePlanInput {
@@ -40,6 +41,8 @@ export interface ClaudeCodePlanInput {
   inspection: HostEntry | null;
   higherPrecedenceEntry: HostEntry | null;
   receipt: ConnectionReceipt | null;
+  conflictDecision?: 'keep' | 'replace' | 'cancel';
+  reviewedEntryFingerprint?: string;
 }
 
 export interface ClaudeCodeReceiptStore {
@@ -146,10 +149,42 @@ export function planClaudeCodeConnection(input: ClaudeCodePlanInput): Connection
   });
 
   if (state === 'conflict') {
-    return neutralPlan(
+    const plan = neutralPlan(
       state,
       'Claude Code already has a different MCP entry with this name; explicit resolution is required.',
     );
+    const reviewedEntryFingerprint =
+      input.inspection === null ? undefined : fingerprintCommand(input.inspection);
+    if (
+      input.conflictDecision === 'replace' &&
+      input.inspection?.restorable !== false &&
+      (input.reviewedEntryFingerprint === undefined ||
+        input.reviewedEntryFingerprint === reviewedEntryFingerprint)
+    ) {
+      return {
+        ...plan,
+        conflictDecision: 'replace',
+        ...(reviewedEntryFingerprint === undefined ? {} : { reviewedEntryFingerprint }),
+        selectedByDefault: true,
+        requiresConflictDecision: false,
+        mutations: [
+          removeInvocation(input.executable),
+          addInvocation(input.executable, input.launcherPath),
+        ],
+        newSessionRequired: true,
+        summary: 'Replace the reviewed Claude Code MCP entry and preserve it for rollback.',
+      };
+    }
+    return {
+      ...plan,
+      ...(input.conflictDecision === undefined ? {} : { conflictDecision: input.conflictDecision }),
+      ...(reviewedEntryFingerprint === undefined ? {} : { reviewedEntryFingerprint }),
+      requiresConflictDecision: input.conflictDecision === undefined,
+      summary:
+        input.conflictDecision === 'replace'
+          ? 'Claude Code entry cannot be restored safely through the official CLI; no changes are planned.'
+          : plan.summary,
+    };
   }
 
   if (state === 'equivalentUnowned') {
@@ -436,7 +471,10 @@ export function createClaudeCodeConnector(options: ClaudeCodeConnectorOptions): 
     return inspectWithDetection(await detect());
   }
 
-  async function planConnection(): Promise<ConnectionPlan> {
+  async function planConnection(input?: {
+    conflictDecision?: 'keep' | 'replace' | 'cancel';
+    reviewedEntryFingerprint?: string;
+  }): Promise<ConnectionPlan> {
     const detection = await detect();
     const inspection = await inspectWithDetection(detection);
     if (inspection.state === 'unavailable') {
@@ -452,6 +490,12 @@ export function createClaudeCodeConnector(options: ClaudeCodeConnectorOptions): 
       inspection: inspection.entry,
       higherPrecedenceEntry: inspection.higherPrecedenceEntry,
       receipt: inspection.receipt,
+      ...(input?.conflictDecision === undefined
+        ? {}
+        : { conflictDecision: input.conflictDecision }),
+      ...(input?.reviewedEntryFingerprint === undefined
+        ? {}
+        : { reviewedEntryFingerprint: input.reviewedEntryFingerprint }),
     });
   }
 
@@ -490,6 +534,23 @@ export function createClaudeCodeConnector(options: ClaudeCodeConnectorOptions): 
       await runMutation(removeInvocation(executable));
       return;
     }
+    if (snapshotValue.entry.restorable === false) {
+      throw new Error('Claude Code cannot safely restore the reviewed MCP entry');
+    }
+    const current = await inspectConfigTarget(options.userConfigPath, 'user');
+    if (
+      current.entry !== null &&
+      fingerprintCommand(current.entry) === fingerprintCommand(snapshotValue.entry)
+    ) {
+      return;
+    }
+    if (
+      current.entry !== null &&
+      fingerprintCommand(current.entry) !== fingerprintCommand(expectedEntry(options.launcherPath))
+    ) {
+      throw new Error('Claude Code MCP configuration changed concurrently; it was not replaced');
+    }
+    if (current.entry !== null) await runMutation(removeInvocation(executable));
     await runMutation({
       executable,
       arguments: [
@@ -509,11 +570,19 @@ export function createClaudeCodeConnector(options: ClaudeCodeConnectorOptions): 
   }
 
   async function applyConnection(requestedPlan: ConnectionPlan): Promise<ConnectorActionResult> {
-    const currentPlan = await planConnection();
+    const currentPlan = await planConnection(
+      requestedPlan.conflictDecision === undefined
+        ? {}
+        : {
+            conflictDecision: requestedPlan.conflictDecision,
+            ...(requestedPlan.reviewedEntryFingerprint === undefined
+              ? {}
+              : { reviewedEntryFingerprint: requestedPlan.reviewedEntryFingerprint }),
+          },
+    );
     if (
       requestedPlan.connectorId !== connectorId ||
-      requestedPlan.state !== currentPlan.state ||
-      JSON.stringify(requestedPlan.mutations) !== JSON.stringify(currentPlan.mutations)
+      JSON.stringify(requestedPlan) !== JSON.stringify(currentPlan)
     ) {
       throw new Error(
         'Claude Code MCP configuration changed after the connection plan was reviewed',
@@ -523,7 +592,8 @@ export function createClaudeCodeConnector(options: ClaudeCodeConnectorOptions): 
       currentPlan.state !== 'notConnected' &&
       currentPlan.state !== 'ownedStale' &&
       currentPlan.state !== 'ownedCurrent' &&
-      currentPlan.state !== 'equivalentUnowned'
+      currentPlan.state !== 'equivalentUnowned' &&
+      !(currentPlan.state === 'conflict' && currentPlan.conflictDecision === 'replace')
     ) {
       return {
         connectorId,

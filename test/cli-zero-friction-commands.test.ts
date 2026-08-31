@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createConnectionReceiptStore } from '../src/cliMain.js';
-import { runCli, type CliRuntime } from '../src/cliProgram.js';
+import { createCliConnectionsRuntime, runCli, type CliRuntime } from '../src/cliProgram.js';
+import type { HostConnector } from '../src/connectors/types.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -120,5 +121,51 @@ describe('zero-friction CLI commands', () => {
       /symlink/iu,
     );
     expect(readFileSync(join(outside, 'codex.json'), 'utf8')).toBe('{"preserved":true}\n');
+  });
+
+  it('executes only the explicitly reviewed replacement plan', async () => {
+    const connect = vi.fn(async () => ({
+      connectorId: 'codex' as const,
+      state: 'ownedCurrent' as const,
+      changed: true,
+      verification: null,
+    }));
+    const plan = vi.fn(async (input?: { conflictDecision?: 'replace' }) => ({
+      connectorId: 'codex' as const,
+      state: 'conflict' as const,
+      selectedByDefault: true,
+      mutations:
+        input?.conflictDecision === 'replace'
+          ? [
+              { executable: '/usr/bin/codex', arguments: ['mcp', 'remove', 'pimpampum'] },
+              { executable: '/usr/bin/codex', arguments: ['mcp', 'add', 'pimpampum'] },
+            ]
+          : [],
+      requiresConflictDecision: input?.conflictDecision !== 'replace',
+      ...(input?.conflictDecision === 'replace'
+        ? { conflictDecision: 'replace' as const, reviewedEntryFingerprint: 'reviewed' }
+        : {}),
+      newSessionRequired: true,
+      approvalPolicy: 'hostDefault' as const,
+      summary: 'reviewed replacement',
+    }));
+    const connector = {
+      id: 'codex',
+      displayName: 'Codex',
+      plan,
+      connect,
+    } as unknown as HostConnector;
+    const runtime = createCliConnectionsRuntime({
+      connectors: [connector],
+      launcherPath: '/private/pimpampum-mcp',
+    });
+
+    await expect(
+      runtime.connect('codex', { confirmed: true, conflictDecision: undefined }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect(connect).not.toHaveBeenCalled();
+    await runtime.connect('codex', { confirmed: true, conflictDecision: 'replace' });
+    expect(plan).toHaveBeenLastCalledWith({ conflictDecision: 'replace' });
+    expect(connect).toHaveBeenCalledOnce();
   });
 });

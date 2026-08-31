@@ -147,6 +147,81 @@ describe('setup coordinator hardening', () => {
     expect(existsSync(dependencies.dataDirectory)).toBe(false);
   });
 
+  it('forwards reviewed replacement while keep and cancel preserve the existing entry', async () => {
+    const replaceRoot = temporaryDirectory();
+    const replaceDependencies = setupDependencies(replaceRoot);
+    vi.mocked(replaceDependencies.connectors.codex.inspect).mockResolvedValue({
+      state: 'conflict',
+      comparison: 'Reviewed conflict',
+    });
+    const replaceCoordinator = createSetupCoordinator(replaceDependencies);
+    const replacePlan = await replaceCoordinator.plan({ selectedConnectors: ['codex'] });
+    await replaceCoordinator.apply({
+      operationId: replacePlan.operationId,
+      expectedRevision: replacePlan.revision,
+      confirmed: true,
+      conflictDecisions: { codex: 'replace' },
+    });
+    expect(replaceDependencies.connectors.codex.connect).toHaveBeenCalledWith({
+      conflictDecision: 'replace',
+    });
+
+    const keepRoot = temporaryDirectory();
+    const keepDependencies = setupDependencies(keepRoot);
+    vi.mocked(keepDependencies.connectors.codex.inspect).mockResolvedValue({ state: 'conflict' });
+    const keepCoordinator = createSetupCoordinator(keepDependencies);
+    const keepPlan = await keepCoordinator.plan({ selectedConnectors: ['codex'] });
+    await expect(
+      keepCoordinator.apply({
+        operationId: keepPlan.operationId,
+        expectedRevision: keepPlan.revision,
+        confirmed: true,
+        conflictDecisions: { codex: 'keep' },
+      }),
+    ).resolves.toMatchObject({
+      status: 'complete',
+      connectors: [{ id: 'codex', state: 'keptExisting', configured: false }],
+    });
+    expect(keepDependencies.connectors.codex.connect).not.toHaveBeenCalled();
+
+    const cancelRoot = temporaryDirectory();
+    const cancelDependencies = setupDependencies(cancelRoot);
+    vi.mocked(cancelDependencies.connectors.codex.inspect).mockResolvedValue({ state: 'conflict' });
+    const cancelCoordinator = createSetupCoordinator(cancelDependencies);
+    const cancelPlan = await cancelCoordinator.plan({ selectedConnectors: ['codex'] });
+    await expect(
+      cancelCoordinator.apply({
+        operationId: cancelPlan.operationId,
+        expectedRevision: cancelPlan.revision,
+        confirmed: true,
+        conflictDecisions: { codex: 'cancel' },
+      }),
+    ).resolves.toMatchObject({ status: 'conflict' });
+    expect(cancelDependencies.runtime.install).not.toHaveBeenCalled();
+    expect(cancelDependencies.connectors.codex.connect).not.toHaveBeenCalled();
+  });
+
+  it('blocks replacement when the reviewed connector fingerprint changes before apply', async () => {
+    const root = temporaryDirectory();
+    const dependencies = setupDependencies(root);
+    vi.mocked(dependencies.connectors.codex.inspect)
+      .mockResolvedValueOnce({ state: 'conflict', revision: 'a'.repeat(64) })
+      .mockResolvedValueOnce({ state: 'conflict', revision: 'b'.repeat(64) });
+    const coordinator = createSetupCoordinator(dependencies);
+    const plan = await coordinator.plan({ selectedConnectors: ['codex'] });
+
+    await expect(
+      coordinator.apply({
+        operationId: plan.operationId,
+        expectedRevision: plan.revision,
+        confirmed: true,
+        conflictDecisions: { codex: 'replace' },
+      }),
+    ).resolves.toMatchObject({ status: 'conflict' });
+    expect(dependencies.runtime.install).not.toHaveBeenCalled();
+    expect(dependencies.connectors.codex.connect).not.toHaveBeenCalled();
+  });
+
   it('resumes a running journal without repeating durable completed phases', async () => {
     const root = temporaryDirectory();
     const dependencies = setupDependencies(root);

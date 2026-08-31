@@ -253,4 +253,104 @@ describe('Codex connector', () => {
     expect(configured).toBe(false);
     expect(storedReceipt).toBeNull();
   });
+
+  it('replaces only a reviewed conflict and restores it when verification fails', async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    const executable = join(bin, 'codex');
+    writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const previous: HostEntry = {
+      command: '/opt/acme/private-memory',
+      arguments: ['--workspace', 'reviewed'],
+      scope: 'global',
+    };
+    let configured: HostEntry | null = previous;
+    const run = vi.fn(async (invocation: { arguments: string[] }) => {
+      if (invocation.arguments[0] === '--version') {
+        return { exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' };
+      }
+      if (invocation.arguments.at(-1) === '--help') {
+        return {
+          exitCode: 0,
+          stdout:
+            invocation.arguments.includes('get') || invocation.arguments.includes('list')
+              ? '--json'
+              : 'Usage',
+          stderr: '',
+        };
+      }
+      if (invocation.arguments.includes('get')) {
+        return configured === null
+          ? { exitCode: 1, stdout: '', stderr: "No MCP server named 'pimpampum' found." }
+          : {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                name: 'pimpampum',
+                transport: {
+                  type: 'stdio',
+                  command: configured.command,
+                  args: configured.arguments,
+                },
+              }),
+              stderr: '',
+            };
+      }
+      if (invocation.arguments.includes('remove')) configured = null;
+      if (invocation.arguments.includes('add')) {
+        const separator = invocation.arguments.indexOf('--');
+        configured = {
+          command: invocation.arguments[separator + 1]!,
+          arguments: invocation.arguments.slice(separator + 2),
+          scope: 'global',
+        };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+    const connector = createCodexConnector({
+      launcherPath: launcher,
+      boundedLocations: [bin],
+      path: bin,
+      requiredTools: ['project_list'],
+      run,
+      verify: async () => ({
+        available: false,
+        serverName: 'pimpampum',
+        tools: [],
+        diagnostics: ['route unavailable'],
+      }),
+      receipt: {
+        read: async () => null,
+        write: async () => undefined,
+        remove: async () => undefined,
+      },
+    });
+
+    await expect(connector.plan()).resolves.toMatchObject({
+      state: 'conflict',
+      mutations: [],
+      requiresConflictDecision: true,
+    });
+    let replacement = await connector.plan({ conflictDecision: 'replace' });
+    expect(replacement).toMatchObject({
+      state: 'conflict',
+      conflictDecision: 'replace',
+      requiresConflictDecision: false,
+      mutations: [{ arguments: ['mcp', 'remove', 'pimpampum'] }, expect.any(Object)],
+    });
+    configured = { ...previous, command: '/opt/acme/changed-after-review' };
+    await expect(connector.connect(replacement)).rejects.toThrow(/changed/iu);
+    expect(
+      run.mock.calls.filter(
+        ([invocation]) =>
+          invocation.arguments[0] === 'mcp' &&
+          invocation.arguments[1] === 'remove' &&
+          invocation.arguments.at(-1) !== '--help',
+      ),
+    ).toHaveLength(0);
+    configured = previous;
+    replacement = await connector.plan({ conflictDecision: 'replace' });
+    await expect(connector.connect(replacement)).rejects.toThrow(/verification/iu);
+    expect(configured).toEqual(previous);
+  });
 });

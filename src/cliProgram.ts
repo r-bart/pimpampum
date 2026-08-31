@@ -94,20 +94,17 @@ export function createCliConnectionsRuntime(input: {
       throw new AppError('bad_request', 'Connector mutation requires explicit confirmation', 400);
     }
     const connector = resolveConnector(id);
-    const plan = await connector.plan();
+    const plan = await connector.plan(decision === undefined ? {} : { conflictDecision: decision });
     if (plan.state === 'conflict') {
-      if (decision !== 'replace') {
+      if (decision !== 'replace' || plan.mutations.length === 0) {
         throw new AppError(
           'conflict',
-          'The existing connector entry requires an explicit replacement decision',
+          decision === 'replace'
+            ? 'The reviewed connector entry cannot be restored safely through the official host CLI'
+            : 'The existing connector entry requires an explicit replacement decision',
           409,
         );
       }
-      throw new AppError(
-        'conflict',
-        'Replacement was explicitly requested, but this connector cannot safely replace the current unowned entry',
-        409,
-      );
     }
     return action === 'connect' ? connector.connect(plan) : connector.repair(plan);
   };

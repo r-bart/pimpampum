@@ -15,6 +15,7 @@ export interface SetupChange {
 export interface SetupConflict {
   connectorId: SetupConnectorId;
   comparison: string;
+  entryFingerprint?: string;
 }
 
 export interface SetupPlan {
@@ -67,6 +68,7 @@ export interface SetupJournal {
   phase: string;
   selectedConnectors: SetupConnectorId[];
   conflictDecisions: Partial<Record<SetupConnectorId, 'keep' | 'replace' | 'cancel'>>;
+  reviewedConflictFingerprints?: Partial<Record<SetupConnectorId, string>>;
   completedPhases: string[];
   diagnostics: string[];
   service: SetupServiceResult;

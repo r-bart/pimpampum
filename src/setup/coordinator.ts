@@ -32,8 +32,16 @@ export interface SetupCoordinatorDependencies {
   connectors: Record<
     SetupConnectorId,
     {
-      inspect(): Promise<{ state: string; comparison?: string }>;
-      connect(): Promise<void>;
+      inspect(): Promise<{
+        state: string;
+        comparison?: string;
+        revision?: string;
+        replacementSupported?: boolean;
+      }>;
+      connect(input?: {
+        conflictDecision?: ConflictDecision;
+        reviewedEntryFingerprint?: string;
+      }): Promise<void>;
       verify(): Promise<{ available: boolean; newSessionRequired: boolean }>;
       restore(): Promise<void>;
     }
@@ -148,6 +156,13 @@ function initialJournal(
     phase: 'runtime.install',
     selectedConnectors: [...plan.selectedConnectors],
     conflictDecisions: { ...decisions },
+    reviewedConflictFingerprints: Object.fromEntries(
+      plan.conflicts.flatMap((conflict) =>
+        conflict.entryFingerprint === undefined
+          ? []
+          : [[conflict.connectorId, conflict.entryFingerprint]],
+      ),
+    ),
     completedPhases: [],
     diagnostics: [],
     service: { installed: false, running: false, verified: false },
@@ -225,12 +240,41 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
   async function preflightConflicts(
     selected: SetupConnectorId[],
     decisions: Partial<Record<SetupConnectorId, ConflictDecision>>,
+    reviewed: Partial<Record<SetupConnectorId, string>> = {},
   ): Promise<SetupConflict[]> {
     const conflicts: SetupConflict[] = [];
     for (const id of selected) {
       const inspection = await dependencies.connectors[id].inspect();
-      if (inspection.state === 'conflict' && decisions[id] !== 'replace') {
-        conflicts.push({ connectorId: id, comparison: safeComparison(inspection.comparison) });
+      if (decisions[id] === 'replace' && inspection.replacementSupported === false) {
+        conflicts.push({
+          connectorId: id,
+          comparison: 'The reviewed entry cannot be restored through the official host CLI.',
+          ...(inspection.revision === undefined ? {} : { entryFingerprint: inspection.revision }),
+        });
+        continue;
+      }
+      if (
+        decisions[id] === 'replace' &&
+        reviewed[id] !== undefined &&
+        (inspection.state !== 'conflict' || inspection.revision !== reviewed[id])
+      ) {
+        conflicts.push({
+          connectorId: id,
+          comparison: 'The connector entry changed after the replacement was reviewed.',
+          entryFingerprint: reviewed[id],
+        });
+        continue;
+      }
+      if (
+        inspection.state === 'conflict' &&
+        decisions[id] !== 'replace' &&
+        decisions[id] !== 'keep'
+      ) {
+        conflicts.push({
+          connectorId: id,
+          comparison: safeComparison(inspection.comparison),
+          ...(inspection.revision === undefined ? {} : { entryFingerprint: inspection.revision }),
+        });
       }
     }
     return conflicts;
@@ -307,13 +351,33 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
 
   async function runConnector(state: SetupJournal, id: SetupConnectorId): Promise<void> {
     const existing = connectorResult(state, id);
+    const conflictDecision = state.conflictDecisions[id];
+    if (conflictDecision === 'keep') {
+      storeConnectorResult(state, {
+        id,
+        configured: false,
+        available: false,
+        newSessionRequired: false,
+        state: 'keptExisting',
+      });
+      return;
+    }
     let configured = existing?.configured ?? false;
     const connectPhase = `connector:${id}.connect`;
     const verifyPhase = `connector:${id}.verify`;
     try {
       if (!configured && !state.completedPhases.includes(connectPhase)) {
         await beginPhase(state, connectPhase);
-        await dependencies.connectors[id].connect();
+        await dependencies.connectors[id].connect(
+          conflictDecision === undefined
+            ? {}
+            : {
+                conflictDecision,
+                ...(state.reviewedConflictFingerprints?.[id] === undefined
+                  ? {}
+                  : { reviewedEntryFingerprint: state.reviewedConflictFingerprints[id] }),
+              },
+        );
         configured = true;
         storeConnectorResult(state, {
           id,
@@ -353,7 +417,9 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
   async function execute(state: SetupJournal): Promise<SetupResult> {
     await runBasePhases(state);
     for (const id of state.selectedConnectors) await runConnector(state, id);
-    state.status = state.connectors.some((connector) => !connector.available)
+    state.status = state.connectors.some(
+      (connector) => !connector.available && connector.state !== 'keptExisting',
+    )
       ? 'partial'
       : 'complete';
     state.phase = state.status;
@@ -417,6 +483,7 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
             const conflicts = await preflightConflicts(
               existing.selectedConnectors,
               existing.conflictDecisions,
+              existing.reviewedConflictFingerprints,
             );
             if (conflicts.length > 0) {
               existing.status = 'conflict';
@@ -432,7 +499,17 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
           }
           return resultFromJournal(existing);
         }
-        const conflicts = await preflightConflicts(plan.selectedConnectors, decisions);
+        const conflicts = await preflightConflicts(
+          plan.selectedConnectors,
+          decisions,
+          Object.fromEntries(
+            plan.conflicts.flatMap((conflict) =>
+              conflict.entryFingerprint === undefined
+                ? []
+                : [[conflict.connectorId, conflict.entryFingerprint]],
+            ),
+          ),
+        );
         if (conflicts.length > 0) {
           return {
             status: 'conflict',
@@ -466,6 +543,7 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
         const conflicts = await preflightConflicts(
           state.selectedConnectors,
           state.conflictDecisions,
+          state.reviewedConflictFingerprints,
         );
         if (conflicts.length > 0) {
           state.status = 'conflict';
@@ -493,7 +571,9 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
         );
         state.status = 'running';
         await runConnector(state, id);
-        state.status = state.connectors.some((connector) => !connector.available)
+        state.status = state.connectors.some(
+          (connector) => !connector.available && connector.state !== 'keptExisting',
+        )
           ? 'partial'
           : 'complete';
         state.phase = state.status;
