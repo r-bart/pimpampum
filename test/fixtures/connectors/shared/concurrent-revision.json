@@ -1,0 +1,9 @@
+{
+  "fixtureVersion": 1,
+  "synthetic": true,
+  "fault": "concurrentRevision",
+  "path": "<synthetic-config>/connector.json",
+  "plannedRevision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "currentRevision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "expectedOutcome": "abortWithoutMutation"
+}

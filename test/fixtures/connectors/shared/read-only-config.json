@@ -1,0 +1,9 @@
+{
+  "fixtureVersion": 1,
+  "synthetic": true,
+  "fault": "readOnlyConfig",
+  "exitCode": 1,
+  "stdout": "",
+  "stderr": "Permission denied while persisting <synthetic-config>/connector configuration",
+  "mutationCommitted": false
+}

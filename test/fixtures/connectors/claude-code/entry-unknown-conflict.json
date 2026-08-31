@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "pimpampum": {
+      "type": "stdio",
+      "command": "/opt/acme/private-memory-server",
+      "args": ["--workspace", "synthetic-project"],
+      "env": {}
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "fixtureVersion": 1,
+  "synthetic": true,
+  "observedCliVersion": "2.1.251 (Claude Code)",
+  "probes": {
+    "listJson": {
+      "arguments": ["mcp", "list", "--json"],
+      "supported": false,
+      "stderrFixture": "unsupported-json-flag.txt"
+    },
+    "getJson": {
+      "arguments": ["mcp", "get", "pimpampum", "--json"],
+      "supported": false
+    },
+    "addStdioAtUserScope": {
+      "arguments": [
+        "mcp",
+        "add",
+        "--scope",
+        "user",
+        "pimpampum",
+        "--",
+        "/Users/example/.local/share/pimpampum/bin/pimpampum-mcp"
+      ],
+      "supported": true
+    },
+    "addJsonAtUserScope": {
+      "argumentsPrefix": ["mcp", "add-json", "--scope", "user", "pimpampum"],
+      "supported": true
+    },
+    "removeAtUserScope": {
+      "arguments": ["mcp", "remove", "--scope", "user", "pimpampum"],
+      "supported": true
+    }
+  },
+  "scope": {
+    "configured": "user",
+    "confirmation": "to user config",
+    "availability": "all projects",
+    "boundedFallback": "Read only mcpServers.pimpampum from synthetic or bounded user JSON when CLI output is not safely parseable."
+  }
+}

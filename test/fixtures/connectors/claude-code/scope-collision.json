@@ -1,0 +1,24 @@
+{
+  "fixtureVersion": 1,
+  "synthetic": true,
+  "user": {
+    "type": "stdio",
+    "command": "/synthetic/user/pimpampum-mcp",
+    "args": [],
+    "env": {}
+  },
+  "project": {
+    "type": "stdio",
+    "command": "/synthetic/project/pimpampum-mcp",
+    "args": [],
+    "env": {}
+  },
+  "local": {
+    "type": "stdio",
+    "command": "/synthetic/local/pimpampum-mcp",
+    "args": [],
+    "env": {}
+  },
+  "observedActiveWhenAllPresent": "local",
+  "expectedClassification": "conflict"
+}
