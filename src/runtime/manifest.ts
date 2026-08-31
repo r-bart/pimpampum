@@ -192,8 +192,11 @@ function assertCompleteRuntime(
   if (byPath.get(entrypoints.node)?.mode !== 0o755) {
     fail('Node entrypoint mode must be executable (0755)');
   }
-  if (!byPath.has(REQUIRED_NATIVE_ADDON)) {
-    fail(`required native addon ${JSON.stringify(REQUIRED_NATIVE_ADDON)} is not listed in files`);
+  const nativeAddons = files.filter((file) => file.path.endsWith('.node'));
+  if (nativeAddons.length !== 1 || nativeAddons[0]!.path !== REQUIRED_NATIVE_ADDON) {
+    fail(
+      `files must list only the installed native addon ${JSON.stringify(REQUIRED_NATIVE_ADDON)}`,
+    );
   }
 }
 
