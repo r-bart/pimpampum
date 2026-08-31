@@ -42,7 +42,7 @@ describe('bounded service health verification', () => {
         dataDirectory,
         nodePath: process.execPath,
         cliPath: join(process.cwd(), 'dist/cli.js'),
-        version: '1.2.4',
+        version: '1.2.5',
         runCommand: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
         adapters: { linux: adapter },
       },
@@ -53,7 +53,7 @@ describe('bounded service health verification', () => {
     expect(healthVerifier).toHaveBeenCalledOnce();
     expect(healthVerifier).toHaveBeenCalledWith({
       baseUrl: 'http://127.0.0.1:7337',
-      version: '1.2.4',
+      version: '1.2.5',
     });
   });
 
@@ -136,6 +136,9 @@ describe('bounded service health verification', () => {
   it('rejects unsafe retry bounds before making a request', async () => {
     await expect(
       verifyServiceHealth({ baseUrl: 'http://127.0.0.1', version: '1.1.3', attempts: 0 }),
+    ).rejects.toThrow(/attempts/iu);
+    await expect(
+      verifyServiceHealth({ baseUrl: 'http://127.0.0.1', version: '1.1.3', attempts: 301 }),
     ).rejects.toThrow(/attempts/iu);
     await expect(
       verifyServiceHealth({
