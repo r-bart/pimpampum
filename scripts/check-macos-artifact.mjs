@@ -13,8 +13,8 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const packageVersion = JSON.parse(
   readFileSync(join(repositoryRoot, 'package.json'), 'utf8'),
 ).version;
-const appRoot = resolve(process.argv[2] ?? 'platforms/macos/dist/PimpampumMenuBar.app');
-const canonicalAppRoot = join(repositoryRoot, 'platforms/macos/dist/PimpampumMenuBar.app');
+const appRoot = resolve(process.argv[2] ?? 'platforms/macos/dist/Pimpampum.app');
+const canonicalAppRoot = join(repositoryRoot, 'platforms/macos/dist/Pimpampum.app');
 const approve = process.argv.includes('--approve');
 const requireSignature = process.argv.includes('--require-signature');
 const requireNotarization = process.argv.includes('--require-notarization');
@@ -372,9 +372,9 @@ function validateCanonicalPlist(plistBytes) {
     parsed.CFBundleExecutable === 'PimpampumMenuBar',
     'The packaged app has an unexpected executable name.',
   );
-  invariant(parsed.CFBundleName === 'pim • pam • pum', 'The packaged app has an unexpected name.');
+  invariant(parsed.CFBundleName === 'Pimpampum', 'The packaged app has an unexpected name.');
   invariant(
-    parsed.CFBundleDisplayName === 'pim • pam • pum',
+    parsed.CFBundleDisplayName === 'Pimpampum',
     'The packaged app has an unexpected display name.',
   );
   invariant(parsed.CFBundleIconFile === 'Pimpampum', 'The packaged app icon file is missing.');
@@ -463,8 +463,8 @@ const metadata = {
   lsUIElement: true,
   bundleIdentifier: 'dev.pimpampum.menubar',
   executable: 'PimpampumMenuBar',
-  appBundle: 'PimpampumMenuBar.app',
-  appName: 'pim • pam • pum',
+  appBundle: 'Pimpampum.app',
+  appName: 'Pimpampum',
   appVersion: packageVersion,
 };
 

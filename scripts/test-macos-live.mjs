@@ -32,7 +32,7 @@ const liveHome = join(temporaryRoot, 'home');
 mkdirSync(liveHome, { recursive: true });
 let cli = join(repositoryRoot, 'dist/cli.js');
 let controlNode = process.execPath;
-const app = join(liveHome, 'Applications/PimpampumMenuBar.app');
+const app = join(liveHome, 'Applications/Pimpampum.app');
 const launchAgent = join(liveHome, 'Library/LaunchAgents/dev.pimpampum.daemon.plist');
 const launchDomain = `gui/${process.getuid()}/dev.pimpampum.daemon`;
 const dataDirectory = join(temporaryRoot, 'data');
@@ -47,6 +47,7 @@ let installed = false;
 let smokeCompleted = false;
 const scenarios = {
   cleanNoNode: false,
+  guidedSetupPopover: false,
   legacyNpmMigration: false,
   noAgent: false,
   oneAgent: false,
@@ -271,7 +272,7 @@ async function waitForAppProcess(expected, attempts = 50) {
 
 function anyPimpampumAppProcessIsRunning() {
   return (
-    spawnSync('/usr/bin/pgrep', ['-f', '/PimpampumMenuBar.app/Contents/MacOS/PimpampumMenuBar'], {
+    spawnSync('/usr/bin/pgrep', ['-f', '/Pimpampum.app/Contents/MacOS/PimpampumMenuBar'], {
       encoding: 'utf8',
     }).status === 0
   );
@@ -392,7 +393,7 @@ try {
     },
   });
   const packagedRoot = join(runtimeRoot, 'node_modules/pimpampum');
-  const packagedApp = join(packagedRoot, 'platforms/macos/dist/PimpampumMenuBar.app');
+  const packagedApp = join(packagedRoot, 'platforms/macos/dist/Pimpampum.app');
   const embeddedPayload = join(packagedApp, 'Contents/Resources/PimpampumRuntime/payload');
   const npmCli = join(packagedRoot, 'dist/cli.js');
   cli = join(embeddedPayload, 'dist/cli.js');
@@ -421,6 +422,22 @@ try {
   }
   scenarios.cleanNoNode = true;
   scenarios.noAgent = true;
+
+  const firstRunDataDirectory = join(temporaryRoot, 'first-run-ui');
+  mkdirSync(firstRunDataDirectory, { recursive: true });
+  const setupRequiredUI = uiSnapshot('setup-required', {
+    dataDirectory: firstRunDataDirectory,
+  });
+  if (
+    setupRequiredUI.visualState !== 'Setup required' ||
+    setupRequiredUI.connectionState !== 'setup-required' ||
+    !setupRequiredUI.accessibilityLabels.includes('Continue to detected agents')
+  ) {
+    throw new Error(
+      `Native first-run UI did not render the guided setup: ${JSON.stringify(setupRequiredUI)}`,
+    );
+  }
+  scenarios.guidedSetupPopover = true;
 
   const preservedPaths = [join(dataDirectory, 'token'), join(dataDirectory, 'pimpampum.sqlite')];
   const cleanRemoval = runCli('uninstall');
@@ -859,7 +876,7 @@ try {
     throw new Error('Native UI did not render rejected local credentials safely.');
   }
 
-  const releaseApp = join(repositoryRoot, 'platforms/macos/dist/PimpampumMenuBar.app');
+  const releaseApp = join(repositoryRoot, 'platforms/macos/dist/Pimpampum.app');
   const artifactMetadataPath = join(
     repositoryRoot,
     'platforms/macos/dist/PimpampumMenuBar.artifact.json',
@@ -931,6 +948,7 @@ try {
       offlineWithoutCache: true,
       daemonOffline: true,
       nativePopoverRendering: true,
+      guidedSetupPopover: scenarios.guidedSetupPopover,
       fixedMarkResource: true,
       externalSemanticBadge: true,
       cappedVisibleCount: true,
@@ -954,6 +972,7 @@ try {
       uninstallCleanup: true,
     },
     renderings: {
+      setupRequired: setupRequiredUI.renderedPngSha256,
       empty: emptyUI.renderedPngSha256,
       active: activeUI.renderedPngSha256,
       cappedCount: cappedUI.renderedPngSha256,

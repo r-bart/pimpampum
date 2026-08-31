@@ -26,8 +26,8 @@ import type {
   ServiceIntegrationStatus,
 } from './types.js';
 
-const APP_NAME = 'PimpampumMenuBar.app';
-const LEGACY_APP_NAMES = ['pim • pam • pum.app', 'Pimpampum.app'] as const;
+const APP_NAME = 'Pimpampum.app';
+const LEGACY_APP_NAMES = ['pim • pam • pum.app', 'PimpampumMenuBar.app'] as const;
 const APP_EXECUTABLE = 'Contents/MacOS/PimpampumMenuBar';
 const INSTALLATION_CONFIGURATION = 'Contents/Resources/installation.json';
 const EMBEDDED_RUNTIME = 'Contents/Resources/PimpampumRuntime';

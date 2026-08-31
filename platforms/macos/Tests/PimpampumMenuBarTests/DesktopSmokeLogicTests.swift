@@ -221,6 +221,7 @@ struct DesktopSmokeLogicTests {
       .renderedControlActivationFailed("button"),
       .popoverDismissalFailed,
       .markResourceMissing,
+      .setupOnboardingCollapsed(0),
       .renderFailed,
     ]
     #expect(errors.allSatisfy { !($0.errorDescription ?? "").isEmpty })

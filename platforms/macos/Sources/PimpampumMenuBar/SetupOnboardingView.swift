@@ -66,6 +66,7 @@ struct SetupOnboardingView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
     }
     .frame(maxHeight: 480)
+    .fixedSize(horizontal: false, vertical: true)
     .onAppear {
       store.start()
       showDurableProgressIfNeeded()

@@ -50,9 +50,9 @@ you to install Node.js, open Terminal, copy a token, or edit an MCP configuratio
 
 ### macOS — download the app
 
-1. Download `PimpampumMenuBar-<version>-macos-arm64.zip` from
+1. Download `Pimpampum-<version>-macos-arm64.zip` from
    [GitHub Releases](https://github.com/r-bart/pimpampum/releases), expand it, and open
-   **PimpampumMenuBar**. Published builds are signed, notarized, and support Apple Silicon Macs
+   **Pimpampum**. Published builds are signed, notarized, and support Apple Silicon Macs
    running macOS 13 or newer.
 2. Choose **Continue**. Pimpampum detects Codex and Claude Code locally and selects the supported
    agents it found.

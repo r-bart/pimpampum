@@ -220,13 +220,13 @@ struct SetupClientStoreTests {
     let process = RecordingProcessRunner()
     let runtime = EmbeddedControlRuntime(
       rootURL: URL(
-        fileURLWithPath: "/Applications/PimpampumMenuBar.app/Contents/Resources/PimpampumRuntime"),
+        fileURLWithPath: "/Applications/Pimpampum.app/Contents/Resources/PimpampumRuntime"),
       executableURL: URL(fileURLWithPath: "/private/runtime/bin/node"),
       cliURL: URL(fileURLWithPath: "/private/runtime/dist/cli.js")
     )
     let bootstrap = EmbeddedSetupBootstrap(
       runtime: runtime,
-      sourceApplicationURL: URL(fileURLWithPath: "/Downloads/PimpampumMenuBar.app"),
+      sourceApplicationURL: URL(fileURLWithPath: "/Downloads/Pimpampum.app"),
       homeDirectory: URL(fileURLWithPath: "/Users/example")
     )
     let plan = try await SetupCommandRunner(
@@ -267,7 +267,7 @@ struct SetupClientStoreTests {
     let runner = SetupCommandRunner(
       bootstrap: EmbeddedSetupBootstrap(
         runtime: runtime,
-        sourceApplicationURL: URL(fileURLWithPath: "/Downloads/PimpampumMenuBar.app"),
+        sourceApplicationURL: URL(fileURLWithPath: "/Downloads/Pimpampum.app"),
         homeDirectory: URL(fileURLWithPath: "/Users/example")
       ),
       processRunner: process

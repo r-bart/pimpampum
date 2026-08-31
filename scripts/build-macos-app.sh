@@ -4,7 +4,7 @@ set -eu
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 package_root="$repository_root/platforms/macos"
 output_root="$package_root/dist"
-app_root="$output_root/PimpampumMenuBar.app"
+app_root="$output_root/Pimpampum.app"
 compact_mark="$package_root/Resources/PimpampumCompact.pdf"
 app_icon="$repository_root/branding/app-icon/Pimpampum.icon"
 fallback_asset_catalog="$package_root/Resources/Assets.car"
@@ -46,7 +46,7 @@ node "$repository_root/scripts/check-runtime-bundle.mjs" \
   --target darwin-arm64 \
   --lockfile "$repository_root/package-lock.json"
 
-rm -rf "$output_root/pim • pam • pum.app" "$output_root/Pimpampum.app" "$app_root"
+rm -rf "$output_root/pim • pam • pum.app" "$output_root/PimpampumMenuBar.app" "$app_root"
 mkdir -p "$app_root/Contents/MacOS" "$app_root/Contents/Resources"
 cp "$binary_root/PimpampumMenuBar" "$app_root/Contents/MacOS/PimpampumMenuBar"
 cp "$package_root/Resources/Info.plist" "$app_root/Contents/Info.plist"

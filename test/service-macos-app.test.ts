@@ -31,7 +31,7 @@ function fixture(label: string): {
   roots.push(root);
   const home = join(root, 'Home With Spaces ü');
   const data = join(root, 'Data ñ');
-  const sourceApp = join(root, 'build', 'PimpampumMenuBar.app');
+  const sourceApp = join(root, 'build', 'Pimpampum.app');
   mkdirSync(join(sourceApp, 'Contents', 'MacOS'), { recursive: true });
   mkdirSync(join(sourceApp, 'Contents', 'Resources'), { recursive: true });
   mkdirSync(home, { recursive: true });
@@ -144,7 +144,7 @@ describe('macOS menu app service integration', () => {
       runCommand,
       adapters: { darwin: adapter },
     });
-    const installedApp = join(root.home, 'Applications', 'PimpampumMenuBar.app');
+    const installedApp = join(root.home, 'Applications', 'Pimpampum.app');
 
     await expect(manager.install()).resolves.toMatchObject({
       installed: true,
@@ -220,9 +220,9 @@ describe('macOS menu app service integration', () => {
       adapters: { darwin: testDesktopAdapter(root) },
     });
     await manager.install();
-    const stableRoot = join(root.home, 'Applications', 'PimpampumMenuBar.app');
-    const legacyRoot = join(root.home, 'Applications', 'pim • pam • pum.app');
-    const unrelatedLegacyPath = join(root.home, 'Applications', 'Pimpampum.app');
+    const stableRoot = join(root.home, 'Applications', 'Pimpampum.app');
+    const legacyRoot = join(root.home, 'Applications', 'PimpampumMenuBar.app');
+    const unrelatedLegacyPath = join(root.home, 'Applications', 'pim • pam • pum.app');
     writeFileSync(unrelatedLegacyPath, 'unrelated user file');
     renameSync(stableRoot, legacyRoot);
     const receiptPath = join(root.data, 'install-receipt.json');
@@ -275,7 +275,7 @@ describe('macOS menu app service integration', () => {
     });
 
     await expect(manager.install()).rejects.toThrow(/timed out/i);
-    expect(existsSync(join(root.home, 'Applications', 'PimpampumMenuBar.app'))).toBe(false);
+    expect(existsSync(join(root.home, 'Applications', 'Pimpampum.app'))).toBe(false);
     expect(existsSync(join(root.data, 'install-receipt.json'))).toBe(false);
     for (const name of [
       'login-registration-request.json',
@@ -376,7 +376,7 @@ describe('macOS menu app service integration', () => {
     const occupiedDestination = join(
       occupied.home,
       'Applications',
-      'PimpampumMenuBar.app',
+      'Pimpampum.app',
       'Contents',
       'Resources',
       'PimpampumRuntime',
@@ -397,7 +397,7 @@ describe('macOS menu app service integration', () => {
     const rollbackDestination = join(
       rollback.home,
       'Applications',
-      'PimpampumMenuBar.app',
+      'Pimpampum.app',
       'Contents',
       'Resources',
       'PimpampumRuntime',
@@ -422,7 +422,7 @@ describe('macOS menu app service integration', () => {
     const destination = join(
       root.home,
       'Applications',
-      'PimpampumMenuBar.app',
+      'Pimpampum.app',
       'Contents',
       'Resources',
       'PimpampumRuntime',
@@ -446,7 +446,7 @@ describe('macOS menu app service integration', () => {
       const destination = join(
         root.home,
         'Applications',
-        'PimpampumMenuBar.app',
+        'Pimpampum.app',
         'Contents',
         'Resources',
         'PimpampumRuntime',
@@ -493,7 +493,7 @@ describe('macOS menu app service integration', () => {
     const destination = join(
       root.home,
       'Applications',
-      'PimpampumMenuBar.app',
+      'Pimpampum.app',
       'Contents',
       'Resources',
       'PimpampumRuntime',
@@ -510,7 +510,7 @@ describe('macOS menu app service integration', () => {
   it('aggregates login unregistration failure after post-registration cleanup fails', async () => {
     const root = fixture('post-registration-cleanup-failure');
     const applications = join(root.home, 'Applications');
-    const legacyRoot = join(applications, 'Pimpampum.app');
+    const legacyRoot = join(applications, 'PimpampumMenuBar.app');
     mkdirSync(legacyRoot, { recursive: true });
     chmodSync(applications, 0o500);
     const runCommand = vi.fn<RunCommand>(async (executable, arguments_) => {
@@ -1133,7 +1133,7 @@ describe('macOS menu app service integration', () => {
       expect(pkill?.[1]).toEqual([
         '-TERM',
         '-f',
-        join(root.home, 'Applications', 'PimpampumMenuBar.app', 'Contents/MacOS/PimpampumMenuBar'),
+        join(root.home, 'Applications', 'Pimpampum.app', 'Contents/MacOS/PimpampumMenuBar'),
       ]);
     }
   });
@@ -1209,7 +1209,7 @@ describe('macOS menu app service integration', () => {
 
   it('preserves unrelated app files and propagates unexpected directory cleanup errors', async () => {
     const root = fixture('cleanup');
-    const app = join(root.home, 'Applications', 'PimpampumMenuBar.app');
+    const app = join(root.home, 'Applications', 'Pimpampum.app');
     const resources = join(app, 'Contents', 'Resources');
     mkdirSync(resources, { recursive: true });
     writeFileSync(join(resources, 'unrelated'), 'keep');

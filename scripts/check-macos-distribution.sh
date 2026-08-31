@@ -2,7 +2,7 @@
 set -eu
 
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-app_root=${1:-"$repository_root/platforms/macos/dist/PimpampumMenuBar.app"}
+app_root=${1:-"$repository_root/platforms/macos/dist/Pimpampum.app"}
 
 if [ "$(uname -s)" != "Darwin" ]; then
   printf 'macOS distribution verification requires macOS.\n' >&2

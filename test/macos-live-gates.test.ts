@@ -52,7 +52,7 @@ function treeSha256(root: string): string {
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'pimpampum-macos-evidence-'));
   roots.push(root);
-  const app = join(root, 'PimpampumMenuBar.app');
+  const app = join(root, 'Pimpampum.app');
   const metadataPath = join(root, 'PimpampumMenuBar.artifact.json');
   const evidencePath = join(root, 'macos-live.json');
   const paths = {
@@ -113,6 +113,7 @@ function fixture() {
     scenarios: Object.fromEntries(
       [
         'cleanNoNode',
+        'guidedSetupPopover',
         'legacyNpmMigration',
         'noAgent',
         'oneAgent',
@@ -143,10 +144,11 @@ function fixture() {
         'noDockIcon',
         'repeatInstallRecovery',
         'uninstallCleanup',
+        'guidedSetupPopover',
       ].map((name) => [name, true]),
     ),
     renderings: Object.fromEntries(
-      ['empty', 'active', 'complete', 'stale', 'recovered'].map((name, index) => [
+      ['setupRequired', 'empty', 'active', 'complete', 'stale', 'recovered'].map((name, index) => [
         name,
         String(index + 1).repeat(64),
       ]),

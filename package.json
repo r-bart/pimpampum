@@ -45,7 +45,7 @@
     "check:quattro-evidence": "node scripts/check-quattro-evidence.mjs",
     "benchmark:overview": "tsx scripts/benchmark-overview.ts",
     "build:macos": "./scripts/build-macos-app.sh",
-    "approve:macos": "npm run build:macos && node scripts/check-macos-artifact.mjs platforms/macos/dist/PimpampumMenuBar.app --approve",
+    "approve:macos": "npm run build:macos && node scripts/check-macos-artifact.mjs platforms/macos/dist/Pimpampum.app --approve",
     "test:macos": "./scripts/check-swift-coverage.sh",
     "validate:omarchy": "node scripts/validate-omarchy-plugin.mjs && node scripts/check-omarchy-delivery.mjs",
     "test:omarchy": "npm run validate:omarchy && vitest run test/omarchy-plugin.test.ts test/service-omarchy.test.ts",

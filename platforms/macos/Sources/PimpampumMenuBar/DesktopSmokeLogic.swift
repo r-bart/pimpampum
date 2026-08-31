@@ -197,6 +197,7 @@ enum DesktopSmokeError: LocalizedError, Equatable {
   case renderedControlActivationFailed(String)
   case popoverDismissalFailed
   case markResourceMissing
+  case setupOnboardingCollapsed(Int)
   case renderFailed
 
   var errorDescription: String? {
@@ -209,6 +210,8 @@ enum DesktopSmokeError: LocalizedError, Equatable {
       "The rendered control could not be activated: \(label)"
     case .popoverDismissalFailed: "The native popover remained visible after opening Settings."
     case .markResourceMissing: "PimpampumCompact.pdf is missing or invalid."
+    case .setupOnboardingCollapsed(let height):
+      "The setup onboarding collapsed to \(height) points in the menu-bar size proposal."
     case .renderFailed: "The native popover could not be rendered."
     }
   }
