@@ -1,14 +1,14 @@
 {
   "schemaVersion": 3,
-  "sourceInputSha256": "e7a365e54f9e303992d4ad9adc29a226e12e02ef0cb7bee6372cb894564ff334",
-  "binarySha256": "8b585274ecc7e2b0063850563e53071e9da6bd7e6a532494e2ea8caa0cb31cde",
-  "plistSha256": "0a7e38d02c105c0ddc8001afd2906074c357181d7b544e0d1705c405705a1992",
+  "sourceInputSha256": "8170c6f91ef16e0f1cad7713a3f3baf50a78ebc2294138e1e68039fb9e97053a",
+  "binarySha256": "3ac30792070dd2e247732760c74696e9129dd68cda62907f9c54a1b60f792271",
+  "plistSha256": "9e0774b71985cb48aa96737a32ced34442bdc884a29b23a55a09fab32522d25d",
   "compactMarkSha256": "5d9f558de031b9a3c4ed1052e093fb235f9a077d077c9a027286975d4a84f463",
   "appIconSha256": "8235c85139ea19e0c7487ff6321073ac1d35e60ee98a9d2e34afc9ab88dbbf4b",
-  "assetCatalogSha256": "47d86ad503725fa829b2cf0af08818e4828e1507e17b01ca313cc114a31ce7b0",
-  "runtimeManifestSha256": "555a5e8a1ca7824ca81d13e90a493a451ba50ae7c12a8a15cc3e9fdd9d1fdf61",
-  "runtimeInventorySha256": "64b04d0e64059c1912fe66d8048bfe87aa53f177a7d953dbc8f6c93ae99d6335",
-  "runtimeSbomSha256": "42d5dfc1e499e1a667f96f57cce07b63dc34afdd62b2c32483f74b4b35a05691",
+  "assetCatalogSha256": "3486a4eb5019856a01e53b2d520658fc2cc0a046667b0d41683e9a5c36e8639a",
+  "runtimeManifestSha256": "a7c3ed5324de3fca049a0bf900dd22e2e439075d736fb24c82f660141e490ad2",
+  "runtimeInventorySha256": "67a72c89bd69ccbba834579c18740bd7c996d262bea9dd1464da2483d0eb1457",
+  "runtimeSbomSha256": "4eee8032523630ff90bea5d6a0edf3877f86b5631c78f0a1052b9831a0920f49",
   "runtimeFileCount": 2490,
   "runtimeTarget": "darwin-arm64",
   "binaryFormat": "Mach-O 64-bit",
@@ -20,6 +20,6 @@
   "executable": "PimpampumMenuBar",
   "appBundle": "PimpampumMenuBar.app",
   "appName": "pim • pam • pum",
-  "appVersion": "1.2.2",
-  "sourceGitCommit": "da718a462f3c7f591381c2a0c312e653269e6291"
+  "appVersion": "1.2.3",
+  "sourceGitCommit": "1bb3f5e32509f12b02fa6f818eb5d16fc1d2eea1"
 }
