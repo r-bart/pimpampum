@@ -250,8 +250,13 @@ validate_runtime_ownership "$installed_version" "$installed_target"
 disconnected=''
 manual=''
 for connector in codex claude-code; do
-  if "$connections_helper" disconnect "$connector" >/dev/null 2>&1; then
-    disconnected="$disconnected $connector"
+  if disconnect_result=$("$connections_helper" disconnect "$connector" 2>/dev/null); then
+    if printf '%s\n' "$disconnect_result" |
+      /usr/bin/grep -Eq '"disconnected"[[:space:]]*:[[:space:]]*true'; then
+      disconnected="$disconnected $connector"
+    else
+      manual="$manual $connector"
+    fi
   else
     manual="$manual $connector"
   fi

@@ -102,16 +102,50 @@ describe('hostile setup coordinator boundaries', () => {
     vi.mocked(input.runtime.rollback).mockRejectedValueOnce(new Error('runtime rollback failed'));
     const setup = createSetupCoordinator(input);
     const plan = await setup.plan({ selectedConnectors: ['codex'] });
-    await expect(
-      setup.apply({
+    const error = await setup
+      .apply({
         operationId: plan.operationId,
         expectedRevision: plan.revision,
         confirmed: true,
-      }),
-    ).rejects.toThrow('occupied service port');
+      })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(String(error)).toMatch(/occupied service port.*rollback was incomplete/iu);
     expect(input.service.rollback).toHaveBeenCalledOnce();
     expect(input.runtime.rollback).toHaveBeenCalledOnce();
     expect(input.connectors.codex.connect).not.toHaveBeenCalled();
+    const journal = createSetupStateStore(input.dataDirectory).read();
+    expect(journal).toMatchObject({
+      status: 'failed',
+      service: { installed: true, running: false, verified: false },
+      completedPhases: [],
+    });
+    expect(journal?.diagnostics.join(' ')).toMatch(
+      /occupied service port.*service rollback failed.*runtime rollback failed/iu,
+    );
+  });
+
+  it('deduplicates and safely labels empty rollback diagnostics', async () => {
+    const duplicateInput = dependencies(temporaryDirectory());
+    vi.mocked(duplicateInput.service.verify).mockRejectedValueOnce(new Error('same failure'));
+    vi.mocked(duplicateInput.service.rollback).mockRejectedValueOnce(new Error('same failure'));
+    const duplicateError = await reviewedApply(createSetupCoordinator(duplicateInput)).catch(
+      (caught: unknown) => caught,
+    );
+    expect(duplicateError).toBeInstanceOf(AggregateError);
+    expect(createSetupStateStore(duplicateInput.dataDirectory).read()?.diagnostics).toEqual([
+      'same failure',
+    ]);
+
+    const emptyInput = dependencies(temporaryDirectory());
+    vi.mocked(emptyInput.service.verify).mockRejectedValueOnce(new Error(''));
+    vi.mocked(emptyInput.service.rollback).mockRejectedValueOnce(new Error(''));
+    const emptyError = await reviewedApply(createSetupCoordinator(emptyInput)).catch(
+      (caught: unknown) => caught,
+    );
+    expect(emptyError).toBeInstanceOf(AggregateError);
+    expect(String(emptyError)).toMatch(/setup failed.*rollback was incomplete/iu);
+    expect(createSetupStateStore(emptyInput.dataDirectory).read()?.diagnostics).toEqual([]);
   });
 
   it('keeps a configured connector repairable when verification is unavailable', async () => {

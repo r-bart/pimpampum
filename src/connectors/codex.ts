@@ -589,16 +589,41 @@ export function createCodexConnector(dependencies: CodexConnectorDependencies): 
           verification: null,
         };
       }
-      const result = await invoke(removeInvocation(detected.executable));
-      if (result.exitCode !== 0)
-        throw new Error('Codex could not remove the owned Pimpampum MCP entry');
-      await dependencies.receipt.remove();
-      return {
-        connectorId: CODEX_ID,
-        state: 'notConnected',
-        changed: true,
-        verification: null,
-      };
+      const before = await connector.snapshot();
+      // The ownership classifier can only produce an owned state from a matching receipt.
+      const previousReceipt = current.receipt!;
+      try {
+        const result = await invoke(removeInvocation(detected.executable));
+        if (result.exitCode !== 0) {
+          throw new Error('Codex could not remove the owned Pimpampum MCP entry');
+        }
+        if ((await inspectEntry(detected.executable)) !== null) {
+          throw new Error('Codex did not remove the owned Pimpampum MCP entry');
+        }
+        await dependencies.receipt.remove();
+        return {
+          connectorId: CODEX_ID,
+          state: 'notConnected',
+          changed: true,
+          verification: null,
+        };
+      } catch (error) {
+        const errors: unknown[] = [error];
+        try {
+          await restore(before);
+        } catch (restoreError) {
+          errors.push(restoreError);
+        }
+        try {
+          await dependencies.receipt.write(previousReceipt);
+        } catch (receiptError) {
+          errors.push(receiptError);
+        }
+        if (errors.length > 1) {
+          throw new AggregateError(errors, 'Codex disconnect and rollback failed');
+        }
+        throw error;
+      }
     },
     async snapshot() {
       const current = await inspect();

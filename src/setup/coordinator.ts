@@ -360,8 +360,19 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
       }
     } catch (error) {
       await failPhase(state, state.phase, error);
-      await dependencies.service.rollback().catch(() => undefined);
-      await dependencies.runtime.rollback().catch(() => undefined);
+      const rollbackErrors: unknown[] = [];
+      let serviceRolledBack = false;
+      try {
+        await dependencies.service.rollback();
+        serviceRolledBack = true;
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+      try {
+        await dependencies.runtime.rollback();
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
       state.completedPhases = state.completedPhases.filter(
         (phase) =>
           phase !== 'runtime.install' &&
@@ -369,11 +380,28 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
           phase !== 'service.verify' &&
           phase !== 'login-item.register',
       );
-      state.service = { installed: false, running: false, verified: false };
+      for (const rollbackError of rollbackErrors) {
+        const diagnostic = redactDiagnostic(rollbackError);
+        if (diagnostic && !state.diagnostics.includes(diagnostic)) {
+          state.diagnostics.push(diagnostic);
+        }
+      }
+      state.service = {
+        installed: !serviceRolledBack,
+        running: false,
+        verified: false,
+      };
       state.loginItem = 'pending';
       state.status = 'failed';
       state.updatedAt = dependencies.now();
       stateStore.write(state);
+      if (rollbackErrors.length > 0) {
+        const message = redactDiagnostic(error) || 'Setup failed';
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          `${message}; setup rollback was incomplete`,
+        );
+      }
       throw error;
     }
 

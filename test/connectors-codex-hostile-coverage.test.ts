@@ -41,6 +41,8 @@ interface CodexHarnessOptions {
   persistMutations?: boolean;
   verificationAvailable?: boolean;
   storedReceipt?: ConnectionReceipt | null;
+  receiptRemoveFailure?: boolean;
+  receiptWriteFailure?: boolean;
 }
 
 function createHarness(options: CodexHarnessOptions = {}) {
@@ -131,9 +133,11 @@ function createHarness(options: CodexHarnessOptions = {}) {
   const receiptStore: CodexConnectorDependencies['receipt'] = {
     read: vi.fn(async () => storedReceipt),
     write: vi.fn(async (value) => {
+      if (options.receiptWriteFailure) throw new Error('synthetic receipt write failure');
       storedReceipt = value;
     }),
     remove: vi.fn(async () => {
+      if (options.receiptRemoveFailure) throw new Error('synthetic receipt removal failure');
       storedReceipt = null;
     }),
   };
@@ -386,6 +390,41 @@ describe('Codex hostile parsing, probes, mutation and rollback coverage', () => 
     });
     await expect(rejected.connector.disconnect()).rejects.toThrow(/could not remove/iu);
     expect(rejected.entry()).toEqual(expected);
+  });
+
+  it('verifies Codex removal and restores the host entry when receipt commit fails', async () => {
+    const noOp = createHarness({
+      entry: expected,
+      storedReceipt: receipt(),
+      persistMutations: false,
+    });
+    await expect(noOp.connector.disconnect()).rejects.toThrow(/did not remove/iu);
+    expect(noOp.entry()).toEqual(expected);
+    expect(noOp.storedReceipt()).toEqual(receipt());
+
+    const receiptFailure = createHarness({
+      entry: expected,
+      storedReceipt: receipt(),
+      receiptRemoveFailure: true,
+    });
+    await expect(receiptFailure.connector.disconnect()).rejects.toThrow(
+      /receipt removal failure/iu,
+    );
+    expect(receiptFailure.entry()).toEqual(expected);
+    expect(receiptFailure.storedReceipt()).toEqual(receipt());
+
+    const rollbackFailure = createHarness({
+      entry: expected,
+      storedReceipt: receipt(),
+      mutationFailure: 'add',
+      receiptRemoveFailure: true,
+      receiptWriteFailure: true,
+    });
+    const error = await rollbackFailure.connector.disconnect().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toHaveLength(3);
+    expect(rollbackFailure.entry()).toBeNull();
+    expect(rollbackFailure.storedReceipt()).toEqual(receipt());
   });
 
   it('restores absent/current/prior entries and refuses unavailable, opaque, or concurrent targets', async () => {
