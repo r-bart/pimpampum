@@ -1,0 +1,178 @@
+#!/bin/sh
+set -eu
+
+umask 077
+PATH=/usr/bin:/bin
+export PATH
+
+fail() {
+  code=$1
+  action=$2
+  error_code=$3
+  printf '{"schemaVersion":1,"ok":false,"action":"%s","code":"%s"}\n' \
+    "$action" "$error_code" >&2
+  exit "$code"
+}
+
+action=${1:-}
+connector_id=${2:-}
+case $action in
+  list | resume)
+    [ "$#" -eq 1 ] || fail 64 "$action" invalid_arguments
+    connector_id=''
+    ;;
+  plan | connect | test | disconnect)
+    [ "$#" -eq 2 ] || fail 64 "$action" invalid_arguments
+    case $connector_id in
+      codex | claude-code) ;;
+      *) fail 64 "$action" invalid_connector ;;
+    esac
+    ;;
+  repair)
+    { [ "$#" -eq 2 ] || { [ "$#" -eq 3 ] && [ "$3" = replace ]; }; } ||
+      fail 64 "$action" invalid_arguments
+    case $connector_id in
+      codex | claude-code) ;;
+      *) fail 64 "$action" invalid_connector ;;
+    esac
+    ;;
+  *) fail 64 unknown invalid_action ;;
+esac
+
+home_directory=${HOME:-}
+case $home_directory in
+  /*) ;;
+  *) fail 73 "$action" invalid_home ;;
+esac
+[ "$home_directory" != / ] || fail 73 "$action" invalid_home
+case $home_directory in
+  *'"'* | *\\*) fail 73 "$action" invalid_home ;;
+esac
+[ -d "$home_directory" ] && [ ! -L "$home_directory" ] || fail 73 "$action" invalid_home
+
+data_directory="$home_directory/.pimpampum"
+receipt="$data_directory/runtime-install-receipt.json"
+control_launcher="$home_directory/.local/share/pimpampum/bin/pimpampum-control"
+[ -d "$data_directory" ] && [ ! -L "$data_directory" ] ||
+  fail 73 "$action" unsafe_data_directory
+for directory in \
+  "$home_directory/.local" \
+  "$home_directory/.local/share" \
+  "$home_directory/.local/share/pimpampum" \
+  "$home_directory/.local/share/pimpampum/bin"; do
+  [ -d "$directory" ] && [ ! -L "$directory" ] || fail 69 "$action" unsafe_runtime_path
+done
+[ -f "$receipt" ] && [ ! -L "$receipt" ] || fail 69 "$action" runtime_not_installed
+[ -f "$control_launcher" ] && [ ! -L "$control_launcher" ] && [ -x "$control_launcher" ] ||
+  fail 69 "$action" control_unavailable
+/usr/bin/grep -Fq "\"controlLauncherPath\": \"$control_launcher\"" "$receipt" ||
+  fail 69 "$action" receipt_mismatch
+expected_launcher_sha=$(/usr/bin/awk -F'"' \
+  '/"controlLauncherSha256"[[:space:]]*:/ { print $4; exit }' "$receipt")
+printf '%s\n' "$expected_launcher_sha" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' ||
+  fail 69 "$action" receipt_mismatch
+if [ -x /usr/bin/sha256sum ]; then
+  actual_launcher_sha=$(/usr/bin/sha256sum "$control_launcher" | /usr/bin/awk '{print $1}')
+elif [ -x /usr/bin/shasum ]; then
+  actual_launcher_sha=$(/usr/bin/shasum -a 256 "$control_launcher" | /usr/bin/awk '{print $1}')
+else
+  fail 69 "$action" checksum_unavailable
+fi
+[ "$actual_launcher_sha" = "$expected_launcher_sha" ] || fail 69 "$action" launcher_mismatch
+
+lock_directory="$data_directory/.connections-helper.lock"
+lock_nonce="$$-$(/bin/date +%s)"
+lock_owner="$lock_directory/owner"
+if ! /bin/mkdir "$lock_directory" 2>/dev/null; then
+  [ -d "$lock_directory" ] && [ ! -L "$lock_directory" ] ||
+    fail 75 "$action" operation_in_progress
+  [ -f "$lock_owner" ] && [ ! -L "$lock_owner" ] ||
+    fail 75 "$action" operation_in_progress
+  owner_pid=$(/usr/bin/awk -F: 'NR == 1 { print $1 }' "$lock_owner")
+  owner_nonce=$(/usr/bin/awk -F: 'NR == 1 { print $2 }' "$lock_owner")
+  case $owner_pid in '' | *[!0-9]*) fail 75 "$action" operation_in_progress ;; esac
+  [ "$owner_pid" -gt 1 ] && [ -n "$owner_nonce" ] || fail 75 "$action" operation_in_progress
+  if /bin/kill -0 "$owner_pid" 2>/dev/null; then
+    fail 75 "$action" operation_in_progress
+  fi
+  owner_value=$(/bin/cat "$lock_owner")
+  [ "$owner_value" = "$owner_pid:$owner_nonce" ] || fail 75 "$action" operation_in_progress
+  /bin/rm -f -- "$lock_owner" || fail 75 "$action" operation_in_progress
+  /bin/rmdir "$lock_directory" || fail 75 "$action" operation_in_progress
+  /bin/mkdir "$lock_directory" || fail 75 "$action" operation_in_progress
+fi
+printf '%s:%s\n' "$$" "$lock_nonce" > "$lock_owner" || {
+  /bin/rmdir "$lock_directory" 2>/dev/null || true
+  fail 73 "$action" staging_unavailable
+}
+work_directory=$(/usr/bin/mktemp -d "$data_directory/.connections-helper.XXXXXX") || {
+  /bin/rm -f -- "$lock_owner"
+  /bin/rmdir "$lock_directory"
+  fail 73 "$action" staging_unavailable
+}
+stdout_file="$work_directory/stdout"
+stderr_file="$work_directory/stderr"
+
+cleanup() {
+  /bin/rm -rf -- "$work_directory"
+  if [ -f "$lock_owner" ] && [ ! -L "$lock_owner" ] &&
+    [ "$(/bin/cat "$lock_owner" 2>/dev/null || true)" = "$$:$lock_nonce" ]; then
+    /bin/rm -f -- "$lock_owner"
+    /bin/rmdir "$lock_directory" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+case $action in
+  list | test) set -- connections ;;
+  plan) set -- setup plan --connector "$connector_id" ;;
+  connect) set -- connect "$connector_id" --yes ;;
+  repair)
+    if [ "${3:-}" = replace ]; then set -- repair "$connector_id" --yes --replace
+    else set -- repair "$connector_id" --yes
+    fi
+    ;;
+  disconnect) set -- disconnect "$connector_id" --yes ;;
+  resume) set -- setup resume ;;
+esac
+
+timeout_command=${PIMPAMPUM_CONNECTIONS_TIMEOUT:-/usr/bin/timeout}
+case $timeout_command in
+  /*) ;;
+  *) fail 69 "$action" timeout_unavailable ;;
+esac
+[ -x "$timeout_command" ] || fail 69 "$action" timeout_unavailable
+[ ! -L "$timeout_command" ] || fail 69 "$action" timeout_unavailable
+
+exit_code=0
+(
+  ulimit -f 128
+  "$timeout_command" --signal=TERM --kill-after=2 30 \
+    "$control_launcher" "$@" > "$stdout_file" 2> "$stderr_file"
+) || exit_code=$?
+
+stdout_bytes=$(/usr/bin/wc -c < "$stdout_file" | /usr/bin/tr -d '[:space:]')
+stderr_bytes=$(/usr/bin/wc -c < "$stderr_file" | /usr/bin/tr -d '[:space:]')
+[ "$stdout_bytes" -le 65536 ] && [ "$stderr_bytes" -le 65536 ] ||
+  fail 70 "$action" output_limit
+[ "$exit_code" -eq 0 ] || {
+  [ "$exit_code" -ne 124 ] && [ "$exit_code" -ne 137 ] || fail 70 "$action" timeout
+  if /usr/bin/grep -Eq '"code"[[:space:]]*:[[:space:]]*"conflict"' "$stderr_file"; then
+    fail 70 "$action" connector_conflict
+  fi
+  fail 70 "$action" command_failed
+}
+
+payload=$(/bin/cat "$stdout_file")
+case $payload in
+  \{*\} | \[*\]) ;;
+  *) fail 70 "$action" invalid_response ;;
+esac
+
+if [ -n "$connector_id" ]; then
+  printf '{"schemaVersion":1,"ok":true,"action":"%s","connectorId":"%s","result":%s}\n' \
+    "$action" "$connector_id" "$payload"
+else
+  printf '{"schemaVersion":1,"ok":true,"action":"%s","connectorId":null,"result":%s}\n' \
+    "$action" "$payload"
+fi

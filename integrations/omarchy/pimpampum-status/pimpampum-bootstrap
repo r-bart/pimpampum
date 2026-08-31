@@ -1,0 +1,368 @@
+#!/bin/sh
+set -eu
+
+umask 077
+PATH=/usr/bin:/bin
+export PATH
+
+fail() {
+  code=$1
+  shift
+  printf '%s\n' "pimpampum-bootstrap: $*" >&2
+  exit "$code"
+}
+
+require_absolute() {
+  case $1 in
+    /*) ;;
+    *) fail 64 "$2 must be an absolute path" ;;
+  esac
+}
+
+ensure_directory() {
+  directory=$1
+  mode=$2
+  if [ -L "$directory" ]; then
+    fail 73 "private runtime path must not be a symlink: $directory"
+  fi
+  if [ ! -e "$directory" ]; then
+    /bin/mkdir -m "$mode" "$directory" ||
+      fail 73 "cannot create private runtime path: $directory"
+  fi
+  [ -d "$directory" ] && [ ! -L "$directory" ] ||
+    fail 73 "private runtime path is not a regular directory: $directory"
+}
+
+sha256_file() {
+  if [ -x /usr/bin/sha256sum ]; then
+    /usr/bin/sha256sum "$1" | /usr/bin/awk '{print $1}'
+  elif [ -x /usr/bin/shasum ]; then
+    /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'
+  else
+    fail 69 'sha256sum or shasum is required to verify runtime files'
+  fi
+}
+
+receipt_value() {
+  /usr/bin/awk -F'"' -v wanted="$1" '$2 == wanted { print $4; exit }' "$2"
+}
+
+plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) ||
+  fail 70 'cannot resolve the plugin directory'
+manifest_path=${PIMPAMPUM_BOOTSTRAP_MANIFEST:-"$plugin_root/runtime-manifest.json"}
+require_absolute "$manifest_path" 'runtime manifest'
+[ -f "$manifest_path" ] && [ ! -L "$manifest_path" ] ||
+  fail 64 "runtime manifest is missing or unsafe: $manifest_path"
+
+uname_command=${PIMPAMPUM_BOOTSTRAP_UNAME:-/usr/bin/uname}
+require_absolute "$uname_command" 'uname command'
+[ -x "$uname_command" ] || fail 69 "uname command is unavailable: $uname_command"
+[ "$($uname_command -s)" = Linux ] || fail 65 'this bootstrap supports Linux only'
+case $($uname_command -m) in
+  x86_64) runtime_target=linux-x64 ;;
+  aarch64 | arm64) runtime_target=linux-arm64 ;;
+  *) fail 65 'unsupported CPU architecture; expected x86_64 or aarch64' ;;
+esac
+
+manifest_value() {
+  manifest_key=$1
+  /usr/bin/awk -v target="\"$runtime_target\"" -v key="\"$manifest_key\"" '
+    index($0, target ":") { selected = 1; next }
+    selected && index($0, key ":") {
+      value = $0
+      sub(/^[^:]+:[[:space:]]*/, "", value)
+      sub(/,[[:space:]]*$/, "", value)
+      gsub(/^"|"$/, "", value)
+      print value
+      exit
+    }
+    selected && $0 ~ /^    }/ { exit }
+  ' "$manifest_path"
+}
+
+version=$(/usr/bin/awk '
+  /"version"[[:space:]]*:/ {
+    value = $0
+    sub(/^[^:]+:[[:space:]]*"/, "", value)
+    sub(/"[[:space:]]*,?[[:space:]]*$/, "", value)
+    print value
+    exit
+  }
+' "$manifest_path")
+url=$(manifest_value url)
+expected_sha256=$(manifest_value sha256)
+maximumBytes=$(manifest_value maximumBytes)
+
+printf '%s\n' "$version" | /usr/bin/grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z._-]+)?$' ||
+  fail 64 'runtime manifest has an invalid exact version'
+expected_url="https://github.com/r-bart/pimpampum/releases/download/v$version/pimpampum-runtime-$version-$runtime_target.tar.gz"
+[ "$url" = "$expected_url" ] ||
+  fail 64 'runtime manifest URL is not the exact versioned target asset'
+printf '%s\n' "$expected_sha256" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' ||
+  fail 64 'runtime manifest SHA-256 is invalid'
+[ "$expected_sha256" != 0000000000000000000000000000000000000000000000000000000000000000 ] ||
+  fail 64 'runtime manifest SHA-256 must not be empty'
+case $maximumBytes in
+  '' | *[!0-9]*) fail 64 'runtime manifest maximumBytes is invalid' ;;
+esac
+[ "$maximumBytes" -gt 0 ] && [ "$maximumBytes" -le 100663296 ] ||
+  fail 64 'runtime manifest maximumBytes exceeds the bootstrap limit'
+
+home_directory=${HOME:-}
+require_absolute "$home_directory" 'HOME'
+[ "$home_directory" != / ] || fail 73 'HOME must not be the filesystem root'
+case $home_directory in
+  *"'"* | *'"'* | *\\*) fail 73 'HOME contains characters unsafe for launchers or receipts' ;;
+esac
+[ -d "$home_directory" ] && [ ! -L "$home_directory" ] ||
+  fail 73 'HOME must be a regular directory and not a symlink'
+runtime_root="$home_directory/.local/share/pimpampum/runtime"
+versions_root="$runtime_root/$version"
+final_directory="$versions_root/$runtime_target"
+owner_marker="$versions_root/.bootstrap-$runtime_target.owner"
+data_directory="$home_directory/.pimpampum"
+service_receipt="$data_directory/install-receipt.json"
+runtime_receipt="$data_directory/runtime-install-receipt.json"
+launchers_root="$home_directory/.local/share/pimpampum/bin"
+control_launcher="$launchers_root/pimpampum-control"
+mcp_launcher="$launchers_root/pimpampum-mcp"
+
+if [ -d "$final_directory" ] && [ ! -L "$final_directory" ] &&
+  [ -f "$final_directory/bin/node" ] && [ ! -L "$final_directory/bin/node" ] &&
+  [ -f "$final_directory/dist/cli.js" ] && [ ! -L "$final_directory/dist/cli.js" ] &&
+  [ -f "$final_directory/dist/mcpStdio.js" ] && [ ! -L "$final_directory/dist/mcpStdio.js" ] &&
+  [ -f "$runtime_receipt" ] && [ ! -L "$runtime_receipt" ] &&
+  [ -x "$control_launcher" ] && [ ! -L "$control_launcher" ] &&
+  [ -x "$mcp_launcher" ] && [ ! -L "$mcp_launcher" ] &&
+  /usr/bin/grep -Fq "\"currentVersion\": \"$version\"" "$runtime_receipt" &&
+  /usr/bin/grep -Fq "\"targetId\": \"$runtime_target\"" "$runtime_receipt" &&
+  /usr/bin/grep -Fq "\"nodePath\": \"$final_directory/bin/node\"" "$runtime_receipt" &&
+  /usr/bin/grep -Fq "\"controlLauncherPath\": \"$control_launcher\"" "$runtime_receipt" &&
+  /usr/bin/grep -Fq "\"mcpLauncherPath\": \"$mcp_launcher\"" "$runtime_receipt"; then
+  prior_control_sha=$(receipt_value controlLauncherSha256 "$runtime_receipt")
+  prior_mcp_sha=$(receipt_value mcpLauncherSha256 "$runtime_receipt")
+  printf '%s\n' "$prior_control_sha" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' &&
+    printf '%s\n' "$prior_mcp_sha" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' ||
+    fail 73 'runtime receipt has invalid stable launcher ownership hashes'
+  [ "$(sha256_file "$control_launcher")" = "$prior_control_sha" ] &&
+    [ "$(sha256_file "$mcp_launcher")" = "$prior_mcp_sha" ] ||
+    fail 73 'stable launcher content does not match the runtime receipt'
+  if ! PIMPAMPUM_BOOTSTRAP=1 "$control_launcher" install; then
+    fail 70 'receipt-owned packaged control CLI repair failed; existing runtime was preserved'
+  fi
+  printf '{"schemaVersion":1,"installed":true,"reconciled":true,"version":"%s","target":"%s"}\n' \
+    "$version" "$runtime_target"
+  exit 0
+fi
+
+ensure_directory "$home_directory/.local" 700
+ensure_directory "$home_directory/.local/share" 700
+ensure_directory "$home_directory/.local/share/pimpampum" 700
+ensure_directory "$runtime_root" 700
+ensure_directory "$versions_root" 700
+ensure_directory "$launchers_root" 700
+ensure_directory "$data_directory" 700
+/bin/chmod 700 "$home_directory/.local/share/pimpampum" "$runtime_root" "$versions_root" \
+  "$launchers_root" "$data_directory"
+staging=$(mktemp -d "$versions_root/.bootstrap-staging.XXXXXX") ||
+  fail 73 "cannot create private staging under $versions_root"
+archive="$staging/runtime.tar.gz"
+extracted="$staging/extracted"
+listing="$staging/archive.list"
+verbose_listing="$staging/archive.verbose"
+created_final=0
+metadata_changed=0
+completed=0
+had_control=0
+had_mcp=0
+had_runtime_receipt=0
+
+restore_metadata() {
+  [ "$metadata_changed" -eq 1 ] || return 0
+  /bin/rm -f -- "$control_launcher" "$mcp_launcher" "$runtime_receipt"
+  if [ "$had_control" -eq 1 ]; then
+    /bin/cp -- "$staging/previous-control" "$control_launcher" 2>/dev/null || true
+    /bin/chmod 755 "$control_launcher" 2>/dev/null || true
+  fi
+  if [ "$had_mcp" -eq 1 ]; then
+    /bin/cp -- "$staging/previous-mcp" "$mcp_launcher" 2>/dev/null || true
+    /bin/chmod 755 "$mcp_launcher" 2>/dev/null || true
+  fi
+  if [ "$had_runtime_receipt" -eq 1 ]; then
+    /bin/cp -- "$staging/previous-runtime-receipt" "$runtime_receipt" 2>/dev/null || true
+    /bin/chmod 600 "$runtime_receipt" 2>/dev/null || true
+  fi
+}
+
+cleanup() {
+  if [ "$completed" -eq 0 ]; then
+    restore_metadata
+  fi
+  if [ "$completed" -eq 0 ] && [ "$created_final" -eq 1 ] && [ -f "$owner_marker" ]; then
+    marker_value=$(cat "$owner_marker" 2>/dev/null || true)
+    if [ "$marker_value" = "$expected_sha256" ]; then
+      rm -rf -- "$final_directory"
+      rm -f -- "$owner_marker"
+    fi
+  fi
+  rm -rf -- "$staging"
+}
+trap cleanup EXIT HUP INT TERM
+
+if [ -n "${PIMPAMPUM_BOOTSTRAP_ARCHIVE:-}" ]; then
+  require_absolute "$PIMPAMPUM_BOOTSTRAP_ARCHIVE" 'fixture archive'
+  [ -f "$PIMPAMPUM_BOOTSTRAP_ARCHIVE" ] && [ ! -L "$PIMPAMPUM_BOOTSTRAP_ARCHIVE" ] ||
+    fail 66 'fixture archive must be a regular file'
+  cp "$PIMPAMPUM_BOOTSTRAP_ARCHIVE" "$archive" ||
+    fail 73 'cannot copy the fixture archive into private staging'
+else
+  curl_command=${PIMPAMPUM_BOOTSTRAP_CURL:-/usr/bin/curl}
+  require_absolute "$curl_command" 'curl command'
+  [ -x "$curl_command" ] || fail 69 'curl is unavailable; install curl and retry'
+  if ! "$curl_command" \
+    --fail --location --proto '=https' --tlsv1.2 \
+    --connect-timeout 10 --max-time 120 --retry 2 --retry-connrefused \
+    --max-filesize "$maximumBytes" --output "$archive" "$url"; then
+    fail 69 'download failed or timed out; check the network and retry'
+  fi
+fi
+
+archive_bytes=$(/usr/bin/wc -c < "$archive" | /usr/bin/tr -d '[:space:]')
+[ "$archive_bytes" -gt 0 ] && [ "$archive_bytes" -le "$maximumBytes" ] ||
+  fail 70 "download exceeded maximumBytes ($maximumBytes bytes)"
+actual_sha256=$(sha256_file "$archive")
+[ "$actual_sha256" = "$expected_sha256" ] ||
+  fail 70 'runtime archive SHA-256 mismatch; nothing was installed'
+
+tar_command=${PIMPAMPUM_BOOTSTRAP_TAR:-/usr/bin/tar}
+require_absolute "$tar_command" 'tar command'
+[ -x "$tar_command" ] || fail 69 'tar is unavailable; install tar and retry'
+"$tar_command" -tzf "$archive" > "$listing" || fail 70 'runtime archive cannot be listed safely'
+"$tar_command" -tvzf "$archive" > "$verbose_listing" ||
+  fail 70 'runtime archive metadata cannot be inspected safely'
+entry_count=$(/usr/bin/wc -l < "$listing" | /usr/bin/tr -d '[:space:]')
+[ "$entry_count" -gt 3 ] && [ "$entry_count" -le 100003 ] ||
+  fail 70 'runtime archive has an unsafe number of entries'
+while IFS= read -r entry; do
+  case $entry in
+    runtime-manifest.json | runtime-inventory.json | runtime-sbom.spdx.json | payload/*) ;;
+    *) fail 70 "runtime archive contains an unsafe path: $entry" ;;
+  esac
+  case $entry in
+    /* | *\\* | .. | ../* | */../* | */..) fail 70 "runtime archive contains path traversal: $entry" ;;
+  esac
+done < "$listing"
+if /usr/bin/awk 'substr($0, 1, 1) != "-" { exit 1 }' "$verbose_listing"; then :; else
+  fail 70 'runtime archive contains a link, directory, device, or special entry'
+fi
+
+mkdir -m 700 "$extracted" || fail 73 'cannot create the extraction staging directory'
+"$tar_command" -xzf "$archive" -C "$extracted" --no-same-owner --no-same-permissions ||
+  fail 70 'runtime archive extraction failed; nothing was installed'
+for required_path in \
+  runtime-manifest.json \
+  payload/bin/node \
+  payload/dist/cli.js \
+  payload/dist/mcpStdio.js \
+  payload/node_modules/better-sqlite3/build/Release/better_sqlite3.node; do
+  [ -f "$extracted/$required_path" ] && [ ! -L "$extracted/$required_path" ] ||
+    fail 70 "runtime archive is missing regular file $required_path"
+done
+/usr/bin/grep -Fq "\"pimpampumVersion\": \"$version\"" "$extracted/runtime-manifest.json" ||
+  fail 70 'runtime archive version does not match the pinned release'
+/usr/bin/grep -Fq "\"platform\": \"linux\"" "$extracted/runtime-manifest.json" ||
+  fail 70 'runtime archive is not a Linux target'
+if ! PIMPAMPUM_BOOTSTRAP=1 \
+  "$extracted/payload/bin/node" "$extracted/payload/dist/cli.js" --version >/dev/null; then
+  fail 70 'staged packaged control CLI smoke failed; nothing was installed'
+fi
+
+if [ -e "$final_directory" ] || [ -L "$final_directory" ]; then
+  [ -d "$final_directory" ] && [ ! -L "$final_directory" ] ||
+    fail 73 'interrupted runtime destination is unsafe'
+  [ -f "$owner_marker" ] && [ ! -L "$owner_marker" ] ||
+    fail 73 "runtime destination already exists without bootstrap ownership: $final_directory"
+  [ "$(cat "$owner_marker")" = "$expected_sha256" ] ||
+    fail 73 'interrupted runtime owner marker does not match this pinned archive'
+else
+  printf '%s\n' "$expected_sha256" > "$owner_marker" ||
+    fail 73 'cannot record the interrupted-install recovery marker'
+  chmod 600 "$owner_marker"
+  mv "$extracted/payload" "$final_directory" ||
+    fail 73 'cannot atomically activate the staged runtime payload'
+  created_final=1
+fi
+
+runtime_node="$final_directory/bin/node"
+runtime_cli="$final_directory/dist/cli.js"
+runtime_mcp="$final_directory/dist/mcpStdio.js"
+
+if [ -e "$runtime_receipt" ] || [ -e "$control_launcher" ] || [ -e "$mcp_launcher" ] ||
+  [ -L "$runtime_receipt" ] || [ -L "$control_launcher" ] || [ -L "$mcp_launcher" ]; then
+  [ -f "$runtime_receipt" ] && [ ! -L "$runtime_receipt" ] ||
+    fail 73 'existing runtime helpers have no safe ownership receipt'
+  /usr/bin/grep -Fq "\"controlLauncherPath\": \"$control_launcher\"" "$runtime_receipt" &&
+    /usr/bin/grep -Fq "\"mcpLauncherPath\": \"$mcp_launcher\"" "$runtime_receipt" ||
+    fail 73 'existing runtime receipt does not own the stable launchers'
+  prior_control_sha=$(receipt_value controlLauncherSha256 "$runtime_receipt")
+  prior_mcp_sha=$(receipt_value mcpLauncherSha256 "$runtime_receipt")
+  printf '%s\n' "$prior_control_sha" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' &&
+    printf '%s\n' "$prior_mcp_sha" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' ||
+    fail 73 'existing runtime receipt has invalid stable launcher ownership hashes'
+  if [ -e "$control_launcher" ] || [ -L "$control_launcher" ]; then
+    [ -f "$control_launcher" ] && [ ! -L "$control_launcher" ] ||
+      fail 73 'existing control launcher is unsafe'
+    [ "$(sha256_file "$control_launcher")" = "$prior_control_sha" ] ||
+      fail 73 'existing control launcher does not match its ownership receipt'
+    /bin/cp -- "$control_launcher" "$staging/previous-control"
+    had_control=1
+  fi
+  if [ -e "$mcp_launcher" ] || [ -L "$mcp_launcher" ]; then
+    [ -f "$mcp_launcher" ] && [ ! -L "$mcp_launcher" ] ||
+      fail 73 'existing MCP launcher is unsafe'
+    [ "$(sha256_file "$mcp_launcher")" = "$prior_mcp_sha" ] ||
+      fail 73 'existing MCP launcher does not match its ownership receipt'
+    /bin/cp -- "$mcp_launcher" "$staging/previous-mcp"
+    had_mcp=1
+  fi
+  /bin/cp -- "$runtime_receipt" "$staging/previous-runtime-receipt"
+  had_runtime_receipt=1
+fi
+
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+  "exec '$runtime_node' '$runtime_cli' \"\$@\"" > "$staging/pimpampum-control"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+  "exec '$runtime_node' '$runtime_mcp' \"\$@\"" > "$staging/pimpampum-mcp"
+/bin/chmod 755 "$staging/pimpampum-control" "$staging/pimpampum-mcp"
+control_sha256=$(sha256_file "$staging/pimpampum-control")
+mcp_sha256=$(sha256_file "$staging/pimpampum-mcp")
+printf '{\n  "schemaVersion": 1,\n  "currentVersion": "%s",\n  "targetId": "%s",\n  "nodePath": "%s",\n  "cliPath": "%s",\n  "mcpPath": "%s",\n  "controlLauncherPath": "%s",\n  "controlLauncherSha256": "%s",\n  "mcpLauncherPath": "%s",\n  "mcpLauncherSha256": "%s",\n  "ownedVersions": [{"version":"%s","targetId":"%s","directory":"%s"}]\n}\n' \
+  "$version" "$runtime_target" "$runtime_node" "$runtime_cli" "$runtime_mcp" \
+  "$control_launcher" "$control_sha256" "$mcp_launcher" "$mcp_sha256" \
+  "$version" "$runtime_target" "$final_directory" > "$staging/runtime-install-receipt.json"
+/bin/chmod 600 "$staging/runtime-install-receipt.json"
+
+metadata_changed=1
+/bin/mv -f -- "$staging/pimpampum-control" "$control_launcher" ||
+  fail 73 'cannot activate the stable control launcher'
+/bin/mv -f -- "$staging/pimpampum-mcp" "$mcp_launcher" ||
+  fail 73 'cannot activate the stable MCP launcher'
+/bin/mv -f -- "$staging/runtime-install-receipt.json" "$runtime_receipt" ||
+  fail 73 'cannot commit the private runtime receipt'
+
+if ! PIMPAMPUM_BOOTSTRAP=1 "$control_launcher" install; then
+  fail 70 'packaged control CLI setup failed; prior service state was preserved'
+fi
+
+[ -f "$service_receipt" ] && [ ! -L "$service_receipt" ] ||
+  fail 70 'packaged control CLI returned without an installation receipt'
+/usr/bin/grep -Fq "\"version\": \"$version\"" "$service_receipt" ||
+  fail 70 'installation receipt does not own the pinned runtime version'
+/usr/bin/grep -Fq "$final_directory/bin/node" "$service_receipt" ||
+  fail 70 'installation receipt does not own the activated runtime path'
+
+rm -f -- "$owner_marker"
+created_final=0
+completed=1
+printf '{"schemaVersion":1,"installed":true,"version":"%s","target":"%s"}\n' \
+  "$version" "$runtime_target"
