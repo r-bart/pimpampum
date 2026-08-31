@@ -67,7 +67,7 @@ function fixture(label: string) {
     `#!/bin/sh
 printf '%s\n' "$*" >> "$PIMPAMPUM_TEST_LOG"
 case "$*" in
-  "disconnect codex --yes") printf '{"data":{}}\\n'; exit 0 ;;
+  "disconnect codex --yes") printf '{"data":{"id":"codex","disconnected":%s}}\\n' "\${PIMPAMPUM_TEST_CODEX_DISCONNECTED:-true}"; exit 0 ;;
   "connect codex --yes"|install) exit 0 ;;
   "disconnect claude-code --yes") exit 10 ;;
   uninstall) exit "\${PIMPAMPUM_TEST_UNINSTALL_EXIT:-0}" ;;
@@ -187,6 +187,17 @@ describe('Omarchy plugin runtime lifecycle', () => {
     expect(readFileSync(state.receipt, 'utf8')).toBe(before);
     expect(readFileSync(join(state.runtime, 'bin/node'), 'utf8')).toContain('#!/bin/sh');
     expect(readFileSync(state.log, 'utf8').trim().split('\n')).toContain('connect codex --yes');
+  });
+
+  it('does not adopt or restore a connector when disconnect succeeds without changing it', () => {
+    const state = fixture('disconnect-noop');
+    const result = run(state, 'remove', {
+      PIMPAMPUM_TEST_CODEX_DISCONNECTED: 'false',
+      PIMPAMPUM_TEST_UNINSTALL_EXIT: '42',
+    });
+
+    expect(result.status).toBe(70);
+    expect(readFileSync(state.log, 'utf8').trim().split('\n')).not.toContain('connect codex --yes');
   });
 
   it('fails closed before mutation when launcher ownership is stale and recovers a dead lock', () => {
