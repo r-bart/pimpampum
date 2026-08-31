@@ -85,6 +85,25 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  runtime-manifest:
+    needs: runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: runtime-linux-*
+          path: ${{ runner.temp }}/runtime-review
+          merge-multiple: true
+      - name: Unpack exact Linux runtime transports
+        run: |
+          for target in linux-arm64 linux-x64; do
+            /usr/bin/tar -xzf "$RUNNER_TEMP/runtime-review/runtime-$target.tar.gz" \
+              -C "$RUNNER_TEMP/runtime-review"
+          done
+      - name: Match reviewed Omarchy pins to exact release archives
+        run: node scripts/check-reviewed-runtime-manifest.mjs "$RUNNER_TEMP/runtime-review"
+
   macos:
     needs: runtime
     runs-on: macos-15

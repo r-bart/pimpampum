@@ -60,6 +60,8 @@ describe('runtime release integration', () => {
     expect(packager).toContain('archive-sha256.json');
     expect(packager).toContain('pimpampum-omarchy-runtime-manifest');
     expect(packager).toContain('cmp -s "$reviewed_plugin_manifest" "$generated_plugin_manifest"');
+    expect(quality).toContain('runtime-manifest:');
+    expect(quality).toContain('check-reviewed-runtime-manifest.mjs');
   });
 
   it('pins Omarchy to versioned bounded Linux assets', () => {
