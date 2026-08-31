@@ -733,7 +733,7 @@ try {
 
   rmSync(backupDirectory, { recursive: true });
   writeFileSync(backupDirectory, 'blocked by the reversible live smoke\n', { mode: 0o600 });
-  const failedRetryCommand = spawnSync(process.execPath, [cli, 'backup', 'retry'], {
+  const failedRetryCommand = spawnSync(controlNode, [cli, 'backup', 'retry'], {
     cwd: repositoryRoot,
     env: environment,
     encoding: 'utf8',

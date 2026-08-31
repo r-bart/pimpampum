@@ -253,6 +253,7 @@ describe('expanded macOS live release gates', () => {
     }
     expect(source).toContain('config="$HOME/.claude.json"');
     expect(source).toContain('"mcpServers":{"pimpampum"');
+    expect(source).toContain("spawnSync(controlNode, [cli, 'backup', 'retry']");
     expect(source).toContain('durationMilliseconds >= 120_000');
     expect(source).toContain("environment.PATH = '/usr/bin:/bin:/usr/sbin:/sbin'");
   });
