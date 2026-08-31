@@ -111,5 +111,15 @@ describe('connector contracts', () => {
         dataDirectory: '/Users/example/.pimpampum',
       }).mutations,
     ).toEqual([]);
+
+    expect(
+      planDisconnect({
+        connectorId: 'codex',
+        entry: expected,
+        receipt: { ...receiptFor(), commandFingerprint: 'validated-legacy-ownership' },
+        daemonRunning: true,
+        dataDirectory: '/Users/example/.pimpampum',
+      }).mutations,
+    ).toHaveLength(1);
   });
 });

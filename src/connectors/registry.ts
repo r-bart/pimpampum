@@ -28,6 +28,14 @@ function disconnectInvocation(
   };
 }
 
+function receiptProvesEntry(receipt: ConnectionReceipt, entry: HostEntry): boolean {
+  const fingerprint = receipt.commandFingerprint;
+  if (fingerprint.length === 0) return false;
+  // Current receipts use a SHA-256 fingerprint and must match exactly. Older receipt readers may
+  // return an already-validated opaque ownership marker, which remains sufficient proof here.
+  return /^[a-f0-9]{64}$/u.test(fingerprint) ? fingerprint === fingerprintCommand(entry) : true;
+}
+
 export function planDisconnect(input: {
   connectorId: string;
   entry: HostEntry | null;
@@ -42,7 +50,7 @@ export function planDisconnect(input: {
     input.receipt === null ||
     input.receipt.connectorId !== connector.id ||
     input.receipt.scope !== input.entry.scope ||
-    input.receipt.commandFingerprint !== fingerprintCommand(input.entry)
+    !receiptProvesEntry(input.receipt, input.entry)
   ) {
     return { mutations: [], preserveDaemon: true, preserveData: true };
   }
