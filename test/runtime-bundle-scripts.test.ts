@@ -124,6 +124,9 @@ function fixture(label: string, target: 'linux-x64' | 'linux-arm64' = 'linux-x64
   write(join(applicationDirectory, 'dist/cli.js'), 'export const cli = true;\n');
   write(join(applicationDirectory, 'dist/mcpStdio.js'), 'export const mcp = true;\n');
   write(join(applicationDirectory, 'node_modules/production/index.js'), 'module.exports = true;\n');
+  write(join(applicationDirectory, 'node_modules/.package-lock.json'), '{}\n');
+  write(join(applicationDirectory, 'node_modules/production/.eslintrc'), '{}\n');
+  write(join(applicationDirectory, 'node_modules/production/.github/FUNDING.yml'), 'ignored\n');
   write(
     join(applicationDirectory, `node_modules/better-sqlite3/prebuilds/${target}.node`),
     nativeBinary(target),
@@ -224,6 +227,7 @@ describe('runtime bundle release scripts', () => {
     ).toBe(false);
     expect(paths).not.toContain('node_modules/better-sqlite3/prebuilds/linux-arm64.node');
     expect(paths).not.toContain('node_modules/better-sqlite3/prebuilds/linux-x64.node');
+    expect(paths.some((path) => path.split('/').some((part) => part.startsWith('.')))).toBe(false);
   });
 
   it.each([
