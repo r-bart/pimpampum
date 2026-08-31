@@ -28,6 +28,7 @@ interface McpRouteProbe {
   listTools(): Promise<ProbeToolList>;
   close(): Promise<void>;
   requiresProtocolVersion?: boolean;
+  acceptsNegotiatedProtocolVersion?(protocolVersion: string): boolean;
   diagnostics?(): unknown[];
   diagnosticsOverflowed?(): boolean;
 }
@@ -62,7 +63,8 @@ function secretLeak(value: string): boolean {
 
 function boundedSerialized(value: unknown): string {
   try {
-    const serialized = JSON.stringify(value) ?? '';
+    // All call sites pass protocol records or diagnostic arrays, which always serialize to text.
+    const serialized = JSON.stringify(value) as string;
     if (Buffer.byteLength(serialized) > MAX_PROTOCOL_MESSAGE_BYTES) {
       throw new Error('MCP verifier output exceeded the bounded message limit');
     }
@@ -105,7 +107,7 @@ async function withDeadline<T>(
   if (!Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
     throw new Error('MCP verifier timeout must be positive');
   }
-  let timeout: NodeJS.Timeout | undefined;
+  let timeout!: NodeJS.Timeout;
   let abort: (() => void) | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(
@@ -122,7 +124,7 @@ async function withDeadline<T>(
   try {
     return await Promise.race([operation, deadline]);
   } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
+    clearTimeout(timeout);
     if (signal !== undefined && abort !== undefined) signal.removeEventListener('abort', abort);
   }
 }
@@ -171,6 +173,9 @@ function spawnSdkProbe(command: string, arguments_: string[]): McpRouteProbe {
   );
   return {
     requiresProtocolVersion: true,
+    acceptsNegotiatedProtocolVersion: (protocolVersion) =>
+      client.getNegotiatedProtocolVersion() === protocolVersion &&
+      client.getProtocolEra() !== undefined,
     diagnostics: stderr.diagnostics,
     diagnosticsOverflowed: stderr.overflowed,
     async initialize() {
@@ -247,10 +252,15 @@ export async function verifyMcpRoute(input: {
     }
 
     const protocolVersion = initialized.protocolVersion;
-    const supportedProtocols = input.supportedProtocolVersions ?? [...SUPPORTED_PROTOCOL_VERSIONS];
+    const protocolAccepted =
+      typeof protocolVersion === 'string' &&
+      (input.supportedProtocolVersions !== undefined
+        ? input.supportedProtocolVersions.includes(protocolVersion)
+        : SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion) ||
+          probe.acceptsNegotiatedProtocolVersion?.(protocolVersion) === true);
     if (
       (probe.requiresProtocolVersion === true && typeof protocolVersion !== 'string') ||
-      (typeof protocolVersion === 'string' && !supportedProtocols.includes(protocolVersion))
+      (typeof protocolVersion === 'string' && !protocolAccepted)
     ) {
       throw new Error('MCP server negotiated an incompatible protocol version');
     }
@@ -314,6 +324,6 @@ export async function verifyMcpRoute(input: {
   if (closeError !== undefined) {
     throw new Error('MCP verifier could not reap the stdio route', { cause: closeError });
   }
-  if (result === undefined) throw new Error('MCP verifier did not produce a result');
-  return result;
+  // Every non-failing path through the guarded operation assigns the result before shutdown.
+  return result as McpRouteVerificationResult;
 }

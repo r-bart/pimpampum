@@ -1458,6 +1458,11 @@ describe('platform-neutral service manager', () => {
     await expect(manager.install()).resolves.toMatchObject({ installed: true });
     expect(order).toEqual(['activate', 'verify', 'afterInstall']);
     expect(postActivationVerifier).toHaveBeenCalledOnce();
+
+    order.length = 0;
+    await expect(manager.install()).resolves.toMatchObject({ installed: true, reconciled: true });
+    expect(order).toEqual(['verify', 'afterInstall']);
+    expect(postActivationVerifier).toHaveBeenCalledTimes(2);
   });
 
   it('restores receipt, artifacts, logs and external state when health verification fails', async () => {

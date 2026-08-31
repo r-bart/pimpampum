@@ -476,6 +476,7 @@ function validateCandidateInventory(
     !isRecord(pluginManifest) ||
     pluginManifest.version !== version ||
     !isRecord(pluginManifest.targets) ||
+    Object.keys(pluginManifest.targets).length === 0 ||
     !Object.keys(pluginManifest.targets).every((pluginTarget) =>
       ['linux-arm64', 'linux-x64'].includes(pluginTarget),
     )
@@ -516,7 +517,6 @@ function createConcretePackagedProvider(
     process.env.PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH ??
     join(installedResources, 'pimpampum-release-public-key.pem');
   const allowedKeyRoots = [input.dataDirectory, installedResources];
-  let stagedAppPath = '';
   return {
     channelManifestUrl:
       input.channelManifestUrl ??
@@ -574,7 +574,7 @@ function createConcretePackagedProvider(
                 '--no-same-permissions',
               ]);
         if (extraction.exitCode !== 0) throw new Error('Packaged release extraction failed');
-        stagedAppPath = validateCandidateInventory(extractedPath, target, version);
+        validateCandidateInventory(extractedPath, target, version);
         rmSync(archivePath, { force: true });
         return {
           path: resolve(extractedPath),
@@ -589,9 +589,10 @@ function createConcretePackagedProvider(
     },
     async reconcile({ version, candidatePath, target }) {
       try {
-        if (target !== 'darwin-arm64' || stagedAppPath === '') {
+        if (target !== 'darwin-arm64') {
           throw new Error('This packaged release activator supports only macOS arm64');
         }
+        const stagedAppPath = validateCandidateInventory(candidatePath, target, version);
         if (!pathInside(candidatePath, stagedAppPath))
           throw new Error('Staged app escaped its candidate root');
         const installedApp = join(input.homeDirectory, 'Applications', 'PimpampumMenuBar.app');
@@ -670,7 +671,6 @@ function createConcretePackagedProvider(
         ) {
           rmSync(stagingRoot, { recursive: true, force: true });
         }
-        stagedAppPath = '';
       }
     },
   };

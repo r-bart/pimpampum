@@ -655,9 +655,7 @@ async function executeCli(
   }
 
   if (command === 'connections') {
-    const input = parseCommandArguments(describe(command), args);
-    if (input.positional.length > 0)
-      throw badArgument(describe(command), 'connections takes no arguments');
+    parseCommandArguments(describe(command), args);
     printBoundary(runtime, await callBoundary(() => connectionsRuntime(runtime).list()));
     return null;
   }

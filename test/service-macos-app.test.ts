@@ -349,6 +349,203 @@ describe('macOS menu app service integration', () => {
     ).toThrow(/symlinks/);
   });
 
+  it('rejects hostile embedded runtime roots and entries before registration', async () => {
+    for (const variant of ['root-symlink', 'child-symlink', 'child-fifo'] as const) {
+      const root = fixture(`embedded-${variant}`);
+      const runtime = join(root.sourceApp, 'Contents', 'Resources', 'PimpampumRuntime');
+      if (variant === 'root-symlink') symlinkSync('/tmp', runtime);
+      else {
+        mkdirSync(runtime);
+        if (variant === 'child-symlink') symlinkSync('/tmp', join(runtime, 'linked'));
+        else execFileSync('/usr/bin/mkfifo', [join(runtime, 'named-pipe')]);
+      }
+      await expect(
+        testDesktopAdapter(root).afterInstall!(
+          adapterContext(root, async () => success()),
+          [],
+        ),
+      ).rejects.toThrow(/embedded macOS runtime/iu);
+    }
+  });
+
+  it('rejects an unsafe installed runtime and reports unsafe bootstrap rollback', async () => {
+    const occupied = fixture('embedded-occupied-destination');
+    const occupiedSource = join(occupied.sourceApp, 'Contents', 'Resources', 'PimpampumRuntime');
+    mkdirSync(occupiedSource);
+    writeFileSync(join(occupiedSource, 'node'), 'runtime');
+    const occupiedDestination = join(
+      occupied.home,
+      'Applications',
+      'PimpampumMenuBar.app',
+      'Contents',
+      'Resources',
+      'PimpampumRuntime',
+    );
+    mkdirSync(join(occupiedDestination, '..'), { recursive: true });
+    writeFileSync(occupiedDestination, 'not a directory');
+    await expect(
+      testDesktopAdapter(occupied).afterInstall!(
+        adapterContext(occupied, async () => success()),
+        [],
+      ),
+    ).rejects.toThrow(/regular directory/iu);
+
+    const rollback = fixture('embedded-unsafe-rollback');
+    const rollbackSource = join(rollback.sourceApp, 'Contents', 'Resources', 'PimpampumRuntime');
+    mkdirSync(rollbackSource);
+    writeFileSync(join(rollbackSource, 'node'), 'runtime');
+    const rollbackDestination = join(
+      rollback.home,
+      'Applications',
+      'PimpampumMenuBar.app',
+      'Contents',
+      'Resources',
+      'PimpampumRuntime',
+    );
+    const runCommand = vi.fn<RunCommand>(async (executable) => {
+      if (executable === '/usr/bin/open') {
+        rmSync(rollbackDestination, { recursive: true });
+        symlinkSync('/tmp', rollbackDestination);
+      }
+      return success();
+    });
+    const error = await testDesktopAdapter(rollback).afterInstall!(
+      adapterContext(rollback, runCommand),
+      [],
+    ).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(String(error)).toMatch(/bootstrap rollback/iu);
+  });
+
+  it('refuses to remove an unsafe embedded runtime during uninstall cleanup', async () => {
+    const root = fixture('embedded-unsafe-remove');
+    const destination = join(
+      root.home,
+      'Applications',
+      'PimpampumMenuBar.app',
+      'Contents',
+      'Resources',
+      'PimpampumRuntime',
+    );
+    mkdirSync(join(destination, '..'), { recursive: true });
+    symlinkSync('/tmp', destination);
+    await expect(
+      testDesktopAdapter(root).afterUninstall!(
+        adapterContext(root, async () => success()),
+        [],
+      ),
+    ).rejects.toThrow(/unsafe embedded runtime/iu);
+  });
+
+  it('replaces and rolls back an existing embedded runtime transactionally', async () => {
+    for (const variant of ['commit', 'rollback'] as const) {
+      const root = fixture(`embedded-existing-${variant}`);
+      const source = join(root.sourceApp, 'Contents', 'Resources', 'PimpampumRuntime');
+      mkdirSync(source);
+      writeFileSync(join(source, 'runtime.txt'), 'new runtime');
+      const destination = join(
+        root.home,
+        'Applications',
+        'PimpampumMenuBar.app',
+        'Contents',
+        'Resources',
+        'PimpampumRuntime',
+      );
+      mkdirSync(destination, { recursive: true });
+      writeFileSync(join(destination, 'runtime.txt'), 'old runtime');
+      const runCommand = vi.fn<RunCommand>(async (executable, arguments_) => {
+        if (
+          variant === 'commit' &&
+          executable === '/usr/bin/open' &&
+          arguments_.includes('--register-login-item')
+        ) {
+          const request = JSON.parse(
+            readFileSync(join(root.data, 'login-registration-request.json'), 'utf8'),
+          ) as { requestId: string; requestedAt: string };
+          writeFileSync(
+            join(root.data, 'login-registration-acknowledgement.json'),
+            JSON.stringify({
+              requestId: request.requestId,
+              createdAt: request.requestedAt,
+              status: 'enabled',
+              registrationChanged: false,
+            }),
+          );
+        }
+        return success();
+      });
+      const operation = testDesktopAdapter(root).afterInstall!(
+        adapterContext(root, runCommand),
+        [],
+      );
+      if (variant === 'commit') {
+        await expect(operation).resolves.toMatchObject({ loginItem: 'enabled' });
+        expect(readFileSync(join(destination, 'runtime.txt'), 'utf8')).toBe('new runtime');
+      } else {
+        await expect(operation).rejects.toThrow(/timed out/iu);
+        expect(readFileSync(join(destination, 'runtime.txt'), 'utf8')).toBe('old runtime');
+      }
+    }
+  });
+
+  it('removes a regular embedded runtime during uninstall cleanup', async () => {
+    const root = fixture('embedded-regular-remove');
+    const destination = join(
+      root.home,
+      'Applications',
+      'PimpampumMenuBar.app',
+      'Contents',
+      'Resources',
+      'PimpampumRuntime',
+    );
+    mkdirSync(destination, { recursive: true });
+    writeFileSync(join(destination, 'runtime.txt'), 'runtime');
+    await testDesktopAdapter(root).afterUninstall!(
+      adapterContext(root, async () => success()),
+      [],
+    );
+    expect(existsSync(destination)).toBe(false);
+  });
+
+  it('aggregates login unregistration failure after post-registration cleanup fails', async () => {
+    const root = fixture('post-registration-cleanup-failure');
+    const applications = join(root.home, 'Applications');
+    const legacyRoot = join(applications, 'Pimpampum.app');
+    mkdirSync(legacyRoot, { recursive: true });
+    chmodSync(applications, 0o500);
+    const runCommand = vi.fn<RunCommand>(async (executable, arguments_) => {
+      if (executable === '/usr/bin/open' && arguments_.includes('--register-login-item')) {
+        const request = JSON.parse(
+          readFileSync(join(root.data, 'login-registration-request.json'), 'utf8'),
+        ) as { requestId: string; requestedAt: string };
+        writeFileSync(
+          join(root.data, 'login-registration-acknowledgement.json'),
+          JSON.stringify({
+            requestId: request.requestId,
+            createdAt: request.requestedAt,
+            status: 'enabled',
+            registrationChanged: true,
+          }),
+        );
+      }
+      if (executable === '/usr/bin/open' && arguments_.includes('--unregister-login-item')) {
+        return { exitCode: 1, stdout: '', stderr: 'unregistration denied' };
+      }
+      return success();
+    });
+    const error = await testDesktopAdapter(root).afterInstall!(
+      adapterContext(root, runCommand),
+      [],
+    ).catch((caught: unknown) => caught);
+    chmodSync(applications, 0o700);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ message: expect.stringMatching(/unregister/iu) }),
+      ]),
+    );
+  });
+
   it('rejects incomplete and non-regular app bundle contents', () => {
     for (const missing of [
       join('Contents', 'MacOS', 'PimpampumMenuBar'),

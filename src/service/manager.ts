@@ -507,7 +507,6 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
         await adapter.afterUninstall?.(context, artifacts);
       } catch (error) {
         await rollbackPrepared(error);
-        throw error;
       }
 
       return {
@@ -573,7 +572,9 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
             ? undefined
             : await adapter.prepareDeactivationRollback?.(context, artifacts);
           try {
-            if (!runningBefore) {
+            if (runningBefore) {
+              registrationRepaired = false;
+            } else {
               await repairRegistration(adapter, context, artifacts);
               registrationRepaired = true;
             }

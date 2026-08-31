@@ -67,6 +67,9 @@ function removalDependencies(root: string): InstallationLifecycleDependencies & 
       removeOwned: vi.fn(async () => {
         events.push('service.remove');
       }),
+      finalizeRemoval: vi.fn(async () => {
+        events.push('service.finalize');
+      }),
     },
     connectors: {
       reconcileOwned: vi.fn(async () => undefined),
@@ -109,6 +112,18 @@ afterEach(() => {
 });
 
 describe('connector-aware reversible installation removal', () => {
+  it('rejects an invalid existing receipt before staging or stopping an update', async () => {
+    const root = temporaryDirectory();
+    const dependencies = removalDependencies(root);
+    dependencies.previous.serviceCommand = [join(root, 'runtime/bin/node')];
+
+    await expect(
+      createInstallationLifecycle(dependencies).update({ targetVersion: '3.0.0' }),
+    ).rejects.toThrow(/service command is incomplete/iu);
+    expect(dependencies.runtime.stage).not.toHaveBeenCalled();
+    expect(dependencies.service.stop).not.toHaveBeenCalled();
+  });
+
   it('disconnects only proven-owned routes and preserves every canonical data byte', async () => {
     const root = temporaryDirectory();
     const dependencies = removalDependencies(root);
@@ -142,6 +157,7 @@ describe('connector-aware reversible installation removal', () => {
       'runtime.remove',
       'receipt.remove',
       'runtime.finalize',
+      'service.finalize',
     ]);
     for (const [relative, contents] of Object.entries(preserved)) {
       expect(readFileSync(join(dependencies.dataDirectory, relative))).toEqual(contents);
@@ -196,6 +212,59 @@ describe('connector-aware reversible installation removal', () => {
     );
     expect(dependencies.receiptBytes.value).toEqual(originalReceipt);
   });
+
+  it.each([
+    ['service stop', 'service.stop'],
+    ['connector disconnect', 'connectors.disconnect'],
+    ['service artifact removal', 'service.remove'],
+    ['runtime quarantine removal', 'runtime.remove'],
+    ['receipt removal', 'receipt.remove'],
+    ['runtime quarantine finalization', 'runtime.finalize'],
+    ['service removal finalization', 'service.finalize'],
+  ] as const)(
+    'rolls back a failure during %s without touching preserved data',
+    async (_label, phase) => {
+      const root = temporaryDirectory();
+      const dependencies = removalDependencies(root);
+      const preservedPath = join(dependencies.dataDirectory, 'pimpampum.sqlite');
+      const preservedBytes = Buffer.from([0, 255, 1, 2, 3]);
+      mkdirSync(dependencies.dataDirectory, { recursive: true });
+      writeFileSync(preservedPath, preservedBytes);
+
+      const operations = {
+        'service.stop': dependencies.service.stop,
+        'connectors.disconnect': dependencies.connectors.disconnectOwned,
+        'service.remove': dependencies.service.removeOwned,
+        'runtime.remove': dependencies.runtime.removeOwned,
+        'receipt.remove': dependencies.receipt.remove,
+        'runtime.finalize': dependencies.runtime.finalizeRemoval!,
+        'service.finalize': dependencies.service.finalizeRemoval!,
+      };
+      vi.mocked(operations[phase]).mockRejectedValueOnce(new Error(`${phase} fault`));
+
+      await expect(createInstallationLifecycle(dependencies).remove()).rejects.toThrow(
+        `${phase} fault`,
+      );
+      expect(readFileSync(preservedPath)).toEqual(preservedBytes);
+
+      if (phase !== 'service.stop') {
+        expect(dependencies.service.restore).toHaveBeenCalledWith(dependencies.previous);
+      }
+      if (phase !== 'service.stop' && phase !== 'connectors.disconnect') {
+        expect(dependencies.connectors.restoreOwned).toHaveBeenCalledWith({
+          codex: { snapshot: 'owned-codex-route' },
+        });
+      }
+      if (
+        phase === 'runtime.remove' ||
+        phase === 'receipt.remove' ||
+        phase === 'runtime.finalize' ||
+        phase === 'service.finalize'
+      ) {
+        expect(dependencies.runtime.restore).toHaveBeenCalledWith('2.0.0');
+      }
+    },
+  );
 });
 
 describe('prepared service uninstall transaction', () => {

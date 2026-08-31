@@ -112,11 +112,7 @@ export function parseRuntimeTargetId(value: unknown): RuntimeTarget {
   }
   const platform = targetId.slice(0, separator);
   const architecture = targetId.slice(separator + 1);
-  const target = parseRuntimeTarget(platform, architecture, 'target id');
-  if (runtimeTargetId(target) !== targetId) {
-    fail('target id is not canonical');
-  }
-  return target;
+  return parseRuntimeTarget(platform, architecture, 'target id');
 }
 
 export function validateRuntimeRelativePath(value: unknown, label = 'file path'): string {

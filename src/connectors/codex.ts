@@ -136,8 +136,8 @@ export function planCodexConnection(input: {
     };
   }
   if (state === 'conflict') {
-    const reviewedEntryFingerprint =
-      input.inspection === null ? undefined : fingerprintCommand(input.inspection);
+    // `classifyConnectorOwnership` can only return conflict for a present entry.
+    const reviewedEntryFingerprint = fingerprintCommand(input.inspection as HostEntry);
     if (
       input.conflictDecision === 'replace' &&
       input.inspection?.restorable !== false &&
@@ -147,7 +147,7 @@ export function planCodexConnection(input: {
       return {
         ...plan,
         conflictDecision: 'replace',
-        ...(reviewedEntryFingerprint === undefined ? {} : { reviewedEntryFingerprint }),
+        reviewedEntryFingerprint,
         mutations: [
           removeInvocation(input.executable),
           addInvocation(input.executable, input.launcherPath),
@@ -160,7 +160,7 @@ export function planCodexConnection(input: {
     return {
       ...plan,
       ...(input.conflictDecision === undefined ? {} : { conflictDecision: input.conflictDecision }),
-      ...(reviewedEntryFingerprint === undefined ? {} : { reviewedEntryFingerprint }),
+      reviewedEntryFingerprint,
       requiresConflictDecision: input.conflictDecision === undefined,
       summary:
         input.conflictDecision === 'replace'

@@ -277,7 +277,7 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
   }
 
   async function completePhase(state: SetupJournal, phase: string): Promise<void> {
-    if (!state.completedPhases.includes(phase)) state.completedPhases.push(phase);
+    state.completedPhases.push(phase);
     state.updatedAt = dependencies.now();
     stateStore.write(state);
     await progress(state, phase, 'completed');
@@ -873,6 +873,7 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
   async function installTarget(targetVersion: string): Promise<void> {
     assertVersion(targetVersion);
     const previous = await dependencies.receipt.read();
+    validatePrevious(previous);
     const connectorEntriesBefore = await dependencies.connectors.snapshotOwned();
     let serviceStopAttempted = false;
     let runtimeActivationAttempted = false;
@@ -901,16 +902,31 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
         runtimeKind: 'packaged',
       });
     } catch (error) {
+      const rollbackErrors: unknown[] = [error];
+      const attempt = async (operation: () => Promise<void>): Promise<void> => {
+        try {
+          await operation();
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      };
       if (runtimeActivationAttempted) {
-        await dependencies.runtime.restore(previous.runtimeVersion).catch(() => undefined);
+        await attempt(() => dependencies.runtime.restore(previous.runtimeVersion));
       }
       if (serviceStopAttempted) {
-        await dependencies.service.restore(previous).catch(() => undefined);
+        await attempt(() => dependencies.service.restore(previous));
       }
       if (serviceStopAttempted) {
-        await dependencies.connectors.restoreOwned(connectorEntriesBefore).catch(() => undefined);
+        await attempt(() => dependencies.connectors.restoreOwned(connectorEntriesBefore));
       }
-      if (commitAttempted) await dependencies.receipt.commit(previous).catch(() => undefined);
+      if (commitAttempted) await attempt(() => dependencies.receipt.commit(previous));
+      if (rollbackErrors.length > 1) {
+        const message = error instanceof Error ? error.message : 'Installation update failed';
+        throw new AggregateError(
+          rollbackErrors,
+          `${message}; installation update rollback was incomplete`,
+        );
+      }
       throw error;
     }
   }
@@ -942,17 +958,13 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
         const manualInstructions = safeManualConnectorInstructions(
           removalPlan.unprovenConnectorIds,
         );
-        let serviceStopAttempted = false;
         let connectorsAttempted = false;
-        let serviceRemovalAttempted = false;
         let runtimeRemovalAttempted = false;
         let receiptRemovalAttempted = false;
         try {
-          serviceStopAttempted = true;
           await dependencies.service.stop();
           connectorsAttempted = true;
           await dependencies.connectors.disconnectOwned(removalPlan.ownedEntries);
-          serviceRemovalAttempted = true;
           await dependencies.service.removeOwned();
           runtimeRemovalAttempted = true;
           await dependencies.runtime.removeOwned();
@@ -973,9 +985,7 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
           if (runtimeRemovalAttempted) {
             await attempt(() => dependencies.runtime.restore(previous.runtimeVersion));
           }
-          if (serviceStopAttempted || serviceRemovalAttempted) {
-            await attempt(() => dependencies.service.restore(previous));
-          }
+          await attempt(() => dependencies.service.restore(previous));
           if (connectorsAttempted) {
             await attempt(() => dependencies.connectors.restoreOwned(removalPlan.ownedEntries));
           }

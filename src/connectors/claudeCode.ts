@@ -153,8 +153,8 @@ export function planClaudeCodeConnection(input: ClaudeCodePlanInput): Connection
       state,
       'Claude Code already has a different MCP entry with this name; explicit resolution is required.',
     );
-    const reviewedEntryFingerprint =
-      input.inspection === null ? undefined : fingerprintCommand(input.inspection);
+    // `classifyConnectorOwnership` can only return conflict for a present entry.
+    const reviewedEntryFingerprint = fingerprintCommand(input.inspection as HostEntry);
     if (
       input.conflictDecision === 'replace' &&
       input.inspection?.restorable !== false &&
@@ -164,7 +164,7 @@ export function planClaudeCodeConnection(input: ClaudeCodePlanInput): Connection
       return {
         ...plan,
         conflictDecision: 'replace',
-        ...(reviewedEntryFingerprint === undefined ? {} : { reviewedEntryFingerprint }),
+        reviewedEntryFingerprint,
         selectedByDefault: true,
         requiresConflictDecision: false,
         mutations: [
@@ -178,7 +178,7 @@ export function planClaudeCodeConnection(input: ClaudeCodePlanInput): Connection
     return {
       ...plan,
       ...(input.conflictDecision === undefined ? {} : { conflictDecision: input.conflictDecision }),
-      ...(reviewedEntryFingerprint === undefined ? {} : { reviewedEntryFingerprint }),
+      reviewedEntryFingerprint,
       requiresConflictDecision: input.conflictDecision === undefined,
       summary:
         input.conflictDecision === 'replace'
@@ -204,29 +204,22 @@ export function planClaudeCodeConnection(input: ClaudeCodePlanInput): Connection
     };
   }
 
-  if (state === 'notConnected' || state === 'ownedStale') {
-    return {
-      connectorId,
-      state,
-      selectedByDefault: true,
-      requiresConflictDecision: false,
-      mutations:
-        state === 'ownedStale'
-          ? [
-              removeInvocation(input.executable),
-              addInvocation(input.executable, input.launcherPath),
-            ]
-          : [addInvocation(input.executable, input.launcherPath)],
-      approvalPolicy: 'hostDefault',
-      newSessionRequired: true,
-      summary:
-        state === 'ownedStale'
-          ? 'The owned Claude Code MCP entry will be repaired through the Claude Code CLI.'
-          : 'Pimpampum will be added to Claude Code through the Claude Code CLI.',
-    };
-  }
-
-  return neutralPlan(state, 'Claude Code configuration is unavailable; no changes are planned.');
+  // The ownership classifier's only remaining states are notConnected and ownedStale.
+  const repairingOwnedEntry = state === 'ownedStale';
+  return {
+    connectorId,
+    state,
+    selectedByDefault: true,
+    requiresConflictDecision: false,
+    mutations: repairingOwnedEntry
+      ? [removeInvocation(input.executable), addInvocation(input.executable, input.launcherPath)]
+      : [addInvocation(input.executable, input.launcherPath)],
+    approvalPolicy: 'hostDefault',
+    newSessionRequired: true,
+    summary: repairingOwnedEntry
+      ? 'The owned Claude Code MCP entry will be repaired through the Claude Code CLI.'
+      : 'Pimpampum will be added to Claude Code through the Claude Code CLI.',
+  };
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

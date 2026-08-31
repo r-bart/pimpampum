@@ -17,6 +17,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import type { Stats } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, normalize } from 'node:path';
 import type { CommandInvocation } from './types.js';
 
@@ -83,10 +84,14 @@ function assertInvocation(invocation: CommandInvocation): void {
   }
 }
 
-function terminateProcessGroup(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+function terminateProcessGroup(
+  child: ReturnType<typeof spawn>,
+  signal: NodeJS.Signals,
+  platform: NodeJS.Platform,
+): void {
   if (child.pid === undefined) return;
   try {
-    if (process.platform === 'win32') child.kill(signal);
+    if (platform === 'win32') child.kill(signal);
     else process.kill(-child.pid, signal);
   } catch {
     try {
@@ -99,7 +104,14 @@ function terminateProcessGroup(child: ReturnType<typeof spawn>, signal: NodeJS.S
 
 export async function runBoundedHostCommand(
   invocation: CommandInvocation,
-  options: { timeoutMilliseconds: number; maxOutputBytes?: number },
+  options: {
+    timeoutMilliseconds: number;
+    maxOutputBytes?: number;
+    /** Test seam for deterministic process lifecycle failures. */
+    spawnProcess?: typeof spawn;
+    /** Test seam for the platform-specific process-group signal branch. */
+    platform?: NodeJS.Platform;
+  },
 ): Promise<BoundedCommandResult> {
   assertInvocation(invocation);
   const timeoutMilliseconds = positiveInteger(options.timeoutMilliseconds, 'Command timeout');
@@ -109,7 +121,7 @@ export async function runBoundedHostCommand(
   );
 
   return new Promise((resolve, reject) => {
-    const child = spawn(invocation.executable, invocation.arguments, {
+    const child = (options.spawnProcess ?? spawn)(invocation.executable, invocation.arguments, {
       detached: process.platform !== 'win32',
       env: sanitizedHostEnvironment(invocation.environment),
       shell: false,
@@ -124,9 +136,9 @@ export async function runBoundedHostCommand(
     const terminate = (error: Error) => {
       if (failure !== null) return;
       failure = error;
-      terminateProcessGroup(child, 'SIGTERM');
+      terminateProcessGroup(child, 'SIGTERM', options.platform ?? process.platform);
       killTimer = setTimeout(
-        () => terminateProcessGroup(child, 'SIGKILL'),
+        () => terminateProcessGroup(child, 'SIGKILL', options.platform ?? process.platform),
         TERMINATION_GRACE_MILLISECONDS,
       );
       killTimer.unref();
@@ -211,7 +223,7 @@ export async function detectExecutable(input: {
     arguments: ['--version'],
     environment: sanitizedHostEnvironment(process.env, input.path),
   };
-  let timer: NodeJS.Timeout | undefined;
+  let timer!: NodeJS.Timeout;
   try {
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(
@@ -231,8 +243,13 @@ export async function detectExecutable(input: {
   } catch {
     return { executable, supported: false };
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
+    clearTimeout(timer);
   }
+}
+
+export interface ConfigurationReadTestHooks {
+  metadata?(descriptor: number, actual: Stats): Stats;
+  contents?(descriptor: number, actual: Buffer): Buffer;
 }
 
 function assertRegularConfiguration(path: string): ReturnType<typeof lstatSync> {
@@ -249,6 +266,7 @@ function assertRegularConfiguration(path: string): ReturnType<typeof lstatSync> 
 function readConfiguration(
   path: string,
   maxBytes = DEFAULT_MAX_CONFIG_BYTES,
+  testHooks?: ConfigurationReadTestHooks,
 ): {
   contents: Buffer;
   mode: number;
@@ -258,15 +276,17 @@ function readConfiguration(
   positiveInteger(maxBytes, 'Host configuration size limit');
   assertRegularConfiguration(path);
   const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  let metadata: ReturnType<typeof fstatSync>;
+  let metadata: Stats;
   let contents: Buffer;
   try {
-    metadata = fstatSync(descriptor);
+    const actualMetadata = fstatSync(descriptor);
+    metadata = testHooks?.metadata?.(descriptor, actualMetadata) ?? actualMetadata;
     if (!metadata.isFile()) throw new Error('Host configuration must be a regular file');
     if (metadata.size > maxBytes) {
       throw new Error('Host configuration exceeds the bounded size limit');
     }
-    contents = readFileSync(descriptor);
+    const actualContents = readFileSync(descriptor);
+    contents = testHooks?.contents?.(descriptor, actualContents) ?? actualContents;
   } finally {
     closeSync(descriptor);
   }
@@ -293,8 +313,10 @@ export function configurationRevision(path: string): string {
 export function readHostConfiguration(
   path: string,
   maxBytes = DEFAULT_MAX_CONFIG_BYTES,
+  /** Test seam for deterministic TOCTOU read states. */
+  testHooks?: ConfigurationReadTestHooks,
 ): { value: unknown; revision: string; mode: number } {
-  const { value, revision, mode } = readConfiguration(path, maxBytes);
+  const { value, revision, mode } = readConfiguration(path, maxBytes, testHooks);
   return { value, revision, mode };
 }
 
@@ -324,6 +346,8 @@ export async function replaceHostConfigurationEntry(input: {
   expectedRevision: string | null;
   mode: number;
   update(current: unknown): unknown;
+  /** Test seam for an I/O failure immediately after the temporary descriptor opens. */
+  afterTemporaryOpen?: () => void;
 }): Promise<{ revision: string }> {
   if (!isAbsolute(input.path) || input.path.includes('\0')) {
     throw new Error('Host configuration path must be absolute');
@@ -360,6 +384,7 @@ export async function replaceHostConfigurationEntry(input: {
       constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
       outputMode,
     );
+    input.afterTemporaryOpen?.();
     writeFileSync(descriptor, contents);
     fsyncSync(descriptor);
     closeSync(descriptor);

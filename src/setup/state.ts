@@ -567,7 +567,6 @@ function recoverStaleLock(path: string): boolean {
     throw new Error('Setup lifecycle lock must be private');
   }
   const value = readPrivateJsonFile(path, 'Setup lifecycle lock');
-  if (value === null) return true;
   if (
     !isRecord(value) ||
     !Number.isSafeInteger(value.pid) ||

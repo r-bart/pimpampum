@@ -16,7 +16,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { createRuntimeLaunchers } from './launchers.js';
 import { resolveRuntimeLayout } from './layout.js';
@@ -33,9 +33,11 @@ import type {
 const MAXIMUM_UNPACKED_BYTES = 175 * 1024 * 1024;
 const RECEIPT_NAME = 'runtime-install-receipt.json';
 const JOURNAL_NAME = 'runtime-install-journal.json';
+const REMOVAL_JOURNAL_NAME = 'runtime-removal-journal.json';
 const MAXIMUM_METADATA_BYTES = 256 * 1024;
+const REMOVAL_QUARANTINE_NAME = /^\.pimpampum-remove-[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/u;
 
-type FileSnapshot = { content: string; mode: number } | null;
+type FileSnapshot = { content: string; mode: 0o600 | 0o755 } | null;
 
 interface ActivationJournal {
   schemaVersion: 1;
@@ -43,6 +45,18 @@ interface ActivationJournal {
   candidateVersion: string;
   finalDirectory: string;
   createdFinal: boolean;
+  controlLauncher: FileSnapshot;
+  mcpLauncher: FileSnapshot;
+  receipt: FileSnapshot;
+}
+
+interface RemovalJournal {
+  schemaVersion: 1;
+  phase: 'prepared' | 'committed';
+  currentVersion: string;
+  targetId: string;
+  quarantineRoot: string;
+  moved: { original: string; quarantined: string }[];
   controlLauncher: FileSnapshot;
   mcpLauncher: FileSnapshot;
   receipt: FileSnapshot;
@@ -107,10 +121,7 @@ function assertRegularDirectory(path: string, label: string): void {
 }
 
 function relativePath(root: string, path: string): string {
-  const value = relative(root, path).split(sep).join('/');
-  if (value.length === 0 || value.startsWith('../') || value === '..')
-    fail('runtime file escapes its root');
-  return value;
+  return relative(root, path).split(sep).join('/');
 }
 
 function walkTree(root: string): string[] {
@@ -173,13 +184,11 @@ function metadataFile(path: string, label: string): Buffer | null {
 function snapshot(path: string, label: string): FileSnapshot {
   const content = metadataFile(path, label);
   if (content === null) return null;
-  return { content: content.toString('base64'), mode: statSync(path).mode & 0o777 };
+  const mode = statSync(path).mode & 0o777;
+  return { content: content.toString('base64'), mode: mode as 0o600 | 0o755 };
 }
 
-function atomicWrite(path: string, content: Buffer | string, mode: number): void {
-  if (mode !== 0o600 && mode !== 0o755) {
-    fail(`atomic runtime metadata mode is invalid: ${mode.toString(8)}`);
-  }
+function atomicWrite(path: string, content: Buffer | string, mode: 0o600 | 0o755): void {
   privateDirectory(dirname(path));
   if (pathEntryExists(path) && lstatSync(path).isSymbolicLink())
     fail(`refusing to replace symlink ${path}`);
@@ -233,6 +242,10 @@ function receiptPath(dataDirectory: string): string {
 
 function journalPath(dataDirectory: string): string {
   return join(dataDirectory, JOURNAL_NAME);
+}
+
+function removalJournalPath(dataDirectory: string): string {
+  return join(dataDirectory, REMOVAL_JOURNAL_NAME);
 }
 
 function parseReceipt(
@@ -337,11 +350,169 @@ function readReceipt(input: {
   architecture: RuntimeArchitecture;
 }): RuntimeInstallReceipt | null {
   const path = receiptPath(input.dataDirectory);
+  const exists = pathEntryExists(path);
   const value = parseJson(path, 'Runtime receipt');
+  if (exists && value === null) fail('runtime receipt is invalid');
   if (value !== null && (statSync(path).mode & 0o777) !== 0o600) {
     fail('runtime receipt must be private (0600)');
   }
   return parseReceipt(value, input.homeDirectory, input.platform, input.architecture);
+}
+
+function parseRemovalSnapshot(value: unknown, label: string): FileSnapshot {
+  if (value === null) return null;
+  if (
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    value === null ||
+    typeof (value as Record<string, unknown>).content !== 'string' ||
+    !Number.isInteger((value as Record<string, unknown>).mode)
+  ) {
+    fail(`${label} snapshot is invalid`);
+  }
+  const snapshotValue = value as FileSnapshot;
+  if (
+    snapshotValue === null ||
+    (snapshotValue.mode !== 0o600 && snapshotValue.mode !== 0o755) ||
+    Buffer.from(snapshotValue.content, 'base64').toString('base64') !== snapshotValue.content
+  ) {
+    fail(`${label} snapshot is invalid`);
+  }
+  return snapshotValue;
+}
+
+function parseRemovalJournal(
+  value: unknown,
+  input: Omit<PruneOwnedRuntimeInput, 'keepVersions'>,
+): RemovalJournal {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    fail('runtime removal journal is invalid');
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.schemaVersion !== 1 ||
+    (candidate.phase !== 'prepared' && candidate.phase !== 'committed') ||
+    typeof candidate.currentVersion !== 'string' ||
+    typeof candidate.targetId !== 'string' ||
+    typeof candidate.quarantineRoot !== 'string' ||
+    !Array.isArray(candidate.moved)
+  ) {
+    fail('runtime removal journal schema is invalid');
+  }
+  const layout = resolveRuntimeLayout({
+    homeDirectory: input.homeDirectory,
+    platform: input.platform,
+    architecture: input.architecture,
+    version: candidate.currentVersion,
+  });
+  if (
+    candidate.targetId !== layout.targetId ||
+    dirname(candidate.quarantineRoot) !== layout.versionsDirectory ||
+    !REMOVAL_QUARANTINE_NAME.test(basename(candidate.quarantineRoot))
+  ) {
+    fail('runtime removal journal escapes the owned layout');
+  }
+  const receiptSnapshot = parseRemovalSnapshot(candidate.receipt, 'Runtime receipt');
+  if (receiptSnapshot === null || receiptSnapshot.mode !== 0o600) {
+    fail('runtime removal receipt snapshot is invalid');
+  }
+  let receiptValue: unknown;
+  try {
+    receiptValue = JSON.parse(Buffer.from(receiptSnapshot.content, 'base64').toString('utf8'));
+  } catch {
+    fail('runtime removal receipt snapshot contains invalid JSON');
+  }
+  const receipt = parseReceipt(
+    receiptValue,
+    input.homeDirectory,
+    input.platform,
+    input.architecture,
+  );
+  if (receipt === null || receipt.currentVersion !== candidate.currentVersion) {
+    fail('runtime removal receipt snapshot does not match its journal');
+  }
+  const ownedDirectories = new Set(receipt.ownedVersions.map(({ directory }) => directory));
+  const moved = candidate.moved.map((entry, index) => {
+    if (
+      typeof entry !== 'object' ||
+      entry === null ||
+      Array.isArray(entry) ||
+      typeof (entry as Record<string, unknown>).original !== 'string' ||
+      (entry as Record<string, unknown>).quarantined !==
+        join(candidate.quarantineRoot as string, String(index)) ||
+      !ownedDirectories.has((entry as Record<string, unknown>).original as string)
+    ) {
+      fail('runtime removal journal contains an unowned path');
+    }
+    return {
+      original: (entry as Record<string, unknown>).original as string,
+      quarantined: (entry as Record<string, unknown>).quarantined as string,
+    };
+  });
+  if (new Set(moved.map(({ original }) => original)).size !== moved.length) {
+    fail('runtime removal journal contains duplicate paths');
+  }
+  return {
+    schemaVersion: 1,
+    phase: candidate.phase,
+    currentVersion: candidate.currentVersion,
+    targetId: candidate.targetId,
+    quarantineRoot: candidate.quarantineRoot,
+    moved,
+    controlLauncher: parseRemovalSnapshot(candidate.controlLauncher, 'Control launcher'),
+    mcpLauncher: parseRemovalSnapshot(candidate.mcpLauncher, 'MCP launcher'),
+    receipt: receiptSnapshot,
+  };
+}
+
+export function recoverInterruptedRuntimeRemoval(
+  input: Omit<PruneOwnedRuntimeInput, 'keepVersions'>,
+): 'none' | 'rolled-back' | 'committed' {
+  const path = removalJournalPath(input.dataDirectory);
+  const exists = pathEntryExists(path);
+  const value = parseJson(path, 'Runtime removal journal');
+  if (!exists) return 'none';
+  if ((statSync(path).mode & 0o777) !== 0o600) {
+    fail('runtime removal journal must be private (0600)');
+  }
+  const journal = parseRemovalJournal(value, input);
+  if (journal.phase === 'prepared') {
+    for (const entry of [...journal.moved].reverse()) {
+      if (!pathEntryExists(entry.quarantined)) {
+        if (!pathEntryExists(entry.original)) {
+          fail('runtime removal recovery found missing active and quarantined bytes');
+        }
+        continue;
+      }
+      if (pathEntryExists(entry.original)) {
+        fail('runtime removal recovery found both active and quarantined bytes');
+      }
+      privateDirectory(dirname(entry.original));
+      renameSync(entry.quarantined, entry.original);
+    }
+    restoreJournalSnapshot(
+      resolveRuntimeLayout({
+        homeDirectory: input.homeDirectory,
+        platform: input.platform,
+        architecture: input.architecture,
+        version: journal.currentVersion,
+      }).controlLauncherPath,
+      journal.controlLauncher,
+    );
+    restoreJournalSnapshot(
+      resolveRuntimeLayout({
+        homeDirectory: input.homeDirectory,
+        platform: input.platform,
+        architecture: input.architecture,
+        version: journal.currentVersion,
+      }).mcpLauncherPath,
+      journal.mcpLauncher,
+    );
+    restoreJournalSnapshot(receiptPath(input.dataDirectory), journal.receipt);
+  }
+  rmSync(journal.quarantineRoot, { recursive: true, force: true });
+  rmSync(path, { force: true });
+  return journal.phase === 'prepared' ? 'rolled-back' : 'committed';
 }
 
 function verifyOwnedLaunchers(receipt: RuntimeInstallReceipt | null): void {
@@ -404,7 +575,8 @@ function restoreJournalSnapshot(path: string, value: unknown): void {
     value === null ||
     Array.isArray(value) ||
     typeof (value as Record<string, unknown>).content !== 'string' ||
-    !Number.isInteger((value as Record<string, unknown>).mode)
+    ((value as Record<string, unknown>).mode !== 0o600 &&
+      (value as Record<string, unknown>).mode !== 0o755)
   ) {
     fail('runtime activation journal snapshot is invalid');
   }
@@ -413,12 +585,13 @@ function restoreJournalSnapshot(path: string, value: unknown): void {
 
 function recoverInterruptedActivation(input: InstallRuntimeInput): void {
   const path = journalPath(input.dataDirectory);
+  const exists = pathEntryExists(path);
   const value = parseJson(path, 'Runtime activation journal');
-  if (value === null) return;
+  if (!exists) return;
   if ((statSync(path).mode & 0o777) !== 0o600) {
     fail('runtime activation journal must be private (0600)');
   }
-  if (typeof value !== 'object' || Array.isArray(value))
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
     fail('runtime activation journal is invalid');
   const journal = value as unknown as ActivationJournal;
   if (
@@ -476,16 +649,14 @@ function ownedVersionsWith(
     (receipt?.ownedVersions ?? []).map((owned) => [`${owned.version}:${owned.targetId}`, owned]),
   );
   byIdentity.set(`${version}:${targetId}`, { version, targetId, directory });
-  return [...byIdentity.values()].sort(
-    (left, right) =>
-      left.version.localeCompare(right.version) || left.targetId.localeCompare(right.targetId),
-  );
+  return [...byIdentity.values()].sort((left, right) => left.version.localeCompare(right.version));
 }
 
 export async function installRuntime(input: InstallRuntimeInput): Promise<RuntimeInstallation> {
   assertRegularDirectory(resolve(input.sourceDirectory), 'Runtime source');
   if (!isAbsolute(input.dataDirectory)) fail('Data directory must be absolute');
   privateDirectory(input.dataDirectory);
+  recoverInterruptedRuntimeRemoval(input);
   recoverInterruptedActivation(input);
   const manifest = parseRuntimeManifest(input.manifest, {
     platform: input.platform,
@@ -668,6 +839,7 @@ export function pruneOwnedRuntimeVersions(input: PruneOwnedRuntimeInput): string
 export function prepareOwnedRuntimeRemoval(
   input: Omit<PruneOwnedRuntimeInput, 'keepVersions'>,
 ): PreparedRuntimeRemoval | null {
+  recoverInterruptedRuntimeRemoval(input);
   const receipt = readReceipt(input);
   if (receipt === null) return null;
   verifyOwnedLaunchers(receipt);
@@ -684,7 +856,39 @@ export function prepareOwnedRuntimeRemoval(
   privateDirectory(layout.versionsDirectory);
   const quarantineRoot = join(layout.versionsDirectory, `.pimpampum-remove-${randomUUID()}`);
   privateDirectory(quarantineRoot);
-  const moved: { original: string; quarantined: string }[] = [];
+  const presentOwnedVersions = receipt.ownedVersions.filter((owned) => {
+    if (!pathEntryExists(owned.directory)) return false;
+    const metadata = lstatSync(owned.directory);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      fail('owned runtime path is unsafe');
+    }
+    return true;
+  });
+  const moved = presentOwnedVersions.map((owned, index) => ({
+    original: owned.directory,
+    quarantined: join(quarantineRoot, String(index)),
+  }));
+  const removalJournal: RemovalJournal = {
+    schemaVersion: 1,
+    phase: 'prepared',
+    currentVersion: receipt.currentVersion,
+    targetId: receipt.targetId,
+    quarantineRoot,
+    moved,
+    controlLauncher: controlSnapshot,
+    mcpLauncher: mcpSnapshot,
+    receipt: receiptSnapshot,
+  };
+  try {
+    atomicWrite(
+      removalJournalPath(input.dataDirectory),
+      `${JSON.stringify(removalJournal)}\n`,
+      0o600,
+    );
+  } catch (error) {
+    rmSync(quarantineRoot, { recursive: true, force: true });
+    throw error;
+  }
   let finished = false;
 
   const rollback = (): void => {
@@ -700,19 +904,13 @@ export function prepareOwnedRuntimeRemoval(
     restore(receipt.mcpLauncherPath, mcpSnapshot);
     restore(runtimeReceiptPath, receiptSnapshot);
     rmSync(quarantineRoot, { recursive: true, force: true });
+    rmSync(removalJournalPath(input.dataDirectory), { force: true });
     finished = true;
   };
 
   try {
-    for (const [index, owned] of receipt.ownedVersions.entries()) {
-      if (!pathEntryExists(owned.directory)) continue;
-      const metadata = lstatSync(owned.directory);
-      if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-        fail('owned runtime path is unsafe');
-      }
-      const quarantined = join(quarantineRoot, String(index));
-      renameSync(owned.directory, quarantined);
-      moved.push({ original: owned.directory, quarantined });
+    for (const entry of moved) {
+      renameSync(entry.original, entry.quarantined);
     }
     rmSync(receipt.controlLauncherPath, { force: true });
     rmSync(receipt.mcpLauncherPath, { force: true });
@@ -729,6 +927,11 @@ export function prepareOwnedRuntimeRemoval(
   return {
     commit() {
       if (finished) return;
+      atomicWrite(
+        removalJournalPath(input.dataDirectory),
+        `${JSON.stringify({ ...removalJournal, phase: 'committed' })}\n`,
+        0o600,
+      );
       rmSync(quarantineRoot, { recursive: true });
       for (const entry of moved) {
         removeEmptyParents(dirname(entry.original), layout.runtimeDirectory);
@@ -743,6 +946,7 @@ export function prepareOwnedRuntimeRemoval(
       } catch {
         // Preserve a non-empty runtime root containing unreceipted/user content.
       }
+      rmSync(removalJournalPath(input.dataDirectory), { force: true });
       finished = true;
     },
     rollback,
