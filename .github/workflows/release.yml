@@ -147,9 +147,6 @@ jobs:
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent platforms/macos/dist/PimpampumMenuBar.app "$submission"
           xcrun notarytool submit "$submission" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
           xcrun stapler staple platforms/macos/dist/PimpampumMenuBar.app
-          node scripts/check-macos-artifact.mjs \
-            platforms/macos/dist/PimpampumMenuBar.app \
-            --require-signature --require-notarization
           scripts/check-macos-distribution.sh
       - name: Approve and exercise the exact notarized artifact
         env:

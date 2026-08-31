@@ -230,6 +230,9 @@ describe('expanded macOS live release gates', () => {
     expect(nested).toBeGreaterThan(0);
     expect(notarize).toBeGreaterThan(nested);
     expect(approve).toBeGreaterThan(notarize);
+    expect(workflow.slice(notarize, approve)).not.toContain(
+      'node scripts/check-macos-artifact.mjs',
+    );
     expect(workflow.slice(approve)).toContain(
       '--approve --require-signature --require-notarization',
     );
