@@ -7,13 +7,7 @@
   "architecture": "arm64",
   "gitCommit": "99747317aa0ae9c2463fd3fc7127d3c222a318d1",
   "sourceInputSha256": "092c5b8ffad9e4bf29504ba300dbdc0ed75d41bb4c5e4b69a5be0d6ddcd66fdb",
-  "releaseSequence": [
-    "sign-nested-runtime",
-    "sign-outer-app",
-    "notarize",
-    "staple",
-    "approve"
-  ],
+  "releaseSequence": ["sign-nested-runtime", "sign-outer-app", "notarize", "staple", "approve"],
   "loginItem": "enabled",
   "versions": {
     "pimpampum": "1.2.10",
@@ -50,9 +44,7 @@
   "sessionRestart": {
     "required": true,
     "observedAfterNewSession": true,
-    "connectors": [
-      "codex"
-    ]
+    "connectors": ["codex"]
   },
   "checks": {
     "empty": true,
