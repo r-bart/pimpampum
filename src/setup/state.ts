@@ -12,6 +12,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -20,10 +21,14 @@ import {
   SETUP_SCHEMA_VERSION,
   type SetupConnectorResult,
   type SetupJournal,
+  type SetupPlan,
+  type SetupPlanStore,
   type SetupStateStore,
 } from './types.js';
 
 const stateFileName = 'setup-state.json';
+const planFileName = 'setup-plan.json';
+const lifecycleLockFileName = '.setup-lifecycle.lock';
 const maximumStateBytes = 1_000_000;
 const privateDirectoryMode = 0o700;
 const privateFileMode = 0o600;
@@ -39,6 +44,19 @@ function assertPrivateDirectory(dataDirectory: string): void {
     throw new Error('Setup data directory must be a regular private directory');
   }
   chmodSync(dataDirectory, privateDirectoryMode);
+}
+
+function assertSafeExistingDirectory(directory: string): boolean {
+  try {
+    const metadata = lstatSync(directory);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error('Setup data directory must be a regular private directory');
+    }
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 function assertStringArray(value: unknown, label: string): asserts value is string[] {
@@ -152,34 +170,115 @@ function parseSetupJournal(value: unknown): SetupJournal {
   };
 }
 
-function readStateFile(path: string): SetupJournal | null {
+function boundedString(value: unknown, label: string, maximum = 1_024): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > maximum ||
+    value.includes('\0')
+  ) {
+    throw new Error(`Invalid setup plan ${label}`);
+  }
+  return value;
+}
+
+function parseSetupPlan(value: unknown): SetupPlan {
+  if (!isRecord(value)) throw new Error('Invalid durable setup plan');
+  assertStringArray(value.selectedConnectors, 'selected connectors');
+  if (
+    value.selectedConnectors.some((id) => !SETUP_CONNECTOR_IDS.includes(id as never)) ||
+    new Set(value.selectedConnectors).size !== value.selectedConnectors.length
+  ) {
+    throw new Error('Invalid durable setup plan connector IDs');
+  }
+  if (!Array.isArray(value.changes) || value.changes.length > 64) {
+    throw new Error('Invalid durable setup plan changes');
+  }
+  const changes = value.changes.map((change) => {
+    if (!isRecord(change)) throw new Error('Invalid durable setup plan change');
+    const path = change.path;
+    if (
+      path !== undefined &&
+      (typeof path !== 'string' || path.length > 2_048 || path.includes('\0'))
+    ) {
+      throw new Error('Invalid durable setup plan path');
+    }
+    return {
+      kind: boundedString(change.kind, 'change kind', 128),
+      summary: boundedString(change.summary, 'change summary', 512),
+      ...(typeof path === 'string' ? { path } : {}),
+    };
+  });
+  if (!Array.isArray(value.conflicts) || value.conflicts.length > SETUP_CONNECTOR_IDS.length) {
+    throw new Error('Invalid durable setup plan conflicts');
+  }
+  const conflicts = value.conflicts.map((conflict) => {
+    if (!isRecord(conflict) || !SETUP_CONNECTOR_IDS.includes(conflict.connectorId as never)) {
+      throw new Error('Invalid durable setup plan conflict');
+    }
+    return {
+      connectorId: conflict.connectorId as SetupPlan['conflicts'][number]['connectorId'],
+      comparison: boundedString(conflict.comparison, 'conflict comparison', 512),
+    };
+  });
+  const revision = boundedString(value.revision, 'revision', 64);
+  if (!/^[a-f0-9]{64}$/u.test(revision)) throw new Error('Invalid durable setup plan revision');
+  if (value.requiresConfirmation !== true) {
+    throw new Error('Durable setup plan must require confirmation');
+  }
+  return {
+    operationId: boundedString(value.operationId, 'operation ID', 128),
+    revision,
+    selectedConnectors: value.selectedConnectors as SetupPlan['selectedConnectors'],
+    changes,
+    conflicts,
+    requiresConfirmation: true,
+  };
+}
+
+function readPrivateJsonFile(path: string, label: string): unknown | null {
+  if (!assertSafeExistingDirectory(dirname(path))) return null;
   if (!existsSync(path)) return null;
   const metadata = lstatSync(path);
   if (metadata.isSymbolicLink() || !metadata.isFile()) {
-    throw new Error('Setup state must be a regular file and not a symlink');
+    throw new Error(`${label} must be a regular file and not a symlink`);
   }
-  if (metadata.size > maximumStateBytes) throw new Error('Setup state exceeds the size limit');
+  if (metadata.size > maximumStateBytes) throw new Error(`${label} exceeds the size limit`);
   const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const opened = fstatSync(descriptor);
     if (!opened.isFile() || opened.dev !== metadata.dev || opened.ino !== metadata.ino) {
-      throw new Error('Setup state changed while it was being opened');
+      throw new Error(`${label} changed while it was being opened`);
     }
     const contents = readFileSync(descriptor, 'utf8');
     if (Buffer.byteLength(contents) > maximumStateBytes) {
-      throw new Error('Setup state exceeds the size limit');
+      throw new Error(`${label} exceeds the size limit`);
     }
-    return parseSetupJournal(JSON.parse(contents) as unknown);
+    return JSON.parse(contents) as unknown;
   } finally {
     closeSync(descriptor);
   }
 }
 
-function writeStateFile(path: string, state: SetupJournal): void {
+function readStateFile(path: string): SetupJournal | null {
+  const value = readPrivateJsonFile(path, 'Setup state');
+  return value === null ? null : parseSetupJournal(value);
+}
+
+function writePrivateJsonFile(path: string, value: unknown): void {
   const directory = dirname(path);
   assertPrivateDirectory(directory);
+  let previous: ReturnType<typeof lstatSync> | null = null;
+  try {
+    previous = lstatSync(path);
+    if (previous.isSymbolicLink() || !previous.isFile()) {
+      throw new Error('Private setup file must be a regular file and not a symlink');
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
   const temporaryPath = join(directory, `.setup-state.${process.pid}.${randomUUID()}.tmp`);
-  const contents = `${JSON.stringify(parseSetupJournal(state))}\n`;
+  const contents = `${JSON.stringify(value)}\n`;
   if (Buffer.byteLength(contents) > maximumStateBytes) {
     throw new Error('Setup state exceeds the size limit');
   }
@@ -195,6 +294,19 @@ function writeStateFile(path: string, state: SetupJournal): void {
     closeSync(descriptor);
     descriptor = null;
     chmodSync(temporaryPath, privateFileMode);
+    let current: ReturnType<typeof lstatSync> | null = null;
+    try {
+      current = lstatSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (
+      (previous === null && current !== null) ||
+      (previous !== null &&
+        (current === null || current.dev !== previous.dev || current.ino !== previous.ino))
+    ) {
+      throw new Error('Private setup file changed concurrently');
+    }
     renameSync(temporaryPath, path);
     const directoryDescriptor = openSync(directory, constants.O_RDONLY);
     try {
@@ -208,6 +320,25 @@ function writeStateFile(path: string, state: SetupJournal): void {
   }
 }
 
+function writeStateFile(path: string, state: SetupJournal): void {
+  writePrivateJsonFile(path, parseSetupJournal(state));
+}
+
+function removePrivateFile(path: string, label: string): void {
+  if (!assertSafeExistingDirectory(dirname(path))) return;
+  let metadata: ReturnType<typeof lstatSync>;
+  try {
+    metadata = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (metadata.isSymbolicLink() || !metadata.isFile()) {
+    throw new Error(`${label} must be a regular file and not a symlink`);
+  }
+  unlinkSync(path);
+}
+
 export function createSetupStateStore(dataDirectory: string): SetupStateStore {
   if (!isAbsolute(dataDirectory) || dataDirectory.includes('\0')) {
     throw new Error('Setup data directory must be an absolute, NUL-free path');
@@ -217,7 +348,7 @@ export function createSetupStateStore(dataDirectory: string): SetupStateStore {
     path,
     read: () => readStateFile(path),
     write: (state) => writeStateFile(path, state),
-    remove: () => rmSync(path, { force: true }),
+    remove: () => removePrivateFile(path, 'Setup state'),
   };
 }
 
@@ -226,4 +357,147 @@ export function readSetupState(dataDirectory: string): SetupJournal | null {
     throw new Error('Setup data directory must be an absolute, NUL-free path');
   }
   return readStateFile(join(dataDirectory, stateFileName));
+}
+
+export function createSetupPlanStore(dataDirectory: string): SetupPlanStore {
+  if (!isAbsolute(dataDirectory) || dataDirectory.includes('\0')) {
+    throw new Error('Setup data directory must be an absolute, NUL-free path');
+  }
+  const path = join(dataDirectory, planFileName);
+  return {
+    path,
+    read() {
+      const value = readPrivateJsonFile(path, 'Setup plan');
+      if (value === null) return null;
+      if (!isRecord(value) || value.schemaVersion !== SETUP_SCHEMA_VERSION) {
+        throw new Error('Unsupported durable setup plan schema');
+      }
+      return parseSetupPlan(value.plan);
+    },
+    write(plan) {
+      writePrivateJsonFile(path, {
+        schemaVersion: SETUP_SCHEMA_VERSION,
+        plan: parseSetupPlan(plan),
+      });
+    },
+    remove: () => removePrivateFile(path, 'Setup plan'),
+  };
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    throw error;
+  }
+}
+
+function recoverStaleLock(path: string): boolean {
+  let metadata: ReturnType<typeof lstatSync>;
+  try {
+    metadata = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
+  }
+  if (metadata.isSymbolicLink() || !metadata.isFile()) {
+    throw new Error('Setup lifecycle lock must be a regular file and not a symlink');
+  }
+  if ((metadata.mode & 0o077) !== 0) {
+    throw new Error('Setup lifecycle lock must be private');
+  }
+  const value = readPrivateJsonFile(path, 'Setup lifecycle lock');
+  if (value === null) return true;
+  if (
+    !isRecord(value) ||
+    !Number.isSafeInteger(value.pid) ||
+    (value.pid as number) <= 0 ||
+    typeof value.nonce !== 'string' ||
+    !/^[a-f0-9-]{36}$/u.test(value.nonce)
+  ) {
+    throw new Error('Setup lifecycle lock has an invalid owner');
+  }
+  if (processIsAlive(value.pid as number)) return false;
+  const current = lstatSync(path);
+  if (current.dev !== metadata.dev || current.ino !== metadata.ino) return false;
+  unlinkSync(path);
+  return true;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export function createSetupLifecycleLock(
+  dataDirectory: string,
+  options: { timeoutMilliseconds?: number; retryMilliseconds?: number } = {},
+): { run<T>(operation: () => Promise<T>): Promise<T> } {
+  if (!isAbsolute(dataDirectory) || dataDirectory.includes('\0')) {
+    throw new Error('Setup data directory must be an absolute, NUL-free path');
+  }
+  const timeoutMilliseconds = options.timeoutMilliseconds ?? 30_000;
+  const retryMilliseconds = options.retryMilliseconds ?? 25;
+  if (
+    !Number.isSafeInteger(timeoutMilliseconds) ||
+    timeoutMilliseconds <= 0 ||
+    !Number.isSafeInteger(retryMilliseconds) ||
+    retryMilliseconds <= 0
+  ) {
+    throw new Error('Setup lifecycle lock timing must use positive integers');
+  }
+  const path = join(dataDirectory, lifecycleLockFileName);
+  return {
+    async run<T>(operation: () => Promise<T>): Promise<T> {
+      assertPrivateDirectory(dataDirectory);
+      const nonce = randomUUID();
+      const startedAt = Date.now();
+      while (true) {
+        let descriptor: number | null = null;
+        let created = false;
+        try {
+          descriptor = openSync(
+            path,
+            constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+            privateFileMode,
+          );
+          created = true;
+          writeFileSync(
+            descriptor,
+            `${JSON.stringify({ schemaVersion: 1, pid: process.pid, nonce })}\n`,
+          );
+          fsyncSync(descriptor);
+          closeSync(descriptor);
+          descriptor = null;
+          break;
+        } catch (error) {
+          if (descriptor !== null) closeSync(descriptor);
+          if (created) {
+            try {
+              unlinkSync(path);
+            } catch {
+              // A failed lock write must not mask its original error.
+            }
+          }
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          if (recoverStaleLock(path)) continue;
+          if (Date.now() - startedAt >= timeoutMilliseconds) {
+            throw new Error('Timed out waiting for the setup lifecycle lock');
+          }
+          await delay(retryMilliseconds);
+        }
+      }
+      try {
+        return await operation();
+      } finally {
+        const owner = readPrivateJsonFile(path, 'Setup lifecycle lock');
+        if (isRecord(owner) && owner.nonce === nonce) {
+          removePrivateFile(path, 'Setup lifecycle lock');
+        }
+      }
+    },
+  };
 }

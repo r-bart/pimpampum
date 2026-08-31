@@ -10,6 +10,7 @@ import {
   type SetupConnectorResult,
   type SetupJournal,
   type SetupPlan,
+  type SetupPlanStore,
   type SetupProgressEvent,
   type SetupResult,
   type SetupStateStore,
@@ -42,6 +43,7 @@ export interface SetupCoordinatorDependencies {
   now(): string;
   onProgress?(event: SetupProgressEvent): void | Promise<void>;
   stateStore?: SetupStateStore;
+  planStore?: SetupPlanStore;
 }
 
 export interface InstallationLifecycleDependencies {
@@ -169,6 +171,7 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
 } {
   assertPrivatePath(dependencies.dataDirectory, 'Setup data directory');
   const stateStore = dependencies.stateStore ?? createSetupStateStore(dependencies.dataDirectory);
+  const planStore = dependencies.planStore;
   const plans = new Map<string, SetupPlan>();
 
   async function progress(
@@ -381,11 +384,15 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
       };
       const plan = { ...withoutRevision, revision: planRevision(withoutRevision) };
       plans.set(operationId, plan);
+      planStore?.write(plan);
       return plan;
     },
 
     async apply(input) {
-      const plan = plans.get(input.operationId);
+      const persistedPlan = planStore?.read() ?? null;
+      const plan =
+        plans.get(input.operationId) ??
+        (persistedPlan?.operationId === input.operationId ? persistedPlan : undefined);
       if (plan === undefined || plan.revision !== input.expectedRevision) {
         throw new Error('Setup plan is missing, stale, or changed');
       }

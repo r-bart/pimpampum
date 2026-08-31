@@ -477,6 +477,14 @@ Usage:
   pimpampum mcp
   pimpampum install [--service-only]
   pimpampum status
+  pimpampum setup plan [--connector <codex|claude-code>]...
+  pimpampum setup apply <operation-id> <revision> --yes [--replace <codex|claude-code>]...
+  pimpampum setup status
+  pimpampum setup resume
+  pimpampum connections
+  pimpampum connect [codex|claude-code] [--yes] [--replace] [--instructions]
+  pimpampum repair <codex|claude-code> --yes [--replace]
+  pimpampum disconnect <codex|claude-code> --yes
   pimpampum update:check
   pimpampum update
   pimpampum uninstall

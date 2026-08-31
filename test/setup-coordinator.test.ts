@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,7 +16,11 @@ import {
   type InstallationLifecycleDependencies,
   type SetupCoordinatorDependencies,
 } from '../src/setup/coordinator.js';
-import { createSetupStateStore } from '../src/setup/state.js';
+import {
+  createSetupLifecycleLock,
+  createSetupPlanStore,
+  createSetupStateStore,
+} from '../src/setup/state.js';
 import { SETUP_SCHEMA_VERSION, type InstallationSnapshot } from '../src/setup/types.js';
 
 const temporaryDirectories: string[] = [];
@@ -52,6 +64,68 @@ afterEach(() => {
 });
 
 describe('setup coordinator hardening', () => {
+  it('applies a reviewed plan from a fresh coordinator process boundary', async () => {
+    const root = temporaryDirectory();
+    const dependencies = setupDependencies(root);
+    const planStore = createSetupPlanStore(dependencies.dataDirectory);
+    const first = createSetupCoordinator({ ...dependencies, planStore });
+    const plan = await first.plan({ selectedConnectors: ['codex'] });
+
+    const second = createSetupCoordinator({ ...dependencies, planStore });
+    await expect(
+      second.apply({
+        operationId: plan.operationId,
+        expectedRevision: plan.revision,
+        confirmed: true,
+      }),
+    ).resolves.toMatchObject({ status: 'complete' });
+    expect(dependencies.connectors.codex.connect).toHaveBeenCalledOnce();
+    expect(readFileSync(planStore.path, 'utf8')).not.toMatch(/bearer|token|secret/iu);
+  });
+
+  it('serializes independent lock instances and recovers a dead private owner', async () => {
+    const root = temporaryDirectory();
+    const dataDirectory = join(root, 'data');
+    const first = createSetupLifecycleLock(dataDirectory, {
+      timeoutMilliseconds: 1_000,
+      retryMilliseconds: 5,
+    });
+    const second = createSetupLifecycleLock(dataDirectory, {
+      timeoutMilliseconds: 1_000,
+      retryMilliseconds: 5,
+    });
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstOperation = first.run(async () => {
+      events.push('first:start');
+      await held;
+      events.push('first:end');
+    });
+    await vi.waitFor(() => expect(events).toEqual(['first:start']));
+    const secondOperation = second.run(async () => {
+      events.push('second:start');
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(['first:start']);
+    releaseFirst();
+    await Promise.all([firstOperation, secondOperation]);
+    expect(events).toEqual(['first:start', 'first:end', 'second:start']);
+
+    writeFileSync(
+      join(dataDirectory, '.setup-lifecycle.lock'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        pid: 2_147_483_647,
+        nonce: '00000000-0000-4000-8000-000000000000',
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await expect(first.run(async () => 'recovered')).resolves.toBe('recovered');
+  });
+
   it('keeps planning filesystem-neutral and blocks a conflict introduced before apply', async () => {
     const root = temporaryDirectory();
     const dependencies = setupDependencies(root);

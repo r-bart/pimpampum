@@ -83,6 +83,13 @@ export interface SetupStateStore {
   remove(): void;
 }
 
+export interface SetupPlanStore {
+  readonly path: string;
+  read(): SetupPlan | null;
+  write(plan: SetupPlan): void;
+  remove(): void;
+}
+
 export interface InstallationSnapshot {
   runtimeVersion: string;
   serviceCommand: string[];
