@@ -1,10 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
-import { createSetupStateStore } from './state.js';
+import { createInstallationMigrationStateStore, createSetupStateStore } from './state.js';
 import {
   SETUP_CONNECTOR_IDS,
   SETUP_SCHEMA_VERSION,
   type InstallationSnapshot,
+  type InstallationMigrationJournal,
+  type InstallationMigrationPhase,
+  type InstallationMigrationStateStore,
+  type InstallationReceiptCapture,
   type SetupConflict,
   type SetupConnectorId,
   type SetupConnectorResult,
@@ -63,6 +67,8 @@ export interface InstallationLifecycleDependencies {
     activate(version: string): Promise<void>;
     restore(version: string): Promise<void>;
     removeOwned(): Promise<void>;
+    finalizeMigration?(previousVersion: string): Promise<void>;
+    finalizeRemoval?(): Promise<void>;
   };
   service: {
     stop(): Promise<void>;
@@ -71,18 +77,37 @@ export interface InstallationLifecycleDependencies {
     verify(): Promise<void>;
     restore(snapshot: InstallationSnapshot): Promise<void>;
     removeOwned(): Promise<void>;
+    finalizeRemoval?(): Promise<void>;
   };
   connectors: {
     reconcileOwned(): Promise<void>;
     snapshotOwned(): Promise<Record<string, unknown>>;
     restoreOwned(entries: Record<string, unknown>): Promise<void>;
-    disconnectOwned(): Promise<void>;
+    planRemoval?(): Promise<{
+      ownedEntries: Record<string, unknown>;
+      unprovenConnectorIds: string[];
+    }>;
+    disconnectOwned(entries?: Record<string, unknown>): Promise<void>;
   };
   receipt: {
     read(): Promise<InstallationSnapshot>;
     commit(snapshot: InstallationSnapshot): Promise<void>;
     remove(): Promise<void>;
+    capture?(): Promise<InstallationReceiptCapture>;
+    restore?(capture: InstallationReceiptCapture): Promise<void>;
   };
+  migrationStateStore?: InstallationMigrationStateStore;
+  now?(): string;
+}
+
+function safeManualConnectorInstructions(connectorIds: readonly string[]): string[] {
+  return [...new Set(connectorIds)]
+    .filter((id) => /^[a-z0-9-]{1,64}$/u.test(id))
+    .sort()
+    .map(
+      (id) =>
+        `The ${id} entry was left unchanged because Pimpampum could not prove ownership. Review only the Pimpampum entry in that agent's settings.`,
+    );
 }
 
 function assertPrivatePath(value: string, label: string): void {
@@ -180,14 +205,41 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
     expectedRevision: string;
     confirmed: boolean;
     conflictDecisions?: Partial<Record<SetupConnectorId, ConflictDecision>>;
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>;
   }): Promise<SetupResult>;
-  resume(): Promise<SetupResult>;
-  retryConnector(id: SetupConnectorId): Promise<SetupResult>;
+  resume(input?: {
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>;
+  }): Promise<SetupResult>;
+  retryConnector(
+    id: SetupConnectorId,
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>,
+  ): Promise<SetupResult>;
 } {
   assertPrivatePath(dependencies.dataDirectory, 'Setup data directory');
   const stateStore = dependencies.stateStore ?? createSetupStateStore(dependencies.dataDirectory);
   const planStore = dependencies.planStore;
   const plans = new Map<string, SetupPlan>();
+  const progressObservers = new Map<
+    string,
+    Set<(event: SetupProgressEvent) => void | Promise<void>>
+  >();
+
+  async function withProgressObserver<T>(
+    operationId: string,
+    observer: ((event: SetupProgressEvent) => void | Promise<void>) | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (observer === undefined) return operation();
+    const observers = progressObservers.get(operationId) ?? new Set();
+    observers.add(observer);
+    progressObservers.set(operationId, observers);
+    try {
+      return await operation();
+    } finally {
+      observers.delete(observer);
+      if (observers.size === 0) progressObservers.delete(operationId);
+    }
+  }
 
   async function progress(
     state: SetupJournal,
@@ -195,19 +247,23 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
     status: SetupProgressEvent['status'],
     diagnostic?: string,
   ): Promise<void> {
-    if (dependencies.onProgress === undefined) return;
     const connector = /^connector:(codex|claude-code)\./u.exec(phase)?.[1] as
       SetupConnectorId | undefined;
+    const event: SetupProgressEvent = {
+      schemaVersion: SETUP_SCHEMA_VERSION,
+      operationId: state.operationId,
+      phase,
+      status,
+      occurredAt: dependencies.now(),
+      ...(connector === undefined ? {} : { connectorId: connector }),
+      ...(diagnostic === undefined ? {} : { diagnostic }),
+    };
+    const observers = [
+      ...(dependencies.onProgress === undefined ? [] : [dependencies.onProgress]),
+      ...(progressObservers.get(state.operationId) ?? []),
+    ];
     try {
-      await dependencies.onProgress({
-        schemaVersion: SETUP_SCHEMA_VERSION,
-        operationId: state.operationId,
-        phase,
-        status,
-        occurredAt: dependencies.now(),
-        ...(connector === undefined ? {} : { connectorId: connector }),
-        ...(diagnostic === undefined ? {} : { diagnostic }),
-      });
+      await Promise.all(observers.map((observer) => observer(event)));
     } catch {
       // UI observers are non-owning and must never become part of the setup transaction.
     }
@@ -464,73 +520,75 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
       }
       if (!input.confirmed) throw new Error('Setup requires explicit confirmation');
       const decisions = input.conflictDecisions ?? {};
-      return dependencies.lifecycleLock.run(async () => {
-        const existing = stateStore.read();
-        if (existing?.status === 'running' && existing.operationId !== plan.operationId) {
-          throw new Error(
-            'Another durable setup operation must be resumed before applying a new plan',
-          );
-        }
-        if (existing?.operationId === plan.operationId) {
-          if (existing.revision !== plan.revision) {
-            throw new Error('Durable setup journal revision does not match the reviewed plan');
-          }
-          if (existing.status === 'running' || existing.status === 'conflict') {
-            existing.conflictDecisions = {
-              ...existing.conflictDecisions,
-              ...decisions,
-            };
-            const conflicts = await preflightConflicts(
-              existing.selectedConnectors,
-              existing.conflictDecisions,
-              existing.reviewedConflictFingerprints,
+      return withProgressObserver(plan.operationId, input.onProgress, () =>
+        dependencies.lifecycleLock.run(async () => {
+          const existing = stateStore.read();
+          if (existing?.status === 'running' && existing.operationId !== plan.operationId) {
+            throw new Error(
+              'Another durable setup operation must be resumed before applying a new plan',
             );
-            if (conflicts.length > 0) {
-              existing.status = 'conflict';
-              existing.phase = 'conflict';
+          }
+          if (existing?.operationId === plan.operationId) {
+            if (existing.revision !== plan.revision) {
+              throw new Error('Durable setup journal revision does not match the reviewed plan');
+            }
+            if (existing.status === 'running' || existing.status === 'conflict') {
+              existing.conflictDecisions = {
+                ...existing.conflictDecisions,
+                ...decisions,
+              };
+              const conflicts = await preflightConflicts(
+                existing.selectedConnectors,
+                existing.conflictDecisions,
+                existing.reviewedConflictFingerprints,
+              );
+              if (conflicts.length > 0) {
+                existing.status = 'conflict';
+                existing.phase = 'conflict';
+                existing.updatedAt = dependencies.now();
+                stateStore.write(existing);
+                return resultFromJournal(existing);
+              }
+              existing.status = 'running';
               existing.updatedAt = dependencies.now();
               stateStore.write(existing);
-              return resultFromJournal(existing);
+              return execute(existing);
             }
-            existing.status = 'running';
-            existing.updatedAt = dependencies.now();
-            stateStore.write(existing);
-            return execute(existing);
+            return resultFromJournal(existing);
           }
-          return resultFromJournal(existing);
-        }
-        const conflicts = await preflightConflicts(
-          plan.selectedConnectors,
-          decisions,
-          Object.fromEntries(
-            plan.conflicts.flatMap((conflict) =>
-              conflict.entryFingerprint === undefined
-                ? []
-                : [[conflict.connectorId, conflict.entryFingerprint]],
+          const conflicts = await preflightConflicts(
+            plan.selectedConnectors,
+            decisions,
+            Object.fromEntries(
+              plan.conflicts.flatMap((conflict) =>
+                conflict.entryFingerprint === undefined
+                  ? []
+                  : [[conflict.connectorId, conflict.entryFingerprint]],
+              ),
             ),
-          ),
-        );
-        if (conflicts.length > 0) {
-          return {
-            status: 'conflict',
-            service: { installed: false, running: false, verified: false },
-            connectors: conflicts.map((conflict) => ({
-              id: conflict.connectorId,
-              configured: false,
-              available: false,
-              newSessionRequired: false,
-              state: 'conflict',
-            })),
-            nextAction: 'resolve-conflict',
-          };
-        }
-        const state = initialJournal(plan, decisions, dependencies.now());
-        stateStore.write(state);
-        return execute(state);
-      });
+          );
+          if (conflicts.length > 0) {
+            return {
+              status: 'conflict',
+              service: { installed: false, running: false, verified: false },
+              connectors: conflicts.map((conflict) => ({
+                id: conflict.connectorId,
+                configured: false,
+                available: false,
+                newSessionRequired: false,
+                state: 'conflict',
+              })),
+              nextAction: 'resolve-conflict',
+            };
+          }
+          const state = initialJournal(plan, decisions, dependencies.now());
+          stateStore.write(state);
+          return execute(state);
+        }),
+      );
     },
 
-    async resume() {
+    async resume(input) {
       return dependencies.lifecycleLock.run(async () => {
         const state = stateStore.read();
         if (state === null) throw new Error('There is no durable setup operation to resume');
@@ -551,11 +609,11 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
           stateStore.write(state);
           return resultFromJournal(state);
         }
-        return execute(state);
+        return withProgressObserver(state.operationId, input?.onProgress, () => execute(state));
       });
     },
 
-    async retryConnector(id) {
+    async retryConnector(id, onProgress) {
       if (!SETUP_CONNECTOR_IDS.includes(id)) throw new Error(`Unsupported connector: ${id}`);
       return dependencies.lifecycleLock.run(async () => {
         const state = stateStore.read();
@@ -570,7 +628,7 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
             (existing?.configured || phase !== `connector:${id}.connect`),
         );
         state.status = 'running';
-        await runConnector(state, id);
+        await withProgressObserver(state.operationId, onProgress, () => runConnector(state, id));
         state.status = state.connectors.some(
           (connector) => !connector.available && connector.state !== 'keptExisting',
         )
@@ -600,6 +658,217 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
 } {
   assertPrivatePath(dependencies.dataDirectory, 'Lifecycle data directory');
   assertPrivatePath(dependencies.homeDirectory, 'Lifecycle home directory');
+  if (
+    (dependencies.receipt.capture === undefined) !==
+    (dependencies.receipt.restore === undefined)
+  ) {
+    throw new Error('Receipt capture and byte-preserving restore must be configured together');
+  }
+  const migrationStateStore =
+    dependencies.migrationStateStore ??
+    createInstallationMigrationStateStore(dependencies.dataDirectory);
+  const now = dependencies.now ?? (() => new Date().toISOString());
+
+  function validatePrevious(previous: InstallationSnapshot): void {
+    assertVersion(previous.runtimeVersion);
+    if (previous.serviceCommand.length < 2) {
+      throw new Error('Existing service command is incomplete');
+    }
+    assertPrivatePath(previous.serviceCommand[0]!, 'Existing Node path');
+    assertPrivatePath(previous.serviceCommand[1]!, 'Existing CLI path');
+    if (
+      previous.dataDirectory !== undefined &&
+      previous.dataDirectory !== dependencies.dataDirectory
+    ) {
+      throw new Error('Installation receipt does not own the canonical data directory');
+    }
+    if (previous.adapter !== undefined && previous.adapter.length === 0) {
+      throw new Error('Installation receipt adapter is invalid');
+    }
+  }
+
+  function migrationAlreadyCommitted(
+    current: InstallationSnapshot,
+    journal: InstallationMigrationJournal,
+  ): boolean {
+    return (
+      current.runtimeKind === 'packaged' &&
+      current.runtimeVersion === journal.targetVersion &&
+      current.serviceCommand[0] === journal.staged.nodePath &&
+      current.serviceCommand[1] === journal.staged.cliPath &&
+      (current.dataDirectory === undefined || current.dataDirectory === dependencies.dataDirectory)
+    );
+  }
+
+  function writeMigrationPhase(
+    journal: InstallationMigrationJournal,
+    phase: InstallationMigrationPhase,
+  ): void {
+    journal.phase = phase;
+    journal.updatedAt = now();
+    migrationStateStore.write(journal);
+  }
+
+  async function restoreReceiptExactly(journal: InstallationMigrationJournal): Promise<void> {
+    if (journal.previousReceiptBase64 !== undefined && dependencies.receipt.restore) {
+      await dependencies.receipt.restore({
+        snapshot: journal.previous,
+        contents: Buffer.from(journal.previousReceiptBase64, 'base64'),
+      });
+      return;
+    }
+    await dependencies.receipt.commit(journal.previous);
+  }
+
+  async function rollbackMigration(
+    journal: InstallationMigrationJournal,
+    originalError?: unknown,
+  ): Promise<void> {
+    const errors: unknown[] = originalError === undefined ? [] : [originalError];
+    const attempt = async (operation: () => Promise<void>): Promise<void> => {
+      try {
+        await operation();
+      } catch (error) {
+        errors.push(error);
+      }
+    };
+    await attempt(() => dependencies.service.stop());
+    await attempt(() => dependencies.runtime.restore(journal.previous.runtimeVersion));
+    await attempt(() => dependencies.service.restore(journal.previous));
+    await attempt(() => dependencies.connectors.restoreOwned(journal.connectorEntries));
+    if (journal.phase === 'committing' || journal.phase === 'committed') {
+      await attempt(() => restoreReceiptExactly(journal));
+    }
+    try {
+      migrationStateStore.remove();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length === 0) return;
+    if (errors.length === 1 && originalError !== undefined) throw originalError;
+    const message =
+      originalError instanceof Error ? originalError.message : 'Migration recovery failed';
+    throw new AggregateError(errors, `${message}; installation rollback was incomplete`);
+  }
+
+  async function completeCommittedMigration(journal: InstallationMigrationJournal): Promise<void> {
+    await dependencies.runtime.finalizeMigration?.(journal.previous.runtimeVersion);
+    migrationStateStore.remove();
+  }
+
+  async function executeMigration(journal: InstallationMigrationJournal): Promise<void> {
+    let committed = false;
+    let mutationStarted = false;
+    try {
+      writeMigrationPhase(journal, 'stopping');
+      mutationStarted = true;
+      await dependencies.service.stop();
+      writeMigrationPhase(journal, 'activating');
+      await dependencies.runtime.activate(journal.staged.version);
+      writeMigrationPhase(journal, 'installing');
+      await dependencies.service.install({
+        nodePath: journal.staged.nodePath,
+        cliPath: journal.staged.cliPath,
+      });
+      writeMigrationPhase(journal, 'starting');
+      await dependencies.service.start();
+      writeMigrationPhase(journal, 'verifying');
+      await dependencies.service.verify();
+      writeMigrationPhase(journal, 'reconciling');
+      await dependencies.connectors.reconcileOwned();
+      const connectorEntries = await dependencies.connectors.snapshotOwned();
+      writeMigrationPhase(journal, 'committing');
+      await dependencies.receipt.commit({
+        runtimeVersion: journal.staged.version,
+        serviceCommand: [journal.staged.nodePath, journal.staged.cliPath],
+        connectorEntries,
+        ...(journal.previous.adapter === undefined ? {} : { adapter: journal.previous.adapter }),
+        dataDirectory: dependencies.dataDirectory,
+        runtimeKind: 'packaged',
+      });
+      committed = true;
+      writeMigrationPhase(journal, 'committed');
+      await completeCommittedMigration(journal);
+    } catch (error) {
+      if (committed) throw error;
+      if (!mutationStarted) throw error;
+      await rollbackMigration(journal, error);
+    }
+  }
+
+  async function capturePreviousInstallation(): Promise<{
+    previous: InstallationSnapshot;
+    previousReceiptBase64?: string;
+  }> {
+    if (!dependencies.receipt.capture) {
+      return { previous: await dependencies.receipt.read() };
+    }
+    const capture = await dependencies.receipt.capture();
+    if (capture.contents.byteLength === 0 || capture.contents.byteLength > 700_000) {
+      throw new Error('Installation receipt snapshot has an invalid migration size');
+    }
+    return {
+      previous: capture.snapshot,
+      previousReceiptBase64: Buffer.from(capture.contents).toString('base64'),
+    };
+  }
+
+  async function migrateLegacyInstallation(targetVersion: string): Promise<boolean> {
+    assertVersion(targetVersion);
+    const existingJournal = migrationStateStore.read();
+    if (existingJournal !== null) {
+      validatePrevious(existingJournal.previous);
+      assertVersion(existingJournal.targetVersion);
+      if (existingJournal.staged.version !== existingJournal.targetVersion) {
+        throw new Error('Durable migration runtime version does not match its target');
+      }
+      assertPrivatePath(existingJournal.staged.nodePath, 'Durable staged Node path');
+      assertPrivatePath(existingJournal.staged.cliPath, 'Durable staged CLI path');
+      if (existingJournal.targetVersion !== targetVersion) {
+        throw new Error('Another installation migration must be recovered before changing target');
+      }
+      let current: InstallationSnapshot | null = null;
+      try {
+        current = await dependencies.receipt.read();
+      } catch {
+        // A torn receipt is recovered from the durable byte snapshot below.
+      }
+      if (current !== null && migrationAlreadyCommitted(current, existingJournal)) {
+        await completeCommittedMigration(existingJournal);
+        return false;
+      }
+      if (existingJournal.phase === 'staged') {
+        await executeMigration(existingJournal);
+        return true;
+      }
+      await rollbackMigration(existingJournal);
+    }
+
+    const captured = await capturePreviousInstallation();
+    validatePrevious(captured.previous);
+    if (captured.previous.runtimeKind === 'packaged') return false;
+
+    const staged = await dependencies.runtime.stage(targetVersion);
+    if (staged.version !== targetVersion) throw new Error('Staged runtime version mismatch');
+    assertPrivatePath(staged.nodePath, 'Staged Node path');
+    assertPrivatePath(staged.cliPath, 'Staged CLI path');
+    const connectorEntries = await dependencies.connectors.snapshotOwned();
+    const journal: InstallationMigrationJournal = {
+      schemaVersion: SETUP_SCHEMA_VERSION,
+      targetVersion,
+      phase: 'staged',
+      previous: captured.previous,
+      ...(captured.previousReceiptBase64 === undefined
+        ? {}
+        : { previousReceiptBase64: captured.previousReceiptBase64 }),
+      connectorEntries,
+      staged,
+      updatedAt: now(),
+    };
+    migrationStateStore.write(journal);
+    await executeMigration(journal);
+    return true;
+  }
 
   async function installTarget(targetVersion: string): Promise<void> {
     assertVersion(targetVersion);
@@ -627,6 +896,9 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
         runtimeVersion: staged.version,
         serviceCommand: [staged.nodePath, staged.cliPath],
         connectorEntries,
+        ...(previous.adapter === undefined ? {} : { adapter: previous.adapter }),
+        dataDirectory: dependencies.dataDirectory,
+        runtimeKind: 'packaged',
       });
     } catch (error) {
       if (runtimeActivationAttempted) {
@@ -646,8 +918,8 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
   return {
     async migrate(input) {
       return dependencies.lifecycleLock.run(async () => {
-        await installTarget(input.targetVersion);
-        return { migrated: true, dataPreserved: true };
+        const migrated = await migrateLegacyInstallation(input.targetVersion);
+        return { migrated, dataPreserved: true };
       });
     },
     async update(input) {
@@ -658,23 +930,73 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
     },
     async remove() {
       return dependencies.lifecycleLock.run(async () => {
-        const previous = await dependencies.receipt.read();
-        const connectorEntriesBefore = await dependencies.connectors.snapshotOwned();
+        const captured = await capturePreviousInstallation();
+        const previous = captured.previous;
+        validatePrevious(previous);
+        const removalPlan = dependencies.connectors.planRemoval
+          ? await dependencies.connectors.planRemoval()
+          : {
+              ownedEntries: await dependencies.connectors.snapshotOwned(),
+              unprovenConnectorIds: [],
+            };
+        const manualInstructions = safeManualConnectorInstructions(
+          removalPlan.unprovenConnectorIds,
+        );
+        let serviceStopAttempted = false;
+        let connectorsAttempted = false;
+        let serviceRemovalAttempted = false;
+        let runtimeRemovalAttempted = false;
         let receiptRemovalAttempted = false;
         try {
+          serviceStopAttempted = true;
           await dependencies.service.stop();
-          await dependencies.connectors.disconnectOwned();
+          connectorsAttempted = true;
+          await dependencies.connectors.disconnectOwned(removalPlan.ownedEntries);
+          serviceRemovalAttempted = true;
           await dependencies.service.removeOwned();
+          runtimeRemovalAttempted = true;
           await dependencies.runtime.removeOwned();
           receiptRemovalAttempted = true;
           await dependencies.receipt.remove();
-          return { removed: true, dataPreserved: true, manualInstructions: [] };
+          await dependencies.runtime.finalizeRemoval?.();
+          await dependencies.service.finalizeRemoval?.();
+          return { removed: true, dataPreserved: true, manualInstructions };
         } catch (error) {
-          await dependencies.runtime.restore(previous.runtimeVersion).catch(() => undefined);
-          await dependencies.service.restore(previous).catch(() => undefined);
-          await dependencies.connectors.restoreOwned(connectorEntriesBefore).catch(() => undefined);
+          const rollbackErrors: unknown[] = [error];
+          const attempt = async (operation: () => Promise<void>): Promise<void> => {
+            try {
+              await operation();
+            } catch (rollbackError) {
+              rollbackErrors.push(rollbackError);
+            }
+          };
+          if (runtimeRemovalAttempted) {
+            await attempt(() => dependencies.runtime.restore(previous.runtimeVersion));
+          }
+          if (serviceStopAttempted || serviceRemovalAttempted) {
+            await attempt(() => dependencies.service.restore(previous));
+          }
+          if (connectorsAttempted) {
+            await attempt(() => dependencies.connectors.restoreOwned(removalPlan.ownedEntries));
+          }
           if (receiptRemovalAttempted) {
-            await dependencies.receipt.commit(previous).catch(() => undefined);
+            if (captured.previousReceiptBase64 !== undefined && dependencies.receipt.restore) {
+              await attempt(() =>
+                dependencies.receipt.restore!({
+                  snapshot: previous,
+                  contents: Buffer.from(captured.previousReceiptBase64!, 'base64'),
+                }),
+              );
+            } else {
+              await attempt(() => dependencies.receipt.commit(previous));
+            }
+          }
+          if (rollbackErrors.length > 1) {
+            const message = error instanceof Error ? error.message : 'Installation removal failed';
+            throw new AggregateError(
+              rollbackErrors,
+              `${message}; installation removal rollback was incomplete`,
+            );
           }
           throw error;
         }

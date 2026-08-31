@@ -90,11 +90,19 @@ export interface ServiceStatus {
 export interface UninstallResult {
   uninstalled: boolean;
   dataPreserved: true;
+  manualInstructions?: string[];
+}
+
+export interface PreparedServiceUninstall {
+  commit(): Promise<UninstallResult>;
+  rollback(): Promise<void>;
+  finalize(): Promise<void>;
 }
 
 export interface ServiceManager {
   install(): Promise<InstallResult>;
   status(): Promise<ServiceStatus>;
+  prepareUninstall?(): Promise<PreparedServiceUninstall | null>;
   uninstall(): Promise<UninstallResult>;
 }
 
@@ -144,4 +152,11 @@ export interface InstallReceipt {
   baseUrl: string;
   logDirectory: string;
   artifacts: ReceiptArtifact[];
+  updateProvider?: 'legacy-npm' | 'packaged-release';
+  packagedRuntime?: PackagedRuntimeMetadata;
+}
+
+export interface InstallReceiptFileSnapshot {
+  receipt: InstallReceipt;
+  contents: Buffer;
 }

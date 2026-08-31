@@ -20,6 +20,9 @@ import {
   SETUP_CONNECTOR_IDS,
   SETUP_SCHEMA_VERSION,
   type SetupConnectorResult,
+  type InstallationMigrationJournal,
+  type InstallationMigrationStateStore,
+  type InstallationSnapshot,
   type SetupJournal,
   type SetupPlan,
   type SetupPlanStore,
@@ -29,6 +32,7 @@ import {
 const stateFileName = 'setup-state.json';
 const planFileName = 'setup-plan.json';
 const lifecycleLockFileName = '.setup-lifecycle.lock';
+const migrationStateFileName = 'installation-migration-state.json';
 const maximumStateBytes = 1_000_000;
 const privateDirectoryMode = 0o700;
 const privateFileMode = 0o600;
@@ -271,6 +275,103 @@ function parseSetupPlan(value: unknown): SetupPlan {
   };
 }
 
+function parseInstallationSnapshot(value: unknown): InstallationSnapshot {
+  if (!isRecord(value)) throw new Error('Invalid installation snapshot');
+  assertStringArray(value.serviceCommand, 'installation service command');
+  if (
+    value.serviceCommand.length < 2 ||
+    !isRecord(value.connectorEntries) ||
+    typeof value.runtimeVersion !== 'string' ||
+    value.runtimeVersion.length === 0 ||
+    value.runtimeVersion.length > 128 ||
+    (value.adapter !== undefined &&
+      (typeof value.adapter !== 'string' ||
+        value.adapter.length === 0 ||
+        value.adapter.length > 128)) ||
+    (value.dataDirectory !== undefined &&
+      (typeof value.dataDirectory !== 'string' ||
+        value.dataDirectory.length === 0 ||
+        value.dataDirectory.length > 4_096 ||
+        value.dataDirectory.includes('\0'))) ||
+    (value.runtimeKind !== undefined &&
+      value.runtimeKind !== 'legacy-npm' &&
+      value.runtimeKind !== 'packaged')
+  ) {
+    throw new Error('Invalid installation snapshot');
+  }
+  return {
+    runtimeVersion: value.runtimeVersion,
+    serviceCommand: [...value.serviceCommand],
+    connectorEntries: structuredClone(value.connectorEntries),
+    ...(typeof value.adapter === 'string' ? { adapter: value.adapter } : {}),
+    ...(typeof value.dataDirectory === 'string' ? { dataDirectory: value.dataDirectory } : {}),
+    ...(value.runtimeKind === 'legacy-npm' || value.runtimeKind === 'packaged'
+      ? { runtimeKind: value.runtimeKind }
+      : {}),
+  };
+}
+
+function parseMigrationJournal(value: unknown): InstallationMigrationJournal {
+  if (!isRecord(value) || value.schemaVersion !== SETUP_SCHEMA_VERSION) {
+    throw new Error('Unsupported installation migration state schema');
+  }
+  const phases: InstallationMigrationJournal['phase'][] = [
+    'staged',
+    'stopping',
+    'activating',
+    'installing',
+    'starting',
+    'verifying',
+    'reconciling',
+    'committing',
+    'committed',
+  ];
+  const receiptBytes =
+    typeof value.previousReceiptBase64 === 'string'
+      ? Buffer.from(value.previousReceiptBase64, 'base64')
+      : null;
+  if (
+    typeof value.targetVersion !== 'string' ||
+    value.targetVersion.length === 0 ||
+    value.targetVersion.length > 128 ||
+    !phases.includes(value.phase as InstallationMigrationJournal['phase']) ||
+    !isRecord(value.connectorEntries) ||
+    !isRecord(value.staged) ||
+    typeof value.staged.version !== 'string' ||
+    typeof value.staged.nodePath !== 'string' ||
+    typeof value.staged.cliPath !== 'string' ||
+    typeof value.updatedAt !== 'string' ||
+    value.updatedAt.length === 0 ||
+    value.updatedAt.length > 128 ||
+    (value.previousReceiptBase64 !== undefined &&
+      (typeof value.previousReceiptBase64 !== 'string' ||
+        value.previousReceiptBase64.length > maximumStateBytes ||
+        !/^[A-Za-z0-9+/]*={0,2}$/u.test(value.previousReceiptBase64) ||
+        receiptBytes === null ||
+        receiptBytes.byteLength === 0 ||
+        receiptBytes.byteLength > 700_000 ||
+        receiptBytes.toString('base64') !== value.previousReceiptBase64))
+  ) {
+    throw new Error('Invalid installation migration state');
+  }
+  return {
+    schemaVersion: SETUP_SCHEMA_VERSION,
+    targetVersion: value.targetVersion,
+    phase: value.phase as InstallationMigrationJournal['phase'],
+    previous: parseInstallationSnapshot(value.previous),
+    ...(typeof value.previousReceiptBase64 === 'string'
+      ? { previousReceiptBase64: value.previousReceiptBase64 }
+      : {}),
+    connectorEntries: structuredClone(value.connectorEntries),
+    staged: {
+      version: value.staged.version,
+      nodePath: value.staged.nodePath,
+      cliPath: value.staged.cliPath,
+    },
+    updatedAt: value.updatedAt,
+  };
+}
+
 function readPrivateJsonFile(path: string, label: string): unknown | null {
   if (!assertSafeExistingDirectory(dirname(path))) return null;
   if (!existsSync(path)) return null;
@@ -416,6 +517,26 @@ export function createSetupPlanStore(dataDirectory: string): SetupPlanStore {
       });
     },
     remove: () => removePrivateFile(path, 'Setup plan'),
+  };
+}
+
+export function createInstallationMigrationStateStore(
+  dataDirectory: string,
+): InstallationMigrationStateStore {
+  if (!isAbsolute(dataDirectory) || dataDirectory.includes('\0')) {
+    throw new Error('Migration data directory must be an absolute, NUL-free path');
+  }
+  const path = join(dataDirectory, migrationStateFileName);
+  return {
+    path,
+    read() {
+      const value = readPrivateJsonFile(path, 'Installation migration state');
+      return value === null ? null : parseMigrationJournal(value);
+    },
+    write(state) {
+      writePrivateJsonFile(path, parseMigrationJournal(state));
+    },
+    remove: () => removePrivateFile(path, 'Installation migration state'),
   };
 }
 

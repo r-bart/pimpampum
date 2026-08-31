@@ -15,7 +15,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { installRuntime, pruneOwnedRuntimeVersions } from '../src/runtime/installer.js';
+import {
+  installRuntime,
+  prepareOwnedRuntimeRemoval,
+  pruneOwnedRuntimeVersions,
+} from '../src/runtime/installer.js';
 import { resolveRuntimeLayout } from '../src/runtime/layout.js';
 import type { RuntimeManifest } from '../src/runtime/types.js';
 
@@ -285,5 +289,50 @@ describe('atomic runtime installer', () => {
     await expect(installRuntime({ ...input, smoke: async () => undefined })).rejects.toThrow(
       /receipt.*private|0600/iu,
     );
+  });
+});
+
+describe('reversible owned runtime removal', () => {
+  it('quarantines receipted versions and restores launchers and receipt on rollback', async () => {
+    const root = temporaryDirectory('remove-rollback');
+    const input = installInput(root, '2.0.0');
+    const installed = await installRuntime({ ...input, smoke: async () => undefined });
+    const receiptPath = join(input.dataDirectory, 'runtime-install-receipt.json');
+    const receiptBytes = readFileSync(receiptPath);
+    const launcherBytes = readFileSync(installed.mcpLauncherPath);
+
+    const prepared = prepareOwnedRuntimeRemoval(input)!;
+    expect(existsSync(installed.nodePath)).toBe(false);
+    expect(existsSync(installed.mcpLauncherPath)).toBe(false);
+    expect(existsSync(receiptPath)).toBe(false);
+
+    prepared.rollback();
+    expect(existsSync(installed.nodePath)).toBe(true);
+    expect(readFileSync(installed.mcpLauncherPath)).toEqual(launcherBytes);
+    expect(readFileSync(receiptPath)).toEqual(receiptBytes);
+  });
+
+  it('permanently removes only receipt-owned runtime paths on commit', async () => {
+    const root = temporaryDirectory('remove-commit');
+    const input = installInput(root, '2.0.0');
+    const installed = await installRuntime({ ...input, smoke: async () => undefined });
+    const layout = resolveRuntimeLayout({
+      homeDirectory: input.homeDirectory,
+      platform: input.platform,
+      architecture: input.architecture,
+      version: '2.0.0',
+    });
+    const userFile = join(input.dataDirectory, 'exports', 'project.md');
+    mkdirSync(dirname(userFile), { recursive: true });
+    writeFileSync(userFile, '# preserved\n');
+
+    const prepared = prepareOwnedRuntimeRemoval(input)!;
+    prepared.commit();
+
+    expect(existsSync(installed.nodePath)).toBe(false);
+    expect(existsSync(join(input.dataDirectory, 'runtime-install-receipt.json'))).toBe(false);
+    expect(existsSync(layout.launchersDirectory)).toBe(false);
+    expect(existsSync(layout.runtimeDirectory)).toBe(false);
+    expect(readFileSync(userFile, 'utf8')).toBe('# preserved\n');
   });
 });

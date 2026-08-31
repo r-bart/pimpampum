@@ -158,6 +158,76 @@ struct UpdateSettingsTests {
   }
 
   @Test
+  func selectsNativePackagedReleaseCopyFromTheInstallReceipt() async {
+    let packagedReceipt = Data(
+      #"""
+      {
+        "schemaVersion": 1,
+        "adapter": "launchd-macos-app",
+        "nodePath": "/bin/sh",
+        "cliPath": "/bin/sh"
+      }
+      """#.utf8
+    )
+    let native = store(
+      receipt: packagedReceipt,
+      runner: UpdateRunner(
+        output: succeeded(
+          #"{"data":{"currentVersion":"1.1.0","latestVersion":"1.1.0","updateAvailable":false}}"#
+        )
+      )
+    )
+
+    await native.check()
+
+    #expect(native.provider == .packagedRelease)
+    #expect(native.presentation.explanation == "\(PimpampumBrand.displayName) is up to date.")
+  }
+
+  @Test
+  func coversExplicitProviderReceiptsAndPackagedIdleAndCheckingCopy() async {
+    let legacyReceipt = Data(
+      #"{"schemaVersion":1,"updateProvider":"legacy-npm","nodePath":"/bin/sh","cliPath":"/bin/sh"}"#.utf8
+    )
+    let legacy = store(
+      receipt: legacyReceipt,
+      runner: UpdateRunner(
+        output: succeeded(
+          #"{"data":{"currentVersion":"1.1.0","latestVersion":"1.1.0","updateAvailable":false}}"#
+        )
+      )
+    )
+    await legacy.check()
+    #expect(legacy.provider == .legacyNpm)
+
+    let packagedReceipt = Data(
+      #"{"schemaVersion":1,"updateProvider":"packaged-release","nodePath":"/bin/sh","cliPath":"/bin/sh"}"#.utf8
+    )
+    let gate = RunnerGate()
+    let checking = store(
+      receipt: packagedReceipt,
+      runner: GatedRunner(
+        gate: gate,
+        output: succeeded(
+          #"{"data":{"currentVersion":"1.1.0","latestVersion":"1.1.0","updateAvailable":false}}"#
+        )
+      )
+    )
+    let task = Task { await checking.check() }
+    await settle(until: { checking.busy && checking.provider == .packagedRelease })
+    #expect(checking.presentation.explanation == "Checking the signed packaged release channel…")
+    await gate.open()
+    await task.value
+
+    let unavailable = store(receipt: packagedReceipt, runner: FailingRunner())
+    await unavailable.check()
+    #expect(
+      unavailable.presentation.explanation
+        == "Check the native packaged release channel. Nothing changes until you install it."
+    )
+  }
+
+  @Test
   func asksForARelaunchOnlyWhenTheInstallReplacedTheRelease() async {
     let replaced = store(
       UpdateRunner(

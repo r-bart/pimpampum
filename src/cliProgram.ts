@@ -20,6 +20,7 @@ import type { ServiceManager } from './service/types.js';
 import type { ArtifactReference, TargetType } from './types.js';
 import type { UpdateManager } from './update.js';
 import type { SetupStateStore } from './setup/types.js';
+import type { SetupProgressEvent } from './setup/types.js';
 import { PIMPAMPUM_VERSION } from './version.js';
 
 export type CliConnectorId = 'codex' | 'claude-code';
@@ -44,10 +45,17 @@ export interface CliSetupRuntime {
     operationId: string;
     expectedRevision: string;
     confirmed: boolean;
-    conflictDecisions?: Partial<Record<CliConnectorId, 'replace'>>;
+    conflictDecisions?: Partial<Record<CliConnectorId, 'replace' | 'keep'>>;
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>;
   }): Promise<unknown>;
   status(): Promise<unknown>;
-  resume(): Promise<unknown>;
+  resume(input?: {
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>;
+  }): Promise<unknown>;
+  retryConnector(
+    id: CliConnectorId,
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>,
+  ): Promise<unknown>;
 }
 
 export interface SetupCoordinatorCliBoundary {
@@ -56,9 +64,16 @@ export interface SetupCoordinatorCliBoundary {
     operationId: string;
     expectedRevision: string;
     confirmed: boolean;
-    conflictDecisions?: Partial<Record<CliConnectorId, 'replace'>>;
+    conflictDecisions?: Partial<Record<CliConnectorId, 'replace' | 'keep'>>;
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>;
   }): Promise<unknown>;
-  resume(): Promise<unknown>;
+  resume(input?: {
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>;
+  }): Promise<unknown>;
+  retryConnector(
+    id: CliConnectorId,
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>,
+  ): Promise<unknown>;
 }
 
 export function createCliSetupRuntime(
@@ -69,7 +84,8 @@ export function createCliSetupRuntime(
     plan: (input) => coordinator.plan(input),
     apply: (input) => coordinator.apply(input),
     status: async () => stateStore.read(),
-    resume: () => coordinator.resume(),
+    resume: (input) => coordinator.resume(input),
+    retryConnector: (id, onProgress) => coordinator.retryConnector(id, onProgress),
   };
 }
 
@@ -262,6 +278,44 @@ function redactBoundaryValue(value: unknown, depth = 0): unknown {
 
 function printBoundary(runtime: CliRuntime, value: unknown): void {
   print(runtime, redactBoundaryValue(value));
+}
+
+function printSetupEvent(runtime: CliRuntime, event: 'progress' | 'result', data: unknown): void {
+  runtime.stdout(
+    `${JSON.stringify({ schemaVersion: 1, event, data: redactBoundaryValue(data) })}\n`,
+  );
+}
+
+function setupNativeOptions(arguments_: string[]): {
+  arguments: string[];
+  events: boolean;
+  keeps: CliConnectorId[];
+} {
+  const filtered: string[] = [];
+  const keeps: CliConnectorId[] = [];
+  let events = false;
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    if (argument === '--events') {
+      if (events) throw new AppError('bad_request', 'Setup event mode may be selected once', 400);
+      events = true;
+      continue;
+    }
+    if (argument === '--keep') {
+      keeps.push(connectorId(arguments_[index + 1]));
+      index += 1;
+      continue;
+    }
+    filtered.push(argument);
+  }
+  if (keeps.length > 0 && !events) {
+    throw new AppError(
+      'bad_request',
+      'Keep decisions are reserved for native setup event mode',
+      400,
+    );
+  }
+  return { arguments: filtered, events, keeps };
 }
 
 async function callBoundary<T>(operation: () => Promise<T>): Promise<T> {
@@ -673,23 +727,49 @@ async function executeCli(
     }
     if (action === 'apply') {
       const descriptor = describe('setup apply');
-      const input = parseCommandArguments(descriptor, args.slice(1));
+      const native = setupNativeOptions(args.slice(1));
+      const input = parseCommandArguments(descriptor, native.arguments);
       requireConfirmation(descriptor, input);
       const replacements = input.optionAll('--replace').map(connectorId);
-      const conflictDecisions = Object.fromEntries(
-        replacements.map((id) => [id, 'replace' as const]),
-      ) as Partial<Record<CliConnectorId, 'replace'>>;
-      printBoundary(
-        runtime,
-        await callBoundary(() =>
-          setup.apply({
-            operationId: required(input.positional[0], 'operation id'),
-            expectedRevision: required(input.positional[1], 'expected revision'),
-            confirmed: true,
-            ...(replacements.length === 0 ? {} : { conflictDecisions }),
-          }),
-        ),
+      if (native.keeps.some((id) => replacements.includes(id))) {
+        throw new AppError(
+          'bad_request',
+          'A connector cannot be both kept and replaced in one setup decision',
+          400,
+        );
+      }
+      const conflictDecisions = Object.fromEntries([
+        ...replacements.map((id) => [id, 'replace' as const] as const),
+        ...native.keeps.map((id) => [id, 'keep' as const] as const),
+      ]) as Partial<Record<CliConnectorId, 'replace' | 'keep'>>;
+      const result = await callBoundary(() =>
+        setup.apply({
+          operationId: required(input.positional[0], 'operation id'),
+          expectedRevision: required(input.positional[1], 'expected revision'),
+          confirmed: true,
+          ...(replacements.length === 0 && native.keeps.length === 0 ? {} : { conflictDecisions }),
+          ...(native.events
+            ? {
+                onProgress: (event: SetupProgressEvent) =>
+                  printSetupEvent(runtime, 'progress', event),
+              }
+            : {}),
+        }),
       );
+      if (native.events) printSetupEvent(runtime, 'result', result);
+      else printBoundary(runtime, result);
+      return null;
+    }
+    if (action === 'retry') {
+      const native = setupNativeOptions(args.slice(1));
+      if (!native.events || native.keeps.length > 0 || native.arguments.length !== 1) {
+        throw new AppError('bad_request', 'Native setup retry requires an agent and --events', 400);
+      }
+      const id = connectorId(native.arguments[0]);
+      const result = await callBoundary(() =>
+        setup.retryConnector(id, (event) => printSetupEvent(runtime, 'progress', event)),
+      );
+      printSetupEvent(runtime, 'result', result);
       return null;
     }
     if (action === 'status') {
@@ -698,8 +778,20 @@ async function executeCli(
       return null;
     }
     if (action === 'resume') {
-      parseCommandArguments(describe('setup resume'), args.slice(1));
-      printBoundary(runtime, await callBoundary(() => setup.resume()));
+      const native = setupNativeOptions(args.slice(1));
+      if (native.keeps.length > 0) {
+        throw new AppError('bad_request', 'Keep decisions require setup apply', 400);
+      }
+      parseCommandArguments(describe('setup resume'), native.arguments);
+      const result = await callBoundary(() =>
+        setup.resume(
+          native.events
+            ? { onProgress: (event) => printSetupEvent(runtime, 'progress', event) }
+            : undefined,
+        ),
+      );
+      if (native.events) printSetupEvent(runtime, 'result', result);
+      else printBoundary(runtime, result);
       return null;
     }
     throw new AppError('bad_request', `Unknown setup action: ${action}`, 400);

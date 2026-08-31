@@ -96,4 +96,45 @@ export interface InstallationSnapshot {
   runtimeVersion: string;
   serviceCommand: string[];
   connectorEntries: Record<string, unknown>;
+  adapter?: string;
+  dataDirectory?: string;
+  runtimeKind?: 'legacy-npm' | 'packaged';
+}
+
+export interface InstallationReceiptCapture {
+  snapshot: InstallationSnapshot;
+  contents: Uint8Array;
+}
+
+export type InstallationMigrationPhase =
+  | 'staged'
+  | 'stopping'
+  | 'activating'
+  | 'installing'
+  | 'starting'
+  | 'verifying'
+  | 'reconciling'
+  | 'committing'
+  | 'committed';
+
+export interface InstallationMigrationJournal {
+  schemaVersion: typeof SETUP_SCHEMA_VERSION;
+  targetVersion: string;
+  phase: InstallationMigrationPhase;
+  previous: InstallationSnapshot;
+  previousReceiptBase64?: string;
+  connectorEntries: Record<string, unknown>;
+  staged: {
+    version: string;
+    nodePath: string;
+    cliPath: string;
+  };
+  updatedAt: string;
+}
+
+export interface InstallationMigrationStateStore {
+  readonly path: string;
+  read(): InstallationMigrationJournal | null;
+  write(state: InstallationMigrationJournal): void;
+  remove(): void;
 }

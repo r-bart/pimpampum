@@ -25,7 +25,13 @@ function fixture() {
     })),
     apply: vi.fn(async (input: unknown) => ({ status: 'complete', input })),
     status: vi.fn(async () => ({ status: 'running' })),
-    resume: vi.fn(async () => ({ status: 'complete' })),
+    resume: vi.fn(async (_input?: unknown) => ({ status: 'complete' })),
+    retryConnector: vi.fn(
+      async (id: string, _onProgress?: (event: unknown) => void | Promise<void>) => ({
+        status: 'complete',
+        id,
+      }),
+    ),
   };
   const connections = {
     list: vi.fn(async () => []),
@@ -95,6 +101,78 @@ describe('zero-friction CLI commands', () => {
       confirmed: true,
       conflictDecision: undefined,
     });
+  });
+
+  it('streams only schema-versioned redacted setup events in the private native mode', async () => {
+    const state = fixture();
+    state.setup.apply.mockImplementationOnce(async (input: unknown) => {
+      const typed = input as {
+        onProgress(event: unknown): void | Promise<void>;
+      };
+      await typed.onProgress({
+        schemaVersion: 1,
+        operationId: 'operation',
+        phase: 'connector:codex.verify',
+        status: 'failed',
+        occurredAt: '2026-08-31T10:00:00.000Z',
+        diagnostic: 'Authorization: Bearer private-value',
+      });
+      return {
+        status: 'partial',
+        input,
+        service: { installed: true, running: true, verified: true },
+        connectors: [],
+        nextAction: 'retry',
+      };
+    });
+
+    await runCli(
+      ['setup', 'apply', 'operation', 'revision', '--yes', '--events', '--keep', 'codex'],
+      state.runtime,
+    );
+
+    const events = state.output.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(events.map((event) => event.event)).toEqual(['progress', 'result']);
+    expect(events.every((event) => event.schemaVersion === 1)).toBe(true);
+    expect(JSON.stringify(events)).not.toContain('private-value');
+    expect(state.setup.apply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conflictDecisions: { codex: 'keep' },
+        onProgress: expect.any(Function),
+      }),
+    );
+  });
+
+  it('keeps native resume and focused retry on the versioned event channel', async () => {
+    const state = fixture();
+    const event = {
+      schemaVersion: 1,
+      operationId: 'operation',
+      phase: 'connector:codex.verify',
+      status: 'completed',
+      occurredAt: '2026-08-31T10:00:00.000Z',
+      connectorId: 'codex',
+    };
+    state.setup.resume.mockImplementationOnce(async (input: unknown) => {
+      await (input as { onProgress(value: unknown): void | Promise<void> }).onProgress(event);
+      return { status: 'complete' };
+    });
+    state.setup.retryConnector.mockImplementationOnce(async (_id: string, onProgress: unknown) => {
+      await (onProgress as (value: unknown) => void | Promise<void>)(event);
+      return { status: 'complete', id: 'codex' };
+    });
+
+    await runCli(['setup', 'resume', '--events'], state.runtime);
+    await runCli(['setup', 'retry', 'codex', '--events'], state.runtime);
+
+    const events = state.output.map((line) => JSON.parse(line) as { event: string });
+    expect(events.map(({ event: kind }) => kind)).toEqual([
+      'progress',
+      'result',
+      'progress',
+      'result',
+    ]);
+    expect(state.setup.retryConnector).toHaveBeenCalledWith('codex', expect.any(Function));
   });
 
   it('redacts credentials returned accidentally by an instruction boundary', async () => {

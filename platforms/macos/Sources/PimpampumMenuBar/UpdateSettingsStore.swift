@@ -102,9 +102,28 @@ struct DesktopUpdateFailureEnvelope: Decodable {
 }
 
 struct DesktopUpdateReceipt: Decodable {
+  struct PackagedRuntime: Decodable {
+    let version: String
+    let target: String
+    let runtimeDirectory: String
+  }
+
   let schemaVersion: Int
   let nodePath: String
   let cliPath: String
+  let adapter: String?
+  let updateProvider: String?
+  let packagedRuntime: PackagedRuntime?
+
+  var usesPackagedRelease: Bool {
+    if let updateProvider { return updateProvider == "packaged-release" }
+    return packagedRuntime != nil || adapter == "macos-app" || adapter == "launchd-macos-app"
+  }
+}
+
+enum DesktopUpdateProvider: Equatable, Sendable {
+  case legacyNpm
+  case packagedRelease
 }
 
 @MainActor
@@ -112,6 +131,7 @@ final class UpdateSettingsStore: ObservableObject {
   @Published private(set) var status: DesktopUpdateStatus?
   @Published private(set) var activity: UpdateActivity = .idle
   @Published private(set) var errorMessage: String?
+  @Published private(set) var provider: DesktopUpdateProvider = .legacyNpm
   // An install rewrites the app bundle underneath the running instance, so the panel must say
   // that the new menu app only appears after the user quits and reopens this one.
   @Published private(set) var relaunchRequired = false
@@ -133,11 +153,16 @@ final class UpdateSettingsStore: ObservableObject {
 
   private var explanation: String {
     switch activity {
-    case .checking: return "Checking npm for a newer release…"
+    case .checking:
+      return provider == .packagedRelease
+        ? "Checking the signed packaged release channel…"
+        : "Checking npm for a newer release…"
     case .installing: return "Installing the update and reconciling the service…"
     case .idle:
       guard let status else {
-        return "Check npm for a newer release. Nothing changes until you install it."
+        return provider == .packagedRelease
+          ? "Check the native packaged release channel. Nothing changes until you install it."
+          : "Check npm for a newer release. Nothing changes until you install it."
       }
       return status.updateAvailable
         ? "\(PimpampumBrand.displayName) \(status.latestVersion) is available."
@@ -187,6 +212,7 @@ final class UpdateSettingsStore: ObservableObject {
     defer { activity = .idle }
     do {
       let receipt = try loadReceipt()
+      provider = receipt.usesPackagedRelease ? .packagedRelease : .legacyNpm
       let output = try await runner.run(
         executable: URL(fileURLWithPath: receipt.nodePath),
         arguments: [receipt.cliPath, operation.rawValue],

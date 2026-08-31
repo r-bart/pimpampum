@@ -1,6 +1,20 @@
-import { closeSync, lstatSync, openSync, readFileSync, readSync, unlinkSync } from 'node:fs';
+import { createHash, createPublicKey, verify as verifySignature } from 'node:crypto';
+import {
+  chmodSync,
+  closeSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { arch, homedir, platform } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative as relativePath, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentCliClient } from './agentClient.js';
 import { createHttpClient } from './client.js';
@@ -32,12 +46,33 @@ import { createMacOSDesktopAdapter } from './service/macosApp.js';
 import { createPlatformServiceManager } from './service/manager.js';
 import { createOmarchyAdapter, isCompatibleOmarchyVersion } from './service/omarchy.js';
 import { findExecutable, runServiceCommand } from './service/platform.js';
+import {
+  installReceiptPath,
+  readInstallReceipt,
+  restoreInstallReceiptSnapshot,
+  snapshotInstallReceipt,
+} from './service/receipt.js';
 import { createSystemdAdapter } from './service/systemd.js';
+import type {
+  InstallReceiptFileSnapshot,
+  PreparedServiceUninstall,
+  RunCommand,
+  ServiceManager,
+} from './service/types.js';
 import { startServer } from './server.js';
 import { PIMPAMPUM_VERSION } from './version.js';
-import { createUpdateManager, resolveNpmPath } from './update.js';
+import {
+  createUpdateManager,
+  resolveNpmPath,
+  type PackagedReleaseProviderInput,
+  type PackagedReleaseTarget,
+  type UpdateInstallReceiptMetadata,
+  type UpdateManager,
+} from './update.js';
 import { resolveRuntimeLayout } from './runtime/layout.js';
-import { createSetupCoordinator } from './setup/coordinator.js';
+import { parseRuntimeManifest } from './runtime/manifest.js';
+import { prepareOwnedRuntimeRemoval, type PreparedRuntimeRemoval } from './runtime/installer.js';
+import { createInstallationLifecycle, createSetupCoordinator } from './setup/coordinator.js';
 import {
   createSetupLifecycleLock,
   createSetupPlanStore,
@@ -183,6 +218,482 @@ function readBoundedUtf8File(path: string, maxBytes: number): string {
   return decodeToolInput(Buffer.concat(chunks, total));
 }
 
+const DEFAULT_RELEASE_CHANNEL_URL =
+  'https://github.com/r-bart/pimpampum/releases/download/update-channel-stable/release-manifest.json';
+const MAX_RELEASE_KEY_BYTES = 16 * 1024;
+const MAX_RELEASE_ARCHIVE_ENTRIES = 20_000;
+
+export interface CliUpdateManagerInput {
+  currentVersion: string;
+  dataDirectory: string;
+  homeDirectory: string;
+  target: PackagedReleaseTarget | null;
+  nodePath: string;
+  runCommand: RunCommand;
+  currentServiceManager: ServiceManager;
+  createCandidateServiceManager(input: {
+    appBundlePath: string;
+    version: string;
+    nodePath: string;
+    cliPath: string;
+  }): ServiceManager;
+  npmPath?: string | null;
+  channelManifestUrl?: string;
+  publicKeyPath?: string;
+  fetchImplementation?: typeof globalThis.fetch;
+  packagedRelease?: PackagedReleaseProviderInput;
+}
+
+function pathInside(root: string, candidate: string): boolean {
+  const child = relativePath(resolve(root), resolve(candidate));
+  return child === '' || (child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child));
+}
+
+function assertTrustedReleaseKey(path: string, allowedRoots: string[]): Buffer {
+  if (!isAbsolute(path) || path.includes('\0')) {
+    throw new Error('Release public key path must be absolute');
+  }
+  const root = allowedRoots.find((candidate) => pathInside(candidate, path));
+  if (!root) throw new Error('Release public key is outside a Pimpampum-owned root');
+  let current = resolve(root);
+  const child = relativePath(current, resolve(path));
+  for (const segment of child.split(sep).filter(Boolean)) {
+    const metadata = lstatSync(current);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error('Release public key path traverses an unsafe directory');
+    }
+    current = join(current, segment);
+  }
+  const metadata = lstatSync(path);
+  if (metadata.isSymbolicLink() || !metadata.isFile()) {
+    throw new Error('Release public key must be a regular file');
+  }
+  const currentUid = process.getuid?.();
+  if (currentUid !== undefined && metadata.uid !== currentUid && metadata.uid !== 0) {
+    throw new Error('Release public key is not owned by the current user or root');
+  }
+  if ((metadata.mode & 0o022) !== 0) {
+    throw new Error('Release public key must not be group- or world-writable');
+  }
+  if (pathInside(allowedRoots[0]!, path) && (metadata.mode & 0o077) !== 0) {
+    throw new Error('Release public key in private data must use mode 0600');
+  }
+  if (metadata.size <= 0 || metadata.size > MAX_RELEASE_KEY_BYTES) {
+    throw new Error('Release public key has an invalid size');
+  }
+  return readFileSync(path);
+}
+
+export function createReleaseSignatureVerifier(input: {
+  publicKeyPath: string;
+  allowedRoots: string[];
+}): PackagedReleaseProviderInput['verifySignature'] {
+  return ({ payload, signature }) => {
+    const bytes = assertTrustedReleaseKey(input.publicKeyPath, input.allowedRoots);
+    const key = createPublicKey(bytes);
+    if (key.asymmetricKeyType !== 'ed25519') {
+      throw new Error('Release public key must be Ed25519');
+    }
+    let decoded: Buffer;
+    try {
+      decoded = Buffer.from(signature, 'base64');
+    } catch (error) {
+      throw new Error('Release signature is not valid base64', { cause: error });
+    }
+    if (decoded.length !== 64) throw new Error('Release signature has an invalid size');
+    return verifySignature(null, Buffer.from(payload, 'utf8'), key, decoded);
+  };
+}
+
+async function boundedFetchBytes(input: {
+  url: string;
+  maximumBytes: number;
+  timeoutMilliseconds: number;
+  fetchImplementation: typeof globalThis.fetch;
+}): Promise<Uint8Array> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), input.timeoutMilliseconds);
+  try {
+    const response = await input.fetchImplementation(input.url, {
+      method: 'GET',
+      redirect: 'error',
+      signal: controller.signal,
+      headers: { Accept: 'application/octet-stream, application/json' },
+    });
+    if (!response.ok || response.body === null)
+      throw new Error(`Release fetch returned HTTP ${response.status}`);
+    const declared = response.headers.get('content-length');
+    if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > input.maximumBytes)) {
+      throw new Error('Release response exceeds its declared size limit');
+    }
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    const reader = response.body.getReader();
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      total += result.value.byteLength;
+      if (total > input.maximumBytes) {
+        await reader.cancel();
+        throw new Error('Release response exceeds its streaming size limit');
+      }
+      chunks.push(result.value);
+    }
+    const output = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      output.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return output;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export function createBoundedReleaseManifestFetcher(
+  fetchImplementation: typeof globalThis.fetch = globalThis.fetch,
+): PackagedReleaseProviderInput['fetchManifest'] {
+  return (input) => boundedFetchBytes({ ...input, fetchImplementation });
+}
+
+function assertSafeArchiveListing(stdout: string): void {
+  const entries = stdout.split('\n').filter(Boolean);
+  if (entries.length === 0 || entries.length > MAX_RELEASE_ARCHIVE_ENTRIES) {
+    throw new Error('Packaged release archive has an invalid entry count');
+  }
+  for (const entry of entries) {
+    const normalized = entry.replace(/\\/gu, '/');
+    if (
+      normalized.includes('\0') ||
+      normalized.startsWith('/') ||
+      /^[A-Za-z]:\//u.test(normalized) ||
+      normalized.split('/').some((part) => part === '..')
+    ) {
+      throw new Error('Packaged release archive contains an unsafe path');
+    }
+  }
+}
+
+function walkRegularFiles(root: string): string[] {
+  const files: string[] = [];
+  const visit = (directory: string): void => {
+    for (const name of readdirSync(directory).sort()) {
+      const path = join(directory, name);
+      const metadata = lstatSync(path);
+      if (metadata.isSymbolicLink()) throw new Error('Packaged release contains a symlink');
+      if (metadata.isDirectory()) visit(path);
+      else if (metadata.isFile()) files.push(path);
+      else throw new Error('Packaged release contains a device or special file');
+      if (files.length > MAX_RELEASE_ARCHIVE_ENTRIES) {
+        throw new Error('Packaged release contains too many files');
+      }
+    }
+  };
+  visit(root);
+  return files;
+}
+
+function findCandidateApp(root: string): string {
+  const matches = walkRegularFiles(root)
+    .filter((path) => path.endsWith(`${sep}Contents${sep}MacOS${sep}PimpampumMenuBar`))
+    .map((path) => dirname(dirname(dirname(path))));
+  if (matches.length !== 1 || !matches[0]!.endsWith('.app')) {
+    throw new Error('Packaged release must contain exactly one Pimpampum macOS app');
+  }
+  return matches[0]!;
+}
+
+function validateRuntimeCandidate(
+  manifestPath: string,
+  target: PackagedReleaseTarget,
+  version: string,
+): void {
+  const [runtimePlatform, runtimeArchitecture] = target.split('-') as [
+    'darwin' | 'linux',
+    'arm64' | 'x64',
+  ];
+  const manifest = parseRuntimeManifest(JSON.parse(readFileSync(manifestPath, 'utf8')) as unknown, {
+    platform: runtimePlatform,
+    architecture: runtimeArchitecture,
+    maximumUnpackedBytes: 512 * 1024 * 1024,
+  });
+  if (manifest.pimpampumVersion !== version) {
+    throw new Error('Packaged runtime version does not match the signed release');
+  }
+  const payloadRoot = join(dirname(manifestPath), 'payload');
+  const actual = walkRegularFiles(payloadRoot)
+    .map((path) => relativePath(payloadRoot, path).split(sep).join('/'))
+    .sort();
+  const expected = manifest.files.map((file) => file.path).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error('Packaged runtime has missing or unexpected files');
+  }
+  for (const file of manifest.files) {
+    const path = join(payloadRoot, ...file.path.split('/'));
+    const metadata = lstatSync(path);
+    const bytes = readFileSync(path);
+    if (
+      bytes.byteLength !== file.size ||
+      (metadata.mode & 0o777) !== file.mode ||
+      createHash('sha256').update(bytes).digest('hex') !== file.sha256
+    ) {
+      throw new Error(`Packaged runtime integrity mismatch: ${file.path}`);
+    }
+  }
+}
+
+function validateCandidateInventory(
+  root: string,
+  target: PackagedReleaseTarget,
+  version: string,
+): string {
+  const files = walkRegularFiles(root);
+  const app = target === 'darwin-arm64' ? findCandidateApp(root) : '';
+  const runtimeManifests = files.filter(
+    (path) =>
+      path.endsWith(`${sep}runtime-manifest.json`) &&
+      !path.includes(`${sep}pimpampum-status${sep}`),
+  );
+  const pluginFiles = files.filter(
+    (path) => path.includes(`${sep}pimpampum-status${sep}`) && path.endsWith('.qml'),
+  );
+  const pluginManifestPath = files.find(
+    (path) =>
+      path.includes(`${sep}pimpampum-status${sep}`) && path.endsWith(`${sep}runtime-manifest.json`),
+  );
+  if (
+    runtimeManifests.length !== 1 ||
+    pluginFiles.length === 0 ||
+    pluginManifestPath === undefined ||
+    (target === 'darwin-arm64' && app === '')
+  ) {
+    throw new Error('Packaged release is missing its app, runtime, or plugin inventory');
+  }
+  validateRuntimeCandidate(runtimeManifests[0]!, target, version);
+  const pluginManifest = JSON.parse(readFileSync(pluginManifestPath, 'utf8')) as unknown;
+  if (
+    !isRecord(pluginManifest) ||
+    pluginManifest.version !== version ||
+    !isRecord(pluginManifest.targets) ||
+    !Object.keys(pluginManifest.targets).every((pluginTarget) =>
+      ['linux-arm64', 'linux-x64'].includes(pluginTarget),
+    )
+  ) {
+    throw new Error('Packaged plugin manifest does not match the signed release');
+  }
+  return app;
+}
+
+function readUpdateReceipt(dataDirectory: string): UpdateInstallReceiptMetadata | undefined {
+  const receipt = readInstallReceipt(installReceiptPath(dataDirectory), dataDirectory);
+  return receipt
+    ? {
+        schemaVersion: 1,
+        adapter: receipt.adapter,
+        ...(receipt.updateProvider === undefined ? {} : { updateProvider: receipt.updateProvider }),
+        ...(receipt.packagedRuntime === undefined
+          ? {}
+          : { packagedRuntime: receipt.packagedRuntime }),
+      }
+    : undefined;
+}
+
+function createConcretePackagedProvider(
+  input: CliUpdateManagerInput,
+): PackagedReleaseProviderInput {
+  if (input.target === null) throw new Error('Packaged release target is unsupported');
+  const fetchImplementation = input.fetchImplementation ?? globalThis.fetch;
+  const installedResources = join(
+    input.homeDirectory,
+    'Applications',
+    'PimpampumMenuBar.app',
+    'Contents',
+    'Resources',
+  );
+  const keyPath =
+    input.publicKeyPath ??
+    process.env.PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH ??
+    join(installedResources, 'pimpampum-release-public-key.pem');
+  const allowedKeyRoots = [input.dataDirectory, installedResources];
+  let stagedAppPath = '';
+  return {
+    channelManifestUrl:
+      input.channelManifestUrl ??
+      process.env.PIMPAMPUM_RELEASE_MANIFEST_URL ??
+      DEFAULT_RELEASE_CHANNEL_URL,
+    target: input.target,
+    fetchManifest: createBoundedReleaseManifestFetcher(fetchImplementation),
+    verifySignature: createReleaseSignatureVerifier({
+      publicKeyPath: keyPath,
+      allowedRoots: allowedKeyRoots,
+    }),
+    async stageCandidate({ asset, maximumBytes, timeoutMilliseconds, target, version }) {
+      const stagingParent = join(input.homeDirectory, 'Applications');
+      mkdirSync(stagingParent, { recursive: true, mode: 0o700 });
+      const parentMetadata = lstatSync(stagingParent);
+      if (parentMetadata.isSymbolicLink() || !parentMetadata.isDirectory()) {
+        throw new Error('Packaged update staging parent must be a regular directory');
+      }
+      const stagingRoot = mkdtempSync(join(stagingParent, '.pimpampum-update-'));
+      chmodSync(stagingRoot, 0o700);
+      const archivePath = join(
+        stagingRoot,
+        target === 'darwin-arm64' ? 'candidate.zip' : 'candidate.tar.gz',
+      );
+      const extractedPath = join(stagingRoot, 'candidate');
+      try {
+        const bytes = await boundedFetchBytes({
+          url: asset.url,
+          maximumBytes,
+          timeoutMilliseconds,
+          fetchImplementation,
+        });
+        if (bytes.byteLength !== asset.size)
+          throw new Error('Packaged release size does not match its manifest');
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        if (sha256 !== asset.sha256)
+          throw new Error('Packaged release hash does not match its manifest');
+        writeFileSync(archivePath, bytes, { flag: 'wx', mode: 0o600 });
+        mkdirSync(extractedPath, { mode: 0o700 });
+        const listing =
+          target === 'darwin-arm64'
+            ? await input.runCommand('/usr/bin/unzip', ['-Z1', archivePath])
+            : await input.runCommand('/usr/bin/tar', ['-tzf', archivePath]);
+        if (listing.exitCode !== 0) throw new Error('Packaged release archive listing failed');
+        assertSafeArchiveListing(listing.stdout);
+        const extraction =
+          target === 'darwin-arm64'
+            ? await input.runCommand('/usr/bin/ditto', ['-x', '-k', archivePath, extractedPath])
+            : await input.runCommand('/usr/bin/tar', [
+                '-xzf',
+                archivePath,
+                '-C',
+                extractedPath,
+                '--no-same-owner',
+                '--no-same-permissions',
+              ]);
+        if (extraction.exitCode !== 0) throw new Error('Packaged release extraction failed');
+        stagedAppPath = validateCandidateInventory(extractedPath, target, version);
+        rmSync(archivePath, { force: true });
+        return {
+          path: resolve(extractedPath),
+          sha256,
+          size: bytes.byteLength,
+          contains: { app: true, runtime: true, plugin: true },
+        };
+      } catch (error) {
+        rmSync(stagingRoot, { recursive: true, force: true });
+        throw error;
+      }
+    },
+    async reconcile({ version, candidatePath, target }) {
+      try {
+        if (target !== 'darwin-arm64' || stagedAppPath === '') {
+          throw new Error('This packaged release activator supports only macOS arm64');
+        }
+        if (!pathInside(candidatePath, stagedAppPath))
+          throw new Error('Staged app escaped its candidate root');
+        const installedApp = join(input.homeDirectory, 'Applications', 'PimpampumMenuBar.app');
+        const installedRuntime = join(
+          installedApp,
+          'Contents',
+          'Resources',
+          'PimpampumRuntime',
+          'payload',
+        );
+        const nodePath = join(installedRuntime, 'bin', 'node');
+        const cliPath = join(installedRuntime, 'dist', 'cli.js');
+        const candidateManager = input.createCandidateServiceManager({
+          appBundlePath: stagedAppPath,
+          version,
+          nodePath,
+          cliPath,
+        });
+        const currentReceipt = readInstallReceipt(
+          installReceiptPath(input.dataDirectory),
+          input.dataDirectory,
+        );
+        if (!currentReceipt) throw new Error('Packaged update requires an installation receipt');
+        const lifecycle = createInstallationLifecycle({
+          dataDirectory: input.dataDirectory,
+          homeDirectory: input.homeDirectory,
+          lifecycleLock: createSetupLifecycleLock(input.dataDirectory),
+          runtime: {
+            stage: async () => ({ version, nodePath, cliPath }),
+            activate: async () => undefined,
+            restore: async () => undefined,
+            removeOwned: async () => undefined,
+          },
+          service: {
+            stop: async () => undefined,
+            install: async () => void (await candidateManager.install()),
+            start: async () => undefined,
+            verify: async () => {
+              const status = await candidateManager.status();
+              if (!status.installed || !status.running || status.version !== version) {
+                throw new Error('Updated packaged service failed health verification');
+              }
+            },
+            restore: async () => void (await input.currentServiceManager.install()),
+            removeOwned: async () => undefined,
+          },
+          connectors: {
+            reconcileOwned: async () => undefined,
+            snapshotOwned: async () => ({}),
+            restoreOwned: async () => undefined,
+            disconnectOwned: async () => undefined,
+          },
+          receipt: {
+            read: async () => ({
+              runtimeVersion: currentReceipt.version,
+              serviceCommand: [currentReceipt.nodePath, currentReceipt.cliPath],
+              connectorEntries: {},
+            }),
+            commit: async (snapshot) => {
+              const installed = readInstallReceipt(
+                installReceiptPath(input.dataDirectory),
+                input.dataDirectory,
+              );
+              if (!installed || installed.version !== snapshot.runtimeVersion) {
+                throw new Error('Updated service receipt did not commit the expected version');
+              }
+            },
+            remove: async () => undefined,
+          },
+        });
+        await lifecycle.update({ targetVersion: version });
+      } finally {
+        const stagingRoot = dirname(candidatePath);
+        if (
+          stagingRoot.startsWith(join(input.homeDirectory, 'Applications', '.pimpampum-update-'))
+        ) {
+          rmSync(stagingRoot, { recursive: true, force: true });
+        }
+        stagedAppPath = '';
+      }
+    },
+  };
+}
+
+export function createCliUpdateManager(input: CliUpdateManagerInput): UpdateManager {
+  const installReceipt = readUpdateReceipt(input.dataDirectory);
+  return createUpdateManager({
+    currentVersion: input.currentVersion,
+    npmPath: input.npmPath === undefined ? resolveNpmPath(input.nodePath) : input.npmPath,
+    nodePath: input.nodePath,
+    runCommand: input.runCommand,
+    ...(installReceipt ? { installReceipt } : {}),
+    ...(input.packagedRelease
+      ? { packagedRelease: input.packagedRelease }
+      : (installReceipt?.adapter === 'launchd-macos-app' ||
+            installReceipt?.adapter === 'macos-app') &&
+          input.target === 'darwin-arm64'
+        ? { packagedRelease: createConcretePackagedProvider(input) }
+        : {}),
+  });
+}
+
 async function readBoundedStdin(maxBytes: number): Promise<string> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -314,6 +825,7 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
     !(runtimePlatform === 'darwin' && runtimeArchitecture !== 'arm64');
   let connections: ReturnType<typeof createCliConnectionsRuntime> | undefined;
   let setup: ReturnType<typeof createCliSetupRuntime> | undefined;
+  let packagedUninstall: ServiceManager['uninstall'] | undefined;
   if (supportedRuntimeTarget) {
     const homeDirectory = homedir();
     const layout = resolveRuntimeLayout({
@@ -354,6 +866,10 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
       ['claude-code', claudeCode],
     ]);
     const orderedConnectors = createConnectorRegistry().map(({ id }) => connectorById.get(id)!);
+    const connectorReceiptById = new Map([
+      ['codex', codexReceipt],
+      ['claude-code', claudeReceipt],
+    ] as const);
     connections = createCliConnectionsRuntime({
       connectors: orderedConnectors,
       launcherPath: layout.mcpLauncherPath,
@@ -451,7 +967,221 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
       planStore: setupPlan,
     });
     setup = createCliSetupRuntime(setupCoordinator, setupState);
+
+    packagedUninstall = async () => {
+      const serviceReceiptPath = installReceiptPath(config.dataDirectory);
+      const serviceReceipt = readInstallReceipt(serviceReceiptPath, config.dataDirectory);
+      const packaged =
+        serviceReceipt !== null &&
+        (serviceReceipt.updateProvider === 'packaged-release' ||
+          serviceReceipt.packagedRuntime !== undefined ||
+          ['launchd-macos-app', 'macos-app', 'systemd-omarchy-quattro'].includes(
+            serviceReceipt.adapter,
+          ));
+      if (!packaged) return serviceManager.uninstall();
+      if (!serviceManager.prepareUninstall) {
+        throw new Error('Packaged service removal transaction is unavailable');
+      }
+
+      let preparedService: PreparedServiceUninstall | null = null;
+      let preparedRuntime: PreparedRuntimeRemoval | null = null;
+      let capturedServiceReceipt: InstallReceiptFileSnapshot | null = null;
+      let disconnectedConnectorIds: ConnectorId[] = [];
+      const lifecycle = createInstallationLifecycle({
+        dataDirectory: config.dataDirectory,
+        homeDirectory,
+        lifecycleLock: createSetupLifecycleLock(config.dataDirectory),
+        runtime: {
+          stage: async () => {
+            throw new Error('Runtime staging is unavailable during removal');
+          },
+          activate: async () => undefined,
+          restore: async () => {
+            preparedRuntime?.rollback();
+            preparedRuntime = null;
+          },
+          removeOwned: async () => {
+            preparedRuntime = prepareOwnedRuntimeRemoval({
+              homeDirectory,
+              dataDirectory: config.dataDirectory,
+              platform: runtimePlatform,
+              architecture: runtimeArchitecture,
+            });
+          },
+          finalizeRemoval: async () => {
+            preparedRuntime?.commit();
+            preparedRuntime = null;
+          },
+        },
+        service: {
+          // prepareUninstall deactivates the native registration inside its rollback boundary.
+          stop: async () => undefined,
+          install: async () => {
+            throw new Error('Service installation is unavailable during removal');
+          },
+          start: async () => undefined,
+          verify: async () => undefined,
+          restore: async () => {
+            if (preparedService === null) return;
+            const transaction = preparedService;
+            preparedService = null;
+            await transaction.rollback();
+          },
+          removeOwned: async () => {
+            preparedService = await serviceManager.prepareUninstall!();
+            if (preparedService === null) {
+              throw new Error('Packaged service receipt disappeared during removal');
+            }
+          },
+          finalizeRemoval: async () => {
+            if (preparedService === null) return;
+            const transaction = preparedService;
+            await transaction.finalize();
+            preparedService = null;
+          },
+        },
+        connectors: {
+          reconcileOwned: async () => undefined,
+          snapshotOwned: async () => ({}),
+          planRemoval: async () => {
+            const ownedEntries: Record<string, unknown> = {};
+            const unprovenConnectorIds: string[] = [];
+            for (const connector of orderedConnectors) {
+              const inspection = await connector.inspect();
+              const receiptStore = connectorReceiptById.get(connector.id)!;
+              const receipt = await receiptStore.read();
+              if (
+                (inspection.state === 'ownedCurrent' || inspection.state === 'ownedStale') &&
+                inspection.entry !== null &&
+                receipt !== null
+              ) {
+                const snapshot = await connector.snapshot();
+                if (
+                  snapshot.entry !== null &&
+                  fingerprintCommand(snapshot.entry) === fingerprintCommand(inspection.entry)
+                ) {
+                  ownedEntries[connector.id] = { snapshot, receipt };
+                  continue;
+                }
+              }
+              if (inspection.entry !== null || receipt !== null) {
+                unprovenConnectorIds.push(connector.id);
+              }
+            }
+            return { ownedEntries, unprovenConnectorIds };
+          },
+          disconnectOwned: async (entries = {}) => {
+            disconnectedConnectorIds = [];
+            for (const connector of orderedConnectors) {
+              if (!Object.hasOwn(entries, connector.id)) continue;
+              disconnectedConnectorIds.push(connector.id);
+              const result = await connector.disconnect();
+              if (!result.changed) {
+                throw new Error(`${connector.displayName} owned entry changed during removal`);
+              }
+            }
+          },
+          restoreOwned: async (entries) => {
+            const errors: unknown[] = [];
+            for (const connectorId of [...disconnectedConnectorIds].reverse()) {
+              const value = entries[connectorId];
+              if (!isRecord(value) || !isRecord(value.snapshot) || !isRecord(value.receipt)) {
+                errors.push(new Error(`Invalid ${connectorId} removal snapshot`));
+                continue;
+              }
+              const connector = connectorById.get(connectorId)!;
+              const receiptStore = connectorReceiptById.get(connectorId)!;
+              try {
+                await connector.restore(value.snapshot as unknown as ConnectorSnapshot);
+                await receiptStore.write(value.receipt as unknown as ConnectionReceipt);
+              } catch (error) {
+                errors.push(error);
+              }
+            }
+            if (errors.length > 0) {
+              throw new AggregateError(errors, 'Agent connection removal rollback failed');
+            }
+          },
+        },
+        receipt: {
+          read: async () => ({
+            runtimeVersion: serviceReceipt.version,
+            serviceCommand: [serviceReceipt.nodePath, serviceReceipt.cliPath],
+            connectorEntries: {},
+            adapter: serviceReceipt.adapter,
+            dataDirectory: serviceReceipt.dataDirectory,
+            runtimeKind: 'packaged',
+          }),
+          capture: async () => {
+            capturedServiceReceipt = snapshotInstallReceipt(
+              serviceReceiptPath,
+              config.dataDirectory,
+            );
+            if (capturedServiceReceipt === null) {
+              throw new Error('Packaged service receipt disappeared during removal planning');
+            }
+            return {
+              snapshot: {
+                runtimeVersion: capturedServiceReceipt.receipt.version,
+                serviceCommand: [
+                  capturedServiceReceipt.receipt.nodePath,
+                  capturedServiceReceipt.receipt.cliPath,
+                ],
+                connectorEntries: {},
+                adapter: capturedServiceReceipt.receipt.adapter,
+                dataDirectory: capturedServiceReceipt.receipt.dataDirectory,
+                runtimeKind: 'packaged',
+              },
+              contents: capturedServiceReceipt.contents,
+            };
+          },
+          commit: async () => {
+            throw new Error('Packaged removal cannot rewrite a semantic receipt snapshot');
+          },
+          restore: async ({ contents }) => {
+            if (
+              capturedServiceReceipt === null ||
+              !Buffer.from(contents).equals(capturedServiceReceipt.contents)
+            ) {
+              throw new Error('Packaged service receipt rollback snapshot changed');
+            }
+            restoreInstallReceiptSnapshot(
+              serviceReceiptPath,
+              capturedServiceReceipt,
+              config.dataDirectory,
+            );
+          },
+          remove: async () => {
+            if (preparedService === null) {
+              throw new Error('Packaged service removal was not prepared');
+            }
+            const transaction = preparedService;
+            await transaction.commit();
+          },
+        },
+      });
+      const removed = await lifecycle.remove();
+      return {
+        uninstalled: removed.removed,
+        dataPreserved: true,
+        ...(removed.manualInstructions.length === 0
+          ? {}
+          : { manualInstructions: removed.manualInstructions }),
+      };
+    };
   }
+
+  const commandServiceManager: ServiceManager =
+    packagedUninstall === undefined
+      ? serviceManager
+      : {
+          install: () => serviceManager.install(),
+          status: () => serviceManager.status(),
+          uninstall: () => packagedUninstall!(),
+          ...(serviceManager.prepareUninstall
+            ? { prepareUninstall: () => serviceManager.prepareUninstall!() }
+            : {}),
+        };
 
   await runCli(process.argv.slice(2), {
     createClient: () => createHttpClient(config),
@@ -471,12 +1201,41 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
         },
       },
     }),
-    serviceManager,
-    updateManager: createUpdateManager({
+    serviceManager: commandServiceManager,
+    updateManager: createCliUpdateManager({
       currentVersion: PIMPAMPUM_VERSION,
+      dataDirectory: config.dataDirectory,
+      homeDirectory: homedir(),
+      target:
+        runtimePlatform === 'darwin' && runtimeArchitecture === 'arm64'
+          ? 'darwin-arm64'
+          : runtimePlatform === 'linux' && runtimeArchitecture === 'arm64'
+            ? 'linux-arm64'
+            : runtimePlatform === 'linux' && runtimeArchitecture === 'x64'
+              ? 'linux-x64'
+              : null,
       npmPath: resolveNpmPath(process.execPath),
       nodePath: process.execPath,
       runCommand: runServiceCommand,
+      currentServiceManager: serviceManager,
+      createCandidateServiceManager: ({ appBundlePath, version, nodePath, cliPath }) => {
+        if (hostPlatform !== 'darwin') {
+          throw new Error('Packaged macOS candidates can only activate on macOS');
+        }
+        const daemonAdapter = createLaunchdAdapter();
+        const desktopAdapter = createMacOSDesktopAdapter({ appBundlePath, daemonAdapter });
+        return createPlatformServiceManager({
+          ...managerInput,
+          version,
+          nodePath,
+          cliPath,
+          adapters: { darwin: desktopAdapter },
+          receiptAdapters: {
+            [daemonAdapter.id]: daemonAdapter,
+            [desktopAdapter.id]: desktopAdapter,
+          },
+        });
+      },
     }),
     ...(connections === undefined ? {} : { connections }),
     ...(setup === undefined ? {} : { setup }),

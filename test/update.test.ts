@@ -244,4 +244,164 @@ describe('update manager', () => {
       serviceReconciled: true,
     });
   });
+
+  it('selects the signed packaged provider from native install receipt metadata without npm', async () => {
+    const fetchManifest = vi.fn(async () =>
+      JSON.stringify({
+        schemaVersion: 1,
+        channel: 'stable',
+        version: '1.2.0',
+        targets: {
+          'darwin-arm64': {
+            url: 'https://github.com/r-bart/pimpampum/releases/download/v1.2.0/Pimpampum-1.2.0-darwin-arm64.zip',
+            sha256: 'a'.repeat(64),
+            signature: 'signed-release-manifest-value'.repeat(2),
+            size: 4096,
+          },
+        },
+      }),
+    );
+    const verifySignature = vi.fn(async () => true);
+    const runCommand = vi.fn();
+    const manager = createUpdateManager({
+      currentVersion: '1.1.0',
+      npmPath: '/npm',
+      nodePath: '/node',
+      runCommand,
+      installReceipt: { schemaVersion: 1, adapter: 'launchd-macos-app' },
+      packagedRelease: {
+        channelManifestUrl: 'https://updates.pimpampum.dev/stable.json',
+        target: 'darwin-arm64',
+        fetchManifest,
+        verifySignature,
+        stageCandidate: vi.fn(),
+        reconcile: vi.fn(),
+      },
+    });
+
+    await expect(manager.check()).resolves.toEqual({
+      currentVersion: '1.1.0',
+      latestVersion: '1.2.0',
+      updateAvailable: true,
+    });
+    expect(fetchManifest).toHaveBeenCalledWith({
+      url: 'https://updates.pimpampum.dev/stable.json',
+      maximumBytes: 65_536,
+      timeoutMilliseconds: 15_000,
+    });
+    expect(verifySignature).toHaveBeenCalledWith(
+      expect.objectContaining({ target: 'darwin-arm64', signature: expect.any(String) }),
+    );
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('stages the full matching packaged candidate before one coordinator reconciliation', async () => {
+    const sha256 = 'b'.repeat(64);
+    const signature = 'trusted-signature-material'.repeat(2);
+    const stageCandidate = vi.fn(async () => ({
+      path: '/private/tmp/pimpampum-update/candidate',
+      sha256,
+      size: 8192,
+      contains: { app: true, runtime: true, plugin: true },
+    }));
+    const reconcile = vi.fn(async () => undefined);
+    const manager = createUpdateManager({
+      currentVersion: '1.1.0',
+      npmPath: null,
+      nodePath: '/private/runtime/node',
+      runCommand: vi.fn(),
+      installReceipt: {
+        schemaVersion: 1,
+        adapter: 'macos-app',
+        updateProvider: 'packaged-release',
+      },
+      packagedRelease: {
+        channelManifestUrl: 'https://updates.pimpampum.dev/stable.json',
+        target: 'darwin-arm64',
+        fetchManifest: async () =>
+          JSON.stringify({
+            schemaVersion: 1,
+            channel: 'stable',
+            version: '1.2.0',
+            targets: {
+              'darwin-arm64': {
+                url: 'https://github.com/r-bart/pimpampum/releases/download/v1.2.0/Pimpampum-1.2.0-darwin-arm64.zip',
+                sha256,
+                signature,
+                size: 8192,
+              },
+            },
+          }),
+        verifySignature: async () => true,
+        stageCandidate,
+        reconcile,
+      },
+    });
+
+    await expect(manager.update()).resolves.toEqual({
+      currentVersion: '1.2.0',
+      latestVersion: '1.2.0',
+      updateAvailable: false,
+      updated: true,
+      installedVersion: '1.2.0',
+      serviceReconciled: true,
+    });
+    expect(stageCandidate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        version: '1.2.0',
+        target: 'darwin-arm64',
+        maximumBytes: 8192,
+        timeoutMilliseconds: 15_000,
+      }),
+    );
+    expect(reconcile).toHaveBeenCalledWith({
+      version: '1.2.0',
+      target: 'darwin-arm64',
+      candidatePath: '/private/tmp/pimpampum-update/candidate',
+      sha256,
+      signature,
+    });
+  });
+
+  it('rejects untrusted manifests and staged hash or inventory drift before reconciliation', async () => {
+    const reconcile = vi.fn();
+    const input = (verifySignature: () => boolean, stagedSha = 'c'.repeat(64)) =>
+      createUpdateManager({
+        currentVersion: '1.1.0',
+        npmPath: null,
+        nodePath: '/private/runtime/node',
+        runCommand: vi.fn(),
+        installReceipt: { schemaVersion: 1, adapter: 'macos-app' },
+        packagedRelease: {
+          channelManifestUrl: 'https://updates.pimpampum.dev/stable.json',
+          target: 'darwin-arm64',
+          fetchManifest: async () =>
+            JSON.stringify({
+              schemaVersion: 1,
+              channel: 'stable',
+              version: '1.2.0',
+              targets: {
+                'darwin-arm64': {
+                  url: 'https://github.com/r-bart/pimpampum/releases/download/v1.2.0/Pimpampum-1.2.0-darwin-arm64.zip',
+                  sha256: 'c'.repeat(64),
+                  signature: 'signed-release-manifest-value'.repeat(2),
+                  size: 1024,
+                },
+              },
+            }),
+          verifySignature,
+          stageCandidate: async () => ({
+            path: '/private/tmp/pimpampum-update/candidate',
+            sha256: stagedSha,
+            size: 1024,
+            contains: { app: true, runtime: true, plugin: true },
+          }),
+          reconcile,
+        },
+      });
+
+    await expect(input(() => false).check()).rejects.toThrow(/signature/u);
+    await expect(input(() => true, 'd'.repeat(64)).update()).rejects.toThrow(/hash/u);
+    expect(reconcile).not.toHaveBeenCalled();
+  });
 });

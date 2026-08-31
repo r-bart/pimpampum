@@ -66,6 +66,11 @@ export interface PruneOwnedRuntimeInput {
   keepVersions?: string[];
 }
 
+export interface PreparedRuntimeRemoval {
+  commit(): void;
+  rollback(): void;
+}
+
 function hash(content: Buffer | string): string {
   return createHash('sha256').update(content).digest('hex');
 }
@@ -658,4 +663,88 @@ export function pruneOwnedRuntimeVersions(input: PruneOwnedRuntimeInput): string
     );
   }
   return removed;
+}
+
+export function prepareOwnedRuntimeRemoval(
+  input: Omit<PruneOwnedRuntimeInput, 'keepVersions'>,
+): PreparedRuntimeRemoval | null {
+  const receipt = readReceipt(input);
+  if (receipt === null) return null;
+  verifyOwnedLaunchers(receipt);
+  const runtimeReceiptPath = receiptPath(input.dataDirectory);
+  const receiptSnapshot = snapshot(runtimeReceiptPath, 'Runtime receipt');
+  const controlSnapshot = snapshot(receipt.controlLauncherPath, 'Control launcher');
+  const mcpSnapshot = snapshot(receipt.mcpLauncherPath, 'MCP launcher');
+  const layout = resolveRuntimeLayout({
+    homeDirectory: input.homeDirectory,
+    platform: input.platform,
+    architecture: input.architecture,
+    version: receipt.currentVersion,
+  });
+  privateDirectory(layout.versionsDirectory);
+  const quarantineRoot = join(layout.versionsDirectory, `.pimpampum-remove-${randomUUID()}`);
+  privateDirectory(quarantineRoot);
+  const moved: { original: string; quarantined: string }[] = [];
+  let finished = false;
+
+  const rollback = (): void => {
+    if (finished) return;
+    for (const entry of [...moved].reverse()) {
+      if (!pathEntryExists(entry.quarantined)) continue;
+      if (pathEntryExists(entry.original)) {
+        fail('runtime removal rollback destination already exists');
+      }
+      renameSync(entry.quarantined, entry.original);
+    }
+    restore(receipt.controlLauncherPath, controlSnapshot);
+    restore(receipt.mcpLauncherPath, mcpSnapshot);
+    restore(runtimeReceiptPath, receiptSnapshot);
+    rmSync(quarantineRoot, { recursive: true, force: true });
+    finished = true;
+  };
+
+  try {
+    for (const [index, owned] of receipt.ownedVersions.entries()) {
+      if (!pathEntryExists(owned.directory)) continue;
+      const metadata = lstatSync(owned.directory);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+        fail('owned runtime path is unsafe');
+      }
+      const quarantined = join(quarantineRoot, String(index));
+      renameSync(owned.directory, quarantined);
+      moved.push({ original: owned.directory, quarantined });
+    }
+    rmSync(receipt.controlLauncherPath, { force: true });
+    rmSync(receipt.mcpLauncherPath, { force: true });
+    rmSync(runtimeReceiptPath, { force: true });
+  } catch (error) {
+    try {
+      rollback();
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError], 'Runtime removal and rollback failed');
+    }
+    throw error;
+  }
+
+  return {
+    commit() {
+      if (finished) return;
+      rmSync(quarantineRoot, { recursive: true });
+      for (const entry of moved) {
+        removeEmptyParents(dirname(entry.original), layout.runtimeDirectory);
+      }
+      try {
+        rmdirSync(layout.launchersDirectory);
+      } catch {
+        // Preserve a non-empty shared launcher directory.
+      }
+      try {
+        rmdirSync(layout.runtimeDirectory);
+      } catch {
+        // Preserve a non-empty runtime root containing unreceipted/user content.
+      }
+      finished = true;
+    },
+    rollback,
+  };
 }

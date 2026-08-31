@@ -42,6 +42,10 @@ function acquireInstanceLock(dataDirectory: string): () => void {
 }
 
 export async function startServer(config = loadConfig()): Promise<RunningServer> {
+  const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
+  if (!loopbackHosts.has(config.host)) {
+    throw new AppError('bad_request', 'Pimpampum HTTP must bind to a loopback host', 400);
+  }
   if (
     config.databasePath !== ':memory:' &&
     resolve(config.databasePath) !== resolve(config.dataDirectory, 'pimpampum.sqlite')

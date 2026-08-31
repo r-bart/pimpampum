@@ -147,6 +147,25 @@ describe('setup coordinator hardening', () => {
     expect(existsSync(dependencies.dataDirectory)).toBe(false);
   });
 
+  it('attaches a bounded per-operation progress observer without making it transactional', async () => {
+    const root = temporaryDirectory();
+    const dependencies = setupDependencies(root);
+    const coordinator = createSetupCoordinator(dependencies);
+    const plan = await coordinator.plan({ selectedConnectors: ['codex'] });
+    const progress: string[] = [];
+    await coordinator.apply({
+      operationId: plan.operationId,
+      expectedRevision: plan.revision,
+      confirmed: true,
+      onProgress: (event) => {
+        progress.push(`${event.phase}:${event.status}`);
+      },
+    });
+    expect(progress).toContain('runtime.install:started');
+    expect(progress).toContain('service.verify:completed');
+    expect(progress).toContain('connector:codex.verify:completed');
+  });
+
   it('forwards reviewed replacement while keep and cancel preserve the existing entry', async () => {
     const replaceRoot = temporaryDirectory();
     const replaceDependencies = setupDependencies(replaceRoot);
