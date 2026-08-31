@@ -60,6 +60,18 @@ export const TASK_3_3_AUTOMATED_ONLY = Object.freeze([
   'incompatible: the daemon pins overview schemaVersion 2 (overviewContract.ts), so a healthy installation can never emit another version; covered by test/service-omarchy.test.ts and test/omarchy-plugin.test.ts.',
   'importing and exporting: set and cleared inside one local filesystem operation (syncController.ts), so a poll observes them only by chance; covered by the sync controller tests.',
 ]);
+export const TASK_6_2_SCENARIOS = Object.freeze([
+  'bootstrap-no-node',
+  'connect-codex',
+  'connect-claude-code',
+  'reject-wrong-architecture',
+  'reject-wrong-hash',
+  'reject-offline-download',
+  'reject-interrupted-download',
+  'quickshell-restart-preserves-daemon-and-connectors',
+  'packaged-update-preserves-connectors',
+  'receipt-owned-removal-preserves-data',
+]);
 const COMMAND_TIMEOUT_MS = 30_000;
 
 function hash(contents) {
@@ -68,6 +80,141 @@ function hash(contents) {
 
 function json(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function exactKeys(value, expected) {
+  return (
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).sort().join('\0') === [...expected].sort().join('\0')
+  );
+}
+
+/**
+ * Task 6.2 is deliberately separate from the human Quattro screenshot artifact. Its injected
+ * scenario boundary is implemented by the native-target harness and fixture tests; this
+ * orchestrator owns exact ordering, duration bounds, hash binding, cleanup, and fail-closed output.
+ */
+export function createTask62LiveRunner(dependencies) {
+  return {
+    async run(input) {
+      if (dependencies.environment.PIMPAMPUM_OMARCHY_DELIVERY_LIVE !== '1') {
+        throw new Error('Set PIMPAMPUM_OMARCHY_DELIVERY_LIVE=1 for the Task 6.2 target smoke');
+      }
+      if (dependencies.platform !== 'linux' || dependencies.uid === 0) {
+        throw new Error('Task 6.2 target smoke requires rootless Linux');
+      }
+      const candidatePath = requireAbsolute(input.candidatePath, 'Candidate path');
+      const evidencePath = requireAbsolute(input.evidencePath, 'Evidence path');
+      const target = input.target;
+      if (target !== 'linux-x64' && target !== 'linux-arm64') {
+        throw new Error('Task 6.2 target must be linux-x64 or linux-arm64');
+      }
+      const delivery = await dependencies.validateDelivery(candidatePath);
+      if (
+        !exactKeys(delivery, ['runtimeVersion', 'runtimeManifestSha256', 'artifactSha256']) ||
+        !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(delivery.runtimeVersion) ||
+        !/^[a-f0-9]{64}$/u.test(delivery.runtimeManifestSha256) ||
+        !/^[a-f0-9]{64}$/u.test(delivery.artifactSha256)
+      ) {
+        throw new Error('Task 6.2 delivery validation returned an invalid hash binding');
+      }
+      const commit = await dependencies.repositoryCommit();
+      if (!/^[a-f0-9]{40}$/u.test(commit)) {
+        throw new Error('Task 6.2 evidence requires an exact repository commit');
+      }
+      const preservedBeforeSha256 = await dependencies.preservedDataSha256();
+      if (!/^[a-f0-9]{64}$/u.test(preservedBeforeSha256)) {
+        throw new Error('Task 6.2 preserved-data baseline hash is invalid');
+      }
+      const startedAt = dependencies.now();
+      const scenarios = [];
+      let cleanupPromise;
+      const cleanupOnce = async () => {
+        cleanupPromise ??= Promise.resolve().then(() => dependencies.cleanup());
+        return cleanupPromise;
+      };
+      let preservedAfterSha256;
+      let cleanup;
+      try {
+        for (const id of TASK_6_2_SCENARIOS) {
+          const scenarioStartedAt = dependencies.now();
+          const result = await dependencies.runScenario({
+            id,
+            target,
+            candidatePath,
+            runtimeVersion: delivery.runtimeVersion,
+            artifactSha256: delivery.artifactSha256,
+          });
+          const scenarioFinishedAt = dependencies.now();
+          const durationMs = scenarioFinishedAt.getTime() - scenarioStartedAt.getTime();
+          if (
+            !exactKeys(result, ['passed', 'observed']) ||
+            result.passed !== true ||
+            typeof result.observed !== 'string' ||
+            result.observed.length === 0 ||
+            result.observed.length > 512 ||
+            !Number.isSafeInteger(durationMs) ||
+            durationMs < 0 ||
+            durationMs > 10 * 60_000
+          ) {
+            throw new Error(`Task 6.2 scenario did not pass safely: ${id}`);
+          }
+          scenarios.push({
+            id,
+            passed: true,
+            observed: result.observed,
+            startedAt: scenarioStartedAt.toISOString(),
+            finishedAt: scenarioFinishedAt.toISOString(),
+            durationMs,
+          });
+        }
+        preservedAfterSha256 = await dependencies.preservedDataSha256();
+        if (preservedAfterSha256 !== preservedBeforeSha256) {
+          throw new Error('Task 6.2 removal changed preserved user data');
+        }
+        cleanup = await cleanupOnce();
+        if (!exactKeys(cleanup, ['completed']) || cleanup.completed !== true) {
+          throw new Error('Task 6.2 cleanup did not complete');
+        }
+      } catch (error) {
+        try {
+          await cleanupOnce();
+        } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], 'Task 6.2 run and cleanup failed');
+        }
+        throw error;
+      }
+      const finishedAt = dependencies.now();
+      const durationMs = finishedAt.getTime() - startedAt.getTime();
+      if (!Number.isSafeInteger(durationMs) || durationMs < 0 || durationMs > 60 * 60_000) {
+        throw new Error('Task 6.2 overall duration is invalid');
+      }
+      const evidence = {
+        schemaVersion: 1,
+        status: 'passed',
+        explicitOptIn: true,
+        commit,
+        target,
+        runtimeVersion: delivery.runtimeVersion,
+        runtimeManifestSha256: delivery.runtimeManifestSha256,
+        artifactSha256: delivery.artifactSha256,
+        startedAt: startedAt.toISOString(),
+        finishedAt: finishedAt.toISOString(),
+        durationMs,
+        scenarios,
+        preservedData: {
+          beforeSha256: preservedBeforeSha256,
+          afterSha256: preservedAfterSha256,
+          unchanged: true,
+        },
+        cleanup,
+      };
+      dependencies.writeEvidenceAtomic(evidencePath, evidence);
+      return evidence;
+    },
+  };
 }
 
 function requireAbsolute(path, label) {

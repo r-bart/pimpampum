@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "pimpampum": {
+      "type": "stdio",
+      "command": "/Users/example/.local/share/pimpampum/bin/pimpampum-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

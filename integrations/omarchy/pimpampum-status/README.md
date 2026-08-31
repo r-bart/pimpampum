@@ -70,10 +70,15 @@ plugin command. It never reads or edits `shell.json` directly. A failed
 installation restores the previous owned state and leaves unrelated plugins
 alone.
 
-The repository-local `install.sh` remains only as a convenience wrapper. It
-executes `pimpampum install`; it does not own a second installation path. The
-installed overview and backup helpers do not depend on the graphical session's
-`PATH`.
+The repository-local `install.sh` remains a thin wrapper around the bounded
+plugin lifecycle. After an official plugin fast-forward, that lifecycle compares
+the checked-in runtime version, Linux target, and archive SHA with its private
+receipt under the same setup lock. An unchanged pin performs no runtime work; a
+new version or target invokes the verified bootstrap and commits the new receipt
+only after the packaged installer succeeds. A checksum change without a version
+change fails closed because release assets are immutable. The previous runtime
+and connector route remain available if reconciliation fails. Installed helpers
+do not depend on the graphical session's `PATH`.
 
 ## Update settings
 
@@ -131,15 +136,20 @@ required to recover.
 pimpampum uninstall
 ```
 
-Removal uses the same receipt and lifecycle lock, delegates plugin removal to
-the official Omarchy command, and then removes only the exact backup path that
-command created for the receipt-owned plugin. Existing backups, unrelated
-plugins, and Pimpampum data are preserved. The pinned Quattro contract's
+Removal uses the same receipt and lifecycle lock. It asks the bounded connection
+helper to disconnect only entries whose connector receipts prove ownership, then
+delegates service and plugin removal to the receipt-selected control launcher and
+stages the receipt-owned runtime and launchers before deletion. Unknown entries
+are left unchanged with redacted manual guidance. A mandatory late failure
+restores completed owned routes and the prior service/runtime before returning an
+error. Databases, tokens, backups, exports, and synchronization snapshots are
+never removal targets. The pinned Quattro contract's
 `listShellConfig` IPC method captures only this widget's section, index, and
 inline settings before removal. If a later step fails, `enablePlugin` and
 `setBarWidget` restore that exact entry without direct `shell.json` access or
-changes to unrelated layout entries. The repository-local `uninstall.sh` is an
-equivalent thin wrapper around `pimpampum uninstall`.
+changes to unrelated layout entries. The repository-local `uninstall.sh` is a
+thin entry into that single bounded lifecycle; restarting Quickshell never calls
+it and never stops the daemon.
 
 ## Validation
 

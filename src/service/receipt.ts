@@ -11,7 +11,12 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { z } from 'zod';
-import type { InstallReceipt, ReceiptArtifact, ServiceArtifact } from './types.js';
+import type {
+  InstallReceipt,
+  InstallReceiptFileSnapshot,
+  ReceiptArtifact,
+  ServiceArtifact,
+} from './types.js';
 
 export const INSTALL_RECEIPT_NAME = 'install-receipt.json';
 
@@ -76,6 +81,15 @@ const installReceiptSchema = z
     dataDirectory: z.string().min(1),
     baseUrl: z.url(),
     logDirectory: z.string().min(1),
+    updateProvider: z.enum(['legacy-npm', 'packaged-release']).optional(),
+    packagedRuntime: z
+      .object({
+        version: z.string().min(1),
+        target: z.enum(['darwin-arm64', 'linux-arm64', 'linux-x64']),
+        runtimeDirectory: z.string().min(1),
+      })
+      .strict()
+      .optional(),
     artifacts: z.array(
       z
         .object({
@@ -91,7 +105,12 @@ const installReceiptSchema = z
 function parseReceipt(value: unknown): InstallReceipt {
   const result = installReceiptSchema.safeParse(value);
   if (!result.success) throw new Error('Invalid Pimpampum installation receipt');
-  return result.data;
+  const { updateProvider, packagedRuntime, ...receipt } = result.data;
+  return {
+    ...receipt,
+    ...(updateProvider === undefined ? {} : { updateProvider }),
+    ...(packagedRuntime === undefined ? {} : { packagedRuntime }),
+  };
 }
 
 export function readInstallReceipt(
@@ -142,4 +161,43 @@ export function writeInstallReceipt(
   trustedRoot = dirname(path),
 ): void {
   writePrivateFileAtomic(path, `${JSON.stringify(receipt, null, 2)}\n`, 0o600, trustedRoot);
+}
+
+export function snapshotInstallReceipt(
+  path: string,
+  trustedRoot = dirname(path),
+): InstallReceiptFileSnapshot | null {
+  const receipt = readInstallReceipt(path, trustedRoot);
+  if (receipt === null) return null;
+  const contents = readFileSync(path);
+  if (contents.byteLength > 700_000) {
+    throw new Error('Installation receipt exceeds the migration snapshot size limit');
+  }
+  let capturedReceipt: InstallReceipt;
+  try {
+    capturedReceipt = parseReceipt(JSON.parse(contents.toString('utf8')) as unknown);
+  } catch (error) {
+    throw new Error('Installation receipt changed while it was being captured', { cause: error });
+  }
+  if (JSON.stringify(capturedReceipt) !== JSON.stringify(receipt)) {
+    throw new Error('Installation receipt changed while it was being captured');
+  }
+  return { receipt: capturedReceipt, contents };
+}
+
+export function restoreInstallReceiptSnapshot(
+  path: string,
+  snapshot: InstallReceiptFileSnapshot,
+  trustedRoot = dirname(path),
+): void {
+  let restored: InstallReceipt;
+  try {
+    restored = parseReceipt(JSON.parse(snapshot.contents.toString('utf8')) as unknown);
+  } catch (error) {
+    throw new Error('Invalid installation receipt byte snapshot', { cause: error });
+  }
+  if (JSON.stringify(restored) !== JSON.stringify(snapshot.receipt)) {
+    throw new Error('Installation receipt byte snapshot does not match its metadata');
+  }
+  writePrivateFileAtomic(path, snapshot.contents, 0o600, trustedRoot);
 }

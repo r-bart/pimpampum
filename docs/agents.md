@@ -1,8 +1,12 @@
 # Using Pimpampum from an agent
 
-This document is for an agent that wants to **use** Pimpampum as shared project
-memory. If you are an agent working **on** the Pimpampum codebase, read
+This document is for an agent that is already connected to Pimpampum and wants to use it as shared
+project memory. If you are working **on** the Pimpampum codebase, read
 [`AGENTS.md`](../AGENTS.md) instead.
+
+If the Pimpampum tools are missing, stop and ask the operator to open Pimpampum's **Agents**
+settings, connect or repair this agent, and then start a new agent session. Do not request a token,
+edit MCP configuration, install packages, or open the local database yourself.
 
 ## The brief
 
@@ -10,117 +14,10 @@ Give this to the agent verbatim. It is the whole contract.
 
 ```text
 Use Pimpampum as the shared project memory.
-Resolve the current Workspace, list available work, and claim exactly one Spec or Task before editing.
+Resolve the current Workspace, list available work, and claim exactly one Spec or leaf Task before editing.
 Read only the relevant Spec, Task, and explicitly scoped Context documents.
 When finished, complete or release the Claim with a concise summary and artifact references.
 ```
-
-## Install
-
-No prompts, no root, no interactive steps. Safe to run unattended.
-
-```bash
-npm install --global pimpampum
-pimpampum install
-```
-
-`pimpampum install` creates one per-user background service and starts the local
-daemon at login. Verify it with `pimpampum status`.
-
-## Connect over MCP
-
-The stdio bridge resolves its own credentials from the local data directory, so
-the agent never handles a token.
-
-```json
-{
-  "mcpServers": {
-    "pimpampum": {
-      "command": "pimpampum-mcp"
-    }
-  }
-}
-```
-
-`pimpampum mcp` starts the same bridge through the main binary. That is the route MCP registry
-clients use (`npx pimpampum mcp`), because `npx pimpampum` alone resolves to the CLI. Both routes
-resolve the local token themselves.
-
-For hosts that speak streamable HTTP instead:
-
-```text
-POST http://127.0.0.1:7337/mcp
-Authorization: Bearer <local-token>
-```
-
-The token lives at `<data-directory>/token` with mode `0600`. Read the effective
-paths with `pimpampum config`, which works offline and never prints the token
-itself.
-
-## Or use the CLI, with no MCP at all
-
-A shell-only agent gets the identical contract without hard-coding HTTP routes.
-
-```bash
-pimpampum commands               # every CLI verb, with arguments, options and effects
-pimpampum config                 # data directory, base URL, MCP URL, stdio command
-pimpampum tools                  # the canonical tool catalog
-pimpampum call work_list --input '{"limit":20}'
-```
-
-### The output contract
-
-Every command writes one `{ "data": ... }` envelope to stdout and exits 0, or one
-`{ "error": ... }` envelope to stderr and exits non-zero. There is one exception:
-`help` prints a text banner, because it is the human affordance. Use `commands`
-to get the same catalog as JSON.
-
-`--help`, `-h`, `--version`, and `-v` are accepted and exit 0.
-
-Tool input comes from exactly one of `--input`, `--stdin`, or `--input-file`, up
-to 2,000,000 UTF-8 bytes.
-
-### Errors
-
-Every error carries a stable `code`, a `retryable` boolean, and a `suggestion`
-naming the next action.
-
-| Code                | Meaning                       | What to do                                                                              |
-| ------------------- | ----------------------------- | --------------------------------------------------------------------------------------- |
-| `unavailable`       | The daemon did not answer.    | Run `pimpampum status`, then `pimpampum install` if it is not installed or not running. |
-| `unauthorized`      | The token was rejected.       | Re-read `pimpampum config`.                                                             |
-| `revision_conflict` | Someone else wrote first.     | Re-read the manifest, retry with its revision.                                          |
-| `conflict`          | A Claim blocks the operation. | Inspect the current Claim.                                                              |
-| `invalid_state`     | A lifecycle rule refused.     | Inspect the Project, Spec, Task states.                                                 |
-| `not_found`         | Unknown resource.             | Resolve the workspace again.                                                            |
-| `bad_request`       | Bad arguments.                | Read `details.usage` or the tool schema.                                                |
-| `payload_too_large` | Input over 2,000,000 bytes.   | Split the write.                                                                        |
-| `internal_error`    | The daemon faulted.           | Inspect the daemon logs.                                                                |
-
-### Self-description
-
-`pimpampum commands` returns every verb with its positional arguments, its
-options, a rendered usage line, and effect annotations that mirror the MCP tool
-annotations: `readOnlyHint`, `destructiveHint`, `idempotentHint`, and
-`requiresDaemon`. Plan against it rather than parsing the text banner.
-
-### Named commands versus `call`
-
-`call` is the complete domain surface and the route to prefer. The named verbs
-(`work:start`, `project:complete`, and so on) are convenience wrappers over the
-same tools. They accept flags for everything the tools accept, so nothing is
-silently dropped:
-
-```bash
-pimpampum work:start spec SPEC_ID agent-7 --lease-seconds 600
-pimpampum work:complete spec SPEC_ID agent-7 4 "Shipped" \
-  --artifact https://github.com/owner/repo/pull/42 \
-  --artifact /absolute/path/report.md
-pimpampum project:create storefront auth "Authentication" --actor codex-thread-123
-```
-
-Use `--artifacts '[{"label":"PR","uri":"https://..."}]'` when a reference needs a
-label. Every write accepts `--actor` to record who made the change.
 
 ## The loop
 
@@ -130,12 +27,12 @@ Three calls. There is no fourth step.
 | ---- | --------------- | -------------------------------------------------------------- |
 | pim  | `work_list`     | Returns only work that can be started right now.               |
 | pam  | `work_start`    | Takes an expiring lease on exactly one Spec or leaf Task.      |
-| pum  | `work_complete` | Records a summary and artifact references, releases the claim. |
+| pum  | `work_complete` | Records a summary and artifact references, releases the Claim. |
 
-Renew a long-running claim with `work_renew`. Give it back untouched with
-`work_release`.
+Renew long work with `work_renew`. Give unfinished work back with `work_release` and a useful
+handoff note.
 
-Recommended full flow:
+Recommended session flow:
 
 ```text
 workspace_resolve
@@ -146,9 +43,15 @@ workspace_resolve
   → work_complete or work_release
 ```
 
-## The model
+Resolve from the current repository path. Use one stable `agentId` for start, renewal, release, and
+completion. Before a write that accepts `expectedRevision`, reread the bounded manifest and pass
+its current revision.
 
-Five entities and one optional level of subtasks.
+An HTTP session may call `sync_status` once during orientation. The stdio connection intentionally
+exposes only the domain tools, so it begins with `workspace_resolve`. Ordinary writes synchronize
+automatically; do not call `sync_now` after each mutation.
+
+## The model
 
 ```text
 Workspace          a product, anchored to one filesystem root
@@ -158,24 +61,36 @@ Workspace          a product, anchored to one filesystem root
             └── Subtask   one level, and no more
 ```
 
-A ready Spec with no open Tasks is claimable directly. Once open Tasks exist,
-only leaf Tasks are claimable. `doing` is derived from a live Claim and is never
-persisted.
+A ready Spec with no open Tasks is claimable directly. Once open Tasks exist, only leaf Tasks are
+claimable. `doing` is derived from a live Claim and is never persisted.
 
 ## Rules an agent must respect
 
-- Claim before editing. A claim is an expiring lease, not a status field.
-- Read only the Spec, Task, and Context explicitly in scope. List tools return
-  manifests and bounded reads, never whole bodies.
-- Never create a project directly in `done`; call the completion operation.
-- Never add subtasks while the parent task is claimed.
-- Sync conflicts are preserved as visible conflicts. Explain the candidates;
-  never resolve one autonomously.
-- Errors carry stable codes. Do not flatten them.
+- Claim before editing. A Claim is an expiring lease, not a status field.
+- Read only the Spec, Task, and Context explicitly in scope. List tools return manifests and
+  bounded reads, never whole bodies.
+- Never create a Project directly in `done`; call the completion operation.
+- Never add Subtasks while the parent Task is claimed.
+- Sync conflicts preserve both candidates. Explain them; never choose one autonomously.
+- Never read or modify Pimpampum's SQLite database, token, receipts, snapshots, or host
+  configuration directly.
+- Errors carry stable codes. Do not flatten them or guess around a failed ownership check.
+
+## Errors
+
+| Code                | Meaning                           | Next action                                           |
+| ------------------- | --------------------------------- | ----------------------------------------------------- |
+| `unavailable`       | The local service did not answer. | Ask the operator to check Pimpampum's service status. |
+| `unauthorized`      | The local route was rejected.     | Ask the operator to repair the agent connection.      |
+| `revision_conflict` | Someone else wrote first.         | Reread and retry only if the change still applies.    |
+| `conflict`          | A Claim blocks the operation.     | Inspect the current Claim; do not take it over.       |
+| `invalid_state`     | A lifecycle rule refused.         | Inspect the Project, Spec, and Task states.           |
+| `not_found`         | The resource is unknown.          | Resolve the Workspace again.                          |
+| `bad_request`       | Input does not match the tool.    | Read the tool schema and correct the request.         |
 
 ## Reference
 
-- Tool catalog with schemas: [`docs/mcp-tools.md`](mcp-tools.md), and the live
-  `tools/list` result, which is authoritative.
-- HTTP surface: OpenAPI description served by the daemon.
-- Full documentation: [`README.md`](../README.md).
+- Tool catalog and lifecycle rules: [`docs/mcp-tools.md`](mcp-tools.md). The live `tools/list`
+  result is the authoritative schema.
+- HTTP surface: the OpenAPI description served by the local daemon.
+- Human installation, connection, and recovery: [`README.md`](../README.md).

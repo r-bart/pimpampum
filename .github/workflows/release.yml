@@ -30,8 +30,56 @@ jobs:
       - run: npm run check:desktop-contract
       - run: npm audit --omit=dev
 
-  publish:
+  runtime:
     needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - run: npm ci
+      - name: Validate Omarchy plugin, runtime pins and executable helpers
+        run: npm run validate:omarchy
+      - name: Build and verify tagged runtime
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          node scripts/build-runtime-bundle.mjs \
+            --target "${{ matrix.target }}" \
+            --output "$RUNNER_TEMP/runtime"
+          node scripts/check-runtime-bundle.mjs \
+            "$RUNNER_TEMP/runtime/pimpampum-runtime-$version-${{ matrix.target }}" \
+            --target "${{ matrix.target }}" \
+            --lockfile package-lock.json
+      - name: Pack mode-preserving runtime transport
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          bundle="pimpampum-runtime-$version-${{ matrix.target }}"
+          /usr/bin/tar -czf "$RUNNER_TEMP/runtime-${{ matrix.target }}.tar.gz" \
+            -C "$RUNNER_TEMP/runtime" "$bundle"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.target }}
+          path: ${{ runner.temp }}/runtime-${{ matrix.target }}.tar.gz
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [validate, runtime]
     runs-on: macos-15
     environment: release
     steps:
@@ -44,8 +92,18 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: runtime-*
+          path: ${{ runner.temp }}/runtime-bundles
+          merge-multiple: true
+      - name: Unpack mode-preserving runtime transports
+        run: |
+          for target in linux-arm64 linux-x64 darwin-arm64; do
+            /usr/bin/tar -xzf "$RUNNER_TEMP/runtime-bundles/runtime-$target.tar.gz" \
+              -C "$RUNNER_TEMP/runtime-bundles"
+          done
       - run: npm run test:macos
-      - run: npm run build:macos
       - name: Import Developer ID certificate
         env:
           CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
@@ -61,28 +119,24 @@ jobs:
           security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$keychain"
           security list-keychains -d user -s "$keychain"
-      - name: Sign final app
+      - name: Build app and sign nested runtime first
+        env:
+          PIMPAMPUM_SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          PIMPAMPUM_RUNTIME_BUNDLE="$RUNNER_TEMP/runtime-bundles/pimpampum-runtime-$version-darwin-arm64" \
+            npm run build:macos
+      - name: Verify nested runtime and sign final app
         env:
           SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
-        run: /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" platforms/macos/dist/PimpampumMenuBar.app
-      - name: Approve and exercise the exact signed artifact
-        env:
-          # The live smoke creates its data directory, daemon logs, and login-item
-          # acknowledgements under os.tmpdir(); pin it so a failure can be uploaded.
-          TMPDIR: ${{ runner.temp }}/macos-live
         run: |
-          mkdir -p "$TMPDIR"
-          node scripts/check-macos-artifact.mjs platforms/macos/dist/PimpampumMenuBar.app --approve
-          PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
-          npm run check:macos-evidence
-      - name: Upload live-smoke diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-live-smoke-diagnostics
-          path: ${{ runner.temp }}/macos-live
-          if-no-files-found: warn
-          retention-days: 7
+          runtime="platforms/macos/dist/PimpampumMenuBar.app/Contents/Resources/PimpampumRuntime/payload"
+          /usr/bin/codesign --verify --strict --verbose=2 \
+            "$runtime/bin/node"
+          /usr/bin/codesign --verify --strict --verbose=2 \
+            "$runtime/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+          /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
+            platforms/macos/dist/PimpampumMenuBar.app
       - name: Notarize and staple
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -93,8 +147,34 @@ jobs:
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent platforms/macos/dist/PimpampumMenuBar.app "$submission"
           xcrun notarytool submit "$submission" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
           xcrun stapler staple platforms/macos/dist/PimpampumMenuBar.app
+          node scripts/check-macos-artifact.mjs \
+            platforms/macos/dist/PimpampumMenuBar.app \
+            --require-signature --require-notarization
           scripts/check-macos-distribution.sh
+      - name: Approve and exercise the exact notarized artifact
+        env:
+          # The live smoke creates its data directory, daemon logs, and login-item
+          # acknowledgements under os.tmpdir(); pin it so a failure can be uploaded.
+          TMPDIR: ${{ runner.temp }}/macos-live
+        run: |
+          mkdir -p "$TMPDIR"
+          node scripts/check-macos-artifact.mjs \
+            platforms/macos/dist/PimpampumMenuBar.app \
+            --approve --require-signature --require-notarization
+          PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
+          npm run check:macos-evidence
+      - name: Upload live-smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-live-smoke-diagnostics
+          path: ${{ runner.temp }}/macos-live
+          if-no-files-found: warn
+          retention-days: 7
       - name: Build release assets
+        env:
+          PIMPAMPUM_RUNTIME_BUNDLES_ROOT: ${{ runner.temp }}/runtime-bundles
+          PIMPAMPUM_REQUIRE_NOTARIZATION: 1
         run: scripts/package-release-assets.sh "$RUNNER_TEMP/release"
       - name: Publish npm package with provenance
         env:
@@ -115,6 +195,17 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "$RUNNER_TEMP/release/pimpampum-${GITHUB_REF_NAME#v}.tgz" \
             "$RUNNER_TEMP/release/PimpampumMenuBar-${GITHUB_REF_NAME#v}-macos-arm64.zip" \
+            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.tar.gz" \
+            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-x64.tar.gz" \
+            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.manifest.json" \
+            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-x64.manifest.json" \
+            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.inventory.json" \
+            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-x64.inventory.json" \
+            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.sbom.spdx.json" \
+            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-x64.sbom.spdx.json" \
+            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.archive-sha256.json" \
+            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-x64.archive-sha256.json" \
+            "$RUNNER_TEMP/release/pimpampum-omarchy-runtime-manifest-${GITHUB_REF_NAME#v}.json" \
             "$RUNNER_TEMP/release/SHA256SUMS" \
             --generate-notes \
             --verify-tag

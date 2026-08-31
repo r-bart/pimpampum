@@ -3,17 +3,20 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepareMacosRuntimePackage } from './macos-live-package.mjs';
 
@@ -23,17 +26,38 @@ if (process.env.PIMPAMPUM_RUN_LIVE_MACOS !== '1') {
 if (process.platform !== 'darwin') throw new Error('The macOS live smoke requires macOS.');
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-let cli = join(repositoryRoot, 'dist/cli.js');
-const app = join(homedir(), 'Applications/PimpampumMenuBar.app');
-const launchAgent = join(homedir(), 'Library/LaunchAgents/dev.pimpampum.daemon.plist');
-const launchDomain = `gui/${process.getuid()}/dev.pimpampum.daemon`;
+const liveStartedAt = Date.now();
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'pimpampum-macos-live-'));
+const liveHome = join(temporaryRoot, 'home');
+mkdirSync(liveHome, { recursive: true });
+let cli = join(repositoryRoot, 'dist/cli.js');
+let controlNode = process.execPath;
+const app = join(liveHome, 'Applications/PimpampumMenuBar.app');
+const launchAgent = join(liveHome, 'Library/LaunchAgents/dev.pimpampum.daemon.plist');
+const launchDomain = `gui/${process.getuid()}/dev.pimpampum.daemon`;
 const dataDirectory = join(temporaryRoot, 'data');
 const workspace = join(temporaryRoot, 'workspace');
 const evidencePath = join(repositoryRoot, 'thoughts/evidence/macos-live.json');
-const environment = { ...process.env, PIMPAMPUM_DATA_DIR: dataDirectory };
+const environment = {
+  ...process.env,
+  HOME: liveHome,
+  PIMPAMPUM_DATA_DIR: dataDirectory,
+};
 let installed = false;
 let smokeCompleted = false;
+const scenarios = {
+  cleanNoNode: false,
+  legacyNpmMigration: false,
+  noAgent: false,
+  oneAgent: false,
+  twoAgents: false,
+  partialFailure: false,
+  conflictDecision: false,
+  popoverRestartResume: false,
+  packagedUpdate: false,
+  disconnect: false,
+  removal: false,
+};
 
 function command(executable, arguments_, options = {}) {
   const result = spawnSync(executable, arguments_, {
@@ -53,7 +77,7 @@ function command(executable, arguments_, options = {}) {
 function runCli(...arguments_) {
   // Pimpampum CLI success is always exactly one {"data": ...} object. Unwrapping here keeps the
   // live runner honest about the contract instead of reading undefined fields off the envelope.
-  const stdout = command(process.execPath, [cli, ...arguments_]);
+  const stdout = command(controlNode, [cli, ...arguments_]);
   const envelope = JSON.parse(stdout);
   if (
     !envelope ||
@@ -67,6 +91,129 @@ function runCli(...arguments_) {
     );
   }
   return envelope.data;
+}
+
+function sha256(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function treeSha256(root) {
+  const paths = [];
+  const visit = (directory) => {
+    for (const name of readdirSync(directory).sort()) {
+      const path = join(directory, name);
+      const metadata = lstatSync(path);
+      if (metadata.isSymbolicLink())
+        throw new Error(`Unsafe symlink in final app artifact: ${path}`);
+      if (metadata.isDirectory()) visit(path);
+      else if (metadata.isFile()) paths.push({ path, mode: metadata.mode & 0o777 });
+      else throw new Error(`Unsafe entry in final app artifact: ${path}`);
+    }
+  };
+  visit(root);
+  const digest = createHash('sha256');
+  for (const entry of paths) {
+    const bytes = readFileSync(entry.path);
+    digest.update(relative(root, entry.path).split(sep).join('/'));
+    digest.update('\0');
+    digest.update(String(entry.mode));
+    digest.update('\0');
+    digest.update(String(bytes.length));
+    digest.update('\0');
+    digest.update(bytes);
+    digest.update('\0');
+  }
+  return digest.digest('hex');
+}
+
+function installHostFixtures() {
+  const bin = join(liveHome, '.local/bin');
+  const state = join(temporaryRoot, 'host-state');
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(state, { recursive: true });
+  const codex = join(bin, 'codex');
+  const claude = join(bin, 'claude');
+  writeFileSync(
+    codex,
+    `#!/bin/sh
+set -eu
+state=${JSON.stringify(join(state, 'codex'))}
+fail=${JSON.stringify(join(state, 'codex-fail'))}
+if [ "\${1:-}" = "--version" ]; then printf 'codex-cli 1.0.0\\n'; exit 0; fi
+if [ "\${1:-}" != "mcp" ]; then exit 2; fi
+case "\${2:-}" in
+  get|list)
+    if [ "\${3:-}" = "--help" ]; then printf '%s\\n' '--json'; exit 0; fi
+    if [ ! -f "$state" ]; then printf '%s\\n' 'No MCP server named pimpampum' >&2; exit 1; fi
+    command_path=$(cat "$state")
+    printf '{"name":"pimpampum","transport":{"type":"stdio","command":"%s","args":[],"env":{}}}\\n' "$command_path"
+    ;;
+  add)
+    if [ "\${3:-}" = "--help" ]; then exit 0; fi
+    if [ -f "$fail" ]; then printf '%s\\n' 'injected Codex add failure' >&2; exit 1; fi
+    for argument in "$@"; do command_path=$argument; done
+    printf '%s' "$command_path" > "$state"
+    ;;
+  remove)
+    if [ "\${3:-}" = "--help" ]; then exit 0; fi
+    rm -f "$state"
+    ;;
+  *) exit 2 ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+set -eu
+state=${JSON.stringify(join(state, 'claude'))}
+fail=${JSON.stringify(join(state, 'claude-fail'))}
+if [ "\${1:-}" = "--version" ]; then printf '1.0.0 (Claude Code)\\n'; exit 0; fi
+if [ "\${1:-}" != "mcp" ]; then exit 2; fi
+case "\${2:-}" in
+  get)
+    if [ "\${3:-}" = "--help" ]; then printf '%s\\n' '--json'; exit 0; fi
+    if [ ! -f "$state" ]; then exit 1; fi
+    command_path=$(cat "$state")
+    printf '{"type":"stdio","command":"%s","args":[],"env":{}}\\n' "$command_path"
+    ;;
+  add-json|add)
+    if [ "\${3:-}" = "--help" ]; then printf '%s\\n' '--scope'; exit 0; fi
+    if [ -f "$fail" ]; then printf '%s\\n' 'injected Claude add failure' >&2; exit 1; fi
+    for argument in "$@"; do json=$argument; done
+    command_path=$(printf '%s' "$json" | sed -n 's/.*"command":"\\([^"]*\\)".*/\\1/p')
+    [ -n "$command_path" ] || exit 2
+    printf '%s' "$command_path" > "$state"
+    ;;
+  remove)
+    if [ "\${3:-}" = "--help" ]; then printf '%s\\n' '--scope'; exit 0; fi
+    rm -f "$state"
+    ;;
+  *) exit 2 ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  chmodSync(codex, 0o755);
+  chmodSync(claude, 0o755);
+  environment.PATH = `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`;
+  environment.PIMPAMPUM_LIVE_HOST_STATE = state;
+  return { state };
+}
+
+function applySetupPlan(connectors, extraArguments = []) {
+  const planArguments = connectors.flatMap((id) => ['--connector', id]);
+  const plan = runCli('setup', 'plan', ...planArguments);
+  const result = runCli(
+    'setup',
+    'apply',
+    plan.operationId,
+    plan.revision,
+    '--yes',
+    ...extraArguments,
+  );
+  return { plan, result };
 }
 
 async function runCliEventually(arguments_, attempts = 100) {
@@ -242,17 +389,168 @@ try {
       );
     },
   });
-  cli = join(runtimeRoot, 'node_modules/pimpampum/dist/cli.js');
+  const packagedRoot = join(runtimeRoot, 'node_modules/pimpampum');
+  const packagedApp = join(packagedRoot, 'platforms/macos/dist/PimpampumMenuBar.app');
+  const embeddedPayload = join(packagedApp, 'Contents/Resources/PimpampumRuntime/payload');
+  const npmCli = join(packagedRoot, 'dist/cli.js');
+  cli = join(embeddedPayload, 'dist/cli.js');
+  controlNode = join(embeddedPayload, 'bin/node');
+  environment.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 
-  const install = runCli('install');
+  const cleanVersion = runCli('version');
+  const cleanPlan = runCli('setup', 'plan');
+  const cleanResult = runCli('setup', 'apply', cleanPlan.operationId, cleanPlan.revision, '--yes');
   installed = true;
-  const empty = await runCliEventually(['overview']);
+  const cleanJournal = runCli('setup', 'status');
+  let empty = await runCliEventually(['overview']);
   const status = runCli('status');
-  if (!status.installed || !status.running || empty.status !== 'empty') {
+  if (
+    cleanVersion.version !==
+      JSON.parse(readFileSync(join(packagedRoot, 'package.json'), 'utf8')).version ||
+    cleanPlan.selectedConnectors.length !== 0 ||
+    cleanResult.status !== 'complete' ||
+    !status.installed ||
+    !status.running ||
+    empty.status !== 'empty'
+  ) {
     throw new Error(
-      `Installed daemon did not report the expected empty online state: ${JSON.stringify({ status, empty })}`,
+      `Embedded no-Node setup did not report the expected state: ${JSON.stringify({ cleanResult, status, empty })}`,
     );
   }
+  scenarios.cleanNoNode = true;
+  scenarios.noAgent = true;
+
+  const preservedPaths = [join(dataDirectory, 'token'), join(dataDirectory, 'pimpampum.sqlite')];
+  const cleanRemoval = runCli('uninstall');
+  installed = false;
+  await assertInstallationAbsent();
+  if (!cleanRemoval.uninstalled) throw new Error('Clean setup removal failed before migration.');
+
+  controlNode = process.execPath;
+  cli = npmCli;
+  const legacyInstall = runCli('install', '--service-only');
+  installed = true;
+  if (!legacyInstall.installed || !runCli('status').running) {
+    throw new Error('Legacy npm service fixture did not become active.');
+  }
+  if (preservedPaths.some((path) => !existsSync(path))) {
+    throw new Error('Legacy fixture did not retain the canonical token and SQLite data.');
+  }
+  const preservedHashes = Object.fromEntries(preservedPaths.map((path) => [path, sha256(path)]));
+  controlNode = join(embeddedPayload, 'bin/node');
+  cli = join(embeddedPayload, 'dist/cli.js');
+  const migrationPlan = runCli('setup', 'plan');
+  const migration = runCli(
+    'setup',
+    'apply',
+    migrationPlan.operationId,
+    migrationPlan.revision,
+    '--yes',
+  );
+  const migratedReceipt = JSON.parse(
+    readFileSync(join(dataDirectory, 'install-receipt.json'), 'utf8'),
+  );
+  if (
+    migration.status !== 'complete' ||
+    migratedReceipt.nodePath !== controlNode ||
+    !Object.entries(preservedHashes).every(([path, hash]) => sha256(path) === hash)
+  ) {
+    throw new Error('Legacy npm migration did not preserve data and activate the packaged node.');
+  }
+  scenarios.legacyNpmMigration = true;
+  empty = await runCliEventually(['overview']);
+
+  const hostFixtures = installHostFixtures();
+  const oneAgent = applySetupPlan(['codex']);
+  if (
+    oneAgent.result.status !== 'complete' ||
+    oneAgent.result.connectors.length !== 1 ||
+    oneAgent.result.connectors[0]?.available !== true
+  ) {
+    throw new Error(`One-agent setup failed: ${JSON.stringify(oneAgent.result)}`);
+  }
+  scenarios.oneAgent = true;
+  runCli('disconnect', 'codex', '--yes');
+
+  const twoAgents = applySetupPlan(['codex', 'claude-code']);
+  if (
+    twoAgents.result.status !== 'complete' ||
+    twoAgents.result.connectors.length !== 2 ||
+    !twoAgents.result.connectors.every((connector) => connector.available)
+  ) {
+    throw new Error(`Two-agent setup failed: ${JSON.stringify(twoAgents.result)}`);
+  }
+  scenarios.twoAgents = true;
+  runCli('disconnect', 'codex', '--yes');
+  runCli('disconnect', 'claude-code', '--yes');
+  scenarios.disconnect = runCli('connections').every(
+    (connection) => connection.state === 'notConnected',
+  );
+
+  writeFileSync(join(hostFixtures.state, 'claude-fail'), '1\n', { mode: 0o600 });
+  const partial = applySetupPlan(['codex', 'claude-code']);
+  if (
+    partial.result.status !== 'partial' ||
+    partial.result.connectors.filter((connector) => connector.available).length !== 1 ||
+    partial.result.connectors.filter((connector) => connector.state === 'needsRepair').length !== 1
+  ) {
+    throw new Error(
+      `Partial connector failure was not isolated: ${JSON.stringify(partial.result)}`,
+    );
+  }
+  scenarios.partialFailure = true;
+
+  const beforeRestart = runCli('setup', 'status');
+  command('/usr/bin/open', ['-gj', app]);
+  await waitForAppProcess(true);
+  command('/usr/bin/pkill', ['-TERM', '-f', join(app, 'Contents/MacOS/PimpampumMenuBar')]);
+  await waitForAppProcess(false);
+  command('/usr/bin/open', ['-gj', app]);
+  await waitForAppProcess(true);
+  const resumedAfterRestart = runCli('setup', 'resume');
+  const afterRestart = runCli('setup', 'status');
+  scenarios.popoverRestartResume =
+    beforeRestart.operationId === afterRestart.operationId &&
+    beforeRestart.status === afterRestart.status &&
+    resumedAfterRestart.status === afterRestart.status;
+  command('/usr/bin/pkill', ['-TERM', '-f', join(app, 'Contents/MacOS/PimpampumMenuBar')]);
+  await waitForAppProcess(false);
+
+  rmSync(join(hostFixtures.state, 'claude-fail'));
+  runCli('disconnect', 'codex', '--yes');
+  writeFileSync(join(hostFixtures.state, 'codex'), '/usr/bin/false', { mode: 0o600 });
+  const conflictPlan = runCli('setup', 'plan', '--connector', 'codex');
+  const conflict = runCli(
+    'setup',
+    'apply',
+    conflictPlan.operationId,
+    conflictPlan.revision,
+    '--yes',
+  );
+  if (conflict.status !== 'conflict') {
+    throw new Error(`Connector conflict mutated without a decision: ${JSON.stringify(conflict)}`);
+  }
+  const replaced = runCli(
+    'setup',
+    'apply',
+    conflictPlan.operationId,
+    conflictPlan.revision,
+    '--yes',
+    '--replace',
+    'codex',
+  );
+  if (replaced.status !== 'complete' || replaced.connectors[0]?.available !== true) {
+    throw new Error(`Reviewed connector replacement failed: ${JSON.stringify(replaced)}`);
+  }
+  scenarios.conflictDecision = true;
+  const sessionConnections = runCli('connections');
+  const sessionRestart = {
+    required: replaced.nextAction === 'new-session' || oneAgent.result.nextAction === 'new-session',
+    observedAfterNewSession: sessionConnections.some(
+      (connection) => connection.id === 'codex' && connection.available === true,
+    ),
+    connectors: ['codex'],
+  };
   const emptyUI = uiSnapshot('empty');
   if (
     emptyUI.visualState !== 'No projects' ||
@@ -467,7 +765,7 @@ try {
 
   command('/bin/launchctl', ['bootout', `gui/${process.getuid()}`, launchAgent]);
   await waitForServiceLoaded(false);
-  const offline = spawnSync(process.execPath, [cli, 'overview'], {
+  const offline = spawnSync(controlNode, [cli, 'overview'], {
     env: environment,
     encoding: 'utf8',
   });
@@ -493,6 +791,13 @@ try {
   const recovered = runCli('install');
   await runCliEventually(['overview']);
   if (!runCli('status').running) throw new Error('Repeat install did not recover the daemon.');
+  const recoveredReceipt = JSON.parse(
+    readFileSync(join(dataDirectory, 'install-receipt.json'), 'utf8'),
+  );
+  scenarios.packagedUpdate =
+    recovered.reconciled === true &&
+    recoveredReceipt.updateProvider === 'packaged-release' &&
+    recoveredReceipt.nodePath === controlNode;
   const recoveredUI = uiSnapshot('recovered');
   if (
     recoveredUI.visualState !== 'All complete' ||
@@ -522,44 +827,70 @@ try {
     throw new Error('Native UI did not render rejected local credentials safely.');
   }
 
-  const binary = readFileSync(
-    join(
-      runtimeRoot,
-      'node_modules/pimpampum/platforms/macos/dist/PimpampumMenuBar.app/Contents/MacOS/PimpampumMenuBar',
-    ),
+  const releaseApp = join(repositoryRoot, 'platforms/macos/dist/PimpampumMenuBar.app');
+  const artifactMetadataPath = join(
+    repositoryRoot,
+    'platforms/macos/dist/PimpampumMenuBar.artifact.json',
   );
-  const compactMark = readFileSync(
-    join(
-      runtimeRoot,
-      'node_modules/pimpampum/platforms/macos/dist/PimpampumMenuBar.app/Contents/Resources/PimpampumCompact.pdf',
-    ),
-  );
-  const artifactMetadata = JSON.parse(
-    readFileSync(
-      join(
-        runtimeRoot,
-        'node_modules/pimpampum/platforms/macos/dist/PimpampumMenuBar.artifact.json',
-      ),
-      'utf8',
-    ),
-  );
+  const artifactMetadata = JSON.parse(readFileSync(artifactMetadataPath, 'utf8'));
+  const releaseRuntime = join(releaseApp, 'Contents/Resources/PimpampumRuntime');
+  const releasePayload = join(releaseRuntime, 'payload');
   const removal = runCli('uninstall');
   if (removal.uninstalled !== true) {
     throw new Error(`Uninstall did not acknowledge complete removal: ${JSON.stringify(removal)}`);
   }
   installed = false;
   await assertInstallationAbsent();
+  scenarios.removal = true;
+
+  const missingScenarios = Object.entries(scenarios)
+    .filter(([, passed]) => !passed)
+    .map(([name]) => name);
+  if (missingScenarios.length > 0) {
+    throw new Error(`macOS live setup missed required scenarios: ${missingScenarios.join(', ')}.`);
+  }
+  if (!sessionRestart.required || !sessionRestart.observedAfterNewSession) {
+    throw new Error('A new agent session was not both required and observed after connection.');
+  }
+
+  const durationMilliseconds = Date.now() - liveStartedAt;
+  if (durationMilliseconds >= 120_000) {
+    throw new Error(`macOS live setup exceeded two minutes: ${durationMilliseconds}ms.`);
+  }
 
   const evidence = {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    status: 'passed',
     testedAt: new Date().toISOString(),
+    durationMilliseconds,
     platform: 'macOS',
     architecture: 'arm64',
     gitCommit: artifactMetadata.sourceGitCommit,
     sourceInputSha256: artifactMetadata.sourceInputSha256,
-    appSha256: createHash('sha256').update(binary).digest('hex'),
-    compactMarkSha256: createHash('sha256').update(compactMark).digest('hex'),
-    loginItem: install.loginItem,
+    releaseSequence: ['sign-nested-runtime', 'sign-outer-app', 'notarize', 'staple', 'approve'],
+    loginItem: cleanJournal.loginItem,
+    versions: {
+      pimpampum: artifactMetadata.appVersion,
+      node: command(controlNode, ['--version']),
+      macOS: command('/usr/bin/sw_vers', ['-productVersion']),
+      codex: command(join(liveHome, '.local/bin/codex'), ['--version']),
+      claudeCode: command(join(liveHome, '.local/bin/claude'), ['--version']),
+    },
+    artifactHashes: {
+      artifactMetadataSha256: sha256(artifactMetadataPath),
+      appBundleSha256: treeSha256(releaseApp),
+      appBinarySha256: sha256(join(releaseApp, 'Contents/MacOS/PimpampumMenuBar')),
+      compactMarkSha256: sha256(join(releaseApp, 'Contents/Resources/PimpampumCompact.pdf')),
+      runtimeManifestSha256: sha256(join(releaseRuntime, 'runtime-manifest.json')),
+      runtimeInventorySha256: sha256(join(releaseRuntime, 'runtime-inventory.json')),
+      runtimeSbomSha256: sha256(join(releaseRuntime, 'runtime-sbom.spdx.json')),
+      runtimeNodeSha256: sha256(join(releasePayload, 'bin/node')),
+      runtimeAddonSha256: sha256(
+        join(releasePayload, 'node_modules/better-sqlite3/build/Release/better_sqlite3.node'),
+      ),
+    },
+    scenarios,
+    sessionRestart,
     checks: {
       empty: true,
       activeClaim: true,
@@ -586,7 +917,7 @@ try {
       settingsWindowSize: true,
       quitLeavesDaemonRunning: true,
       noDockIcon: true,
-      repeatInstallRecovery: recovered.reconciled === true,
+      repeatInstallRecovery: scenarios.packagedUpdate,
       uninstallCleanup: true,
     },
     renderings: {
@@ -616,7 +947,7 @@ try {
   process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
 } finally {
   if (installed) {
-    const removal = spawnSync(process.execPath, [cli, 'uninstall'], {
+    const removal = spawnSync(controlNode, [cli, 'uninstall'], {
       cwd: repositoryRoot,
       env: environment,
       encoding: 'utf8',

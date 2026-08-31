@@ -19,6 +19,7 @@ import type {
   InstallResult,
   PlatformServiceAdapter,
   PlatformServiceManagerInput,
+  PreparedServiceUninstall,
   ServiceAdapterContext,
   ServiceArtifact,
   ServiceManager,
@@ -186,6 +187,28 @@ function adapterContext(input: PlatformServiceManagerInput): ServiceAdapterConte
   if (!isPathInside(dataDirectory, logDirectory)) {
     throw new Error('Log directory must be inside the data directory');
   }
+  let packagedRuntime: ServiceAdapterContext['packagedRuntime'];
+  if (input.packagedRuntime) {
+    const runtimeDirectory = absolutePath(
+      input.packagedRuntime.runtimeDirectory,
+      'Packaged runtime directory',
+    );
+    if (input.packagedRuntime.version !== input.version) {
+      throw new Error('Packaged runtime version must match the service version');
+    }
+    const targetPlatform = input.packagedRuntime.target.split('-')[0];
+    if (targetPlatform !== input.platform) {
+      throw new Error('Packaged runtime target must match the service platform');
+    }
+    if (
+      !isPathInside(runtimeDirectory, absolutePath(input.nodePath, 'Node executable')) ||
+      !isPathInside(runtimeDirectory, absolutePath(input.cliPath, 'CLI path'))
+    ) {
+      throw new Error('Packaged runtime executable paths must remain inside the runtime directory');
+    }
+    assertNoSymlinkTraversal(runtimeDirectory, 'Packaged runtime directory', runtimeDirectory);
+    packagedRuntime = { ...input.packagedRuntime, runtimeDirectory };
+  }
   return {
     homeDirectory: safeExistingDirectory(input.homeDirectory, 'Home directory'),
     dataDirectory,
@@ -196,6 +219,7 @@ function adapterContext(input: PlatformServiceManagerInput): ServiceAdapterConte
     port,
     logDirectory,
     runCommand: input.runCommand,
+    ...(packagedRuntime ? { packagedRuntime } : {}),
   };
 }
 
@@ -206,6 +230,15 @@ function validateArtifacts(context: ServiceAdapterContext, artifacts: ServiceArt
     if (!isPathInside(context.homeDirectory, artifact.path)) {
       throw new Error('Service artifact must be inside the home directory');
     }
+    if (
+      context.packagedRuntime &&
+      (artifact.path === context.packagedRuntime.runtimeDirectory ||
+        isPathInside(context.packagedRuntime.runtimeDirectory, artifact.path))
+    ) {
+      throw new Error(
+        'Runtime payload is owned by the runtime installer and cannot be a service artifact',
+      );
+    }
     assertNoSymlinkTraversal(artifact.path, 'Service artifact', context.homeDirectory);
     if (seen.has(artifact.path)) throw new Error('Service adapter returned a duplicate artifact');
     if (!Number.isInteger(artifact.mode) || artifact.mode < 0 || artifact.mode > 0o777) {
@@ -214,6 +247,31 @@ function validateArtifacts(context: ServiceAdapterContext, artifacts: ServiceArt
     seen.add(artifact.path);
   }
   if (artifacts.length === 0) throw new Error('Service adapter returned no artifacts');
+}
+
+async function verifyPostActivation(
+  input: PlatformServiceManagerInput,
+  context: ServiceAdapterContext,
+  receiptPath: string,
+  expectedReceipt: InstallReceipt,
+  previousReceipt: InstallReceipt | null,
+): Promise<void> {
+  if (!input.postActivationVerifier) return;
+  const activatedReceipt = readInstallReceipt(receiptPath, context.dataDirectory);
+  if (
+    !activatedReceipt ||
+    activatedReceipt.installationKey !== expectedReceipt.installationKey ||
+    activatedReceipt.version !== context.version
+  ) {
+    throw new Error('Activated service receipt does not match the expected version');
+  }
+  await input.postActivationVerifier({
+    context,
+    receipt: activatedReceipt,
+    previousReceipt,
+    reconciled: previousReceipt !== null,
+    ...(context.packagedRuntime ? { packagedRuntime: context.packagedRuntime } : {}),
+  });
 }
 
 function validateOwnedArtifactRoots(
@@ -378,6 +436,101 @@ function repairMissingArtifacts(
 export function createPlatformServiceManager(input: PlatformServiceManagerInput): ServiceManager {
   const receiptPath = installReceiptPath(absolutePath(input.dataDirectory, 'Data directory'));
 
+  async function prepareUninstall(): Promise<PreparedServiceUninstall | null> {
+    requireAdapter(input);
+    const context = adapterContext(input);
+    const release = acquireLifecycleLock(context.dataDirectory);
+    let released = false;
+    const releaseOnce = (): void => {
+      if (released) return;
+      released = true;
+      release();
+    };
+    try {
+      const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
+      if (!receipt) {
+        releaseOnce();
+        return null;
+      }
+      const adapter = requireReceiptAdapter(input, receipt);
+      const plannedArtifacts = adapter.artifacts(context);
+      validateArtifacts(context, plannedArtifacts);
+      const ownedRoots = validateOwnedArtifactRoots(adapter, context);
+      await adapter.preflight?.(context, plannedArtifacts, 'uninstall');
+      const artifacts = validateOwnedArtifacts(context, receipt, plannedArtifacts, ownedRoots);
+      const snapshots = artifacts.map((artifact) =>
+        snapshotArtifact(artifact.path, context.homeDirectory),
+      );
+      const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
+      let rollbackDeactivation: (() => Promise<void>) | undefined;
+      let deactivationAttempted = false;
+      let finished = false;
+      let committed = false;
+
+      const rollbackPrepared = async (originalError?: unknown): Promise<void> => {
+        if (finished) return;
+        const rollbackErrors: unknown[] = originalError === undefined ? [] : [originalError];
+        try {
+          restoreArtifacts([...snapshots, receiptSnapshot]);
+        } catch (restoreError) {
+          rollbackErrors.push(restoreError);
+        }
+        if (deactivationAttempted) {
+          try {
+            if (rollbackDeactivation) {
+              await rollbackDeactivation();
+            } else {
+              await adapter.activate(context, plannedArtifacts);
+              await adapter.afterInstall?.(context, plannedArtifacts);
+            }
+          } catch (activationError) {
+            rollbackErrors.push(activationError);
+          }
+        }
+        finished = true;
+        releaseOnce();
+        if (rollbackErrors.length === 0) return;
+        if (rollbackErrors.length === 1 && originalError !== undefined) throw originalError;
+        throw new AggregateError(rollbackErrors, 'Service uninstallation and rollback failed');
+      };
+
+      try {
+        repairMissingArtifacts(context, receipt, plannedArtifacts);
+        assertOwnedBytes(receipt, artifacts);
+        rollbackDeactivation = await adapter.prepareDeactivationRollback?.(
+          context,
+          plannedArtifacts,
+        );
+        deactivationAttempted = true;
+        await adapter.deactivate(context, artifacts);
+        for (const artifact of artifacts) rmSync(artifact.path, { force: true });
+        await adapter.afterUninstall?.(context, artifacts);
+      } catch (error) {
+        await rollbackPrepared(error);
+      }
+
+      return {
+        async commit() {
+          if (finished) throw new Error('Prepared service removal is already complete');
+          if (committed) throw new Error('Prepared service removal is already committed');
+          rmSync(receiptPath, { force: true });
+          committed = true;
+          return { uninstalled: true, dataPreserved: true };
+        },
+        rollback: () => rollbackPrepared(),
+        async finalize() {
+          if (finished) return;
+          if (!committed) throw new Error('Prepared service removal is not committed');
+          finished = true;
+          releaseOnce();
+        },
+      };
+    } catch (error) {
+      releaseOnce();
+      throw error;
+    }
+  }
+
   return {
     async install(): Promise<InstallResult> {
       const defaultAdapter = requireAdapter(input);
@@ -401,8 +554,58 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
         });
         if (existing?.installationKey === key && artifactSetIsCurrent(existing, artifacts)) {
           chmodSync(receiptPath, 0o600);
-          if (!(await adapter.isRunning(context, artifacts))) {
-            await repairRegistration(adapter, context, artifacts);
+          if (!input.postActivationVerifier) {
+            if (!(await adapter.isRunning(context, artifacts))) {
+              await repairRegistration(adapter, context, artifacts);
+            }
+            const integration = await adapter.afterInstall?.(context, artifacts);
+            return { installed: true, reconciled: true, receiptPath, ...integration };
+          }
+          const runningBefore = await adapter.isRunning(context, artifacts);
+          const snapshots = artifacts.map((artifact) =>
+            snapshotArtifact(artifact.path, context.homeDirectory),
+          );
+          const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
+          const logsSnapshot = snapshotServiceLogs(context.logDirectory, 5, context.dataDirectory);
+          let registrationRepaired = false;
+          const rollbackRegistration = runningBefore
+            ? undefined
+            : await adapter.prepareDeactivationRollback?.(context, artifacts);
+          try {
+            if (runningBefore) {
+              registrationRepaired = false;
+            } else {
+              await repairRegistration(adapter, context, artifacts);
+              registrationRepaired = true;
+            }
+            await verifyPostActivation(input, context, receiptPath, existing, existing);
+          } catch (error) {
+            const rollbackErrors: unknown[] = [error];
+            if (registrationRepaired) {
+              try {
+                if (rollbackRegistration) await rollbackRegistration();
+                else await adapter.deactivate(context, artifacts);
+              } catch (registrationRollbackError) {
+                rollbackErrors.push(registrationRollbackError);
+              }
+            }
+            try {
+              restoreArtifacts([...snapshots, receiptSnapshot]);
+            } catch (restoreError) {
+              rollbackErrors.push(restoreError);
+            }
+            try {
+              restoreServiceLogs(logsSnapshot);
+            } catch (logsRestoreError) {
+              rollbackErrors.push(logsRestoreError);
+            }
+            if (rollbackErrors.length > 1) {
+              throw new AggregateError(
+                rollbackErrors,
+                'Service health verification and rollback failed',
+              );
+            }
+            throw error;
           }
           const integration = await adapter.afterInstall?.(context, artifacts);
           return { installed: true, reconciled: true, receiptPath, ...integration };
@@ -427,7 +630,16 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
           baseUrl: `http://${context.host === '::1' ? '[::1]' : context.host}:${context.port}`,
           logDirectory: context.logDirectory,
           artifacts: ownedArtifacts,
+          ...(context.packagedRuntime
+            ? {
+                updateProvider: 'packaged-release' as const,
+                packagedRuntime: context.packagedRuntime,
+              }
+            : {}),
         };
+        const rollbackActivationState = input.postActivationVerifier
+          ? await adapter.prepareDeactivationRollback?.(context, artifacts)
+          : undefined;
         let activationCompleted = false;
         try {
           rotateServiceLogs(context.logDirectory, 5, context.dataDirectory);
@@ -443,6 +655,7 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
           writeInstallReceipt(receiptPath, receipt, context.dataDirectory);
           await adapter.activate(context, artifacts);
           activationCompleted = true;
+          await verifyPostActivation(input, context, receiptPath, receipt, existing);
           const integration = await adapter.afterInstall?.(context, artifacts);
           return {
             installed: true,
@@ -453,7 +666,7 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
         } catch (error) {
           const rollbackErrors: unknown[] = [error];
           let serviceArtifactsRestored = false;
-          if (activationCompleted) {
+          if (activationCompleted && !rollbackActivationState) {
             try {
               if (adapter.rollbackActivation) {
                 await adapter.rollbackActivation(context, artifacts);
@@ -475,7 +688,13 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
           } catch (logsRestoreError) {
             rollbackErrors.push(logsRestoreError);
           }
-          if (serviceArtifactsRestored && adapter.afterRollback) {
+          if (serviceArtifactsRestored && rollbackActivationState) {
+            try {
+              await rollbackActivationState();
+            } catch (activationRollbackError) {
+              rollbackErrors.push(activationRollbackError);
+            }
+          } else if (serviceArtifactsRestored && adapter.afterRollback) {
             try {
               await adapter.afterRollback(context, artifacts);
             } catch (adapterRollbackError) {
@@ -518,61 +737,24 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
     },
 
     async uninstall(): Promise<UninstallResult> {
-      requireAdapter(input);
-      const context = adapterContext(input);
-      return withLifecycleLock(context, async () => {
-        const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
-        if (!receipt) return { uninstalled: false, dataPreserved: true };
-        const adapter = requireReceiptAdapter(input, receipt);
-        const plannedArtifacts = adapter.artifacts(context);
-        validateArtifacts(context, plannedArtifacts);
-        const ownedRoots = validateOwnedArtifactRoots(adapter, context);
-        await adapter.preflight?.(context, plannedArtifacts, 'uninstall');
-        const artifacts = validateOwnedArtifacts(context, receipt, plannedArtifacts, ownedRoots);
-        const snapshots = artifacts.map((artifact) =>
-          snapshotArtifact(artifact.path, context.homeDirectory),
-        );
-        const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
-        let rollbackDeactivation: (() => Promise<void>) | undefined;
-        let deactivationAttempted = false;
+      const prepared = await prepareUninstall();
+      if (prepared === null) return { uninstalled: false, dataPreserved: true };
+      try {
+        const result = await prepared.commit();
+        await prepared.finalize();
+        return result;
+      } catch (error) {
         try {
-          repairMissingArtifacts(context, receipt, plannedArtifacts);
-          assertOwnedBytes(receipt, artifacts);
-          rollbackDeactivation = await adapter.prepareDeactivationRollback?.(
-            context,
-            plannedArtifacts,
+          await prepared.rollback();
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            'Service uninstallation and rollback failed',
           );
-          deactivationAttempted = true;
-          await adapter.deactivate(context, artifacts);
-          for (const artifact of artifacts) rmSync(artifact.path, { force: true });
-          await adapter.afterUninstall?.(context, artifacts);
-          rmSync(receiptPath, { force: true });
-          return { uninstalled: true, dataPreserved: true };
-        } catch (error) {
-          const rollbackErrors: unknown[] = [error];
-          try {
-            restoreArtifacts([...snapshots, receiptSnapshot]);
-          } catch (restoreError) {
-            rollbackErrors.push(restoreError);
-          }
-          if (deactivationAttempted) {
-            try {
-              if (rollbackDeactivation) {
-                await rollbackDeactivation();
-              } else {
-                await adapter.activate(context, plannedArtifacts);
-                await adapter.afterInstall?.(context, plannedArtifacts);
-              }
-            } catch (activationError) {
-              rollbackErrors.push(activationError);
-            }
-          }
-          if (rollbackErrors.length > 1) {
-            throw new AggregateError(rollbackErrors, 'Service uninstallation and rollback failed');
-          }
-          throw error;
         }
-      });
+        throw error;
+      }
     },
+    prepareUninstall,
   };
 }

@@ -1,0 +1,5 @@
+error: unexpected argument '--json' found
+
+Usage: codex mcp list [OPTIONS]
+
+For more information, try '--help'.

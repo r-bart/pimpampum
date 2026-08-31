@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -10,6 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -84,6 +86,10 @@ function fixture(label: string): Fixture {
 
 function ok(stdout = ''): CommandResult {
   return { exitCode: 0, stdout, stderr: '' };
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function fakeQuattro(root: Fixture): FakeQuattro {
@@ -619,13 +625,40 @@ writeFileSync(process.env.HELPER_OUTPUT, JSON.stringify({ dataDirectory: process
       nodePath: process.execPath,
       cliPath,
     };
+    const controlDirectory = join(root.home, '.local', 'share', 'pimpampum', 'bin');
+    const controlLauncher = join(controlDirectory, 'pimpampum-control');
+    const runtimeDirectory = join(root.home, '.pimpampum');
+    const runtimeReceipt = join(runtimeDirectory, 'runtime-install-receipt.json');
+    mkdirSync(controlDirectory, { recursive: true });
+    mkdirSync(runtimeDirectory, { recursive: true });
+    writeFileSync(
+      controlLauncher,
+      `#!/bin/sh
+export PIMPAMPUM_DATA_DIR=${shellQuote(root.data)}
+export PIMPAMPUM_HOST='127.0.0.1'
+export PIMPAMPUM_PORT='7337'
+exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
+`,
+    );
+    chmodSync(controlLauncher, 0o755);
+    const controlLauncherSha256 = createHash('sha256')
+      .update(readFileSync(controlLauncher))
+      .digest('hex');
+    writeFileSync(
+      runtimeReceipt,
+      `${JSON.stringify({ controlLauncherPath: controlLauncher, controlLauncherSha256 }, null, 2)}\n`,
+    );
+    chmodSync(runtimeReceipt, 0o600);
     await createPlatformServiceManager(input).install();
 
     const helper = join(root.target, 'pimpampum-overview');
     execFileSync(helper, [], {
       env: {
         ...process.env,
+        HOME: root.home,
         HELPER_OUTPUT: outputPath,
+        PATH: join(root.root, 'attacker-path'),
+        PIMPAMPUM_CLI: join(root.root, 'attacker-cli'),
         PIMPAMPUM_DATA_DIR: '/wrong/data/directory',
       },
     });
@@ -635,14 +668,21 @@ writeFileSync(process.env.HELPER_OUTPUT, JSON.stringify({ dataDirectory: process
       port: '7337',
       arguments: ['overview'],
     });
-    expect(readFileSync(helper, 'utf8')).toContain(process.execPath);
+    expect(readFileSync(helper)).toEqual(readFileSync(join(root.source, 'pimpampum-overview')));
+    const route = readFileSync(join(root.target, 'pimpampum-control-route'), 'utf8');
+    expect(route).not.toContain(process.execPath);
+    expect(route).toContain('controlLauncherSha256');
+    expect(route).toContain('exec "$control_launcher" "$@"');
 
     const backupHelper = join(root.target, 'pimpampum-backup');
     const backupDirectory = join(root.root, "Dropbox ü ; $(touch nope) 'quoted'");
     execFileSync(backupHelper, ['configure', backupDirectory], {
       env: {
         ...process.env,
+        HOME: root.home,
         HELPER_OUTPUT: outputPath,
+        PATH: join(root.root, 'attacker-path'),
+        PIMPAMPUM_CLI: join(root.root, 'attacker-cli'),
         PIMPAMPUM_DATA_DIR: '/wrong/data/directory',
       },
     });
@@ -653,7 +693,56 @@ writeFileSync(process.env.HELPER_OUTPUT, JSON.stringify({ dataDirectory: process
       arguments: ['backup', 'configure', backupDirectory],
     });
     expect(existsSync(join(root.root, 'nope'))).toBe(false);
-    expect(readFileSync(backupHelper, 'utf8')).toContain('backup "$@"');
+    expect(readFileSync(backupHelper)).toEqual(readFileSync(join(root.source, 'pimpampum-backup')));
+
+    writeFileSync(controlLauncher, `${readFileSync(controlLauncher, 'utf8')}# tampered\n`);
+    chmodSync(controlLauncher, 0o755);
+    expect(() =>
+      execFileSync(helper, [], {
+        env: { ...process.env, HOME: root.home, HELPER_OUTPUT: outputPath },
+      }),
+    ).toThrow();
+  });
+
+  it('keeps an official Git checkout clean across install, fast-forward, reconcile, and removal', async () => {
+    const root = fixture('git-checkout-reconcile');
+    execFileSync('git', ['init', '--initial-branch=main'], { cwd: root.source });
+    execFileSync('git', ['config', 'user.name', 'Pimpampum Test'], { cwd: root.source });
+    execFileSync('git', ['config', 'user.email', 'test@pimpampum.local'], { cwd: root.source });
+    execFileSync('git', ['add', '.'], { cwd: root.source });
+    execFileSync('git', ['commit', '-m', 'initial plugin'], { cwd: root.source });
+    mkdirSync(dirname(root.target), { recursive: true });
+    execFileSync('git', ['clone', root.source, root.target]);
+
+    const quattro = fakeQuattro(root);
+    quattro.state.installed = true;
+    quattro.state.enabled = true;
+    quattro.state.layout.right.push({ id: OMARCHY_PLUGIN_ID });
+    const composite = adapter(root, daemon(root, []));
+    const input = managerInput(root, quattro.runCommand, composite);
+    await createPlatformServiceManager(input).install();
+    expect(
+      execFileSync('git', ['status', '--porcelain=v1'], { cwd: root.target, encoding: 'utf8' }),
+    ).toBe('');
+
+    writeFileSync(
+      join(root.source, 'README.md'),
+      `${readFileSync(join(root.source, 'README.md'), 'utf8')}\nFast-forward fixture.\n`,
+    );
+    execFileSync('git', ['add', 'README.md'], { cwd: root.source });
+    execFileSync('git', ['commit', '-m', 'plugin fast-forward'], { cwd: root.source });
+    execFileSync('git', ['pull', '--ff-only'], { cwd: root.target });
+
+    await createPlatformServiceManager(input).install();
+    expect(
+      execFileSync('git', ['status', '--porcelain=v1'], { cwd: root.target, encoding: 'utf8' }),
+    ).toBe('');
+    await expect(createPlatformServiceManager(input).uninstall()).resolves.toEqual({
+      uninstalled: true,
+      dataPreserved: true,
+    });
+    expect(existsSync(root.target)).toBe(false);
+    expect(readFileSync(join(root.data, 'token'), 'utf8')).toBe('preserve-me');
   });
 
   it('refuses to pass unreceipted plugin content to the destructive official remove command', async () => {

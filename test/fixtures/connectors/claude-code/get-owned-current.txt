@@ -1,0 +1,10 @@
+pimpampum:
+  Scope: User config (available in all your projects)
+  Status: ✘ Failed to connect
+  Issue: ENOENT: no such file or directory, posix_spawn '<synthetic-launcher>'
+  Type: stdio
+  Command: /Users/example/.local/share/pimpampum/bin/pimpampum-mcp
+  Args:
+  Environment:
+
+To remove this server, run: claude mcp remove pimpampum -s user

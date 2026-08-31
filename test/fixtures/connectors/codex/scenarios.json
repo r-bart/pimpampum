@@ -1,0 +1,43 @@
+{
+  "fixtureVersion": 1,
+  "synthetic": true,
+  "scenarios": {
+    "missingHost": {
+      "expectedState": "notInstalled",
+      "processFixture": "../shared/missing-host.json"
+    },
+    "unsupportedFlags": {
+      "expectedCapability": "jsonInspectionUnavailable",
+      "stderrFixture": "unsupported-json-flag.txt"
+    },
+    "absentEntry": {
+      "expectedState": "notConnected",
+      "stdoutFixture": "list-absent.json"
+    },
+    "exactOwnedEntry": {
+      "expectedState": "ownedCurrent",
+      "getFixture": "get-owned-current.json",
+      "listFixture": "list-owned-current.json"
+    },
+    "legacyNpmEntry": {
+      "expectedStateWithMatchingReceipt": "ownedStale",
+      "getFixture": "get-legacy-npm.json"
+    },
+    "unknownConflict": {
+      "expectedState": "conflict",
+      "getFixture": "get-unknown-conflict.json"
+    },
+    "readOnlyConfig": {
+      "expectedState": "unavailable",
+      "processFixture": "../shared/read-only-config.json"
+    },
+    "concurrentRevision": {
+      "expectedState": "unavailable",
+      "revisionFixture": "../shared/concurrent-revision.json"
+    },
+    "hostCliFailure": {
+      "expectedState": "unavailable",
+      "processFixture": "../shared/host-cli-failure.json"
+    }
+  }
+}

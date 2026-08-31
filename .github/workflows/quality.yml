@@ -24,7 +24,69 @@ jobs:
       - run: npm run check:desktop-contract
       - run: npm audit --omit=dev
 
+  runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - run: npm ci
+      - name: Validate Omarchy plugin, runtime pins and executable helpers
+        run: npm run validate:omarchy
+      - name: Build reproducible private runtime
+        run: >-
+          node scripts/build-runtime-bundle.mjs
+          --target "${{ matrix.target }}"
+          --output "$RUNNER_TEMP/runtime"
+      - name: Verify target, manifest, inventory and archive
+        run: |
+          version=$(node -p "require('./package.json').version")
+          node scripts/check-runtime-bundle.mjs \
+            "$RUNNER_TEMP/runtime/pimpampum-runtime-$version-${{ matrix.target }}" \
+            --target "${{ matrix.target }}" \
+            --lockfile package-lock.json
+      - name: Smoke with an empty external PATH
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          payload="$RUNNER_TEMP/runtime/pimpampum-runtime-$version-${{ matrix.target }}/payload"
+          mkdir -p "$RUNNER_TEMP/runtime-home"
+          env -i HOME="$RUNNER_TEMP/runtime-home" PATH= \
+            "$payload/bin/node" "$payload/dist/cli.js" --version
+          (
+            cd "$payload"
+            env -i HOME="$RUNNER_TEMP/runtime-home" PATH= \
+              "$payload/bin/node" --input-type=module --eval \
+              "import Database from 'better-sqlite3'; const db=new Database(':memory:'); db.prepare('select 1').get(); db.close();"
+          )
+      - name: Pack mode-preserving runtime transport
+        run: |
+          version=$(node -p "require('./package.json').version")
+          bundle="pimpampum-runtime-$version-${{ matrix.target }}"
+          /usr/bin/tar -czf "$RUNNER_TEMP/runtime-${{ matrix.target }}.tar.gz" \
+            -C "$RUNNER_TEMP/runtime" "$bundle"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.target }}
+          path: ${{ runner.temp }}/runtime-${{ matrix.target }}.tar.gz
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
   macos:
+    needs: runtime
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
@@ -34,4 +96,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:macos
-      - run: npm run build:macos
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtime-darwin-arm64
+          path: ${{ runner.temp }}/runtime-darwin-arm64
+      - name: Unpack mode-preserving runtime transport
+        run: |
+          /usr/bin/tar -xzf "$RUNNER_TEMP/runtime-darwin-arm64/runtime-darwin-arm64.tar.gz" \
+            -C "$RUNNER_TEMP/runtime-darwin-arm64"
+      - name: Build app with the reviewed runtime
+        run: |
+          version=$(node -p "require('./package.json').version")
+          PIMPAMPUM_RUNTIME_BUNDLE="$RUNNER_TEMP/runtime-darwin-arm64/pimpampum-runtime-$version-darwin-arm64" \
+            npm run build:macos

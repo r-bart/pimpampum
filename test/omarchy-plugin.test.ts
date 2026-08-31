@@ -301,6 +301,7 @@ describe('Omarchy Quattro plugin', () => {
     const service = readFileSync(join(pluginSource, 'BackupService.qml'), 'utf8');
     const popout = readFileSync(join(pluginSource, 'StatusPopout.qml'), 'utf8');
     const helper = readFileSync(join(pluginSource, 'pimpampum-backup'), 'utf8');
+    const route = readFileSync(join(pluginSource, 'pimpampum-control-route'), 'utf8');
 
     expect(service).toContain('command: [root.helperPath, "status"]');
     expect(service).toContain('arguments.push(path)');
@@ -318,8 +319,9 @@ describe('Omarchy Quattro plugin', () => {
     expect(popout).toContain('Folder picker unavailable. Configure');
     expect(popout).not.toContain('Enter path manually');
     expect(statSync(join(pluginSource, 'pimpampum-folder-picker')).mode & 0o111).not.toBe(0);
-    expect(helper).toContain('backup "$@"');
-    expect(helper).not.toMatch(/eval\b|bearer|token/iu);
+    expect(helper).toContain('exec "$route" backup "$@"');
+    expect(route).toContain('set -- backup "$@"');
+    expect(`${helper}\n${route}`).not.toMatch(/eval\b|bearer|token/iu);
   });
 
   it('exposes automatic shared-folder synchronization without shell interpolation', () => {
@@ -327,6 +329,7 @@ describe('Omarchy Quattro plugin', () => {
     const service = readFileSync(join(pluginSource, 'SyncService.qml'), 'utf8');
     const popout = readFileSync(join(pluginSource, 'StatusPopout.qml'), 'utf8');
     const helper = readFileSync(join(pluginSource, 'pimpampum-sync'), 'utf8');
+    const route = readFileSync(join(pluginSource, 'pimpampum-control-route'), 'utf8');
     expect(widget).toContain('SyncService {');
     expect(popout).toContain('Synchronization');
     expect(popout).toContain('Sync now');
@@ -372,8 +375,9 @@ describe('Omarchy Quattro plugin', () => {
     expect(service).toContain('var arguments = [helperPath, operation]');
     expect(service).toContain('arguments.push(path)');
     expect(service).not.toMatch(/sh\s+-c|bash\s+-c|shellQuote|\+\s*(?:directory|path)/u);
-    expect(helper).toContain('sync configure "$2" --device "$device_id" --json');
-    expect(helper).not.toMatch(/eval\b|bearer|token/iu);
+    expect(helper).toContain('exec "$route" sync "$@"');
+    expect(route).toContain('set -- sync configure "$2" --device "$device_id" --json');
+    expect(`${helper}\n${route}`).not.toMatch(/eval\b|bearer|token/iu);
   });
 
   it('keeps daemon lifecycle recovery inside a bounded installed helper', () => {
@@ -401,6 +405,7 @@ describe('Omarchy Quattro plugin', () => {
     const popout = readFileSync(join(pluginSource, 'StatusPopout.qml'), 'utf8');
     const service = readFileSync(join(pluginSource, 'UpdateService.qml'), 'utf8');
     const helper = readFileSync(join(pluginSource, 'pimpampum-update'), 'utf8');
+    const route = readFileSync(join(pluginSource, 'pimpampum-control-route'), 'utf8');
     expect(widget).toContain('UpdateService {');
     expect(popout).toContain('"Check for updates"');
     expect(popout).toContain('"Install update"');
@@ -424,9 +429,10 @@ describe('Omarchy Quattro plugin', () => {
     expect(service).toContain('message.length > 500');
     expect(service).toContain('"Could not install the update" : "Could not check for updates"');
     expect(service).not.toMatch(/errorMessage\s*=\s*(?:root\.)?processError\b/u);
-    expect(helper).toContain('command_name=update:check');
-    expect(helper).toContain('command_name=update');
-    expect(helper).not.toMatch(/eval\b|bearer|token/iu);
+    expect(helper).toContain('exec "$route" update "$@"');
+    expect(route).toContain('set -- update:check');
+    expect(route).toContain('set -- update');
+    expect(`${helper}\n${route}`).not.toMatch(/eval\b|bearer|token/iu);
   });
 
   // A hung `npm view` used to leave the popout on "Checking…" until the shell restarted. Only the

@@ -154,7 +154,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
   {
     name: 'mcp',
     summary:
-      'Run the MCP stdio bridge on this process. stdout carries the protocol, so this command writes no envelope. Registry clients reach it as `npx pimpampum mcp`.',
+      'Run the MCP stdio bridge on this process. stdout carries only the protocol, so this command writes no envelope.',
     arguments: [],
     options: [],
     annotations: { ...write, idempotentHint: false },
@@ -162,7 +162,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
   {
     name: 'install',
     summary:
-      'Install the per-user background service and start it at login. No prompts, no root, safe to run unattended.',
+      'Install the per-user background service from the current packaged runtime. No root required.',
     arguments: [],
     options: [
       {
@@ -181,15 +181,152 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
     annotations: { ...read, requiresDaemon: false },
   },
   {
+    name: 'setup plan',
+    summary:
+      'Describe private runtime, service, login item, and selected connector changes without mutating them.',
+    arguments: [],
+    options: [
+      {
+        flag: '--connector',
+        value: 'codex|claude-code',
+        description: 'Connector to include. Repeat to select both supported hosts.',
+        repeatable: true,
+      },
+    ],
+    annotations: { ...write, requiresDaemon: false },
+  },
+  {
+    name: 'setup apply',
+    summary:
+      'Apply one reviewed setup plan after an explicit confirmation and optional conflict decisions.',
+    arguments: [
+      { name: 'operation-id', required: true, description: 'Operation ID returned by setup plan.' },
+      {
+        name: 'revision',
+        required: true,
+        description: 'Exact plan revision returned by setup plan.',
+      },
+    ],
+    options: [
+      {
+        flag: '--yes',
+        value: null,
+        required: true,
+        description: 'Confirm this reviewed setup operation.',
+      },
+      {
+        flag: '--replace',
+        value: 'codex|claude-code',
+        repeatable: true,
+        description: 'Explicitly authorize replacement for one reported connector conflict.',
+      },
+    ],
+    annotations: { ...idempotentWrite, requiresDaemon: false },
+  },
+  {
+    name: 'setup status',
+    summary: 'Return the current durable setup journal, with bounded redacted diagnostics.',
+    arguments: [],
+    options: [],
+    annotations: localRead,
+  },
+  {
+    name: 'setup resume',
+    summary:
+      'Resume a previously confirmed durable setup operation without repeating completed phases.',
+    arguments: [],
+    options: [],
+    annotations: { ...idempotentWrite, requiresDaemon: false },
+  },
+  {
+    name: 'connections',
+    summary:
+      'List Codex and Claude Code connection ownership, availability, and verification state.',
+    arguments: [],
+    options: [],
+    annotations: localRead,
+  },
+  {
+    name: 'connect',
+    summary:
+      'Connect one supported host through its official CLI, or print tokenless manual instructions.',
+    arguments: [
+      {
+        name: 'connector-id',
+        required: false,
+        description: 'Supported connector.',
+        values: ['codex', 'claude-code'],
+      },
+    ],
+    options: [
+      { flag: '--yes', value: null, description: 'Confirm the selected connector mutation.' },
+      {
+        flag: '--replace',
+        value: null,
+        description: 'Separately authorize replacement of the reported conflicting entry.',
+      },
+      {
+        flag: '--instructions',
+        value: null,
+        description: 'Print bounded tokenless advanced manual instructions instead of mutating.',
+      },
+    ],
+    annotations: { ...idempotentWrite, requiresDaemon: false },
+  },
+  {
+    name: 'repair',
+    summary: 'Repair and independently verify one receipt-owned connector entry.',
+    arguments: [
+      {
+        name: 'connector-id',
+        required: true,
+        description: 'Supported connector.',
+        values: ['codex', 'claude-code'],
+      },
+    ],
+    options: [
+      { flag: '--yes', value: null, required: true, description: 'Confirm the repair.' },
+      {
+        flag: '--replace',
+        value: null,
+        description: 'Separately authorize replacement of the reported conflicting entry.',
+      },
+    ],
+    annotations: { ...idempotentWrite, requiresDaemon: false },
+  },
+  {
+    name: 'disconnect',
+    summary:
+      'Remove only a receipt-proven connector entry while preserving the daemon and all private data.',
+    arguments: [
+      {
+        name: 'connector-id',
+        required: true,
+        description: 'Supported connector.',
+        values: ['codex', 'claude-code'],
+      },
+    ],
+    options: [
+      {
+        flag: '--yes',
+        value: null,
+        required: true,
+        description: 'Confirm the owned connector removal.',
+      },
+    ],
+    annotations: { ...destructiveWrite, requiresDaemon: false },
+  },
+  {
     name: 'update:check',
-    summary: 'Check npm for a newer Pimpampum release without changing the installation.',
+    summary: 'Check the configured release provider for a newer packaged Pimpampum release.',
     arguments: [],
     options: [],
     annotations: localRead,
   },
   {
     name: 'update',
-    summary: 'Install the latest npm release and reconcile the service and desktop integration.',
+    summary:
+      'Install the verified packaged release and reconcile the service and connector launchers.',
     arguments: [],
     options: [],
     annotations: { ...idempotentWrite, requiresDaemon: false },

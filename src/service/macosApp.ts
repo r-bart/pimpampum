@@ -1,5 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, readdirSync, rmdirSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmdirSync,
+  rmSync,
+} from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { acceptLoginAcknowledgement } from './loginHandshake.js';
 import { assertNoSymlinkTraversal, writePrivateFileAtomic } from './receipt.js';
@@ -19,6 +30,7 @@ const APP_NAME = 'PimpampumMenuBar.app';
 const LEGACY_APP_NAMES = ['pim • pam • pum.app', 'Pimpampum.app'] as const;
 const APP_EXECUTABLE = 'Contents/MacOS/PimpampumMenuBar';
 const INSTALLATION_CONFIGURATION = 'Contents/Resources/installation.json';
+const EMBEDDED_RUNTIME = 'Contents/Resources/PimpampumRuntime';
 const REQUEST_FILE = 'login-registration-request.json';
 const ACKNOWLEDGEMENT_FILE = 'login-registration-acknowledgement.json';
 const STATUS_FILE = 'login-item-status.json';
@@ -62,13 +74,17 @@ function sourceFiles(root: string): Array<{ relativePath: string; content: Buffe
       a.name.localeCompare(b.name),
     )) {
       const path = join(directory, entry.name);
+      const relativePath = relative(root, path);
       if (entry.isSymbolicLink()) throw new Error('macOS app bundle must not contain symlinks');
       if (entry.isDirectory()) {
+        // The private runtime is copied transactionally as a directory after the small app
+        // artifacts land. Keeping its large native payload out of ServiceArtifact prevents the
+        // service receipt and rollback snapshots from retaining hundreds of megabytes in memory.
+        if (relativePath === EMBEDDED_RUNTIME) continue;
         visit(path);
         continue;
       }
       if (!entry.isFile()) throw new Error('macOS app bundle may contain only regular files');
-      const relativePath = relative(root, path);
       if (relativePath === INSTALLATION_CONFIGURATION) continue;
       files.push({
         relativePath,
@@ -85,6 +101,85 @@ function sourceFiles(root: string): Array<{ relativePath: string; content: Buffe
     throw new Error('macOS app bundle is missing Info.plist');
   }
   return files;
+}
+
+interface RuntimeSourceTransaction {
+  commit(): void;
+  rollback(): void;
+}
+
+function copyRegularTree(source: string, destination: string): void {
+  const sourceMetadata = lstatSync(source);
+  if (sourceMetadata.isSymbolicLink() || !sourceMetadata.isDirectory()) {
+    throw new Error('Embedded macOS runtime must be a regular directory');
+  }
+  mkdirSync(destination, { recursive: true, mode: 0o700 });
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const sourcePath = join(source, entry.name);
+    const destinationPath = join(destination, entry.name);
+    if (entry.isSymbolicLink()) throw new Error('Embedded macOS runtime must not contain symlinks');
+    if (entry.isDirectory()) {
+      copyRegularTree(sourcePath, destinationPath);
+      continue;
+    }
+    if (!entry.isFile()) throw new Error('Embedded macOS runtime may contain only regular files');
+    copyFileSync(sourcePath, destinationPath);
+    chmodSync(destinationPath, lstatSync(sourcePath).mode & 0o777);
+  }
+}
+
+function installEmbeddedRuntimeSource(
+  sourceApp: string,
+  installedApp: string,
+): RuntimeSourceTransaction | null {
+  const source = join(sourceApp, EMBEDDED_RUNTIME);
+  if (!existsSync(source)) return null;
+  const destination = join(installedApp, EMBEDDED_RUNTIME);
+  const parent = dirname(destination);
+  mkdirSync(parent, { recursive: true, mode: 0o755 });
+  const suffix = randomUUID();
+  const staging = join(parent, `.PimpampumRuntime.stage-${suffix}`);
+  const backup = join(parent, `.PimpampumRuntime.backup-${suffix}`);
+  let backedUp = false;
+  try {
+    copyRegularTree(source, staging);
+    if (existsSync(destination)) {
+      const current = lstatSync(destination);
+      if (current.isSymbolicLink() || !current.isDirectory()) {
+        throw new Error('Installed embedded runtime must be a regular directory');
+      }
+      renameSync(destination, backup);
+      backedUp = true;
+    }
+    renameSync(staging, destination);
+  } catch (error) {
+    rmSync(staging, { recursive: true, force: true });
+    if (backedUp && !existsSync(destination)) renameSync(backup, destination);
+    throw error;
+  }
+  return {
+    commit() {
+      rmSync(backup, { recursive: true, force: true });
+    },
+    rollback() {
+      const current = lstatSync(destination);
+      if (current.isSymbolicLink() || !current.isDirectory()) {
+        throw new Error('Refusing to roll back an unsafe embedded runtime path');
+      }
+      rmSync(destination, { recursive: true });
+      if (backedUp) renameSync(backup, destination);
+    },
+  };
+}
+
+function removeEmbeddedRuntimeSource(installedApp: string): void {
+  const runtime = join(installedApp, EMBEDDED_RUNTIME);
+  if (!existsSync(runtime)) return;
+  const metadata = lstatSync(runtime);
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new Error('Refusing to remove an unsafe embedded runtime path');
+  }
+  rmSync(runtime, { recursive: true });
 }
 
 function appRoot(context: ServiceAdapterContext): string {
@@ -399,9 +494,34 @@ export function createMacOSDesktopAdapter(
       await options.daemonAdapter.activate(context, artifacts);
     },
     async afterInstall(context) {
-      const integration = await registerLoginItem(context);
-      for (const legacyRoot of legacyAppRoots(context)) removeEmptyLegacyAppDirectories(legacyRoot);
-      return integration;
+      const runtime = installEmbeddedRuntimeSource(options.appBundlePath, appRoot(context));
+      let registered = false;
+      try {
+        const integration = await registerLoginItem(context);
+        registered = true;
+        runtime?.commit();
+        for (const legacyRoot of legacyAppRoots(context))
+          removeEmptyLegacyAppDirectories(legacyRoot);
+        return integration;
+      } catch (error) {
+        const errors: unknown[] = [error];
+        if (registered) {
+          try {
+            await unregisterLoginItem(context, openPath, appRoot(context), now);
+          } catch (unregisterError) {
+            errors.push(unregisterError);
+          }
+        }
+        try {
+          runtime?.rollback();
+        } catch (rollbackError) {
+          errors.push(rollbackError);
+        }
+        if (errors.length > 1) {
+          throw new AggregateError(errors, 'macOS app runtime bootstrap rollback failed');
+        }
+        throw error;
+      }
     },
     async deactivate(context, artifacts) {
       const installedApp = appRoot(context);
@@ -487,6 +607,7 @@ export function createMacOSDesktopAdapter(
           rmSync(path);
         }
       }
+      removeEmbeddedRuntimeSource(appRoot(context));
       removeEmptyAppDirectories(appRoot(context), artifacts);
     },
     async integrationStatus(context) {

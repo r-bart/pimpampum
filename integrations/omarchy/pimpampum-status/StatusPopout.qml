@@ -34,8 +34,20 @@ Item {
   readonly property string pickerHelperPath: decodeURIComponent(
     Qt.resolvedUrl("pimpampum-folder-picker").toString().replace(/^file:\/\//, "")
   )
+  readonly property string connectionHelperPath: decodeURIComponent(
+    Qt.resolvedUrl("pimpampum-connections").toString().replace(/^file:\/\//, "")
+  )
   readonly property bool folderDialogOpen: folderPicker.running
   readonly property bool folderDialogAvailable: pickerHelperPath.charAt(0) === "/"
+  readonly property bool showGuidedAgents: connectionService.initialized
+    && ((connectionService.codexState !== "Not installed"
+        && connectionService.codexState !== "Unsupported version"
+        && connectionService.codexState !== "Connected"
+        && connectionService.codexState !== "New session required")
+      || (connectionService.claudeCodeState !== "Not installed"
+        && connectionService.claudeCodeState !== "Unsupported version"
+        && connectionService.claudeCodeState !== "Connected"
+        && connectionService.claudeCodeState !== "New session required"))
 
   // The popout draws on the popup card Omarchy paints with Color.popups.background, not on
   // the wallpaper. bar.barForeground is resolved against whatever is behind a transparent
@@ -71,6 +83,7 @@ Item {
     service.refresh()
     backupService.refresh()
     syncService.refresh()
+    connectionService.list()
   }
 
   function chooseDirectory(target) {
@@ -210,6 +223,7 @@ Item {
       manualBackupDirectory = backupService.directory
       syncService.refresh()
       backupService.refresh()
+      connectionService.list()
     }
   }
 
@@ -269,6 +283,11 @@ Item {
     onExited: function(exitCode) {
       if (exitCode !== 0) root.revealError = "Could not open the workspace directory"
     }
+  }
+
+  AgentConnectionService {
+    id: connectionService
+    helperPath: root.connectionHelperPath
   }
 
   PopupCard {
@@ -391,6 +410,18 @@ Item {
           height: 1
           color: root.foreground
           opacity: 0.14
+        }
+
+        AgentsSettingsCard {
+          visible: !root.settingsView && root.showGuidedAgents
+          width: parent.width
+          guided: true
+          service: connectionService
+          foreground: root.foreground
+          background: root.background
+          accent: root.accent
+          urgent: root.urgent
+          fontFamily: root.fontFamily
         }
 
         Text {
@@ -906,6 +937,17 @@ Item {
           visible: root.settingsView && !root.helpView
           width: parent.width
           spacing: Style.space(10)
+
+          AgentsSettingsCard {
+            width: parent.width
+            guided: false
+            service: connectionService
+            foreground: root.foreground
+            background: root.background
+            accent: root.accent
+            urgent: root.urgent
+            fontFamily: root.fontFamily
+          }
 
           Rectangle {
             width: parent.width

@@ -6,6 +6,7 @@ import {
   type AgentErrorEnvelope,
 } from './agentProtocol.js';
 import type { PimpampumHttpClient } from './client.js';
+import type { HostConnector } from './connectors/types.js';
 import {
   CLI_COMMANDS,
   describeCommands,
@@ -18,7 +19,155 @@ import { MAX_AGENT_INPUT_BYTES } from './limits.js';
 import type { ServiceManager } from './service/types.js';
 import type { ArtifactReference, TargetType } from './types.js';
 import type { UpdateManager } from './update.js';
+import type { SetupStateStore } from './setup/types.js';
+import type { SetupProgressEvent } from './setup/types.js';
 import { PIMPAMPUM_VERSION } from './version.js';
+
+export type CliConnectorId = 'codex' | 'claude-code';
+
+export interface CliConnectionsRuntime {
+  list(): Promise<unknown>;
+  connect(
+    id: CliConnectorId,
+    input: { confirmed: boolean; conflictDecision: 'replace' | undefined },
+  ): Promise<unknown>;
+  repair(
+    id: CliConnectorId,
+    input: { confirmed: boolean; conflictDecision: 'replace' | undefined },
+  ): Promise<unknown>;
+  disconnect(id: CliConnectorId, input: { confirmed: boolean }): Promise<unknown>;
+  instructions(): Promise<unknown>;
+}
+
+export interface CliSetupRuntime {
+  plan(input: { selectedConnectors: CliConnectorId[] }): Promise<unknown>;
+  apply(input: {
+    operationId: string;
+    expectedRevision: string;
+    confirmed: boolean;
+    conflictDecisions?: Partial<Record<CliConnectorId, 'replace' | 'keep'>>;
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>;
+  }): Promise<unknown>;
+  status(): Promise<unknown>;
+  resume(input?: {
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>;
+  }): Promise<unknown>;
+  retryConnector(
+    id: CliConnectorId,
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>,
+  ): Promise<unknown>;
+}
+
+export interface SetupCoordinatorCliBoundary {
+  plan(input: { selectedConnectors: CliConnectorId[] }): Promise<unknown>;
+  apply(input: {
+    operationId: string;
+    expectedRevision: string;
+    confirmed: boolean;
+    conflictDecisions?: Partial<Record<CliConnectorId, 'replace' | 'keep'>>;
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>;
+  }): Promise<unknown>;
+  resume(input?: {
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>;
+  }): Promise<unknown>;
+  retryConnector(
+    id: CliConnectorId,
+    onProgress?: (event: SetupProgressEvent) => void | Promise<void>,
+  ): Promise<unknown>;
+}
+
+export function createCliSetupRuntime(
+  coordinator: SetupCoordinatorCliBoundary,
+  stateStore: Pick<SetupStateStore, 'read'>,
+): CliSetupRuntime {
+  return {
+    plan: (input) => coordinator.plan(input),
+    apply: (input) => coordinator.apply(input),
+    status: async () => stateStore.read(),
+    resume: (input) => coordinator.resume(input),
+    retryConnector: (id, onProgress) => coordinator.retryConnector(id, onProgress),
+  };
+}
+
+export function createCliConnectionsRuntime(input: {
+  connectors: readonly HostConnector[];
+  launcherPath: string;
+}): CliConnectionsRuntime {
+  const connectors = new Map(input.connectors.map((connector) => [connector.id, connector]));
+  const resolveConnector = (id: CliConnectorId): HostConnector => {
+    const connector = connectors.get(id);
+    if (connector === undefined)
+      throw new AppError('not_found', `Connector is not available: ${id}`, 404);
+    return connector;
+  };
+  const act = async (
+    id: CliConnectorId,
+    action: 'connect' | 'repair',
+    confirmed: boolean,
+    decision: 'replace' | undefined,
+  ): Promise<unknown> => {
+    if (!confirmed) {
+      throw new AppError('bad_request', 'Connector mutation requires explicit confirmation', 400);
+    }
+    const connector = resolveConnector(id);
+    const plan = await connector.plan(decision === undefined ? {} : { conflictDecision: decision });
+    if (plan.state === 'conflict') {
+      if (decision !== 'replace' || plan.mutations.length === 0) {
+        throw new AppError(
+          'conflict',
+          decision === 'replace'
+            ? 'The reviewed connector entry cannot be restored safely through the official host CLI'
+            : 'The existing connector entry requires an explicit replacement decision',
+          409,
+        );
+      }
+    }
+    return action === 'connect' ? connector.connect(plan) : connector.repair(plan);
+  };
+  return {
+    async list() {
+      return Promise.all(
+        input.connectors.map(async (connector) => {
+          const inspection = await connector.inspect();
+          let available = false;
+          if (inspection.state === 'ownedCurrent' || inspection.state === 'equivalentUnowned') {
+            available = await connector
+              .verify()
+              .then((result) => result.available)
+              .catch(() => false);
+          }
+          return {
+            id: connector.id,
+            displayName: connector.displayName,
+            state: inspection.state,
+            available,
+          };
+        }),
+      );
+    },
+    connect: (id, options) => act(id, 'connect', options.confirmed, options.conflictDecision),
+    repair: (id, options) => act(id, 'repair', options.confirmed, options.conflictDecision),
+    disconnect: async (id, options) => {
+      if (!options.confirmed) {
+        throw new AppError('bad_request', 'Connector removal requires explicit confirmation', 400);
+      }
+      const result = await resolveConnector(id).disconnect();
+      return {
+        id,
+        disconnected: result.changed,
+        state: result.state,
+        dataPreserved: true,
+      };
+    },
+    instructions: async () => ({
+      transport: 'stdio',
+      command: input.launcherPath,
+      arguments: [],
+      tokenIncluded: false,
+      connectors: input.connectors.map(({ id, displayName }) => ({ id, displayName })),
+    }),
+  };
+}
 
 export interface AgentCliConfiguration {
   dataDirectory: string;
@@ -43,6 +192,8 @@ export interface CliRuntime {
   serviceManager: ServiceManager;
   serviceOnlyManager?: ServiceManager;
   updateManager: UpdateManager;
+  connections?: CliConnectionsRuntime;
+  setup?: CliSetupRuntime;
   startServer(): Promise<{ config: { baseUrl: string }; close(): Promise<void> }>;
   startStdioBridge(): Promise<void>;
   readFile(path: string, maxBytes?: number): string;
@@ -96,6 +247,127 @@ function print(runtime: CliRuntime, value: unknown): void {
 
 function printEnvelope(runtime: CliRuntime, value: unknown): void {
   runtime.stdout(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function redactText(value: string): string {
+  return value
+    .replace(/(?:authorization\s*:?\s*)?bearer\s+\S+/giu, '[credential redacted]')
+    .replace(/\bPIMPAMPUM_TOKEN\b(?:\s*[:=]\s*\S+)?/giu, '[credential redacted]')
+    .replace(/\b(?:api[_-]?key|access[_-]?token|secret)\s*[:=]\s*\S+/giu, '[credential redacted]')
+    .replace(/[\r\n\t]+/gu, ' ')
+    .slice(0, 2_048);
+}
+
+function redactBoundaryValue(value: unknown, depth = 0): unknown {
+  if (depth > 16) return '[bounded]';
+  if (typeof value === 'string') return redactText(value);
+  if (Array.isArray(value))
+    return value.slice(0, 512).map((item) => redactBoundaryValue(item, depth + 1));
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, 512)
+      .map(([key, item]) => [
+        key,
+        /^(?:authorization|token|secret|api[_-]?key|access[_-]?token)$/iu.test(key)
+          ? '[credential redacted]'
+          : redactBoundaryValue(item, depth + 1),
+      ]),
+  );
+}
+
+function printBoundary(runtime: CliRuntime, value: unknown): void {
+  print(runtime, redactBoundaryValue(value));
+}
+
+function printSetupEvent(runtime: CliRuntime, event: 'progress' | 'result', data: unknown): void {
+  runtime.stdout(
+    `${JSON.stringify({ schemaVersion: 1, event, data: redactBoundaryValue(data) })}\n`,
+  );
+}
+
+function setupNativeOptions(arguments_: string[]): {
+  arguments: string[];
+  events: boolean;
+  keeps: CliConnectorId[];
+} {
+  const filtered: string[] = [];
+  const keeps: CliConnectorId[] = [];
+  let events = false;
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    if (argument === '--events') {
+      if (events) throw new AppError('bad_request', 'Setup event mode may be selected once', 400);
+      events = true;
+      continue;
+    }
+    if (argument === '--keep') {
+      keeps.push(connectorId(arguments_[index + 1]));
+      index += 1;
+      continue;
+    }
+    filtered.push(argument);
+  }
+  if (keeps.length > 0 && !events) {
+    throw new AppError(
+      'bad_request',
+      'Keep decisions are reserved for native setup event mode',
+      400,
+    );
+  }
+  return { arguments: filtered, events, keeps };
+}
+
+async function callBoundary<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw new AppError(
+        error.code,
+        redactText(error.message),
+        error.status,
+        error.retryable,
+        redactBoundaryValue(error.details) as Record<string, unknown>,
+      );
+    }
+    const code = isRecord(error) && typeof error.code === 'string' ? error.code : '';
+    const message = redactText(
+      error instanceof Error ? error.message : 'The local operation failed',
+    );
+    if (/CONFLICT/iu.test(code) || /conflict|requires a decision/iu.test(message)) {
+      throw new AppError('conflict', message || 'An explicit conflict decision is required', 409);
+    }
+    throw new AppError('internal_error', message || 'The local operation failed', 500);
+  }
+}
+
+function connectorId(value: string | undefined): CliConnectorId {
+  const id = required(value, 'connector id');
+  if (id !== 'codex' && id !== 'claude-code') {
+    throw new AppError('bad_request', 'Connector id must be codex or claude-code', 400);
+  }
+  return id;
+}
+
+function requireConfirmation(command: CliCommand, input: CommandInput): void {
+  if (!input.boolean('--yes')) {
+    throw badArgument(command, 'This operation requires the explicit --yes flag');
+  }
+}
+
+function connectionsRuntime(runtime: CliRuntime): CliConnectionsRuntime {
+  if (runtime.connections === undefined) {
+    throw new AppError('unavailable', 'Connection management is unavailable in this runtime', 503);
+  }
+  return runtime.connections;
+}
+
+function setupRuntime(runtime: CliRuntime): CliSetupRuntime {
+  if (runtime.setup === undefined) {
+    throw new AppError('unavailable', 'Setup management is unavailable in this runtime', 503);
+  }
+  return runtime.setup;
 }
 
 const commandsByName = new Map(CLI_COMMANDS.map((command) => [command.name, command]));
@@ -380,6 +652,147 @@ async function executeCli(
   if (command === 'config') {
     print(runtime, runtime.describeConfig());
     return null;
+  }
+
+  if (command === 'connections') {
+    parseCommandArguments(describe(command), args);
+    printBoundary(runtime, await callBoundary(() => connectionsRuntime(runtime).list()));
+    return null;
+  }
+  if (command === 'connect') {
+    const descriptor = describe(command);
+    const input = parseCommandArguments(descriptor, args);
+    const connections = connectionsRuntime(runtime);
+    if (input.boolean('--instructions')) {
+      if (input.positional.length > 0 || input.boolean('--yes') || input.boolean('--replace')) {
+        throw badArgument(
+          descriptor,
+          '--instructions cannot be combined with a connector or mutation flags',
+        );
+      }
+      printBoundary(runtime, await callBoundary(() => connections.instructions()));
+      return null;
+    }
+    requireConfirmation(descriptor, input);
+    const id = connectorId(input.positional[0]);
+    printBoundary(
+      runtime,
+      await callBoundary(() =>
+        connections.connect(id, {
+          confirmed: true,
+          conflictDecision: input.boolean('--replace') ? 'replace' : undefined,
+        }),
+      ),
+    );
+    return null;
+  }
+  if (command === 'repair') {
+    const descriptor = describe(command);
+    const input = parseCommandArguments(descriptor, args);
+    requireConfirmation(descriptor, input);
+    const id = connectorId(input.positional[0]);
+    printBoundary(
+      runtime,
+      await callBoundary(() =>
+        connectionsRuntime(runtime).repair(id, {
+          confirmed: true,
+          conflictDecision: input.boolean('--replace') ? 'replace' : undefined,
+        }),
+      ),
+    );
+    return null;
+  }
+  if (command === 'disconnect') {
+    const descriptor = describe(command);
+    const input = parseCommandArguments(descriptor, args);
+    requireConfirmation(descriptor, input);
+    const id = connectorId(input.positional[0]);
+    printBoundary(
+      runtime,
+      await callBoundary(() => connectionsRuntime(runtime).disconnect(id, { confirmed: true })),
+    );
+    return null;
+  }
+  if (command === 'setup') {
+    const action = required(args[0], 'setup action');
+    const setup = setupRuntime(runtime);
+    if (action === 'plan') {
+      const descriptor = describe('setup plan');
+      const input = parseCommandArguments(descriptor, args.slice(1));
+      const selectedConnectors = input.optionAll('--connector').map(connectorId);
+      printBoundary(runtime, await callBoundary(() => setup.plan({ selectedConnectors })));
+      return null;
+    }
+    if (action === 'apply') {
+      const descriptor = describe('setup apply');
+      const native = setupNativeOptions(args.slice(1));
+      const input = parseCommandArguments(descriptor, native.arguments);
+      requireConfirmation(descriptor, input);
+      const replacements = input.optionAll('--replace').map(connectorId);
+      if (native.keeps.some((id) => replacements.includes(id))) {
+        throw new AppError(
+          'bad_request',
+          'A connector cannot be both kept and replaced in one setup decision',
+          400,
+        );
+      }
+      const conflictDecisions = Object.fromEntries([
+        ...replacements.map((id) => [id, 'replace' as const] as const),
+        ...native.keeps.map((id) => [id, 'keep' as const] as const),
+      ]) as Partial<Record<CliConnectorId, 'replace' | 'keep'>>;
+      const result = await callBoundary(() =>
+        setup.apply({
+          operationId: required(input.positional[0], 'operation id'),
+          expectedRevision: required(input.positional[1], 'expected revision'),
+          confirmed: true,
+          ...(replacements.length === 0 && native.keeps.length === 0 ? {} : { conflictDecisions }),
+          ...(native.events
+            ? {
+                onProgress: (event: SetupProgressEvent) =>
+                  printSetupEvent(runtime, 'progress', event),
+              }
+            : {}),
+        }),
+      );
+      if (native.events) printSetupEvent(runtime, 'result', result);
+      else printBoundary(runtime, result);
+      return null;
+    }
+    if (action === 'retry') {
+      const native = setupNativeOptions(args.slice(1));
+      if (!native.events || native.keeps.length > 0 || native.arguments.length !== 1) {
+        throw new AppError('bad_request', 'Native setup retry requires an agent and --events', 400);
+      }
+      const id = connectorId(native.arguments[0]);
+      const result = await callBoundary(() =>
+        setup.retryConnector(id, (event) => printSetupEvent(runtime, 'progress', event)),
+      );
+      printSetupEvent(runtime, 'result', result);
+      return null;
+    }
+    if (action === 'status') {
+      parseCommandArguments(describe('setup status'), args.slice(1));
+      printBoundary(runtime, await callBoundary(() => setup.status()));
+      return null;
+    }
+    if (action === 'resume') {
+      const native = setupNativeOptions(args.slice(1));
+      if (native.keeps.length > 0) {
+        throw new AppError('bad_request', 'Keep decisions require setup apply', 400);
+      }
+      parseCommandArguments(describe('setup resume'), native.arguments);
+      const result = await callBoundary(() =>
+        setup.resume(
+          native.events
+            ? { onProgress: (event) => printSetupEvent(runtime, 'progress', event) }
+            : undefined,
+        ),
+      );
+      if (native.events) printSetupEvent(runtime, 'result', result);
+      else printBoundary(runtime, result);
+      return null;
+    }
+    throw new AppError('bad_request', `Unknown setup action: ${action}`, 400);
   }
   if (command === 'tools') {
     const catalog = await withAgentClient(runtime, (client) => client.listTools());

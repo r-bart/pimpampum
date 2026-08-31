@@ -1,0 +1,336 @@
+#!/bin/sh
+set -eu
+
+umask 077
+PATH=/usr/bin:/bin
+export PATH
+
+fail() {
+  code=$1
+  shift
+  printf '%s\n' "pimpampum-plugin-lifecycle: $*" >&2
+  exit "$code"
+}
+
+require_absolute() {
+  case $1 in
+    /*) ;;
+    *) fail 64 "$2 must be absolute" ;;
+  esac
+}
+
+sha256_file() {
+  if [ -x /usr/bin/sha256sum ]; then
+    /usr/bin/sha256sum "$1" | /usr/bin/awk '{print $1}'
+  elif [ -x /usr/bin/shasum ]; then
+    /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'
+  else
+    fail 69 'sha256sum or shasum is required for receipt ownership checks'
+  fi
+}
+
+action=${1:-}
+case $action in
+  install) action=reconcile ;;
+  uninstall) action=remove ;;
+  reconcile | remove) ;;
+  *) fail 64 'expected install, reconcile, uninstall, or remove' ;;
+esac
+[ "$#" -eq 1 ] || fail 64 'invalid arguments'
+
+plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || fail 70 'cannot resolve plugin root'
+home_directory=${HOME:-}
+require_absolute "$home_directory" HOME
+[ "$home_directory" != / ] || fail 73 'HOME must not be the filesystem root'
+case $home_directory in *'"'* | *\\*) fail 73 'HOME contains unsafe receipt characters' ;; esac
+[ -d "$home_directory" ] && [ ! -L "$home_directory" ] ||
+  fail 73 'HOME must be a regular directory and not a symlink'
+data_directory="$home_directory/.pimpampum"
+[ ! -L "$data_directory" ] || fail 73 'private data path is unsafe'
+/bin/mkdir -p -m 700 "$data_directory" || fail 73 'cannot create private data directory'
+[ -d "$data_directory" ] && [ ! -L "$data_directory" ] || fail 73 'private data path is unsafe'
+/bin/chmod 700 "$data_directory"
+
+lock_path="$data_directory/.setup-lifecycle.lock"
+pid_hex=$(printf '%08x' "$$")
+time_hex=$(printf '%08x' "$(/bin/date +%s)")
+lock_nonce="$pid_hex-0000-4000-8000-0000$time_hex"
+lock_attempt=0
+while :; do
+  if (set -C; printf '{"schemaVersion":1,"pid":%s,"nonce":"%s"}\n' "$$" "$lock_nonce" > "$lock_path") 2>/dev/null; then
+    break
+  fi
+  [ -f "$lock_path" ] && [ ! -L "$lock_path" ] ||
+    fail 75 'setup lifecycle lock is unsafe'
+  owner_pid=$(/usr/bin/awk -F'"pid":' '{ split($2, value, ","); print value[1]; exit }' "$lock_path")
+  owner_nonce=$(/usr/bin/awk -F'"nonce":"' '{ split($2, value, "\""); print value[1]; exit }' "$lock_path")
+  case $owner_pid in '' | *[!0-9]*) fail 75 'setup lifecycle lock has an invalid owner' ;; esac
+  printf '%s\n' "$owner_nonce" | /usr/bin/grep -Eq '^[a-f0-9-]{36}$' ||
+    fail 75 'setup lifecycle lock has an invalid owner'
+  if ! /bin/kill -0 "$owner_pid" 2>/dev/null; then
+    owner_value=$(cat "$lock_path")
+    [ "$owner_value" = "{\"schemaVersion\":1,\"pid\":$owner_pid,\"nonce\":\"$owner_nonce\"}" ] ||
+      fail 75 'setup lifecycle lock changed during stale-owner recovery'
+    /bin/rm -f -- "$lock_path" || fail 75 'cannot recover stale setup lifecycle lock'
+    continue
+  fi
+  lock_attempt=$((lock_attempt + 1))
+  [ "$lock_attempt" -lt 300 ] || fail 75 'timed out waiting for setup lifecycle lock'
+  /bin/sleep 0.1
+done
+/bin/chmod 600 "$lock_path"
+
+cleanup_lock() {
+  if [ -f "$lock_path" ] && [ ! -L "$lock_path" ] &&
+    /usr/bin/grep -Fq "\"nonce\":\"$lock_nonce\"" "$lock_path"; then
+    /bin/rm -f -- "$lock_path"
+  fi
+}
+trap cleanup_lock EXIT
+trap 'cleanup_lock; trap - EXIT; exit 130' HUP INT TERM
+
+manifest=${PIMPAMPUM_LIFECYCLE_MANIFEST:-"$plugin_root/runtime-manifest.json"}
+uname_command=${PIMPAMPUM_LIFECYCLE_UNAME:-/usr/bin/uname}
+require_absolute "$manifest" 'runtime manifest'
+require_absolute "$uname_command" 'uname command'
+[ -f "$manifest" ] && [ ! -L "$manifest" ] || fail 64 'runtime manifest is missing or unsafe'
+[ -x "$uname_command" ] || fail 69 'uname command is unavailable'
+[ "$($uname_command -s)" = Linux ] || fail 65 'Omarchy lifecycle requires Linux'
+case $($uname_command -m) in
+  x86_64) target=linux-x64 ;;
+  aarch64 | arm64) target=linux-arm64 ;;
+  *) fail 65 'unsupported CPU architecture' ;;
+esac
+
+manifest_value() {
+  key=$1
+  /usr/bin/awk -v target_key="\"$target\"" -v wanted="\"$key\"" '
+    index($0, target_key ":") { selected = 1; next }
+    selected && index($0, wanted ":") {
+      value = $0
+      sub(/^[^:]+:[[:space:]]*/, "", value)
+      sub(/,[[:space:]]*$/, "", value)
+      gsub(/^"|"$/, "", value)
+      print value
+      exit
+    }
+    selected && $0 ~ /^    }/ { exit }
+  ' "$manifest"
+}
+
+version=$(/usr/bin/awk '
+  /"version"[[:space:]]*:/ {
+    value = $0
+    sub(/^[^:]+:[[:space:]]*"/, "", value)
+    sub(/"[[:space:]]*,?[[:space:]]*$/, "", value)
+    print value
+    exit
+  }
+' "$manifest")
+sha256=$(manifest_value sha256)
+printf '%s\n' "$version" | /usr/bin/grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z._-]+)?$' ||
+  fail 64 'runtime manifest version is invalid'
+printf '%s\n' "$sha256" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' ||
+  fail 64 'runtime manifest SHA-256 is invalid'
+
+lifecycle_receipt="$data_directory/omarchy-plugin-runtime.json"
+runtime_receipt="$data_directory/runtime-install-receipt.json"
+control_launcher="$home_directory/.local/share/pimpampum/bin/pimpampum-control"
+mcp_launcher="$home_directory/.local/share/pimpampum/bin/pimpampum-mcp"
+connections_helper=${PIMPAMPUM_LIFECYCLE_CONNECTIONS:-"$plugin_root/pimpampum-connections"}
+bootstrap=${PIMPAMPUM_LIFECYCLE_BOOTSTRAP:-"$plugin_root/pimpampum-bootstrap"}
+require_absolute "$connections_helper" 'connections helper'
+require_absolute "$bootstrap" bootstrap
+
+validate_runtime_ownership() {
+  expected_version=$1
+  expected_target=$2
+  runtime_directory="$home_directory/.local/share/pimpampum/runtime/$expected_version/$expected_target"
+  runtime_node="$runtime_directory/bin/node"
+  runtime_cli="$runtime_directory/dist/cli.js"
+  runtime_mcp="$runtime_directory/dist/mcpStdio.js"
+  for runtime_parent in \
+    "$home_directory/.local" \
+    "$home_directory/.local/share" \
+    "$home_directory/.local/share/pimpampum" \
+    "$home_directory/.local/share/pimpampum/bin" \
+    "$home_directory/.local/share/pimpampum/runtime" \
+    "$home_directory/.local/share/pimpampum/runtime/$expected_version"; do
+    [ -d "$runtime_parent" ] && [ ! -L "$runtime_parent" ] ||
+      fail 69 'receipt-owned runtime parent is unavailable or unsafe'
+  done
+  [ -f "$runtime_receipt" ] && [ ! -L "$runtime_receipt" ] ||
+    fail 69 'runtime receipt is missing or unsafe'
+  [ -d "$runtime_directory" ] && [ ! -L "$runtime_directory" ] ||
+    fail 69 'receipt-owned runtime payload is unavailable'
+  for runtime_file in "$runtime_node" "$runtime_cli" "$runtime_mcp"; do
+    [ -f "$runtime_file" ] && [ ! -L "$runtime_file" ] ||
+      fail 69 'receipt-owned runtime entrypoint is unavailable'
+  done
+  [ -x "$control_launcher" ] && [ ! -L "$control_launcher" ] &&
+    [ -x "$mcp_launcher" ] && [ ! -L "$mcp_launcher" ] ||
+    fail 69 'receipt-owned stable launchers are unavailable'
+  /usr/bin/grep -Fq "\"currentVersion\": \"$expected_version\"" "$runtime_receipt" &&
+    /usr/bin/grep -Fq "\"targetId\": \"$expected_target\"" "$runtime_receipt" &&
+    /usr/bin/grep -Fq "\"nodePath\": \"$runtime_node\"" "$runtime_receipt" &&
+    /usr/bin/grep -Fq "\"cliPath\": \"$runtime_cli\"" "$runtime_receipt" &&
+    /usr/bin/grep -Fq "\"mcpPath\": \"$runtime_mcp\"" "$runtime_receipt" &&
+    /usr/bin/grep -Fq "\"controlLauncherPath\": \"$control_launcher\"" "$runtime_receipt" &&
+    /usr/bin/grep -Fq "\"mcpLauncherPath\": \"$mcp_launcher\"" "$runtime_receipt" ||
+    fail 69 'runtime receipt does not own the expected private payload'
+  expected_control_sha=$(/usr/bin/awk -F'"' \
+    '/"controlLauncherSha256"[[:space:]]*:/ { print $4; exit }' "$runtime_receipt")
+  expected_mcp_sha=$(/usr/bin/awk -F'"' \
+    '/"mcpLauncherSha256"[[:space:]]*:/ { print $4; exit }' "$runtime_receipt")
+  printf '%s\n' "$expected_control_sha" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' ||
+    fail 69 'runtime receipt control launcher hash is invalid'
+  printf '%s\n' "$expected_mcp_sha" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' ||
+    fail 69 'runtime receipt MCP launcher hash is invalid'
+  [ "$(sha256_file "$control_launcher")" = "$expected_control_sha" ] &&
+    [ "$(sha256_file "$mcp_launcher")" = "$expected_mcp_sha" ] ||
+    fail 69 'stable launcher content does not match its ownership receipt'
+}
+
+write_lifecycle_receipt() {
+  temporary=$(/usr/bin/mktemp "$data_directory/.omarchy-plugin-runtime.XXXXXX") ||
+    fail 73 'cannot stage lifecycle receipt'
+  printf '{"schemaVersion":1,"version":"%s","target":"%s","sha256":"%s"}\n' \
+    "$version" "$target" "$sha256" > "$temporary"
+  /bin/chmod 600 "$temporary"
+  /bin/mv -f -- "$temporary" "$lifecycle_receipt"
+}
+
+if [ "$action" = reconcile ]; then
+  if [ -f "$lifecycle_receipt" ] && [ ! -L "$lifecycle_receipt" ] &&
+    /usr/bin/grep -Fq "\"version\":\"$version\"" "$lifecycle_receipt" &&
+    /usr/bin/grep -Fq "\"target\":\"$target\"" "$lifecycle_receipt" &&
+    ! /usr/bin/grep -Fq "\"sha256\":\"$sha256\"" "$lifecycle_receipt"; then
+    fail 70 'immutable runtime checksum changed without a version change; prior runtime was preserved'
+  fi
+  if [ -f "$lifecycle_receipt" ] && [ ! -L "$lifecycle_receipt" ] &&
+    [ -f "$runtime_receipt" ] && [ ! -L "$runtime_receipt" ] &&
+    [ -x "$control_launcher" ] && [ ! -L "$control_launcher" ] &&
+    /usr/bin/grep -Fq "\"version\":\"$version\"" "$lifecycle_receipt" &&
+    /usr/bin/grep -Fq "\"target\":\"$target\"" "$lifecycle_receipt" &&
+    /usr/bin/grep -Fq "\"sha256\":\"$sha256\"" "$lifecycle_receipt" &&
+    /usr/bin/grep -Fq "\"currentVersion\": \"$version\"" "$runtime_receipt" &&
+    /usr/bin/grep -Fq "\"targetId\": \"$target\"" "$runtime_receipt" &&
+    /usr/bin/grep -Fq "\"controlLauncherPath\": \"$control_launcher\"" "$runtime_receipt"; then
+    validate_runtime_ownership "$version" "$target"
+    printf '{"schemaVersion":1,"reconciled":false,"changed":false,"version":"%s","target":"%s"}\n' \
+      "$version" "$target"
+    exit 0
+  fi
+  [ -x "$bootstrap" ] && [ ! -L "$bootstrap" ] || fail 69 'bootstrap is unavailable or unsafe'
+  "$bootstrap" >/dev/null || fail 70 'pinned runtime reconciliation failed; previous route was preserved'
+  validate_runtime_ownership "$version" "$target"
+  write_lifecycle_receipt
+  printf '{"schemaVersion":1,"reconciled":true,"changed":true,"version":"%s","target":"%s"}\n' \
+    "$version" "$target"
+  exit 0
+fi
+
+[ -f "$runtime_receipt" ] && [ ! -L "$runtime_receipt" ] ||
+  fail 69 'runtime receipt is missing; nothing was removed'
+[ -f "$control_launcher" ] && [ ! -L "$control_launcher" ] && [ -x "$control_launcher" ] ||
+  fail 69 'receipt-owned control launcher is unavailable; nothing was removed'
+/usr/bin/grep -Fq "\"controlLauncherPath\": \"$control_launcher\"" "$runtime_receipt" ||
+  fail 69 'runtime receipt does not own the control launcher'
+installed_version=$(/usr/bin/awk -F'"' '/"currentVersion"[[:space:]]*:/ { print $4; exit }' "$runtime_receipt")
+installed_target=$(/usr/bin/awk -F'"' '/"targetId"[[:space:]]*:/ { print $4; exit }' "$runtime_receipt")
+printf '%s\n' "$installed_version" | /usr/bin/grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z._-]+)?$' ||
+  fail 69 'runtime receipt version is invalid'
+[ "$installed_target" = linux-x64 ] || [ "$installed_target" = linux-arm64 ] ||
+  fail 69 'runtime receipt target is invalid'
+[ "$installed_target" = "$target" ] || fail 69 'runtime receipt belongs to another architecture'
+validate_runtime_ownership "$installed_version" "$installed_target"
+[ -x "$connections_helper" ] && [ ! -L "$connections_helper" ] ||
+  fail 69 'connections helper is unavailable or unsafe'
+
+disconnected=''
+manual=''
+for connector in codex claude-code; do
+  if "$connections_helper" disconnect "$connector" >/dev/null 2>&1; then
+    disconnected="$disconnected $connector"
+  else
+    manual="$manual $connector"
+  fi
+done
+
+restore_connections() {
+  for connector in $disconnected; do
+    "$control_launcher" connect "$connector" --yes >/dev/null 2>&1 || true
+  done
+}
+
+if ! "$control_launcher" uninstall >/dev/null; then
+  restore_connections
+  fail 70 'service/plugin removal failed; previously disconnected owned routes were restored'
+fi
+
+removal_staging="$home_directory/.local/share/pimpampum/.removal-staging.$$"
+/bin/mkdir -m 700 "$removal_staging" || {
+  "$control_launcher" install >/dev/null 2>&1 || true
+  restore_connections
+  fail 73 'cannot stage receipt-owned removal; service was restored'
+}
+/bin/cp -- "$runtime_receipt" "$removal_staging/runtime-install-receipt.json" || {
+  /bin/rm -rf -- "$removal_staging"
+  "$control_launcher" install >/dev/null 2>&1 || true
+  restore_connections
+  fail 73 'cannot snapshot the runtime receipt; service was restored'
+}
+if [ -f "$lifecycle_receipt" ] && [ ! -L "$lifecycle_receipt" ]; then
+  /bin/cp -- "$lifecycle_receipt" "$removal_staging/omarchy-plugin-runtime.json" || {
+    /bin/rm -rf -- "$removal_staging"
+    "$control_launcher" install >/dev/null 2>&1 || true
+    restore_connections
+    fail 73 'cannot snapshot the lifecycle receipt; service was restored'
+  }
+fi
+rollback_runtime() {
+  if [ -d "$removal_staging/runtime" ]; then
+    /bin/mkdir -p "$(dirname -- "$runtime_directory")"
+    /bin/mv -- "$removal_staging/runtime" "$runtime_directory" 2>/dev/null || true
+  fi
+  [ ! -f "$removal_staging/pimpampum-control" ] ||
+    /bin/mv -- "$removal_staging/pimpampum-control" "$control_launcher" 2>/dev/null || true
+  [ ! -f "$removal_staging/pimpampum-mcp" ] ||
+    /bin/mv -- "$removal_staging/pimpampum-mcp" "$mcp_launcher" 2>/dev/null || true
+  [ ! -f "$removal_staging/runtime-install-receipt.json" ] ||
+    /bin/cp -- "$removal_staging/runtime-install-receipt.json" "$runtime_receipt" 2>/dev/null || true
+  [ ! -f "$removal_staging/omarchy-plugin-runtime.json" ] ||
+    /bin/cp -- "$removal_staging/omarchy-plugin-runtime.json" "$lifecycle_receipt" 2>/dev/null || true
+  if [ -x "$runtime_node" ] && [ -f "$runtime_cli" ]; then
+    "$runtime_node" "$runtime_cli" install >/dev/null 2>&1 || true
+  fi
+  restore_connections
+  /bin/rm -rf -- "$removal_staging"
+}
+
+if ! /bin/mv -- "$runtime_directory" "$removal_staging/runtime"; then
+  rollback_runtime
+  fail 70 'runtime removal staging failed; prior installation was restored'
+fi
+if ! /bin/mv -- "$control_launcher" "$removal_staging/pimpampum-control"; then
+  rollback_runtime
+  fail 70 'control launcher removal staging failed; prior installation was restored'
+fi
+if [ -f "$mcp_launcher" ] && [ ! -L "$mcp_launcher" ]; then
+  if ! /bin/mv -- "$mcp_launcher" "$removal_staging/pimpampum-mcp"; then
+    rollback_runtime
+    fail 70 'MCP launcher removal staging failed; prior installation was restored'
+  fi
+fi
+
+if ! /bin/rm -f -- "$runtime_receipt" "$lifecycle_receipt"; then
+  rollback_runtime
+  fail 70 'receipt commit failed; prior installation was restored'
+fi
+/bin/rm -rf -- "$removal_staging"
+if [ -n "$manual" ]; then
+  printf '%s\n' 'Some connector entries were not proven receipt-owned and were left unchanged.' >&2
+  printf '%s\n' 'Review the reported agents with their official host CLI; no command or credential was logged.' >&2
+fi
+printf '{"schemaVersion":1,"removed":true,"dataPreserved":true,"manualGuidance":%s}\n' \
+  "$([ -n "$manual" ] && printf true || printf false)"

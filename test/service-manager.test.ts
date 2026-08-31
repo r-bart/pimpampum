@@ -1410,6 +1410,186 @@ describe('platform-neutral service manager', () => {
       }).install(),
     ).rejects.toThrow(/not inside an adapter-owned root/);
   });
+  it('runs the injected packaged-runtime health gate before adapter finalization', async () => {
+    const root = testRoot('post-activation-order');
+    const runtimeDirectory = join(
+      root.homeDirectory,
+      '.local',
+      'share',
+      'pimpampum',
+      'runtime',
+      '1.0.0',
+    );
+    mkdirSync(join(runtimeDirectory, 'dist'), { recursive: true });
+    writeFileSync(join(runtimeDirectory, 'node'), 'node');
+    writeFileSync(join(runtimeDirectory, 'dist', 'cli.js'), 'cli');
+    const order: string[] = [];
+    const adapter = testAdapter(root, {
+      activate: async () => {
+        order.push('activate');
+      },
+      afterInstall: async () => {
+        order.push('afterInstall');
+        return undefined;
+      },
+    });
+    const postActivationVerifier = vi.fn(async (verification) => {
+      order.push('verify');
+      expect(verification.receipt.version).toBe('1.0.0');
+      expect(verification.receipt.baseUrl).toBe('http://127.0.0.1:7337');
+      expect(verification.context.nodePath).toBe(join(runtimeDirectory, 'node'));
+      expect(verification.packagedRuntime).toEqual({
+        version: '1.0.0',
+        target: 'linux-x64',
+        runtimeDirectory,
+      });
+    });
+    const manager = createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        nodePath: join(runtimeDirectory, 'node'),
+        cliPath: join(runtimeDirectory, 'dist', 'cli.js'),
+        packagedRuntime: { version: '1.0.0', target: 'linux-x64', runtimeDirectory },
+        postActivationVerifier,
+        adapters: { linux: adapter },
+      }),
+    );
+
+    await expect(manager.install()).resolves.toMatchObject({ installed: true });
+    expect(order).toEqual(['activate', 'verify', 'afterInstall']);
+    expect(postActivationVerifier).toHaveBeenCalledOnce();
+
+    order.length = 0;
+    await expect(manager.install()).resolves.toMatchObject({ installed: true, reconciled: true });
+    expect(order).toEqual(['verify', 'afterInstall']);
+    expect(postActivationVerifier).toHaveBeenCalledTimes(2);
+  });
+
+  it('restores receipt, artifacts, logs and external state when health verification fails', async () => {
+    const root = testRoot('post-activation-rollback');
+    const artifactPath = join(root.homeDirectory, '.config', 'pimpampum', 'service');
+    let externalVersion: string | null = null;
+    let shouldFail = false;
+    const adapter = (content: string): PlatformServiceAdapter => ({
+      id: 'health-adapter',
+      platform: 'linux',
+      artifacts: () => [{ path: artifactPath, content, mode: 0o600 }],
+      prepareDeactivationRollback: async () => {
+        const previous = externalVersion;
+        return async () => {
+          externalVersion = previous;
+        };
+      },
+      activate: async (context) => {
+        externalVersion = context.version;
+      },
+      deactivate: async () => {
+        externalVersion = null;
+      },
+      isRunning: async () => externalVersion !== null,
+    });
+    const base = managerInput(root, async () => success(), {
+      platform: 'linux',
+      adapters: { linux: adapter('v1') },
+      postActivationVerifier: async () => {
+        if (shouldFail) throw new Error('daemon identity mismatch');
+      },
+    });
+    await createPlatformServiceManager(base).install();
+    const receiptPath = installReceiptPath(root.dataDirectory);
+    const previousReceipt = readFileSync(receiptPath);
+    mkdirSync(join(root.dataDirectory, 'logs'), { recursive: true });
+    writeFileSync(join(root.dataDirectory, 'logs', 'pimpampum.log'), 'old log');
+    shouldFail = true;
+
+    await expect(
+      createPlatformServiceManager({
+        ...base,
+        version: '2.0.0',
+        adapters: { linux: adapter('v2') },
+      }).install(),
+    ).rejects.toThrow('daemon identity mismatch');
+
+    expect(readFileSync(artifactPath, 'utf8')).toBe('v1');
+    expect(readFileSync(receiptPath)).toEqual(previousReceipt);
+    expect(readFileSync(join(root.dataDirectory, 'logs', 'pimpampum.log'), 'utf8')).toBe('old log');
+    expect(externalVersion).toBe('1.0.0');
+  });
+
+  it('health-checks idempotent registration repair and restores the prior stopped state', async () => {
+    const root = testRoot('post-activation-fast-repair');
+    let running = false;
+    let failVerification = false;
+    const rollback = vi.fn(async () => {
+      running = false;
+    });
+    const adapter = testAdapter(root, {
+      prepareDeactivationRollback: async () => rollback,
+      activate: async () => {
+        running = true;
+      },
+      deactivate: async () => {
+        running = false;
+      },
+      isRunning: async () => running,
+    });
+    const manager = createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        adapters: { linux: adapter },
+        postActivationVerifier: async () => {
+          if (failVerification) throw new Error('more than one daemon owns the receipt');
+        },
+      }),
+    );
+    await manager.install();
+    running = false;
+    failVerification = true;
+
+    await expect(manager.install()).rejects.toThrow('more than one daemon owns the receipt');
+    expect(running).toBe(false);
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(readInstallReceipt(installReceiptPath(root.dataDirectory))?.version).toBe('1.0.0');
+  });
+
+  it('never treats packaged runtime payload files as service snapshots', async () => {
+    const root = testRoot('runtime-not-artifact');
+    const runtimeDirectory = join(
+      root.homeDirectory,
+      '.local',
+      'share',
+      'pimpampum',
+      'runtime',
+      '1.0.0',
+    );
+    const nodePath = join(runtimeDirectory, 'bin', 'node');
+    const cliPath = join(runtimeDirectory, 'dist', 'cli.js');
+    mkdirSync(join(runtimeDirectory, 'bin'), { recursive: true });
+    mkdirSync(join(runtimeDirectory, 'dist'), { recursive: true });
+    writeFileSync(nodePath, 'node');
+    writeFileSync(cliPath, 'cli');
+    const adapter = testAdapter(root, {
+      artifacts: () => [
+        { path: join(runtimeDirectory, 'payload-file'), content: 'large', mode: 0o600 },
+      ],
+    });
+    const postActivationVerifier = vi.fn(async () => undefined);
+
+    await expect(
+      createPlatformServiceManager(
+        managerInput(root, async () => success(), {
+          platform: 'linux',
+          nodePath,
+          cliPath,
+          packagedRuntime: { version: '1.0.0', target: 'linux-x64', runtimeDirectory },
+          postActivationVerifier,
+          adapters: { linux: adapter },
+        }),
+      ).install(),
+    ).rejects.toThrow(/runtime installer/iu);
+    expect(postActivationVerifier).not.toHaveBeenCalled();
+    expect(existsSync(join(runtimeDirectory, 'payload-file'))).toBe(false);
+  });
 });
 
 describe('installation receipts', () => {

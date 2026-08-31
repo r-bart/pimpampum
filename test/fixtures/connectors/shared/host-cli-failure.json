@@ -1,0 +1,11 @@
+{
+  "fixtureVersion": 1,
+  "synthetic": true,
+  "fault": "hostCliFailure",
+  "exitCode": 70,
+  "signal": null,
+  "timedOut": false,
+  "stdout": "",
+  "stderr": "Synthetic host CLI failure",
+  "mutationCommitted": false
+}

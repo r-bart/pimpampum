@@ -52,12 +52,14 @@ struct PimpampumMenuBarApp: App {
     let updateSettingsStore = UpdateSettingsStore(
       receiptURL: dataDirectory.appendingPathComponent("install-receipt.json")
     )
+    let agentSettingsStore = AgentSettingsStore.bundled()
     _store = StateObject(wrappedValue: OverviewStore(reader: client))
     _settingsWindowController = StateObject(
       wrappedValue: SyncSettingsWindowController(
         syncStore: syncSettingsStore,
         backupStore: backupSettingsStore,
-        updateStore: updateSettingsStore
+        updateStore: updateSettingsStore,
+        agentStore: agentSettingsStore
       )
     )
   }
@@ -70,13 +72,13 @@ struct PimpampumMenuBarApp: App {
         settingsWindowOpener: settingsWindowController,
         quitApplication: { NSApplication.shared.terminate(nil) }
       )
-        .onAppear {
-          store.start()
-          store.setPopoverOpen(true)
-        }
-        .onDisappear {
-          store.setPopoverOpen(false)
-        }
+      .onAppear {
+        store.start()
+        store.setPopoverOpen(true)
+      }
+      .onDisappear {
+        store.setPopoverOpen(false)
+      }
     } label: {
       StatusIndicator(
         state: StatusPopover.visualState(

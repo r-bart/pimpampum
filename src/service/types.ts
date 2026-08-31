@@ -8,6 +8,14 @@ export type RunCommand = (executable: string, arguments_: string[]) => Promise<C
 
 export type SupportedServicePlatform = 'darwin' | 'linux';
 
+export type PackagedRuntimeTarget = 'darwin-arm64' | 'linux-arm64' | 'linux-x64';
+
+export interface PackagedRuntimeMetadata {
+  version: string;
+  target: PackagedRuntimeTarget;
+  runtimeDirectory: string;
+}
+
 export interface ServiceArtifact {
   path: string;
   content: string | Buffer;
@@ -24,6 +32,7 @@ export interface ServiceAdapterContext {
   port: number;
   logDirectory: string;
   runCommand: RunCommand;
+  packagedRuntime?: PackagedRuntimeMetadata;
 }
 
 export interface PlatformServiceAdapter {
@@ -81,11 +90,19 @@ export interface ServiceStatus {
 export interface UninstallResult {
   uninstalled: boolean;
   dataPreserved: true;
+  manualInstructions?: string[];
+}
+
+export interface PreparedServiceUninstall {
+  commit(): Promise<UninstallResult>;
+  rollback(): Promise<void>;
+  finalize(): Promise<void>;
 }
 
 export interface ServiceManager {
   install(): Promise<InstallResult>;
   status(): Promise<ServiceStatus>;
+  prepareUninstall?(): Promise<PreparedServiceUninstall | null>;
   uninstall(): Promise<UninstallResult>;
 }
 
@@ -102,7 +119,19 @@ export interface PlatformServiceManagerInput {
   logDirectory?: string;
   adapters?: Partial<Record<SupportedServicePlatform, PlatformServiceAdapter>>;
   receiptAdapters?: Record<string, PlatformServiceAdapter>;
+  packagedRuntime?: PackagedRuntimeMetadata;
+  postActivationVerifier?: PostActivationVerifier;
 }
+
+export interface ServiceActivationVerification {
+  context: Readonly<ServiceAdapterContext>;
+  receipt: Readonly<InstallReceipt>;
+  previousReceipt: Readonly<InstallReceipt> | null;
+  reconciled: boolean;
+  packagedRuntime?: Readonly<PackagedRuntimeMetadata>;
+}
+
+export type PostActivationVerifier = (verification: ServiceActivationVerification) => Promise<void>;
 
 export interface ReceiptArtifact {
   path: string;
@@ -123,4 +152,11 @@ export interface InstallReceipt {
   baseUrl: string;
   logDirectory: string;
   artifacts: ReceiptArtifact[];
+  updateProvider?: 'legacy-npm' | 'packaged-release';
+  packagedRuntime?: PackagedRuntimeMetadata;
+}
+
+export interface InstallReceiptFileSnapshot {
+  receipt: InstallReceipt;
+  contents: Buffer;
 }

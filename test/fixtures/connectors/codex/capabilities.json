@@ -1,0 +1,35 @@
+{
+  "fixtureVersion": 1,
+  "synthetic": true,
+  "observedCliVersion": "codex-cli 0.151.0",
+  "probes": {
+    "listJson": {
+      "arguments": ["mcp", "list", "--json"],
+      "supported": true
+    },
+    "getJson": {
+      "arguments": ["mcp", "get", "pimpampum", "--json"],
+      "supported": true
+    },
+    "addStdio": {
+      "arguments": [
+        "mcp",
+        "add",
+        "pimpampum",
+        "--",
+        "/Users/example/.local/share/pimpampum/bin/pimpampum-mcp"
+      ],
+      "supported": true
+    },
+    "remove": {
+      "arguments": ["mcp", "remove", "pimpampum"],
+      "supported": true
+    }
+  },
+  "scope": {
+    "kind": "global-user",
+    "explicitScopeFlag": false,
+    "addConfirmation": "Added global MCP server 'pimpampum'.",
+    "sharedSurfaces": ["cli", "desktop", "ide"]
+  }
+}

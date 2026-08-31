@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "pimpampum": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["pimpampum", "mcp"],
+      "env": {}
+    }
+  }
+}
