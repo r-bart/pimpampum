@@ -43,6 +43,8 @@ jobs:
           node-version: 24.19.0
           cache: npm
       - run: npm ci
+      - name: Validate Omarchy plugin, runtime pins and executable helpers
+        run: npm run validate:omarchy
       - name: Build reproducible private runtime
         run: >-
           node scripts/build-runtime-bundle.mjs

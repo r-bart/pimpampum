@@ -85,6 +85,17 @@ export interface PreparedRuntimeRemoval {
   rollback(): void;
 }
 
+export interface InstalledRuntimeInspection extends RuntimeInstallation {
+  targetId: RuntimeOwnedVersion['targetId'];
+  runtimeDirectory: string;
+}
+
+export interface RuntimeInstallationTransaction {
+  installation: RuntimeInstallation;
+  commit(): void;
+  rollback(): void;
+}
+
 function hash(content: Buffer | string): string {
   return createHash('sha256').update(content).digest('hex');
 }
@@ -583,7 +594,9 @@ function restoreJournalSnapshot(path: string, value: unknown): void {
   restore(path, value as FileSnapshot);
 }
 
-function recoverInterruptedActivation(input: InstallRuntimeInput): void {
+function recoverInterruptedActivation(
+  input: Pick<InstallRuntimeInput, 'homeDirectory' | 'dataDirectory' | 'platform' | 'architecture'>,
+): void {
   const path = journalPath(input.dataDirectory);
   const exists = pathEntryExists(path);
   const value = parseJson(path, 'Runtime activation journal');
@@ -797,6 +810,103 @@ export async function installRuntime(input: InstallRuntimeInput): Promise<Runtim
     rmSync(stagingRoot, { recursive: true, force: true });
     removeEmptyParents(dirname(stagingRoot), layout.runtimeDirectory);
   }
+}
+
+export function inspectInstalledRuntime(
+  input: Omit<PruneOwnedRuntimeInput, 'keepVersions'>,
+): InstalledRuntimeInspection | null {
+  recoverInterruptedRuntimeRemoval(input);
+  recoverInterruptedActivation(input);
+  const receipt = readReceipt(input);
+  if (receipt === null) return null;
+  verifyOwnedLaunchers(receipt);
+  const layout = resolveRuntimeLayout({
+    homeDirectory: input.homeDirectory,
+    platform: input.platform,
+    architecture: input.architecture,
+    version: receipt.currentVersion,
+  });
+  const owned = receipt.ownedVersions.find(
+    (candidate) =>
+      candidate.version === receipt.currentVersion && candidate.targetId === receipt.targetId,
+  );
+  if (owned?.directory !== layout.versionDirectory) {
+    fail('runtime receipt does not own its active version directory');
+  }
+  assertRegularDirectory(owned.directory, 'Active runtime directory');
+  for (const [path, label] of [
+    [receipt.nodePath, 'Active Node entrypoint'],
+    [receipt.cliPath, 'Active CLI entrypoint'],
+    [receipt.mcpPath, 'Active MCP entrypoint'],
+  ] as const) {
+    if (!pathEntryExists(path)) fail(`${label} is missing`);
+    const metadata = lstatSync(path);
+    if (metadata.isSymbolicLink() || !metadata.isFile()) fail(`${label} must be a regular file`);
+    if (label === 'Active Node entrypoint' && (metadata.mode & 0o111) === 0) {
+      fail('active Node entrypoint is not executable');
+    }
+  }
+  return {
+    activated: false,
+    version: receipt.currentVersion,
+    nodePath: receipt.nodePath,
+    cliPath: receipt.cliPath,
+    mcpLauncherPath: receipt.mcpLauncherPath,
+    previousVersion: receipt.currentVersion,
+    targetId: receipt.targetId,
+    runtimeDirectory: owned.directory,
+  };
+}
+
+export async function installRuntimeTransaction(
+  input: InstallRuntimeInput,
+): Promise<RuntimeInstallationTransaction> {
+  const manifest = parseRuntimeManifest(input.manifest, {
+    platform: input.platform,
+    architecture: input.architecture,
+    maximumUnpackedBytes: MAXIMUM_UNPACKED_BYTES,
+  });
+  const layout = resolveRuntimeLayout({
+    homeDirectory: input.homeDirectory,
+    platform: input.platform,
+    architecture: input.architecture,
+    version: manifest.pimpampumVersion,
+  });
+  recoverInterruptedRuntimeRemoval(input);
+  recoverInterruptedActivation(input);
+  const previousReceipt = readReceipt(input);
+  assertLauncherOwnership(layout, previousReceipt);
+  const previousControlLauncher = snapshot(layout.controlLauncherPath, 'Control launcher');
+  const previousMcpLauncher = snapshot(layout.mcpLauncherPath, 'MCP launcher');
+  const previousReceiptFile = snapshot(receiptPath(input.dataDirectory), 'Runtime receipt');
+  const candidateExisted = pathEntryExists(layout.versionDirectory);
+  const installation = await installRuntime(input);
+  let finished = false;
+  return {
+    installation,
+    commit() {
+      finished = true;
+    },
+    rollback() {
+      if (finished) return;
+      if (installation.activated) {
+        const current = readReceipt(input);
+        if (current === null || current.currentVersion !== installation.version) {
+          fail('runtime changed before activation rollback');
+        }
+        verifyOwnedLaunchers(current);
+        restore(layout.controlLauncherPath, previousControlLauncher);
+        restore(layout.mcpLauncherPath, previousMcpLauncher);
+        restore(receiptPath(input.dataDirectory), previousReceiptFile);
+        if (!candidateExisted && pathEntryExists(layout.versionDirectory)) {
+          assertRegularDirectory(layout.versionDirectory, 'Rolled back runtime directory');
+          rmSync(layout.versionDirectory, { recursive: true });
+          removeEmptyParents(dirname(layout.versionDirectory), layout.runtimeDirectory);
+        }
+      }
+      finished = true;
+    },
+  };
 }
 
 export function pruneOwnedRuntimeVersions(input: PruneOwnedRuntimeInput): string[] {

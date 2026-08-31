@@ -52,6 +52,8 @@ jobs:
           node-version: 24.19.0
           cache: npm
       - run: npm ci
+      - name: Validate Omarchy plugin, runtime pins and executable helpers
+        run: npm run validate:omarchy
       - name: Build and verify tagged runtime
         run: |
           version=${GITHUB_REF_NAME#v}
@@ -119,26 +121,6 @@ jobs:
             "$runtime/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
           /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
             platforms/macos/dist/PimpampumMenuBar.app
-      - name: Approve and exercise the exact signed artifact
-        env:
-          # The live smoke creates its data directory, daemon logs, and login-item
-          # acknowledgements under os.tmpdir(); pin it so a failure can be uploaded.
-          TMPDIR: ${{ runner.temp }}/macos-live
-        run: |
-          mkdir -p "$TMPDIR"
-          node scripts/check-macos-artifact.mjs \
-            platforms/macos/dist/PimpampumMenuBar.app \
-            --approve --require-signature
-          PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
-          npm run check:macos-evidence
-      - name: Upload live-smoke diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-live-smoke-diagnostics
-          path: ${{ runner.temp }}/macos-live
-          if-no-files-found: warn
-          retention-days: 7
       - name: Notarize and staple
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -153,6 +135,26 @@ jobs:
             platforms/macos/dist/PimpampumMenuBar.app \
             --require-signature --require-notarization
           scripts/check-macos-distribution.sh
+      - name: Approve and exercise the exact notarized artifact
+        env:
+          # The live smoke creates its data directory, daemon logs, and login-item
+          # acknowledgements under os.tmpdir(); pin it so a failure can be uploaded.
+          TMPDIR: ${{ runner.temp }}/macos-live
+        run: |
+          mkdir -p "$TMPDIR"
+          node scripts/check-macos-artifact.mjs \
+            platforms/macos/dist/PimpampumMenuBar.app \
+            --approve --require-signature --require-notarization
+          PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
+          npm run check:macos-evidence
+      - name: Upload live-smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-live-smoke-diagnostics
+          path: ${{ runner.temp }}/macos-live
+          if-no-files-found: warn
+          retention-days: 7
       - name: Build release assets
         env:
           PIMPAMPUM_RUNTIME_BUNDLES_ROOT: ${{ runner.temp }}/runtime-bundles

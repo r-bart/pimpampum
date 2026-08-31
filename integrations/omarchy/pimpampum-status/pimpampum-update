@@ -1,19 +1,6 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-operation=${1:-check}
-case "$operation" in
-  check) command_name=update:check ;;
-  install) command_name=update ;;
-  *) printf '%s\n' 'pimpampum-update: expected check or install' >&2; exit 64 ;;
-esac
-
-if [[ -n ${PIMPAMPUM_CLI:-} && ${PIMPAMPUM_CLI:0:1} == / && -x $PIMPAMPUM_CLI ]]; then
-  exec "$PIMPAMPUM_CLI" "$command_name"
-fi
-if [[ -x ${HOME}/.local/bin/pimpampum ]]; then
-  exec "${HOME}/.local/bin/pimpampum" "$command_name"
-fi
-cli=$(command -v pimpampum || true)
-[[ -n $cli && ${cli:0:1} == / && -x $cli ]] || { printf '%s\n' 'pimpampum-update: CLI unavailable' >&2; exit 127; }
-exec "$cli" "$command_name"
+case $0 in /*) route=${0%/*}/pimpampum-control-route ;; *) exit 69 ;; esac
+[ -x "$route" ] && [ ! -L "$route" ] || exit 69
+exec "$route" update "$@"

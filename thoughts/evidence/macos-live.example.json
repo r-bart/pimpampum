@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 3,
+  "status": "template-only-not-approved",
+  "testedAt": "REPLACE_WITH_LIVE_RUN_TIMESTAMP",
+  "durationMilliseconds": 0,
+  "platform": "macOS",
+  "architecture": "arm64",
+  "gitCommit": "REPLACE_WITH_40_CHARACTER_COMMIT",
+  "sourceInputSha256": "REPLACE_WITH_SOURCE_INPUT_SHA256",
+  "releaseSequence": ["sign-nested-runtime", "sign-outer-app", "notarize", "staple", "approve"],
+  "loginItem": "REPLACE_WITH_ENABLED_REQUIRES_APPROVAL_OR_DENIED",
+  "versions": {
+    "pimpampum": "REPLACE_WITH_VERSION",
+    "node": "REPLACE_WITH_EMBEDDED_NODE_VERSION",
+    "macOS": "REPLACE_WITH_MACOS_VERSION",
+    "codex": null,
+    "claudeCode": null
+  },
+  "artifactHashes": {
+    "artifactMetadataSha256": "REPLACE_WITH_SHA256",
+    "appBundleSha256": "REPLACE_WITH_SHA256",
+    "appBinarySha256": "REPLACE_WITH_SHA256",
+    "compactMarkSha256": "REPLACE_WITH_SHA256",
+    "runtimeManifestSha256": "REPLACE_WITH_SHA256",
+    "runtimeInventorySha256": "REPLACE_WITH_SHA256",
+    "runtimeSbomSha256": "REPLACE_WITH_SHA256",
+    "runtimeNodeSha256": "REPLACE_WITH_SHA256",
+    "runtimeAddonSha256": "REPLACE_WITH_SHA256"
+  },
+  "scenarios": {
+    "cleanNoNode": false,
+    "legacyNpmMigration": false,
+    "noAgent": false,
+    "oneAgent": false,
+    "twoAgents": false,
+    "partialFailure": false,
+    "conflictDecision": false,
+    "popoverRestartResume": false,
+    "packagedUpdate": false,
+    "disconnect": false,
+    "removal": false
+  },
+  "sessionRestart": {
+    "required": false,
+    "observedAfterNewSession": false,
+    "connectors": []
+  },
+  "checks": {},
+  "renderings": {},
+  "manualBoundaries": []
+}

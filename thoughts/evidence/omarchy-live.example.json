@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "status": "pending",
+  "explicitOptIn": false,
+  "commit": "",
+  "target": "linux-x64",
+  "runtimeVersion": "",
+  "runtimeManifestSha256": "",
+  "artifactSha256": "",
+  "startedAt": "",
+  "finishedAt": "",
+  "durationMs": 0,
+  "scenarios": [
+    {
+      "id": "bootstrap-no-node",
+      "passed": false,
+      "observed": "",
+      "startedAt": "",
+      "finishedAt": "",
+      "durationMs": 0
+    },
+    {
+      "id": "connect-codex",
+      "passed": false,
+      "observed": "",
+      "startedAt": "",
+      "finishedAt": "",
+      "durationMs": 0
+    },
+    {
+      "id": "connect-claude-code",
+      "passed": false,
+      "observed": "",
+      "startedAt": "",
+      "finishedAt": "",
+      "durationMs": 0
+    },
+    {
+      "id": "reject-wrong-architecture",
+      "passed": false,
+      "observed": "",
+      "startedAt": "",
+      "finishedAt": "",
+      "durationMs": 0
+    },
+    {
+      "id": "reject-wrong-hash",
+      "passed": false,
+      "observed": "",
+      "startedAt": "",
+      "finishedAt": "",
+      "durationMs": 0
+    },
+    {
+      "id": "reject-offline-download",
+      "passed": false,
+      "observed": "",
+      "startedAt": "",
+      "finishedAt": "",
+      "durationMs": 0
+    },
+    {
+      "id": "reject-interrupted-download",
+      "passed": false,
+      "observed": "",
+      "startedAt": "",
+      "finishedAt": "",
+      "durationMs": 0
+    },
+    {
+      "id": "quickshell-restart-preserves-daemon-and-connectors",
+      "passed": false,
+      "observed": "",
+      "startedAt": "",
+      "finishedAt": "",
+      "durationMs": 0
+    },
+    {
+      "id": "packaged-update-preserves-connectors",
+      "passed": false,
+      "observed": "",
+      "startedAt": "",
+      "finishedAt": "",
+      "durationMs": 0
+    },
+    {
+      "id": "receipt-owned-removal-preserves-data",
+      "passed": false,
+      "observed": "",
+      "startedAt": "",
+      "finishedAt": "",
+      "durationMs": 0
+    }
+  ],
+  "preservedData": {
+    "beforeSha256": "",
+    "afterSha256": "",
+    "unchanged": false
+  },
+  "cleanup": {
+    "completed": false
+  }
+}

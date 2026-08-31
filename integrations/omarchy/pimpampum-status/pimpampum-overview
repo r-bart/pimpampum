@@ -1,18 +1,6 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-if [[ -n ${PIMPAMPUM_CLI:-} && ${PIMPAMPUM_CLI:0:1} == / && -x $PIMPAMPUM_CLI ]]; then
-  exec "$PIMPAMPUM_CLI" overview
-fi
-
-if [[ -x ${HOME}/.local/bin/pimpampum ]]; then
-  exec "${HOME}/.local/bin/pimpampum" overview
-fi
-
-pimpampum_cli=$(command -v pimpampum || true)
-if [[ -z $pimpampum_cli || ${pimpampum_cli:0:1} != / || ! -x $pimpampum_cli ]]; then
-  printf '%s\n' 'pimpampum-overview: no absolute Pimpampum CLI executable was found' >&2
-  exit 127
-fi
-
-exec "$pimpampum_cli" overview
+case $0 in /*) route=${0%/*}/pimpampum-control-route ;; *) exit 69 ;; esac
+[ -x "$route" ] && [ ! -L "$route" ] || exit 69
+exec "$route" overview

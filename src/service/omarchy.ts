@@ -103,120 +103,6 @@ function backupNamePrefix(): string {
   return `.${OMARCHY_PLUGIN_ID}.bak.`;
 }
 
-function shellQuote(value: string, label: string): string {
-  if (value.includes('\0') || /[\r\n]/u.test(value)) {
-    throw new Error(`${label} must not contain null bytes or line breaks`);
-  }
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-function renderOverviewHelper(context: ServiceAdapterContext): string {
-  return `#!/bin/bash
-set -euo pipefail
-
-export PIMPAMPUM_DATA_DIR=${shellQuote(context.dataDirectory, 'Pimpampum data directory')}
-export PIMPAMPUM_HOST=${shellQuote(context.host, 'Pimpampum host')}
-export PIMPAMPUM_PORT=${shellQuote(String(context.port), 'Pimpampum port')}
-exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cliPath, 'Pimpampum CLI')} overview
-`;
-}
-
-function renderBackupHelper(context: ServiceAdapterContext): string {
-  return `#!/bin/bash
-set -euo pipefail
-
-case \${1:-} in
-  status|retry|disable)
-    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-backup: invalid arguments' >&2; exit 64; }
-    ;;
-  configure)
-    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-backup: configure requires one directory' >&2; exit 64; }
-    ;;
-  *)
-    printf '%s\\n' 'pimpampum-backup: expected status, configure, retry, or disable' >&2
-    exit 64
-    ;;
-esac
-
-export PIMPAMPUM_DATA_DIR=${shellQuote(context.dataDirectory, 'Pimpampum data directory')}
-export PIMPAMPUM_HOST=${shellQuote(context.host, 'Pimpampum host')}
-export PIMPAMPUM_PORT=${shellQuote(String(context.port), 'Pimpampum port')}
-exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cliPath, 'Pimpampum CLI')} backup "$@"
-`;
-}
-
-function renderSyncHelper(context: ServiceAdapterContext): string {
-  return `#!/bin/bash
-set -euo pipefail
-
-case \${1:-} in
-  status|now|pause|resume|conflicts|forget)
-    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-sync: invalid arguments' >&2; exit 64; }
-    ;;
-  configure)
-    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-sync: configure requires one directory' >&2; exit 64; }
-    ;;
-  *)
-    printf '%s\\n' 'pimpampum-sync: expected status, configure, now, pause, resume, conflicts, or forget' >&2
-    exit 64
-    ;;
-esac
-
-export PIMPAMPUM_DATA_DIR=${shellQuote(context.dataDirectory, 'Pimpampum data directory')}
-export PIMPAMPUM_HOST=${shellQuote(context.host, 'Pimpampum host')}
-export PIMPAMPUM_PORT=${shellQuote(String(context.port), 'Pimpampum port')}
-
-if [[ $1 == configure ]]; then
-  device_id=$(hostname | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-63)
-  [[ -n $device_id ]] || device_id=linux
-  exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cliPath, 'Pimpampum CLI')} sync configure "$2" --device "$device_id" --json
-fi
-
-exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cliPath, 'Pimpampum CLI')} sync "$1" --json
-`;
-}
-
-function renderUpdateHelper(context: ServiceAdapterContext): string {
-  return `#!/bin/bash
-set -euo pipefail
-
-case \${1:-} in
-  check) command_name=update:check ;;
-  install) command_name=update ;;
-  *) printf '%s\\n' 'pimpampum-update: expected check or install' >&2; exit 64 ;;
-esac
-
-export PIMPAMPUM_DATA_DIR=${shellQuote(context.dataDirectory, 'Pimpampum data directory')}
-exec ${shellQuote(context.nodePath, 'Node executable')} ${shellQuote(context.cliPath, 'Pimpampum CLI')} "$command_name"
-`;
-}
-
-function renderServiceHelper(): string {
-  return `#!/bin/bash
-set -euo pipefail
-
-case \${1:-} in
-  status)
-    [[ $# -eq 1 ]] || exit 64
-    ;;
-  start|stop|restart)
-    [[ $# -eq 1 ]] || exit 64
-    /usr/bin/systemctl --user "$1" pimpampum.service >/dev/null
-    ;;
-  *)
-    printf '%s\\n' 'pimpampum-service: expected status, start, stop, or restart' >&2
-    exit 64
-    ;;
-esac
-
-if /usr/bin/systemctl --user is-active --quiet pimpampum.service; then
-  printf '%s\\n' '{"running":true}'
-else
-  printf '%s\\n' '{"running":false}'
-fi
-`;
-}
-
 function walkPluginSource(sourceRoot: string, directory = sourceRoot): string[] {
   const paths: string[] = [];
   for (const name of readdirSync(directory).sort()) {
@@ -231,7 +117,22 @@ function walkPluginSource(sourceRoot: string, directory = sourceRoot): string[] 
   return paths;
 }
 
+function validateHelperContext(context: ServiceAdapterContext): void {
+  for (const [label, value] of [
+    ['Pimpampum data directory', context.dataDirectory],
+    ['Pimpampum host', context.host],
+    ['Pimpampum port', String(context.port)],
+    ['Node executable', context.nodePath],
+    ['Pimpampum CLI', context.cliPath],
+  ] as const) {
+    if (value.includes('\0') || /[\r\n]/u.test(value)) {
+      throw new Error(`${label} must not contain null bytes or line breaks`);
+    }
+  }
+}
+
 function pluginArtifacts(sourceRoot: string, context: ServiceAdapterContext): ServiceArtifact[] {
+  validateHelperContext(context);
   const target = pluginTarget(context);
   return walkPluginSource(sourceRoot).map((sourcePath) => {
     const child = relative(sourceRoot, sourcePath);
@@ -241,6 +142,7 @@ function pluginArtifacts(sourceRoot: string, context: ServiceAdapterContext): Se
       'pimpampum-backup',
       'pimpampum-bootstrap',
       'pimpampum-connections',
+      'pimpampum-control-route',
       'pimpampum-folder-picker',
       'pimpampum-overview',
       'pimpampum-plugin-lifecycle',
@@ -250,18 +152,9 @@ function pluginArtifacts(sourceRoot: string, context: ServiceAdapterContext): Se
     ].includes(child);
     return {
       path: join(target, child),
-      content:
-        child === 'pimpampum-overview'
-          ? renderOverviewHelper(context)
-          : child === 'pimpampum-backup'
-            ? renderBackupHelper(context)
-            : child === 'pimpampum-service'
-              ? renderServiceHelper()
-              : child === 'pimpampum-sync'
-                ? renderSyncHelper(context)
-                : child === 'pimpampum-update'
-                  ? renderUpdateHelper(context)
-                  : readFileSync(sourcePath),
+      // Keep the official Git checkout byte-stable. Machine-specific routing is selected at
+      // execution time only after pimpampum-control-route verifies the private runtime receipt.
+      content: readFileSync(sourcePath),
       mode: executable ? 0o755 : 0o644,
     };
   });
@@ -365,6 +258,7 @@ function validateOwnedDestination(context: ServiceAdapterContext): void {
 function validateRemovalTree(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): void {
   const target = pluginTarget(context);
   assertOwnedPluginDirectory(target, context);
+  const gitMetadataDirectory = join(target, '.git');
   const allowedFiles = new Set(
     artifacts
       .map((artifact) => normalize(artifact.path))
@@ -387,6 +281,10 @@ function validateRemovalTree(context: ServiceAdapterContext, artifacts: ServiceA
         throw new Error(`Refusing to remove an Omarchy plugin containing a symlink: ${child}`);
       }
       if (metadata.isDirectory()) {
+        // `omarchy plugin add` installs a real Git checkout. The official remove command owns
+        // deletion of its internal metadata together with that checkout; never traverse it or
+        // treat its implementation files as Pimpampum receipt artifacts.
+        if (child === gitMetadataDirectory) continue;
         if (!allowedDirectories.has(child)) {
           throw new Error(`Refusing to remove an unreceipted Omarchy plugin directory: ${child}`);
         }

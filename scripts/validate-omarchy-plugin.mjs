@@ -155,6 +155,7 @@ for (const expected of [
   'install.sh',
   'manifest.json',
   'pimpampum-backup',
+  'pimpampum-control-route',
   'pimpampum-overview',
   'pimpampum-service',
   'pimpampum-sync',
@@ -519,24 +520,38 @@ invariant(
 );
 
 const helper = read(join(pluginRoot, 'pimpampum-overview'));
-invariant(helper.includes('overview'), 'overview helper does not call the overview command');
+const controlRoute = read(join(pluginRoot, 'pimpampum-control-route'));
 invariant(
-  !/(?:health|install|uninstall|work:|project:|task:)/u.test(helper),
+  helper.includes('pimpampum-control-route') && controlRoute.includes('set -- overview'),
+  'overview helper does not call the bounded overview route',
+);
+invariant(
+  !/(?:health|uninstall|work:|project:|task:)/u.test(`${helper}\n${controlRoute}`),
   'overview helper is not read-only',
 );
-invariant(!/(?:bearer|token)/iu.test(helper), 'overview helper contains authentication material');
+invariant(
+  !/(?:bearer|token)/iu.test(`${helper}\n${controlRoute}`),
+  'overview helper contains authentication material',
+);
 
 const backupHelper = read(join(pluginRoot, 'pimpampum-backup'));
 for (const action of ['status', 'configure', 'retry', 'disable']) {
-  invariant(backupHelper.includes(action), `backup helper omits ${action}`);
+  invariant(controlRoute.includes(action), `backup helper omits ${action}`);
 }
 invariant(
-  backupHelper.includes('backup "$@"'),
+  backupHelper.includes('pimpampum-control-route') && controlRoute.includes('set -- backup "$@"'),
   'backup helper must preserve every caller argument boundary',
 );
 invariant(
-  !/(?:bearer|token|eval\b|\bsh\s+-c|\bbash\s+-c)/iu.test(backupHelper),
+  !/(?:bearer|token|eval\b|\bsh\s+-c|\bbash\s+-c)/iu.test(`${backupHelper}\n${controlRoute}`),
   'backup helper contains credentials or shell evaluation',
+);
+invariant(
+  controlRoute.includes('runtime-install-receipt.json') &&
+    controlRoute.includes('controlLauncherSha256') &&
+    controlRoute.includes('exec "$control_launcher" "$@"') &&
+    !/(?:command\s+-v|\/\.local\/bin\/pimpampum|\bnpm\b|\bnpx\b)/u.test(controlRoute),
+  'surface helpers must use only the receipt-owned hash-verified control launcher',
 );
 
 for (const scriptName of ['install.sh', 'uninstall.sh']) {

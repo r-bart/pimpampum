@@ -427,12 +427,12 @@ describe('concrete packaged staging rollback', () => {
       fetchImplementation,
     });
 
-    await expect(manager.update()).rejects.toThrow(/archive listing failed/iu);
+    await expect(manager.update()).rejects.toThrow(/invalid runtime archive/iu);
     const applications = join(homeDirectory, 'Applications');
     expect(
       readdirSync(applications).filter((name) => name.startsWith('.pimpampum-update-')),
     ).toEqual([]);
-    expect(runCommand).toHaveBeenCalledWith('/usr/bin/unzip', expect.any(Array));
+    expect(runCommand).not.toHaveBeenCalled();
   });
 });
 
