@@ -569,7 +569,9 @@ try {
   scenarios.conflictDecision = true;
   const sessionConnections = runCli('connections');
   const sessionRestart = {
-    required: replaced.nextAction === 'new-session' || oneAgent.result.nextAction === 'new-session',
+    required: [replaced, oneAgent.result].some((result) =>
+      result.connectors.some((connector) => connector.newSessionRequired),
+    ),
     observedAfterNewSession: sessionConnections.some(
       (connection) => connection.id === 'codex' && connection.available === true,
     ),
@@ -876,7 +878,9 @@ try {
     throw new Error(`macOS live setup missed required scenarios: ${missingScenarios.join(', ')}.`);
   }
   if (!sessionRestart.required || !sessionRestart.observedAfterNewSession) {
-    throw new Error('A new agent session was not both required and observed after connection.');
+    throw new Error(
+      `A new agent session was not both required and observed after connection: ${JSON.stringify(sessionRestart)}`,
+    );
   }
 
   const durationMilliseconds = Date.now() - liveStartedAt;
