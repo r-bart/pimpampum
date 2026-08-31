@@ -40,6 +40,7 @@ function arm64MachO(): Buffer {
 
 function addRuntimeFixture(app: string): void {
   const runtimeRoot = join(app, 'Contents/Resources/PimpampumRuntime');
+  rmSync(runtimeRoot, { recursive: true, force: true });
   const payload = join(runtimeRoot, 'payload');
   const files = [
     { path: 'bin/node', content: arm64MachO(), mode: 0o755 },

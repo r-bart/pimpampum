@@ -576,7 +576,7 @@ describe('launchctl adapter', () => {
     expect(runCommand.mock.calls.map(([, arguments_]) => arguments_)).toEqual([
       ['print', `gui/520/${LAUNCH_AGENT_LABEL}`],
       ['bootout', 'gui/520', artifact.path],
-      ['bootout', 'gui/520', artifact.path],
+      ['bootout', `gui/520/${LAUNCH_AGENT_LABEL}`],
       ...(restore ? [['bootstrap', 'gui/520', artifact.path], restore] : []),
     ]);
   });

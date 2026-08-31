@@ -184,6 +184,14 @@ function signatureDescription(path) {
   return `${result.stdout}${result.stderr}`;
 }
 
+function signatureEntitlements(path) {
+  const result = spawnSync('/usr/bin/codesign', ['-d', '--entitlements', ':-', path], {
+    encoding: 'utf8',
+  });
+  invariant(result.status === 0, `Unable to inspect code-signing entitlements for ${path}.`);
+  return `${result.stdout}${result.stderr}`;
+}
+
 function validateDistributionPolicy() {
   if (!requireSignature && !requireNotarization) return;
   invariant(process.platform === 'darwin', 'macOS signature verification requires macOS.');
@@ -198,6 +206,17 @@ function validateDistributionPolicy() {
       `Nested runtime code lacks a Developer ID Application signature: ${nestedCode}`,
     );
   }
+  const nodeEntitlements = signatureEntitlements(runtimeNode);
+  invariant(
+    /<key>com\.apple\.security\.cs\.allow-jit<\/key>\s*<true\/>/u.test(nodeEntitlements),
+    'The signed Node runtime is missing its hardened-runtime JIT entitlement.',
+  );
+  invariant(
+    !/com\.apple\.security\.cs\.(?:disable-library-validation|allow-unsigned-executable-memory)/u.test(
+      nodeEntitlements,
+    ),
+    'The signed Node runtime contains an unnecessarily broad code-signing entitlement.',
+  );
   execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', appRoot], {
     stdio: 'pipe',
   });

@@ -7,6 +7,6 @@ enum PimpampumBrand {
 
   static func versionText(bundle: Bundle = .main) -> String {
     let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-    return "Version \(version ?? "1.2.2")"
+    return "Version \(version ?? "1.2.3")"
   }
 }

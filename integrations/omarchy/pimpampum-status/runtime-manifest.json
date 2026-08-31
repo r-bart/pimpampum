@@ -1,14 +1,14 @@
 {
-  "version": "1.2.2",
+  "version": "1.2.3",
   "targets": {
     "linux-arm64": {
-      "url": "https://github.com/r-bart/pimpampum/releases/download/v1.2.2/pimpampum-runtime-1.2.2-linux-arm64.tar.gz",
-      "sha256": "0bf815830f4fede8de575bc96d76f3d74a5719aad1f52e03195b50d2554ce9e8",
+      "url": "https://github.com/r-bart/pimpampum/releases/download/v1.2.3/pimpampum-runtime-1.2.3-linux-arm64.tar.gz",
+      "sha256": "659b1b3d0af3c18bdedc62276882cbe2e6bfa5c9a187a41c6f58bb976be88737",
       "maximumBytes": 100663296
     },
     "linux-x64": {
-      "url": "https://github.com/r-bart/pimpampum/releases/download/v1.2.2/pimpampum-runtime-1.2.2-linux-x64.tar.gz",
-      "sha256": "24e24e596d4a581ea3ef79cc5d4eb08b6703fdd6459b0910272abac1216804fb",
+      "url": "https://github.com/r-bart/pimpampum/releases/download/v1.2.3/pimpampum-runtime-1.2.3-linux-x64.tar.gz",
+      "sha256": "b7fc323cf283bfea4eee6ee5781a898acc43c828a292ec64cb157a8da912e3d7",
       "maximumBytes": 100663296
     }
   }

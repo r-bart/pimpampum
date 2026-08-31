@@ -47,9 +47,12 @@ async function boundedResponseBytes(response: Response): Promise<Uint8Array> {
 }
 
 export async function verifyServiceHealth(input: VerifyServiceHealthInput): Promise<void> {
-  const attempts = input.attempts ?? 20;
-  const requestTimeoutMilliseconds = input.requestTimeoutMilliseconds ?? 250;
-  const retryIntervalMilliseconds = input.retryIntervalMilliseconds ?? 50;
+  // A cold, hardened Node runtime can take several seconds to initialize when launchd starts it
+  // for the first time. Keep each request tightly bounded while allowing the signed service a
+  // realistic ten-second readiness window.
+  const attempts = input.attempts ?? 100;
+  const requestTimeoutMilliseconds = input.requestTimeoutMilliseconds ?? 500;
+  const retryIntervalMilliseconds = input.retryIntervalMilliseconds ?? 100;
   if (!Number.isInteger(attempts) || attempts < 1 || attempts > 100) {
     throw new Error('Service health attempts must be between 1 and 100');
   }

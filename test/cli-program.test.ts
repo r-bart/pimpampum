@@ -273,6 +273,39 @@ describe('CLI program', () => {
     });
   });
 
+  it('reports every redacted setup aggregate member through the local boundary', async () => {
+    const state = fixture();
+    state.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+    state.runtime.setup = {
+      plan: vi.fn(async () => ({})),
+      apply: vi.fn(async () => {
+        throw new AggregateError(
+          [new Error('daemon failed: Bearer private-token'), new Error('rollback bootout failed')],
+          'Service installation and rollback failed',
+        );
+      }),
+      status: vi.fn(async () => null),
+      resume: vi.fn(async () => null),
+      retryConnector: vi.fn(async () => null),
+    };
+
+    await expect(
+      runCli(['setup', 'apply', 'operation-id', 'revision', '--yes'], state.runtime),
+    ).rejects.toThrow('exit:1');
+
+    expect(JSON.parse(state.errors[0] ?? '')).toMatchObject({
+      error: {
+        message: 'Service installation and rollback failed',
+        details: {
+          name: 'AggregateError',
+          causes: ['daemon failed: [credential redacted]', 'rollback bootout failed'],
+        },
+      },
+    });
+  });
+
   it('treats service-only as the ordinary service install when no platform UI manager exists', async () => {
     const state = fixture();
     delete state.runtime.serviceOnlyManager;

@@ -22,8 +22,10 @@ describe('runtime release integration', () => {
   });
 
   it('signs nested runtime code before the outer app and enforces distribution policy', () => {
+    const build = source('scripts/build-macos-app.sh');
     const workflow = source('.github/workflows/release.yml');
     const check = source('scripts/check-macos-artifact.mjs');
+    const nodeEntitlements = source('platforms/macos/Resources/Node.entitlements');
     const nodeSign = workflow.indexOf('$runtime/bin/node');
     const addonSign = workflow.indexOf('better-sqlite3/build/Release/better_sqlite3.node');
     const outerSign = workflow.indexOf('platforms/macos/dist/PimpampumMenuBar.app', addonSign);
@@ -34,7 +36,12 @@ describe('runtime release integration', () => {
     expect(check).toContain("['--verify', '--deep', '--strict'");
     expect(check).toContain("['stapler', 'validate'");
     expect(check).toContain('Developer ID Application');
+    expect(check).toContain('com\\.apple\\.security\\.cs\\.allow-jit');
     expect(workflow).toContain('--require-signature --require-notarization');
+    expect(build).toContain('Node.entitlements');
+    expect(nodeEntitlements).toContain('com.apple.security.cs.allow-jit');
+    expect(nodeEntitlements).not.toContain('disable-library-validation');
+    expect(nodeEntitlements).not.toContain('allow-unsigned-executable-memory');
   });
 
   it('builds and publishes the complete tagged target matrix', () => {
