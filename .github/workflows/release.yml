@@ -68,6 +68,7 @@ jobs:
         with:
           name: runtime-${{ matrix.target }}
           path: ${{ runner.temp }}/runtime/pimpampum-runtime-*-${{ matrix.target }}
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
 
@@ -89,6 +90,7 @@ jobs:
         with:
           pattern: runtime-*
           path: ${{ runner.temp }}/runtime-bundles
+          merge-multiple: true
       - run: npm run test:macos
       - name: Import Developer ID certificate
         env:
@@ -107,9 +109,11 @@ jobs:
           security list-keychains -d user -s "$keychain"
       - name: Build app and sign nested runtime first
         env:
-          PIMPAMPUM_RUNTIME_BUNDLE: ${{ runner.temp }}/runtime-bundles/runtime-darwin-arm64
           PIMPAMPUM_SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
-        run: npm run build:macos
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          PIMPAMPUM_RUNTIME_BUNDLE="$RUNNER_TEMP/runtime-bundles/pimpampum-runtime-$version-darwin-arm64" \
+            npm run build:macos
       - name: Verify nested runtime and sign final app
         env:
           SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}

@@ -251,4 +251,15 @@ describe('expanded macOS live release gates', () => {
     expect(source).toContain('durationMilliseconds >= 120_000');
     expect(source).toContain("environment.PATH = '/usr/bin:/bin:/usr/sbin:/sbin'");
   });
+
+  it('preserves complete runtime artifacts and addresses their versioned download layout', () => {
+    const quality = readFileSync(join(repositoryRoot, '.github/workflows/quality.yml'), 'utf8');
+    const release = readFileSync(join(repositoryRoot, '.github/workflows/release.yml'), 'utf8');
+
+    for (const workflow of [quality, release]) {
+      expect(workflow).toContain('include-hidden-files: true');
+      expect(workflow).toContain('pimpampum-runtime-$version-darwin-arm64');
+    }
+    expect(release).toContain('merge-multiple: true');
+  });
 });

@@ -75,6 +75,7 @@ jobs:
         with:
           name: runtime-${{ matrix.target }}
           path: ${{ runner.temp }}/runtime/pimpampum-runtime-*-${{ matrix.target }}
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
 
@@ -94,6 +95,7 @@ jobs:
           name: runtime-darwin-arm64
           path: ${{ runner.temp }}/runtime-darwin-arm64
       - name: Build app with the reviewed runtime
-        env:
-          PIMPAMPUM_RUNTIME_BUNDLE: ${{ runner.temp }}/runtime-darwin-arm64
-        run: npm run build:macos
+        run: |
+          version=$(node -p "require('./package.json').version")
+          PIMPAMPUM_RUNTIME_BUNDLE="$RUNNER_TEMP/runtime-darwin-arm64/pimpampum-runtime-$version-darwin-arm64" \
+            npm run build:macos
