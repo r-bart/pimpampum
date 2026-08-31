@@ -188,6 +188,7 @@ describe('macOS menu app service integration', () => {
       '/usr/bin/open',
       ['-W', '-n', installedApp, '--args', '--unregister-login-item'],
     ]);
+    expect(runCommand.mock.calls).toContainEqual(['/usr/bin/open', ['-n', installedApp]]);
   });
 
   it('migrates receipt-owned historical app bundle names to the stable technical path', async () => {

@@ -454,7 +454,10 @@ export function createMacOSDesktopAdapter(
       // file above records it, the menu app shows a notice with a retry, and the receipt carries
       // it as `loginItem: 'error'`. Aborting here would leave a working daemon uninstalled over a
       // Login Items policy the user can only fix from System Settings anyway.
-      const open = await context.runCommand(openPath, [installedApp]);
+      // The registration helper exits immediately. Force a fresh instance at the exact stable
+      // path so LaunchServices cannot reuse that terminating process or another bundle with the
+      // same identifier (for example the copy the user launched from Downloads).
+      const open = await context.runCommand(openPath, ['-n', installedApp]);
       if (open.exitCode !== 0)
         throw new Error(`Unable to open the macOS menu app (${open.exitCode})`);
       return { loginItem: accepted.status };
