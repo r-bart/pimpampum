@@ -101,7 +101,10 @@ function assertReleaseInputs(packagePath, lockfilePath) {
 
 function shouldSkipApplicationPath(relativePath) {
   const parts = relativePath.split('/');
-  if (parts.includes('.bin')) return true;
+  // npm pack removes dot-prefixed files from nested package contents. Excluding
+  // them here keeps the signed app, npm package, manifest, and private runtime
+  // byte-for-byte compatible across every supported delivery surface.
+  if (parts.some((part) => part.startsWith('.'))) return true;
   const betterRoot = 'node_modules/better-sqlite3/';
   if (!relativePath.startsWith(betterRoot)) return false;
   const betterRelative = relativePath.slice(betterRoot.length);
