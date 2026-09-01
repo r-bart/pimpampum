@@ -49,6 +49,17 @@ enum SetupComponentState: String, Codable, Equatable, Sendable {
   }
 
   var accessibilityLabel: String { label }
+
+  /// Whether this state needs the user's attention. The background service is machinery: the setup
+  /// screen lists the agents the user chose and only surfaces the service when it went wrong.
+  var needsAttention: Bool {
+    switch self {
+    case .connected, .connecting, .newSessionRequired: false
+    case .notInstalled, .notConnected, .needsRepair, .configurationConflict, .unsupportedVersion,
+      .unavailable:
+      true
+    }
+  }
 }
 
 struct SetupServicePresentation: Equatable, Sendable {

@@ -37,13 +37,14 @@ struct LocalSetupAgentDetector: SetupAgentDetecting {
 
   private static func containsRegularItem(_ urls: [URL]) -> Bool {
     urls.contains { url in
+      // Agent CLIs install themselves as symlinks into ~/.local/bin, so refusing links made Codex
+      // undetectable on a standard installation. Detection only reads presence: nothing is executed
+      // or written through this path, so the link is resolved and its target inspected instead.
+      let resolved = url.resolvingSymlinksInPath()
       guard
-        let values = try? url.resourceValues(forKeys: [
-          .isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey,
-        ])
+        let values = try? resolved.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
       else { return false }
-      return values.isSymbolicLink != true
-        && (values.isRegularFile == true || values.isDirectory == true)
+      return values.isRegularFile == true || values.isDirectory == true
     }
   }
 }
@@ -64,10 +65,14 @@ final class SetupStore: ObservableObject {
   @Published private(set) var completion: SetupResult?
   @Published private(set) var errorMessage: String?
   @Published private(set) var unresolvedConflicts: [SetupConflict] = []
+  @Published private(set) var pendingApplicationRelaunch = false
 
   var busy: Bool { activity.isBusy }
   var selectedAgents: [SetupAgentID] { agents.filter(\.selected).map(\.id) }
-  var canReview: Bool { !selectedAgents.isEmpty && !busy }
+  /// Connecting an agent is optional. The spec's success metrics require setup with no supported
+  /// agents to complete, and the coordinator already handles an empty selection. Demanding one
+  /// here left the service uninstallable on any Mac where nothing was detected.
+  var canReview: Bool { !busy }
   var canCancel: Bool { activity.isBusy && !activity.hasBegunMutation }
   var needsLoginItemApproval: Bool { completion?.nextAction == .recoverLoginItem }
 
@@ -193,12 +198,21 @@ final class SetupStore: ObservableObject {
         await self?.receive(event)
       }
       receive(result)
-      try await relaunchStableApplication(for: result)
+      pendingApplicationRelaunch = result.service.installed
     } catch let error as SetupClientError {
       errorMessage = Self.sanitize(error.message)
     } catch {
       errorMessage = Self.sanitize(error.localizedDescription)
     }
+  }
+
+  /// Relaunching terminates this process. Doing it inside `apply` meant the view never reached
+  /// `onFinished`, so the popover kept showing a half-finished setup until it was reopened. The
+  /// caller runs this once the outcome is on screen and the popover has moved on.
+  func relaunchInstalledApplicationIfNeeded() async {
+    guard pendingApplicationRelaunch else { return }
+    pendingApplicationRelaunch = false
+    _ = try? await runner.relaunchInstalledApplicationIfNeeded()
   }
 
   func resolveConflict(_ id: SetupAgentID, decision: SetupConflictDecision) async {
@@ -242,7 +256,7 @@ final class SetupStore: ObservableObject {
         await self?.receive(event)
       }
       receive(result)
-      try await relaunchStableApplication(for: result)
+      pendingApplicationRelaunch = result.service.installed
     } catch let error as SetupClientError {
       errorMessage = Self.sanitize(error.message)
     } catch {
@@ -252,18 +266,22 @@ final class SetupStore: ObservableObject {
 
   func resume() async {
     guard activity == .idle else { return }
-    activity = .resuming
+    // Reading the durable journal is not a mutation. Announcing `.resuming` before one is known to
+    // be running sends the onboarding to its final step, which it never leaves, so a clean machine
+    // shows "Setting up your private service" over a service nothing has begun to install.
+    activity = .detecting
     errorMessage = nil
     defer { activity = .idle }
     do {
       guard let journal = try await runner.status() else { return }
       receive(journal)
       guard journal.status == .running else { return }
+      activity = .resuming
       let result = try await runner.resume { [weak self] event in
         await self?.receive(event)
       }
       receive(result)
-      try await relaunchStableApplication(for: result)
+      pendingApplicationRelaunch = result.service.installed
     } catch let error as SetupClientError {
       errorMessage = Self.sanitize(error.message)
     } catch {
@@ -380,11 +398,6 @@ final class SetupStore: ObservableObject {
       connectors: journal.connectors,
       nextAction: nextAction
     )
-  }
-
-  private func relaunchStableApplication(for result: SetupResult) async throws {
-    guard result.service.installed else { return }
-    _ = try await runner.relaunchInstalledApplicationIfNeeded()
   }
 
   private static func servicePresentation(_ result: SetupServiceResult)
