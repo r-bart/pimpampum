@@ -201,6 +201,14 @@ enum SetupNDJSONDecoder {
 
   static func decode(_ data: Data) throws -> [SetupWireEvent] {
     guard !data.isEmpty else { throw SetupClientError.invalidResponse }
+    // `setup plan` and `setup status` have no `--events` mode, so they always leave the CLI as one
+    // indented `{ "data": ... }` envelope spanning several lines. Only `apply`, `resume`, and
+    // `retry` emit one event per line. Try the whole buffer as a single object before splitting,
+    // because a line of an indented object is never valid JSON on its own.
+    if (try? JSONSerialization.jsonObject(with: data)) != nil {
+      guard data.count <= maximumEventBytes else { throw SetupClientError.responseTooLarge }
+      return [try decodeLine(data)]
+    }
     let lines = data.split(separator: 0x0A, omittingEmptySubsequences: true)
     guard !lines.isEmpty, lines.count <= maximumEvents else {
       throw SetupClientError.responseTooLarge

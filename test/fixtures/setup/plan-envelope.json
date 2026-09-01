@@ -1,0 +1,23 @@
+{
+  "data": {
+    "operationId": "6c5bd965-8f55-455f-84f8-64aa3eb5693c",
+    "selectedConnectors": [],
+    "changes": [
+      {
+        "kind": "runtime",
+        "summary": "Install the private Pimpampum runtime."
+      },
+      {
+        "kind": "service",
+        "summary": "Install and verify the local Pimpampum service."
+      },
+      {
+        "kind": "login-item",
+        "summary": "Register supported background startup."
+      }
+    ],
+    "conflicts": [],
+    "requiresConfirmation": true,
+    "revision": "8e429eff9d0fd336f3fcf7bef4d489dbef173be2f3e21921817602348bcdf861"
+  }
+}
