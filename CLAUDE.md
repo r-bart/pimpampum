@@ -93,6 +93,7 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER give CLI failures distinct exit codes; the Omarchy helpers `exec` the CLI and already reserve 64 and 127, and every consumer branches on non-zero then parses the envelope.
 - ALWAYS sweep `scripts/` as well as `integrations/` and `platforms/` when changing CLI output; the live runners and the evidence validator parse it too.
 - ALWAYS sweep `scripts/test-macos-live.mjs` when changing the guided setup's first screen or its accessibility labels; the live smoke asserts one exact label and only the release job runs it, so a green local suite still fails the tag.
+- ALWAYS re-read `scripts/test-macos-live.mjs` when changing how `OverviewStore` reports a state; each snapshot launches a fresh app, so anything that delays a state — like the cold-start grace before reporting offline — must be waited for instead of read from the first frame.
 - NEVER pick a desktop asset or color from `bar.background`; on a transparent bar Omarchy resolves it to the foreground via `omarchy-bar-text-color`, so paint from `bar.barForeground`.
 - NEVER paint popout content from `bar.barForeground`; the popout draws on Omarchy's popup card, so read `Color.popups.text` and `Color.popups.background` or the labels vanish into the card on a light wallpaper.
 - NEVER tint a bar icon through a `MultiEffect` over a `layer.enabled` source; the cached texture keeps its first color and survives a wallpaper change. Draw it with `Shape`/`ShapePath` and `fillColor`.
