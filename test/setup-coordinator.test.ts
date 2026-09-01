@@ -40,6 +40,12 @@ function setupDependencies(root: string): SetupCoordinatorDependencies {
   });
   return {
     lifecycleLock: { run: async <T>(operation: () => Promise<T>) => operation() },
+    changeTargets: {
+      runtimeDirectory: '/runtime',
+      servicePath: '/service.plist',
+      dataDirectory: '/data',
+      connectorConfigPaths: { codex: '/codex.toml', 'claude-code': '/claude.json' },
+    },
     runtime: {
       install: vi.fn(async () => ({ version: '2.0.0' })),
       rollback: vi.fn(async () => undefined),

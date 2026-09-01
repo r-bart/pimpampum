@@ -1150,6 +1150,18 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
     };
     const setupCoordinator = createSetupCoordinator({
       lifecycleLock: createSetupLifecycleLock(config.dataDirectory),
+      changeTargets: {
+        runtimeDirectory: layout.runtimeDirectory,
+        servicePath:
+          hostPlatform === 'darwin'
+            ? join(homeDirectory, 'Library', 'LaunchAgents', 'dev.pimpampum.daemon.plist')
+            : join(homeDirectory, '.config', 'systemd', 'user', 'pimpampum.service'),
+        dataDirectory: config.dataDirectory,
+        connectorConfigPaths: {
+          codex: join(homeDirectory, '.codex', 'config.toml'),
+          'claude-code': join(homeDirectory, '.claude.json'),
+        },
+      },
       runtime: {
         install: async () => {
           if (packagedRuntimeBootstrap === null) return { version: PIMPAMPUM_VERSION };
