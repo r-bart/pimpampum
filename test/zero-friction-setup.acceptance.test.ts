@@ -38,6 +38,12 @@ type SetupResult = {
 
 type SetupDependencies = {
   lifecycleLock: { run<T>(operation: () => Promise<T>): Promise<T> };
+  changeTargets: {
+    runtimeDirectory: string;
+    servicePath: string;
+    dataDirectory: string;
+    connectorConfigPaths: Partial<Record<'codex' | 'claude-code', string>>;
+  };
   runtime: {
     install(): Promise<{ version: string }>;
     rollback(): Promise<void>;
@@ -78,6 +84,12 @@ function dependencies(root: string, overrides: Partial<SetupDependencies> = {}):
   });
   return {
     lifecycleLock: { run: async <T>(operation: () => Promise<T>) => operation() },
+    changeTargets: {
+      runtimeDirectory: '/home/runtime',
+      servicePath: '/home/service.plist',
+      dataDirectory: '/home/data',
+      connectorConfigPaths: { codex: '/home/codex.toml', 'claude-code': '/home/claude.json' },
+    },
     runtime: {
       install: vi.fn(async () => ({ version: '2.0.0' })),
       rollback: vi.fn(async () => undefined),
@@ -148,10 +160,29 @@ describe('Durable one-confirmation setup coordinator', () => {
     expect(plan.changes.map((change) => change.kind)).toEqual([
       'runtime',
       'service',
+      'data',
       'login-item',
       'connector:codex',
       'connector:claude-code',
     ]);
+    // "Advanced users can inspect the planned paths and operations before confirmation" is only
+    // true if the plan names them. Login item registration is the one change with no path.
+    expect(
+      plan.changes
+        .filter((change) => change.kind !== 'login-item')
+        .every((change) => typeof change.path === 'string' && change.path.length > 0),
+    ).toBe(true);
+    expect(plan.changes.find((change) => change.kind === 'connector:claude-code')?.path).toBe(
+      '/home/claude.json',
+    );
+
+    // A connector with no recorded configuration path still plans, just without a location.
+    const withoutPaths = createSetupCoordinator({
+      ...deps,
+      changeTargets: { ...deps.changeTargets, connectorConfigPaths: {} },
+    } as unknown as Parameters<typeof createSetupCoordinator>[0]);
+    const bare = await withoutPaths.plan({ selectedConnectors: ['codex'] });
+    expect(bare.changes.find((change) => change.kind === 'connector:codex')?.path).toBeUndefined();
     expect(deps.runtime.install).not.toHaveBeenCalled();
     expect(deps.service.install).not.toHaveBeenCalled();
     expect(deps.connectors.codex.connect).not.toHaveBeenCalled();

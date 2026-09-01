@@ -11,7 +11,7 @@ import {
   rmdirSync,
   rmSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { acceptLoginAcknowledgement } from './loginHandshake.js';
 import { assertNoSymlinkTraversal, writePrivateFileAtomic } from './receipt.js';
 import type {
@@ -26,6 +26,7 @@ import type {
   ServiceIntegrationStatus,
 } from './types.js';
 
+const SYSTEM_APPLICATIONS = '/Applications';
 const APP_NAME = 'Pimpampum.app';
 const LEGACY_APP_NAMES = ['pim • pam • pum.app', 'PimpampumMenuBar.app'] as const;
 const APP_EXECUTABLE = 'Contents/MacOS/PimpampumMenuBar';
@@ -35,6 +36,7 @@ const REQUEST_FILE = 'login-registration-request.json';
 const ACKNOWLEDGEMENT_FILE = 'login-registration-acknowledgement.json';
 const STATUS_FILE = 'login-item-status.json';
 const UNREGISTRATION_ACKNOWLEDGEMENT_FILE = 'login-unregistration-acknowledgement.json';
+const APPLICATION_PATH_FILE = 'application-path.json';
 
 interface FileSnapshot {
   path: string;
@@ -57,10 +59,18 @@ export interface MacOSDesktopAdapterOptions {
   acknowledgementPollIntervalMs?: number;
 }
 
-function ensureAbsoluteDirectory(path: string): void {
+/**
+ * Path shape is always wrong when it is wrong, so it is checked on every operation. Presence is
+ * checked separately: an installed CLI legitimately has no build tree, and only install needs one.
+ */
+function ensureBundlePathShape(path: string): void {
   if (!isAbsolute(path) || path.includes('\0')) {
     throw new Error('macOS app bundle path must be absolute');
   }
+}
+
+function ensureAbsoluteDirectory(path: string): void {
+  ensureBundlePathShape(path);
   assertNoSymlinkTraversal(path, 'macOS app bundle', path);
   if (!existsSync(path) || !lstatSync(path).isDirectory()) {
     throw new Error('Build the macOS app before installing Pimpampum');
@@ -154,6 +164,9 @@ function installEmbeddedRuntimeSource(
     renameSync(staging, destination);
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });
+    /* v8 ignore next -- restoring the previous runtime needs `renameSync` to fail mid-transaction,
+       which only a mocked filesystem can force; test/service-macos-runtime-rollback.test.ts proves
+       the behaviour. */
     if (backedUp && !existsSync(destination)) renameSync(backup, destination);
     throw error;
   }
@@ -182,8 +195,61 @@ function removeEmbeddedRuntimeSource(installedApp: string): void {
   rmSync(runtime, { recursive: true });
 }
 
-function appRoot(context: ServiceAdapterContext): string {
-  return join(context.homeDirectory, 'Applications', APP_NAME);
+/**
+ * Where the app lives once setup finishes, and whether Pimpampum put it there.
+ *
+ * A bundle the user already placed in an Applications folder is the app. Copying it into a second
+ * managed location leaves two menu-bar icons — the user's copy and the one macOS starts when the
+ * login item is registered — and hides the real app from the user. In that case setup registers the
+ * copy that is already there and owns no application files at all, so uninstalling leaves the app
+ * for the user to drag to the Trash, exactly like any other macOS app.
+ *
+ * A bundle running from Downloads or a mounted image can vanish, so that one is still copied into
+ * the managed location under the home directory.
+ */
+function applicationLocation(
+  context: ServiceAdapterContext,
+  sourceBundlePath: string,
+): { path: string; managed: boolean } {
+  const managedPath = join(context.homeDirectory, 'Applications', APP_NAME);
+  const parents = [SYSTEM_APPLICATIONS, join(context.homeDirectory, 'Applications')];
+  if (parents.includes(dirname(normalize(sourceBundlePath)))) {
+    return { path: normalize(sourceBundlePath), managed: false };
+  }
+  // An installed CLI runs from the packaged runtime and has no bundle to look at, so uninstall
+  // would otherwise assume the managed path and fail to launch a helper that is not there. The
+  // install recorded where the app actually is.
+  const recorded = recordedApplicationPath(context);
+  if (recorded !== null && recorded !== managedPath) return { path: recorded, managed: false };
+  return { path: managedPath, managed: true };
+}
+
+function recordApplicationPath(context: ServiceAdapterContext, path: string): void {
+  writePrivateFileAtomic(
+    controlPath(context, APPLICATION_PATH_FILE),
+    `${JSON.stringify({ schemaVersion: 1, path }, null, 2)}\n`,
+    0o600,
+    context.dataDirectory,
+  );
+}
+
+function recordedApplicationPath(context: ServiceAdapterContext): string | null {
+  const file = controlPath(context, APPLICATION_PATH_FILE);
+  if (!existsSync(file)) return null;
+  try {
+    const value = readJsonObject(file, context.dataDirectory);
+    if (
+      value.schemaVersion !== 1 ||
+      typeof value.path !== 'string' ||
+      !isAbsolute(value.path) ||
+      value.path.includes('\0')
+    ) {
+      return null;
+    }
+    return normalize(value.path);
+  } catch {
+    return null;
+  }
 }
 
 function legacyAppRoots(context: ServiceAdapterContext): string[] {
@@ -294,6 +360,9 @@ async function unregisterLoginItem(
   openPath: string,
   installedApp: string,
   now: () => Date,
+  acknowledgementPolls: number,
+  sleep: (milliseconds: number) => Promise<void>,
+  acknowledgementPollIntervalMs: number,
 ): Promise<LoginAcknowledgementStatus> {
   const acknowledgementPath = controlPath(context, UNREGISTRATION_ACKNOWLEDGEMENT_FILE);
   if (existsSync(acknowledgementPath)) {
@@ -305,7 +374,6 @@ async function unregisterLoginItem(
   }
   const startedAt = Math.floor(now().getTime() / 1000) * 1000;
   const unregister = await context.runCommand(openPath, [
-    '-W',
     '-n',
     installedApp,
     '--args',
@@ -313,6 +381,14 @@ async function unregisterLoginItem(
   ]);
   if (unregister.exitCode !== 0) {
     throw new Error(`Unable to unregister the macOS login item (${unregister.exitCode})`);
+  }
+  // Wait for the helper's acknowledgement file rather than for the process, the way registration
+  // already does. `open -W` waits on the bundle, and when setup adopted an app the user had already
+  // placed in an Applications folder that bundle is also the running menu-bar app, so `-W` blocks
+  // on the wrong instance and reports a failure for work that succeeded.
+  for (let attempt = 0; attempt < acknowledgementPolls; attempt += 1) {
+    if (existsSync(acknowledgementPath)) break;
+    await sleep(acknowledgementPollIntervalMs);
   }
   return assertSuccessfulUnregistration(
     acknowledgementPath,
@@ -376,9 +452,22 @@ export function createMacOSDesktopAdapter(
     throw new Error('Acknowledgement poll interval must be positive');
   }
 
+  const bundleIsPresent = (): boolean => {
+    ensureBundlePathShape(options.appBundlePath);
+    return existsSync(options.appBundlePath) && lstatSync(options.appBundlePath).isDirectory();
+  };
+
   const appArtifacts = (context: ServiceAdapterContext): ServiceArtifact[] => {
+    // Status and uninstall run from the installed runtime, which carries no build tree. The bundle
+    // is already covered by `ownedArtifactRoots`, so an empty source plan still removes every file.
+    // Install is the one operation that genuinely needs the source, and `preflight` rejects it.
+    if (!bundleIsPresent()) return [];
+    const location = applicationLocation(context, options.appBundlePath);
+    // The app is already where it belongs: setup owns no file inside it, not even the installation
+    // marker, which would land outside the home directory. The app falls back to `~/.pimpampum`.
+    if (!location.managed) return [];
     ensureAbsoluteDirectory(options.appBundlePath);
-    const destination = appRoot(context);
+    const destination = location.path;
     const files: ServiceArtifact[] = sourceFiles(options.appBundlePath).map((file) => ({
       path: join(destination, file.relativePath),
       content: file.content,
@@ -416,7 +505,7 @@ export function createMacOSDesktopAdapter(
         0o600,
         context.dataDirectory,
       );
-      const installedApp = appRoot(context);
+      const installedApp = applicationLocation(context, options.appBundlePath).path;
       const launch = await context.runCommand(openPath, [
         '-n',
         installedApp,
@@ -465,7 +554,15 @@ export function createMacOSDesktopAdapter(
       const rollbackErrors: unknown[] = [error];
       if (registrationChanged) {
         try {
-          await unregisterLoginItem(context, openPath, appRoot(context), now);
+          await unregisterLoginItem(
+            context,
+            openPath,
+            applicationLocation(context, options.appBundlePath).path,
+            now,
+            acknowledgementPolls,
+            sleep,
+            acknowledgementPollIntervalMs,
+          );
         } catch (unregisterError) {
           rollbackErrors.push(unregisterError);
         }
@@ -490,14 +587,35 @@ export function createMacOSDesktopAdapter(
     artifacts(context) {
       return [...options.daemonAdapter.artifacts(context), ...appArtifacts(context)];
     },
+    canPlanArtifacts() {
+      // The app bundle ships in the build tree. Once installed, the CLI runs from the packaged
+      // runtime, where that path does not exist and the plan omits every app file.
+      return bundleIsPresent();
+    },
+    async preflight(_context, _artifacts, operation) {
+      if (operation === 'install') ensureAbsoluteDirectory(options.appBundlePath);
+    },
     ownedArtifactRoots(context) {
-      return [appRoot(context), ...legacyAppRoots(context)];
+      // Only claim the app directory when setup put it there. A copy the user placed in an
+      // Applications folder is theirs, and uninstalling must not delete it — nor could it, since
+      // owned roots must stay inside the home directory.
+      const location = applicationLocation(context, options.appBundlePath);
+      return location.managed
+        ? [location.path, ...legacyAppRoots(context)]
+        : legacyAppRoots(context);
     },
     async activate(context, artifacts) {
       await options.daemonAdapter.activate(context, artifacts);
     },
     async afterInstall(context) {
-      const runtime = installEmbeddedRuntimeSource(options.appBundlePath, appRoot(context));
+      // Nothing to copy when the app is already in place: its embedded runtime is the source.
+      const location = applicationLocation(context, options.appBundlePath);
+      // Record it before registering, so a later uninstall run from the installed CLI knows which
+      // bundle to ask, instead of guessing the managed path.
+      recordApplicationPath(context, location.path);
+      const runtime = location.managed
+        ? installEmbeddedRuntimeSource(options.appBundlePath, location.path)
+        : null;
       let registered = false;
       try {
         const integration = await registerLoginItem(context);
@@ -510,7 +628,15 @@ export function createMacOSDesktopAdapter(
         const errors: unknown[] = [error];
         if (registered) {
           try {
-            await unregisterLoginItem(context, openPath, appRoot(context), now);
+            await unregisterLoginItem(
+              context,
+              openPath,
+              applicationLocation(context, options.appBundlePath).path,
+              now,
+              acknowledgementPolls,
+              sleep,
+              acknowledgementPollIntervalMs,
+            );
           } catch (unregisterError) {
             errors.push(unregisterError);
           }
@@ -527,8 +653,16 @@ export function createMacOSDesktopAdapter(
       }
     },
     async deactivate(context, artifacts) {
-      const installedApp = appRoot(context);
-      const previousStatus = await unregisterLoginItem(context, openPath, installedApp, now);
+      const installedApp = applicationLocation(context, options.appBundlePath).path;
+      const previousStatus = await unregisterLoginItem(
+        context,
+        openPath,
+        installedApp,
+        now,
+        acknowledgementPolls,
+        sleep,
+        acknowledgementPollIntervalMs,
+      );
       if (pendingLoginRollbackState) pendingLoginRollbackState.previousStatus = previousStatus;
       await options.daemonAdapter.deactivate(context, artifacts);
       // Quit the menu app this installation launched. The Swift side only terminates running
@@ -591,7 +725,10 @@ export function createMacOSDesktopAdapter(
     },
     async afterRollback(context, artifacts) {
       await options.daemonAdapter.afterRollback?.(context, artifacts);
-      removeEmptyAppDirectories(appRoot(context), artifacts);
+      removeEmptyAppDirectories(
+        applicationLocation(context, options.appBundlePath).path,
+        artifacts,
+      );
     },
     async rollbackActivation(context, artifacts) {
       await options.daemonAdapter.deactivate(context, artifacts);
@@ -602,6 +739,7 @@ export function createMacOSDesktopAdapter(
         ACKNOWLEDGEMENT_FILE,
         STATUS_FILE,
         UNREGISTRATION_ACKNOWLEDGEMENT_FILE,
+        APPLICATION_PATH_FILE,
       ]) {
         const path = controlPath(context, name);
         if (existsSync(path)) {
@@ -610,8 +748,11 @@ export function createMacOSDesktopAdapter(
           rmSync(path);
         }
       }
-      removeEmbeddedRuntimeSource(appRoot(context));
-      removeEmptyAppDirectories(appRoot(context), artifacts);
+      removeEmbeddedRuntimeSource(applicationLocation(context, options.appBundlePath).path);
+      removeEmptyAppDirectories(
+        applicationLocation(context, options.appBundlePath).path,
+        artifacts,
+      );
     },
     async integrationStatus(context) {
       return integrationStatus(controlPath(context, STATUS_FILE), context.dataDirectory);

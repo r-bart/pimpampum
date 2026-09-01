@@ -28,6 +28,16 @@ struct HelpDialogTests {
 
   @Test
   func composesTheNativeDialog() {
-    _ = HelpDialog().body
+    _ = HelpDialog(onDone: {}).body
+  }
+
+  @Test
+  func doneClosesOnlyTheDialog() {
+    // The dialog used `@Environment(\.dismiss)`, which inside a menu-bar popover closed the whole
+    // popover. Dismissal is now a callback the presenting view owns.
+    var closed = 0
+    let dialog = HelpDialog(onDone: { closed += 1 })
+    dialog.onDone()
+    #expect(closed == 1)
   }
 }

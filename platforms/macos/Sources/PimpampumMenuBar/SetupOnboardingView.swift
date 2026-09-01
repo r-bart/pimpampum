@@ -2,25 +2,68 @@ import AppKit
 import SwiftUI
 
 enum SetupOnboardingStep: Int, CaseIterable, Sendable {
-  case explain = 1
-  case agents = 2
-  case progress = 3
+  case welcome = 1
+  case explain = 2
+  case agents = 3
+  case progress = 4
+
+  /// The step a fresh onboarding opens on. Naming it keeps the view's initial state from drifting
+  /// away from the first case whenever a step is added ahead of the others.
+  static let first = SetupOnboardingStep.welcome
 
   var marker: String {
     switch self {
-    case .explain: "1 OF 3"
-    case .agents: "2 OF 3"
-    case .progress: "3 OF 3"
+    case .welcome: "1 OF 4"
+    case .explain: "2 OF 4"
+    case .agents: "3 OF 4"
+    case .progress: "4 OF 4"
     }
   }
 }
 
+struct SetupTrustPoint: Identifiable, Equatable {
+  let id: String
+  let systemImage: String
+  let text: String
+}
+
 enum SetupOnboardingCopy {
-  static let title = "One private home for agent context"
+  static let welcomeName = PimpampumBrand.displayName
+  static let welcomeTagline = "Project memory your agents can share."
+  static let getStartedButton = "Get started"
+  static let title = "Your agents share one project memory"
   static let detail =
-    "Pimpampum keeps shared project memory on this Mac, starts at sign-in, and stays available when this menu closes. You can remove it later."
-  static let changeSummary =
-    "Install and verify the private service, enable start at sign-in, and connect only the agents selected below."
+    "Pimpampum keeps running in the background on this Mac. Your agents read and write the same projects, specs, and tasks instead of starting from scratch."
+  static let changesTitle = "See exact changes"
+  static let changesPending = "Working out the exact list…"
+  static let agentsTitle = "Choose the agents you work in"
+  static let agentsDetail =
+    "You create and track work from your agents, not here. This menu shows the state they share."
+  static let agentsListTitle = "Supported agents"
+  static let progressReassurance =
+    "You can close this menu. Setup continues and resumes here when you reopen it."
+  static let progressTitle = "Setting up Pimpampum"
+  static let serviceRowTitle = "Background service"
+  static let continueButton = "Continue"
+  static let finishButton = "Done"
+
+  static let trustPoints = [
+    SetupTrustPoint(
+      id: "private",
+      systemImage: "lock.shield",
+      text: "Private to your macOS account"
+    ),
+    SetupTrustPoint(
+      id: "availability",
+      systemImage: "circle.dotted.circle",
+      text: "Starts at sign-in and keeps running"
+    ),
+    SetupTrustPoint(
+      id: "reversible",
+      systemImage: "arrow.uturn.backward.circle",
+      text: "Remove it anytime from Settings"
+    ),
+  ]
 }
 
 @MainActor
@@ -36,11 +79,16 @@ struct SetupAssistant {
 
 @MainActor
 struct SetupOnboardingView: View {
+  /// Tall enough to hold the welcome and the explanation without either of them resizing the
+  /// popover. Taller steps grow past it; the point is that the short ones do not shrink.
+  static let stepMinimumHeight: CGFloat = 320
+
   @StateObject private var store: SetupStore
   let onFinished: () -> Void
 
   @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
-  @State private var step: SetupOnboardingStep = .explain
+  @State private var step: SetupOnboardingStep = SetupOnboardingStep.first
+  @State private var isChangesHelpPresented = false
 
   init(store: SetupStore, onFinished: @escaping () -> Void) {
     _store = StateObject(wrappedValue: store)
@@ -55,15 +103,27 @@ struct SetupOnboardingView: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 18) {
-        stepHeader
+        // Help replaces the step inside the popover instead of opening a sheet. A sheet is a real
+        // window, and a menu-bar popover closes as soon as it loses key focus, so presenting one
+        // tore the whole setup down.
+        if isChangesHelpPresented {
+          SetupChangesHelpDialog(changes: store.plan?.changes ?? []) {
+            isChangesHelpPresented = false
+          }
+        } else {
+          stepHeader
 
-        switch step {
-        case .explain: explanation
-        case .agents: agentSelection
-        case .progress: progressContent
+          switch step {
+          case .welcome: welcome
+          case .explain: explanation
+          case .agents: agentSelection
+          case .progress: progressContent
+          }
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
+      // A common floor for every step. Without it the popover resizes as the user moves between
+      // steps and the primary button slides out from under the pointer they were about to click.
+      .frame(maxWidth: .infinity, minHeight: Self.stepMinimumHeight, alignment: .topLeading)
     }
     .frame(maxHeight: 480)
     .fixedSize(horizontal: false, vertical: true)
@@ -82,22 +142,62 @@ struct SetupOnboardingView: View {
         .font(.caption2.weight(.semibold))
         .tracking(0.8)
         .foregroundStyle(.secondary)
-        .accessibilityLabel("Step \(step.rawValue) of 3")
+        .accessibilityLabel("Step \(step.rawValue) of \(SetupOnboardingStep.allCases.count)")
 
-      Text(stepTitle)
-        .font(.title2.weight(.semibold))
-        .foregroundStyle(.primary)
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityAddTraits(.isHeader)
+      // The welcome step carries its own centered lockup, so it must not repeat a leading title.
+      if let stepTitle {
+        Text(stepTitle)
+          .font(.title2.weight(.semibold))
+          .foregroundStyle(.primary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityAddTraits(.isHeader)
+      }
     }
   }
 
-  private var stepTitle: String {
+  private var stepTitle: String? {
     switch step {
+    case .welcome: nil
     case .explain: SetupOnboardingCopy.title
-    case .agents: "Choose where context is available"
-    case .progress: "Setting up your private service"
+    case .agents: SetupOnboardingCopy.agentsTitle
+    case .progress: SetupOnboardingCopy.progressTitle
     }
+  }
+
+  private var welcome: some View {
+    VStack(spacing: 14) {
+      // The shared height floor leaves room to spare on this step. Split it above and below the
+      // lockup instead of letting it all pile up underneath the button.
+      Spacer(minLength: 0)
+
+      PimpampumMark(size: 44)
+        .foregroundStyle(.primary)
+        .accessibilityHidden(true)
+
+      VStack(spacing: 6) {
+        Text(SetupOnboardingCopy.welcomeName)
+          .font(.title2.weight(.semibold))
+          .foregroundStyle(.primary)
+          .accessibilityAddTraits(.isHeader)
+
+        Text(SetupOnboardingCopy.welcomeTagline)
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      Button(SetupOnboardingCopy.getStartedButton) { move(to: .explain) }
+        .buttonStyle(GuidedPrimaryButtonStyle())
+        .keyboardShortcut(.defaultAction)
+        .accessibilityLabel("Get started with guided setup")
+
+      Spacer(minLength: 0)
+    }
+    // A brand moment needs air, and the popover must still negotiate a visible height from the
+    // menu bar's zero-height proposal. StatusPopoverTests pins that floor.
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .padding(.vertical, 24)
   }
 
   private var explanation: some View {
@@ -107,13 +207,13 @@ struct SetupOnboardingView: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
-      VStack(alignment: .leading, spacing: 10) {
-        trustRow("Private to your account", symbol: "lock.shield")
-        trustRow("Available when this menu is closed", symbol: "circle.dotted.circle")
-        trustRow("Reversible from Settings", symbol: "arrow.uturn.backward.circle")
+      VStack(alignment: .leading, spacing: 12) {
+        ForEach(SetupOnboardingCopy.trustPoints) { point in
+          trustRow(point.text, symbol: point.systemImage)
+        }
       }
 
-      Button("Continue") { move(to: .agents) }
+      Button(SetupOnboardingCopy.continueButton) { move(to: .agents) }
         .buttonStyle(GuidedPrimaryButtonStyle())
         .keyboardShortcut(.defaultAction)
         .accessibilityLabel("Continue to detected agents")
@@ -122,13 +222,15 @@ struct SetupOnboardingView: View {
 
   private var agentSelection: some View {
     VStack(alignment: .leading, spacing: 14) {
-      VStack(alignment: .leading, spacing: 5) {
-        Text("Detected agents")
-          .font(.headline)
-        Text("Ready to connect")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
+      // Why a connection matters belongs to the step, not to the list header: Pimpampum has no
+      // editing surface of its own, so the agent is where the work happens.
+      Text(SetupOnboardingCopy.agentsDetail)
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      Text(SetupOnboardingCopy.agentsListTitle)
+        .font(.headline)
 
       if store.activity == .detecting && store.agents.isEmpty {
         HStack(spacing: 8) {
@@ -147,6 +249,8 @@ struct SetupOnboardingView: View {
                 set: { store.setSelected($0, for: agent.id) }
               )
             ) {
+              // The label has to claim the row, or macOS sizes each Toggle to its own text and the
+              // switches land at different x positions with the rows visibly ragged.
               VStack(alignment: .leading, spacing: 2) {
                 Text(agent.id.displayName)
                   .foregroundStyle(.primary)
@@ -154,32 +258,21 @@ struct SetupOnboardingView: View {
                   .font(.caption)
                   .foregroundStyle(.secondary)
               }
+              .frame(maxWidth: .infinity, alignment: .leading)
             }
             .toggleStyle(.switch)
             .disabled(!agent.detected || store.busy)
-            .frame(minHeight: 44)
+            .frame(maxWidth: .infinity, minHeight: 44)
             .accessibilityLabel("Select \(agent.id.displayName)")
             .accessibilityValue(agent.selected ? "Selected" : "Not selected")
           }
         }
       }
 
-      VStack(alignment: .leading, spacing: 6) {
-        Text("Exact changes")
-          .font(.subheadline.weight(.semibold))
-        Text(SetupOnboardingCopy.changeSummary)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-        ForEach(store.selectedAgents, id: \.self) { id in
-          Label("Connect \(id.displayName)", systemImage: "checkmark.circle")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .accessibilityLabel("Connect \(id.displayName)")
-        }
-      }
-      .padding(12)
-      .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      exactChangesLink
+      // Planning is a read. Doing it here means the user confirms the operation they were shown,
+      // instead of one computed after the button was already pressed.
+      .task(id: store.selectedAgents) { await store.review() }
 
       if let errorMessage = store.errorMessage {
         inlineError(errorMessage)
@@ -189,7 +282,7 @@ struct SetupOnboardingView: View {
         Button("Back") { move(to: .explain) }
           .buttonStyle(GuidedSecondaryButtonStyle())
           .keyboardShortcut(.cancelAction)
-          .accessibilityLabel("Back to private service explanation")
+          .accessibilityLabel("Back to what Pimpampum does")
 
         Button("Review & set up") { reviewAndSetUp() }
           .buttonStyle(GuidedPrimaryButtonStyle())
@@ -202,26 +295,24 @@ struct SetupOnboardingView: View {
 
   private var progressContent: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text("You can close this menu. Setup continues safely and resumes here when reopened.")
+      Text(SetupOnboardingCopy.progressReassurance)
         .font(.subheadline)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
-      progressRow(
-        title: "Private service",
-        state: store.service.state,
-        symbol: "lock.shield"
-      )
+      // The background service is machinery, not something the user chose, so it stays hidden while
+      // it behaves. It still appears when it needs attention, and when no agent was selected, because
+      // otherwise this step would report nothing at all.
+      if store.service.state.needsAttention || store.agentResults.isEmpty {
+        progressRow(
+          title: SetupOnboardingCopy.serviceRowTitle,
+          state: store.service.state,
+          symbol: store.service.state.needsAttention ? "exclamationmark.triangle" : "gearshape"
+        )
+      }
 
       ForEach(store.agentResults) { agent in
         agentProgressRow(agent)
-      }
-
-      if store.busy {
-        ProgressView()
-          .controlSize(.small)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .accessibilityLabel("Setup in progress")
       }
 
       if let errorMessage = store.errorMessage {
@@ -253,10 +344,17 @@ struct SetupOnboardingView: View {
       }
 
       if store.completion?.status == .complete {
-        Button("Done", action: onFinished)
-          .buttonStyle(GuidedPrimaryButtonStyle())
-          .keyboardShortcut(.defaultAction)
-          .accessibilityLabel("Finish setup")
+        Button(SetupOnboardingCopy.finishButton) {
+          Task {
+            // Hand the popover back before relaunching: on a copy started from Downloads that call
+            // terminates this process.
+            onFinished()
+            await store.relaunchInstalledApplicationIfNeeded()
+          }
+        }
+        .buttonStyle(GuidedPrimaryButtonStyle())
+        .keyboardShortcut(.defaultAction)
+        .accessibilityLabel("Finish setup")
       }
     }
   }
@@ -268,19 +366,8 @@ struct SetupOnboardingView: View {
         state: agent.state,
         symbol: "person.crop.circle"
       )
-      Text(
-        agent.configured
-          ? agent.available
-            ? "Configured · Available in the current session"
-            : "Configured · Not available in the current session"
-          : "Not configured"
-      )
-      .font(.caption)
-      .foregroundStyle(.secondary)
-      .accessibilityLabel(
-        "\(agent.id.displayName), configured \(agent.configured ? "yes" : "no"), current session available \(agent.available ? "yes" : "no")"
-      )
-
+      // No detail line: `progressRow` already states the row's state, and "Not configured" showed
+      // up while the agent was mid-connection, contradicting the row right above it.
       if agent.state == .needsRepair {
         Button(GuidedSetupRecoveryCopy.retry) {
           Task { await store.retry(agent.id) }
@@ -343,12 +430,59 @@ struct SetupOnboardingView: View {
     .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
   }
 
+  /// The plan the user is about to authorize stays one line. The spec still requires that the
+  /// changes and their paths be inspectable before confirming, so the full list lives one click
+  /// away rather than filling the step with something the user already chose above.
+  private var exactChangesLink: some View {
+    Group {
+      if let changes = store.plan?.changes, !changes.isEmpty {
+        Button {
+          isChangesHelpPresented = true
+        } label: {
+          HStack(spacing: 5) {
+            Image(systemName: "questionmark.circle")
+            Text(SetupOnboardingCopy.changesTitle)
+          }
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
+        .accessibilityLabel(SetupChangesHelpCopy.buttonTitle)
+        .help(SetupChangesHelpCopy.buttonTitle)
+      } else {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text(SetupOnboardingCopy.changesPending)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .frame(minHeight: 44, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(SetupOnboardingCopy.changesPending)
+      }
+    }
+  }
+
   private func trustRow(_ title: String, symbol: String) -> some View {
-    Label(title, systemImage: symbol)
-      .font(.subheadline)
-      .foregroundStyle(.primary)
-      .frame(minHeight: 44, alignment: .leading)
-      .accessibilityLabel(title)
+    // These rows are read, never tapped. The 44pt floor is the tap target for the toggles and
+    // buttons; applying it here only stretches the list to a 54pt stride and breaks its rhythm.
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
+      Image(systemName: symbol)
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+        // One column width for three symbols of different advance, so every label starts at the
+        // same x and the icons read as a set rather than three loose glyphs.
+        .frame(width: 16, alignment: .center)
+
+      Text(title)
+        .font(.subheadline)
+        .foregroundStyle(.primary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(title)
   }
 
   private func progressRow(
@@ -384,12 +518,15 @@ struct SetupOnboardingView: View {
 
   private func reviewAndSetUp() {
     Task {
-      await store.review()
+      // The plan is already on screen; re-planning here would apply a different operation than the
+      // one the user reviewed.
       guard store.plan != nil, store.errorMessage == nil else { return }
       move(to: .progress)
       guard store.plan?.conflicts.isEmpty == true else { return }
       await store.apply()
-      if store.completion?.status == .complete { onFinished() }
+      // The step reports the outcome and offers its own Done button. Closing setup is the user's
+      // call: doing it here meant the result flashed past and the popover jumped to its normal
+      // state before anyone could read what had happened.
     }
   }
 
@@ -440,7 +577,7 @@ struct SetupOnboardingView: View {
   }
 }
 
-private struct GuidedPrimaryButtonStyle: ButtonStyle {
+struct GuidedPrimaryButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .font(.body.weight(.semibold))

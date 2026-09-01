@@ -120,10 +120,10 @@ details may be copied explicitly but stay outside the normal path.
 The macOS first-run experience uses the **Guided** direction selected from the interactive
 onboarding prototype on 2026-08-31.
 
-- Use one compact popover and three progressive steps: explain the private service, choose detected
-  agents, then install and verify.
-- Keep the single meaningful consent on **Review & set up**. The explanatory first step does not
-  trigger mutations.
+- Use one compact popover and four progressive steps: welcome, explain what Pimpampum does, choose
+  detected agents, then install and verify.
+- Keep the single meaningful consent on **Review & set up**. The welcome and explanatory steps do
+  not trigger mutations.
 - Lead with outcomes and trust: no Terminal window, no visible Node.js runtime, starts at sign-in,
   and can be fully removed.
 - Detect Codex and Claude Code automatically, select both by default, and preserve user choice in
@@ -147,18 +147,19 @@ Rejected directions:
 
 1. The user downloads and opens one signed `.dmg` or `.app` distribution.
 2. The existing menu-bar onboarding appears using the current Quiet visual language.
-3. Step one explains that one private service will run for the current user, starts at sign-in,
+3. Step one presents the brand, states what Pimpampum is in one line, and invites the user in.
+4. Step two explains that Pimpampum keeps running in the background for the current user, starts at sign-in,
    remains available when the menu app closes, and can be removed later.
-4. Step two lists the supported installed agents Pimpampum detected and selects them by default.
-5. The user reviews the bounded configuration changes and selects **Review & set up** once.
-6. Step three installs the packaged runtime, registers the per-user service, registers the app for
+5. Step three lists the supported installed agents Pimpampum detected and selects them by default.
+6. The user reviews the bounded configuration changes and selects **Review & set up** once.
+7. Step four installs the packaged runtime, registers the per-user service, registers the app for
    login, configures the selected agents, starts the service, and verifies every owned change.
-7. If macOS requires Login Items approval, Pimpampum shows the native recovery action and resumes
+8. If macOS requires Login Items approval, Pimpampum shows the native recovery action and resumes
    verification afterward.
-8. The completion screen reports the local service and each agent separately.
-9. Pimpampum offers **Open Codex**, **Open Claude Code**, or a concise instruction to begin a new
-   session when a running session cannot reload MCP dynamically.
-10. Returning to the menu shows the normal portfolio view. Agent connection management lives in
+9. The completion screen reports the local service and each agent separately.
+10. Pimpampum offers **Open Codex**, **Open Claude Code**, or a concise instruction to begin a new
+    session when a running session cannot reload MCP dynamically.
+11. Returning to the menu shows the normal portfolio view. Agent connection management lives in
     Settings.
 
 ### Omarchy: clean installation
@@ -205,36 +206,51 @@ system.
 
 ### Proposed first-run content hierarchy
 
+Amended 2026-09-01. Two changes. First, the explanatory heading, paragraph, and trust list were
+rewritten: the paragraph and the list previously repeated the same three promises, and "agent
+context" was internal vocabulary. Second, a welcome step was added ahead of the explanation to
+present the brand, set the tone, and invite entry; the flow is now four steps and the markers read
+`OF 4`. The single mutating confirmation stays on **Review & set up**. The approved strings live in
+`SetupOnboardingCopy` and are frozen by `SetupOnboardingCopyTests`. Third, the agent list heading became `Supported agents`: a row can read `Not detected`, and a list titled `Detected agents` then contradicts itself. The per-row state carries detection instead. Fourth, step 3 now states why an agent connection matters: Pimpampum has no editing surface of its own, so a connected agent is where the user actually works and the menu bar only reports state. Principle 1 still applies, so the copy never names MCP. The list subtitle was dropped because "Both can be changed later" asserted a connector count the screen cannot guarantee. The change summary no longer says the agents are selected "below", because that block renders after the switches. Fifth, "private service" was removed from every user-facing string: it read as a subscription rather than a background process. The setup step is now titled "Setting up Pimpampum" and lists the chosen agents; the service appears only when it needs attention.
+
 ```text
-1 OF 3
-FIRST, THE SERVICE
+1 OF 4
 
-One private home for agent context.
-Pimpampum keeps shared memory available without a Terminal window or a separate Node app.
+        ⬤
 
-⌂ Runs only on this Mac, even when this window is closed.
-◎ Starts automatically when you sign in.
-↶ Can be stopped and fully removed at any time.
+pim • pam • pum
+Project memory your agents can share.
+
+[ Get started ]
+
+2 OF 4
+
+Your agents share one project memory
+Pimpampum keeps running in the background on this Mac. Your agents read and write the same projects,
+specs, and tasks instead of starting from scratch.
+
+⌂ Private to your macOS account
+◎ Starts at sign-in and keeps running
+↶ Remove it anytime from Settings
 
 [ Continue ]
 
-2 OF 3
-NOW, YOUR AGENTS
+3 OF 4
 
-Choose who can use Pimpampum.
-We found two supported agents. Both can be changed later.
+Choose the agents you work in
+You create and track work from your agents, not here. This menu shows the state they share.
 
-Detected agents
-[selected] Codex          Ready to connect
-[selected] Claude Code    Ready to connect
+Supported agents
+[selected] Codex          Detected on this Mac
+[selected] Claude Code    Detected on this Mac
 
 [ Back ] [ Review & set up ]
 
-3 OF 3
+4 OF 4
 Making Pimpampum ready.
 ```
 
-The flow has three short steps but only one mutating confirmation. Agent selection is inline and
+The flow has four short steps but only one mutating confirmation. Agent selection is inline and
 both detected supported agents are selected by default.
 
 ### Progress
@@ -412,6 +428,11 @@ HTTP routes, and `PimpampumStore`.
 - The confirmation does not authorize installing third-party agents, deleting data, enabling
   remote access, or resolving unknown configuration conflicts.
 - Advanced users can inspect the planned paths and operations before confirmation.
+  Amended 2026-09-01: this was specified but never implemented. `SetupChange.path` existed and
+  was always null, and the macOS confirmation screen rendered a hand-written constant instead of
+  the plan. The coordinator now fills `path` for the runtime, service, data, and connector
+  changes from the resolved layout, and adds a `data` change so the local database is disclosed
+  like every other target.
 
 ### 5. Connection Provisioning
 

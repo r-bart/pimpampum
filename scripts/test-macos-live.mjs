@@ -431,7 +431,9 @@ try {
   if (
     setupRequiredUI.visualState !== 'Setup required' ||
     setupRequiredUI.connectionState !== 'setup-required' ||
-    !setupRequiredUI.accessibilityLabels.includes('Continue to detected agents')
+    // The first step is the welcome; its primary action proves the popover rendered a usable
+    // onboarding rather than the empty panel this smoke exists to catch.
+    !setupRequiredUI.accessibilityLabels.includes('Get started with guided setup')
   ) {
     throw new Error(
       `Native first-run UI did not render the guided setup: ${JSON.stringify(setupRequiredUI)}`,

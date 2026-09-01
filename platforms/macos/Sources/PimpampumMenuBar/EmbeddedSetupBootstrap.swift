@@ -48,9 +48,12 @@ struct EmbeddedSetupBootstrap: Sendable {
     )
   }
 
+  /// Whether the copy that must survive setup is a different one from this process. Installation
+  /// registers the login item by opening the installed copy, so by the time setup finishes there are
+  /// usually two menu-bar apps running and only one may remain.
   var requiresInstalledApplicationRelaunch: Bool {
-    sourceApplicationURL.resolvingSymlinksInPath()
-      != installedApplicationURL.resolvingSymlinksInPath()
+    sourceApplicationURL.resolvingSymlinksInPath().standardizedFileURL
+      != installedApplicationURL.resolvingSymlinksInPath().standardizedFileURL
   }
 
   func installedApplicationExists(fileManager: FileManager = .default) -> Bool {
@@ -83,17 +86,30 @@ struct InstalledApplicationRelauncher {
     },
     terminateCurrentApplication: @escaping () -> Void = {
       NSApplication.shared.terminate(nil)
+    },
+    installedCopyIsRunning: @escaping (URL) -> Bool = { installedURL in
+      let target = installedURL.resolvingSymlinksInPath().standardizedFileURL
+      let current = ProcessInfo.processInfo.processIdentifier
+      return NSWorkspace.shared.runningApplications.contains { application in
+        application.processIdentifier != current
+          && application.bundleURL?.resolvingSymlinksInPath().standardizedFileURL == target
+      }
     }
   ) async throws -> Bool {
     guard bootstrap.requiresInstalledApplicationRelaunch,
       bootstrap.installedApplicationExists(fileManager: fileManager)
     else { return false }
-    let configuration = NSWorkspace.OpenConfiguration()
-    configuration.activates = true
-    // LaunchServices may otherwise focus the still-running copy in Downloads because both apps
-    // share a bundle ID. Start the stable path before terminating this transient source process.
-    configuration.createsNewApplicationInstance = true
-    try await launchApplication(bootstrap.installedApplicationURL, configuration)
+    // Two separate jobs. Starting the installed copy is only needed when nothing started it yet;
+    // login-item registration usually did, several phases earlier. Ending this process is always
+    // needed, because otherwise both copies keep an icon in the menu bar.
+    if !installedCopyIsRunning(bootstrap.installedApplicationURL) {
+      let configuration = NSWorkspace.OpenConfiguration()
+      configuration.activates = true
+      // LaunchServices would otherwise focus the still-running copy in Downloads, since both apps
+      // share a bundle ID.
+      configuration.createsNewApplicationInstance = true
+      try await launchApplication(bootstrap.installedApplicationURL, configuration)
+    }
     terminateCurrentApplication()
     return true
   }

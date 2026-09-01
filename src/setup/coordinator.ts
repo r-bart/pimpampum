@@ -51,6 +51,17 @@ export interface SetupCoordinatorDependencies {
     }
   >;
   loginItem: { register(): Promise<'enabled' | 'requires-approval' | 'denied'> };
+  /**
+   * Where each disclosed change lands, and the address the service listens on. The plan names them
+   * so the confirmation screen can state what it is about to touch instead of describing it in
+   * prose. `requiresConfirmation` is only honest if the user can see this.
+   */
+  changeTargets: {
+    runtimeDirectory: string;
+    servicePath: string;
+    dataDirectory: string;
+    connectorConfigPaths: Partial<Record<SetupConnectorId, string>>;
+  };
   dataDirectory: string;
   now(): string;
   onProgress?(event: SetupProgressEvent): void | Promise<void>;
@@ -520,14 +531,33 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
       const withoutRevision: Omit<SetupPlan, 'revision'> = {
         operationId,
         selectedConnectors,
+        // Summaries stay short and plain: the confirmation screen shows them as-is, and the
+        // machinery behind each one belongs in its help sheet, not in the consent list.
         changes: [
-          { kind: 'runtime', summary: 'Install the private Pimpampum runtime.' },
-          { kind: 'service', summary: 'Install and verify the local Pimpampum service.' },
-          { kind: 'login-item', summary: 'Register supported background startup.' },
-          ...selectedConnectors.map((id) => ({
-            kind: `connector:${id}`,
-            summary: `Connect ${id === 'codex' ? 'Codex' : 'Claude Code'} to Pimpampum.`,
-          })),
+          {
+            kind: 'runtime',
+            summary: 'Install everything Pimpampum needs to run.',
+            path: dependencies.changeTargets.runtimeDirectory,
+          },
+          {
+            kind: 'service',
+            summary: 'Run Pimpampum in the background.',
+            path: dependencies.changeTargets.servicePath,
+          },
+          {
+            kind: 'data',
+            summary: 'Keep your work on this Mac.',
+            path: dependencies.changeTargets.dataDirectory,
+          },
+          { kind: 'login-item', summary: 'Start when you sign in.' },
+          ...selectedConnectors.map((id) => {
+            const connectorPath = dependencies.changeTargets.connectorConfigPaths[id];
+            return {
+              kind: `connector:${id}`,
+              summary: `Connect ${id === 'codex' ? 'Codex' : 'Claude Code'}.`,
+              ...(connectorPath === undefined ? {} : { path: connectorPath }),
+            };
+          }),
         ],
         conflicts,
         requiresConfirmation: true,

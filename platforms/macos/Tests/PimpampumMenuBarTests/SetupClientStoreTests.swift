@@ -9,6 +9,7 @@ private struct FixtureDetector: SetupAgentDetecting {
 }
 
 private actor FixtureSetupRunner: SetupCommandRunning {
+  var relaunchCalls = 0
   var plannedSelections: [[SetupAgentID]] = []
   var applyCalls = 0
   var resumeCalls = 0
@@ -20,6 +21,14 @@ private actor FixtureSetupRunner: SetupCommandRunning {
   var plannedConflicts: [SetupConflict] = []
   var lastReplacing: [SetupAgentID] = []
   var lastKeeping: [SetupAgentID] = []
+
+  @MainActor
+  func relaunchInstalledApplicationIfNeeded() async throws -> Bool {
+    await recordRelaunch()
+    return true
+  }
+
+  private func recordRelaunch() { relaunchCalls += 1 }
 
   func plan(selectedConnectors: [SetupAgentID]) async throws -> SetupPlan {
     if let failure { throw failure }
@@ -158,6 +167,45 @@ private actor StreamingProcessRunner: SetupStreamingProcessRunning {
   }
 }
 
+private final class ActivityProbeRunner: SetupCommandRunning, @unchecked Sendable {
+  weak var store: SetupStore?
+  var activityDuringStatus: SetupActivity = .idle
+  var resumeCalls = 0
+
+  func plan(selectedConnectors _: [SetupAgentID]) async throws -> SetupPlan {
+    throw SetupClientError.unavailable
+  }
+
+  func apply(
+    operationID _: String,
+    revision _: String,
+    replacing _: [SetupAgentID],
+    keeping _: [SetupAgentID],
+    onProgress _: @escaping @Sendable (SetupProgressEvent) async -> Void
+  ) async throws -> SetupResult {
+    throw SetupClientError.unavailable
+  }
+
+  func status() async throws -> SetupJournal? {
+    activityDuringStatus = await MainActor.run { self.store?.activity ?? .idle }
+    return nil
+  }
+
+  func resume(
+    onProgress _: @escaping @Sendable (SetupProgressEvent) async -> Void
+  ) async throws -> SetupResult {
+    resumeCalls += 1
+    throw SetupClientError.unavailable
+  }
+
+  func retry(
+    _: SetupAgentID,
+    onProgress _: @escaping @Sendable (SetupProgressEvent) async -> Void
+  ) async throws -> SetupResult {
+    throw SetupClientError.unavailable
+  }
+}
+
 private actor ProgressRecorder {
   var events: [SetupProgressEvent] = []
   func append(_ event: SetupProgressEvent) { events.append(event) }
@@ -286,6 +334,51 @@ struct SetupClientStoreTests {
   }
 
   @MainActor
+  @Test("applying does not relaunch until the caller says the outcome is on screen")
+  func relaunchIsDeferredUntilAfterCompletion() async {
+    // The relaunch terminates the process. Running it inside `apply` meant the view never reached
+    // `onFinished`, so the popover stayed on a half-finished setup until it was reopened.
+    let runner = FixtureSetupRunner()
+    let store = SetupStore(runner: runner, detector: FixtureDetector(detected: [.codex]))
+    await store.prepare()
+    await store.review()
+    await store.apply()
+
+    #expect(store.completion?.status == .complete)
+    #expect(store.pendingApplicationRelaunch)
+    #expect(await runner.relaunchCalls == 0)
+
+    await store.relaunchInstalledApplicationIfNeeded()
+    #expect(await runner.relaunchCalls == 1)
+    #expect(!store.pendingApplicationRelaunch)
+
+    // Asking twice must not restart the app again.
+    await store.relaunchInstalledApplicationIfNeeded()
+    #expect(await runner.relaunchCalls == 1)
+  }
+
+  @MainActor
+  @Test("a Mac with no detected agent can still install the service")
+  func noDetectedAgentStillReviewable() async {
+    // EC-1 and the "successful setup with no supported agents" metric. The confirmation button was
+    // gated on a non-empty selection, so nothing could be installed on such a machine at all.
+    let store = SetupStore(runner: FixtureSetupRunner(), detector: FixtureDetector(detected: []))
+    await store.prepare()
+    #expect(store.agents.allSatisfy { !$0.detected })
+    #expect(store.selectedAgents.isEmpty)
+    #expect(store.canReview)
+
+    let runner = FixtureSetupRunner()
+    let planned = SetupStore(runner: runner, detector: FixtureDetector(detected: []))
+    await planned.prepare()
+    await planned.review()
+    // The plan is requested with an empty connector list, and the service still installs.
+    #expect(await runner.plannedSelections == [[]])
+    await planned.apply()
+    #expect(planned.service.state == .connected)
+  }
+
+  @MainActor
   @Test("selects detected agents by default and keeps service and agent outcomes separate")
   func defaultSelectionAndResult() async {
     let runner = FixtureSetupRunner()
@@ -297,8 +390,11 @@ struct SetupClientStoreTests {
     #expect(store.agents.first(where: { $0.id == .codex })?.selected == true)
     #expect(store.agents.first(where: { $0.id == .claudeCode })?.selected == false)
     #expect(store.canReview)
+    // Deselecting every agent must not block setup. The spec's success metrics require a setup with
+    // no supported agents to complete, and this assertion used to demand the opposite.
     store.setSelected(false, for: .codex)
-    #expect(!store.canReview)
+    #expect(store.selectedAgents.isEmpty)
+    #expect(store.canReview)
     store.setSelected(true, for: .codex)
     await store.review()
     await store.apply()
@@ -428,6 +524,69 @@ struct SetupClientStoreTests {
     #expect(!value.contains("/Users/example"))
     #expect(!value.contains("\n"))
     #expect(value.count <= SetupStore.maximumErrorLength + 1)
+  }
+
+  @Test("decodes the indented envelope the packaged CLI emits for setup plan")
+  func decodesIndentedPlanEnvelope() throws {
+    // `setup plan` has no `--events` mode, so it always leaves the CLI through `printEnvelope`,
+    // which indents with two spaces. Decoding must not assume one event per line.
+    let source = """
+      {
+        "data": {
+          "operationId": "d1d0678a-afef-4c36-b95a-35bd8dcdf9c1",
+          "selectedConnectors": [],
+          "changes": [
+            {
+              "kind": "runtime",
+              "summary": "Install the private Pimpampum runtime."
+            }
+          ],
+          "conflicts": [],
+          "requiresConfirmation": true,
+          "revision": "17a91022c05bd35d574db1b7f2d9b79c156a6558fa1f4f67686059bc6f4706e8"
+        }
+      }
+      """
+    let events = try SetupNDJSONDecoder.decode(Data(source.utf8))
+    #expect(events.count == 1)
+    guard case .plan(let plan) = events.last else {
+      Issue.record("Expected one plan event")
+      return
+    }
+    #expect(plan.operationId == "d1d0678a-afef-4c36-b95a-35bd8dcdf9c1")
+    #expect(plan.requiresConfirmation)
+    #expect(plan.changes.count == 1)
+  }
+
+  @Test("decodes the indented empty journal envelope from setup status")
+  func decodesIndentedEmptyJournalEnvelope() throws {
+    let source = """
+      {
+        "data": null
+      }
+      """
+    let events = try SetupNDJSONDecoder.decode(Data(source.utf8))
+    #expect(events.count == 1)
+    guard case .journal(let journal) = events.last else {
+      Issue.record("Expected one journal event")
+      return
+    }
+    #expect(journal == nil)
+  }
+
+  @Test("reading the durable journal on launch must not look like a mutation")
+  @MainActor
+  func journalReadDoesNotBeginMutation() async {
+    // `start()` always calls `resume()`. On a clean machine there is no journal, so nothing may be
+    // reported as begun: the onboarding sends itself to its final step on `hasBegunMutation` and
+    // never returns.
+    let runner = ActivityProbeRunner()
+    let store = SetupStore(runner: runner, detector: FixtureDetector(detected: []))
+    runner.store = store
+    await store.resume()
+    #expect(!runner.activityDuringStatus.hasBegunMutation)
+    #expect(runner.resumeCalls == 0)
+    #expect(!store.activity.hasBegunMutation)
   }
 
   private static let runningJournal = SetupJournal(

@@ -88,6 +88,16 @@ enum DesktopSmokeHarness {
       let store = OverviewStore(reader: reader)
       await store.refresh()
       if seed != nil, request.refreshAfterSeed { await store.refresh() }
+      // A cold start holds `.loading` while it gives the daemon a few chances to come up, so the
+      // first frame of a fresh process is not an answer. Every snapshot launches a fresh process,
+      // so drive the store to a settled state rather than reporting the transient one.
+      var settleAttempts = 0
+      while store.connectionState == .loading, store.overview == nil,
+        settleAttempts < OverviewStore.startupRetryLimit
+      {
+        settleAttempts += 1
+        await store.refresh()
+      }
 
       guard
         let markURL = Bundle.main.url(

@@ -988,6 +988,37 @@ describe('platform-neutral service manager', () => {
     });
   });
 
+  it('verifies the receipt when the adapter cannot plan its artifacts', async () => {
+    // An installed macOS CLI runs from the packaged runtime and has no app bundle to plan from.
+    // Status must still answer from the receipt instead of failing the whole read-only command.
+    const root = testRoot('unplannable');
+    const ownedPath = join(root.homeDirectory, 'service-owned');
+    let canPlan = true;
+    const adapter = testAdapter(root, {
+      artifacts: () => {
+        if (!canPlan) throw new Error('Build the macOS app before installing Pimpampum');
+        return [{ path: ownedPath, content: 'owned', mode: 0o600 }];
+      },
+      canPlanArtifacts: () => canPlan,
+    });
+    const manager = createPlatformServiceManager(
+      managerInput(root, vi.fn<RunCommand>(), {
+        platform: 'linux',
+        adapters: { linux: adapter },
+      }),
+    );
+    await manager.install();
+
+    canPlan = false;
+    await expect(manager.status()).resolves.toMatchObject({ installed: true, running: true });
+
+    writeFileSync(ownedPath, 'tampered', { mode: 0o600 });
+    await expect(manager.status()).resolves.toMatchObject({ installed: false, running: false });
+
+    rmSync(ownedPath);
+    await expect(manager.status()).resolves.toMatchObject({ installed: false, running: false });
+  });
+
   it('rejects unsupported and mismatched adapters before mutation', async () => {
     const root = testRoot('unsupported');
     const runCommand = vi.fn<RunCommand>(async (_executable, arguments_) =>

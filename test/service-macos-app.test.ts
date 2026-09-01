@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
@@ -186,7 +187,10 @@ describe('macOS menu app service integration', () => {
     expect(readFileSync(join(root.data, 'token'), 'utf8')).toBe('secret-token');
     expect(runCommand.mock.calls).toContainEqual([
       '/usr/bin/open',
-      ['-W', '-n', installedApp, '--args', '--unregister-login-item'],
+      // No `-W`: the helper's acknowledgement file is polled instead. When setup adopts an app
+      // the user already placed in an Applications folder, that bundle is also the running
+      // menu-bar app and `-W` waits on the wrong instance.
+      ['-n', installedApp, '--args', '--unregister-login-item'],
     ]);
     expect(runCommand.mock.calls).toContainEqual(['/usr/bin/open', ['-n', installedApp]]);
   });
@@ -288,7 +292,129 @@ describe('macOS menu app service integration', () => {
     }
   });
 
-  it('rejects unsafe bundles and invalid adapter options before installation', () => {
+  it('copies no runtime into an adopted app and records where it lives', async () => {
+    // An adopted bundle already carries its embedded runtime: copying it over itself while the app
+    // is running would be both pointless and dangerous.
+    const root = fixture('adopt-install');
+    const userApp = join(root.home, 'Applications', 'Pimpampum.app');
+    mkdirSync(join(userApp, 'Contents', 'Resources', 'PimpampumRuntime'), { recursive: true });
+    writeFileSync(join(userApp, 'Contents', 'Resources', 'PimpampumRuntime', 'node'), 'runtime', {
+      mode: 0o755,
+    });
+    mkdirSync(root.data, { recursive: true });
+    writeFileSync(
+      join(root.data, 'login-registration-acknowledgement.json'),
+      JSON.stringify({
+        requestId: 'ignored',
+        createdAt: '2026-08-26T20:00:00.000Z',
+        status: 'enabled',
+        registrationChanged: false,
+      }),
+      { mode: 0o600 },
+    );
+
+    const adapter = testDesktopAdapter(root, { appBundlePath: userApp });
+    await adapter.afterInstall!(
+      adapterContext(root, async () => success()),
+      [],
+    ).catch(() => undefined);
+
+    // The runtime inside the user's app is untouched: no staging or backup directory beside it.
+    const resources = readdirSync(join(userApp, 'Contents', 'Resources'));
+    expect(resources.filter((name) => name.startsWith('.PimpampumRuntime'))).toEqual([]);
+    // And the path is recorded so an installed CLI can find the app later.
+    const recorded = JSON.parse(readFileSync(join(root.data, 'application-path.json'), 'utf8')) as {
+      schemaVersion: number;
+      path: string;
+    };
+    expect(recorded).toEqual({ schemaVersion: 1, path: userApp });
+  });
+
+  it('adopts an app the user already placed in an Applications folder', () => {
+    // Copying such a copy into ~/Applications leaves two menu-bar icons: the user's app and the one
+    // macOS starts when the login item is registered. Setup registers the copy that is there.
+    const root = fixture('adopt');
+    const context: ServiceAdapterContext = {
+      homeDirectory: root.home,
+      dataDirectory: root.data,
+      nodePath: '/usr/bin/node',
+      cliPath: '/opt/pimpampum/cli.js',
+      version: '1.0.0',
+      host: '127.0.0.1',
+      port: 7337,
+      logDirectory: join(root.data, 'logs'),
+      runCommand: async () => success(),
+    };
+    const daemon = createLaunchdAdapter({ guiDomain: 'gui/501' });
+    const userApp = join(root.home, 'Applications', 'Pimpampum.app');
+    mkdirSync(join(userApp, 'Contents', 'Resources'), { recursive: true });
+    writeFileSync(join(userApp, 'Contents', 'Info.plist'), '<plist/>', { mode: 0o644 });
+
+    const adopted = createMacOSDesktopAdapter({ appBundlePath: userApp, daemonAdapter: daemon });
+    // No application files are planned, so nothing is copied and no marker is written inside a
+    // bundle that may sit outside the home directory.
+    const daemonOnly = daemon.artifacts(context).map((artifact) => artifact.path);
+    expect(adopted.artifacts(context).map((artifact) => artifact.path)).toEqual(daemonOnly);
+    // And uninstalling must not claim the user's app.
+    expect(adopted.ownedArtifactRoots?.(context) ?? []).not.toContain(userApp);
+
+    // A bundle outside an Applications folder is still copied into the managed location.
+    const staged = createMacOSDesktopAdapter({
+      appBundlePath: root.sourceApp,
+      daemonAdapter: daemon,
+    });
+    const managed = join(root.home, 'Applications', 'Pimpampum.app');
+    expect(staged.artifacts(context).some((artifact) => artifact.path.startsWith(managed))).toBe(
+      true,
+    );
+    expect(staged.ownedArtifactRoots?.(context) ?? []).toContain(managed);
+  });
+
+  it('ignores a malformed or hostile recorded application path', () => {
+    // An installed CLI reads this file to learn where the app is. A bad value must fall back to the
+    // managed location rather than pointing the uninstaller at an arbitrary path.
+    const root = fixture('recorded-path');
+    const context: ServiceAdapterContext = {
+      homeDirectory: root.home,
+      dataDirectory: root.data,
+      nodePath: '/usr/bin/node',
+      cliPath: '/opt/pimpampum/cli.js',
+      version: '1.0.0',
+      host: '127.0.0.1',
+      port: 7337,
+      logDirectory: join(root.data, 'logs'),
+      runCommand: async () => success(),
+    };
+    const daemon = createLaunchdAdapter({ guiDomain: 'gui/501' });
+    const managed = join(root.home, 'Applications', 'Pimpampum.app');
+    const recordPath = join(root.data, 'application-path.json');
+    mkdirSync(root.data, { recursive: true });
+
+    // The CLI has no bundle of its own to inspect, which is the case this file exists for.
+    const installedCli = createMacOSDesktopAdapter({
+      appBundlePath: join(root.root, 'runtime', 'platforms', 'macos', 'dist', 'Pimpampum.app'),
+      daemonAdapter: daemon,
+    });
+
+    for (const invalid of [
+      '{"schemaVersion":2,"path":"/Applications/Pimpampum.app"}',
+      '{"schemaVersion":1,"path":42}',
+      '{"schemaVersion":1,"path":"relative/Pimpampum.app"}',
+      '{"schemaVersion":1}',
+      'not json at all',
+    ]) {
+      writeFileSync(recordPath, invalid, { mode: 0o600 });
+      expect(installedCli.ownedArtifactRoots?.(context) ?? []).toContain(managed);
+    }
+
+    // A well-formed record is trusted, and the app it names is not claimed as ours.
+    writeFileSync(recordPath, '{"schemaVersion":1,"path":"/Applications/Pimpampum.app"}', {
+      mode: 0o600,
+    });
+    expect(installedCli.ownedArtifactRoots?.(context) ?? []).not.toContain(managed);
+  });
+
+  it('rejects unsafe bundles and invalid adapter options before installation', async () => {
     const root = fixture('validation');
     const context: ServiceAdapterContext = {
       homeDirectory: root.home,
@@ -307,12 +433,18 @@ describe('macOS menu app service integration', () => {
         context,
       ),
     ).toThrow(/absolute/);
-    expect(() =>
-      createMacOSDesktopAdapter({
-        appBundlePath: join(root.root, 'missing.app'),
-        daemonAdapter: daemon,
-      }).artifacts(context),
-    ).toThrow(/build the macOS app/i);
+    // A missing bundle no longer breaks planning: status and uninstall run from the installed
+    // runtime, which has no build tree. Install is where the source is required.
+    const withoutBundle = createMacOSDesktopAdapter({
+      appBundlePath: join(root.root, 'missing.app'),
+      daemonAdapter: daemon,
+    });
+    expect(withoutBundle.canPlanArtifacts?.(context)).toBe(false);
+    expect(withoutBundle.artifacts(context)).toEqual(daemon.artifacts(context));
+    await expect(withoutBundle.preflight?.(context, [], 'uninstall')).resolves.toBeUndefined();
+    await expect(withoutBundle.preflight?.(context, [], 'install')).rejects.toThrow(
+      /build the macOS app/i,
+    );
     expect(() =>
       createMacOSDesktopAdapter({
         appBundlePath: root.sourceApp,

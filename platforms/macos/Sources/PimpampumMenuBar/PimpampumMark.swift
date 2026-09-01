@@ -28,9 +28,11 @@ enum PimpampumMarkAsset {
 @MainActor
 struct PimpampumMark: View {
   let image: NSImage?
+  let size: CGFloat
 
-  init(image: NSImage? = PimpampumMarkAsset.bundledTemplateImage) {
+  init(image: NSImage? = PimpampumMarkAsset.bundledTemplateImage, size: CGFloat = 14) {
     self.image = image
+    self.size = size
   }
 
   var body: some View {
@@ -44,7 +46,7 @@ struct PimpampumMark: View {
         MissingPimpampumMark()
       }
     }
-    .frame(width: 14, height: 14)
+    .frame(width: size, height: size)
   }
 }
 

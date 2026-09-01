@@ -21,8 +21,14 @@ fi
 # validation, state derivation, and polling must remain completely covered.
 # Any new non-UI logic belongs here. Excluded system/UI adapters are documented
 # in thoughts/notes/2026-08-26_swift-coverage.md.
+#
+# 2026-09-01: this gate reported 100% while every first-run defect of that session sat in files it
+# never measured. SetupModels.swift is now inside it. SetupStore.swift (56%) and
+# SetupCommandRunner.swift (64%) remain outside and are the next candidates; see
+# thoughts/notes/2026-09-01_first-run-decoder-and-launcher.md.
 covered_sources=(
     "$package_root/Sources/PimpampumMenuBar/Models.swift"
+    "$package_root/Sources/PimpampumMenuBar/SetupModels.swift"
     "$package_root/Sources/PimpampumMenuBar/OverviewClient.swift"
     "$package_root/Sources/PimpampumMenuBar/AuthenticatedDaemonConfiguration.swift"
     "$package_root/Sources/PimpampumMenuBar/OverviewStore.swift"

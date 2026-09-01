@@ -25,17 +25,18 @@ struct ZeroFrictionSetupAcceptanceTests {
     )
   }
 
-  @Test("Guided onboarding has three progressive steps and one mutating confirmation")
+  @Test("Guided onboarding has four progressive steps and one mutating confirmation")
   func guidedHierarchyAndConsent() throws {
     // Spec: US-1/AC-1, US-1/AC-4, FR-4.1, FR-4.2, A11Y-2
     let onboarding = try source(
       "platforms/macos/Sources/PimpampumMenuBar/SetupOnboardingView.swift")
 
-    #expect(onboarding.contains("1 OF 3"))
-    #expect(onboarding.contains("2 OF 3"))
-    #expect(onboarding.contains("3 OF 3"))
+    #expect(onboarding.contains("1 OF 4"))
+    #expect(onboarding.contains("2 OF 4"))
+    #expect(onboarding.contains("3 OF 4"))
+    #expect(onboarding.contains("4 OF 4"))
     #expect(onboarding.contains("Review & set up"))
-    #expect(onboarding.contains("One private home for agent context"))
+    #expect(onboarding.contains("Your agents share one project memory"))
     #expect(!onboarding.localizedCaseInsensitiveContains("npm"))
     #expect(!onboarding.localizedCaseInsensitiveContains("open terminal"))
   }
@@ -51,8 +52,8 @@ struct ZeroFrictionSetupAcceptanceTests {
     #expect(models.contains("codex"))
     #expect(models.contains("claude-code"))
     #expect(models.contains("selectedByDefault"))
-    #expect(onboarding.contains("Detected agents"))
-    #expect(onboarding.contains("Ready to connect"))
+    #expect(onboarding.contains("Supported agents"))
+    #expect(onboarding.contains("Detected on this Mac"))
     #expect(onboarding.contains("Toggle") || onboarding.contains("selection"))
   }
 

@@ -25,6 +25,12 @@ describe('setup progress observer cleanup', () => {
     };
     const coordinator = createSetupCoordinator({
       lifecycleLock: { run: async <T>(operation: () => Promise<T>) => operation() },
+      changeTargets: {
+        runtimeDirectory: '/runtime',
+        servicePath: '/service.plist',
+        dataDirectory: '/data',
+        connectorConfigPaths: { codex: '/codex.toml', 'claude-code': '/claude.json' },
+      },
       runtime: { install: async () => ({ version: '1.0.0' }), rollback: async () => undefined },
       service: {
         install: async () => undefined,

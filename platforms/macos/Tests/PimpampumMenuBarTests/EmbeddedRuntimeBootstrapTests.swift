@@ -136,6 +136,76 @@ struct EmbeddedRuntimeBootstrapTests {
     #expect(terminated)
   }
 
+  @Test("ends this process without starting a second copy when one already runs")
+  @MainActor
+  func terminatesWithoutLaunchingWhenInstalledCopyIsRunning() async throws {
+    // Installation registers the login item by opening the installed copy, so it is normally
+    // already running when setup finishes. Launching again left two icons in the menu bar;
+    // skipping the terminate left two as well. Only one copy may remain.
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("pimpampum-relaunch-single-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let home = root.appendingPathComponent("home")
+    let source = root.appendingPathComponent("Downloads/Pimpampum.app")
+    let installed = home.appendingPathComponent("Applications/Pimpampum.app")
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
+    let bootstrap = EmbeddedSetupBootstrap(
+      runtime: EmbeddedControlRuntime(
+        rootURL: root,
+        executableURL: root.appendingPathComponent("bin/node"),
+        cliURL: root.appendingPathComponent("dist/cli.js")
+      ),
+      sourceApplicationURL: source,
+      homeDirectory: home
+    )
+
+    var launched = false
+    var terminated = false
+    let relaunched = try await InstalledApplicationRelauncher().relaunchIfNeeded(
+      bootstrap: bootstrap,
+      launchApplication: { _, _ in launched = true },
+      terminateCurrentApplication: { terminated = true },
+      installedCopyIsRunning: { _ in true }
+    )
+
+    #expect(relaunched)
+    #expect(!launched)
+    // The installed copy holds the menu bar, so this one must go.
+    #expect(terminated)
+  }
+
+  @Test("a copy already running from the installed path is left alone")
+  @MainActor
+  func doesNothingWhenAlreadyRunningFromTheInstalledPath() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("pimpampum-relaunch-noop-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let home = root.appendingPathComponent("home")
+    let installed = home.appendingPathComponent("Applications/Pimpampum.app")
+    try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
+    let bootstrap = EmbeddedSetupBootstrap(
+      runtime: EmbeddedControlRuntime(
+        rootURL: root,
+        executableURL: root.appendingPathComponent("bin/node"),
+        cliURL: root.appendingPathComponent("dist/cli.js")
+      ),
+      sourceApplicationURL: installed,
+      homeDirectory: home
+    )
+    #expect(!bootstrap.requiresInstalledApplicationRelaunch)
+
+    var terminated = false
+    let relaunched = try await InstalledApplicationRelauncher().relaunchIfNeeded(
+      bootstrap: bootstrap,
+      launchApplication: { _, _ in },
+      terminateCurrentApplication: { terminated = true },
+      installedCopyIsRunning: { _ in true }
+    )
+    #expect(!relaunched)
+    #expect(!terminated)
+  }
+
   @Test("does not trust a symlink at the stable application path")
   func rejectsSymlinkedInstalledApplication() throws {
     let root = FileManager.default.temporaryDirectory
