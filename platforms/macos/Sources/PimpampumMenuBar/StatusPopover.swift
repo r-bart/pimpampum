@@ -85,7 +85,14 @@ struct StatusPopover: View {
 
       Divider()
 
-      if isSetupRequired {
+      if isHelpPresented {
+        // Rendered inside the popover, never in a sheet. A sheet is a real window and the menu-bar
+        // popover closes the moment it loses key focus, taking the popover down with it.
+        ScrollView {
+          HelpDialog { isHelpPresented = false }
+            .padding(20)
+        }
+      } else if isSetupRequired {
         SetupOnboardingView(
           assistant: setupAssistant,
           onCheckAgain: {
@@ -146,9 +153,6 @@ struct StatusPopover: View {
     }
     .frame(width: Self.containerWidth)
     .background(.regularMaterial)
-    .sheet(isPresented: $isHelpPresented) {
-      HelpDialog()
-    }
   }
 
   private var loginApprovalNotice: some View {

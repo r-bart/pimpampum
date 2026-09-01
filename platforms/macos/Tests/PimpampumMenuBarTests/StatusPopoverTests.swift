@@ -306,7 +306,7 @@ struct StatusPopoverTests {
 
     assistant.prepareApp()
     #expect(events == ["register"])
-    #expect(SetupOnboardingCopy.title == "One private home for agent context")
+    #expect(SetupOnboardingCopy.title == "Your agents share one project memory")
     _ = SetupOnboardingView(assistant: assistant, onCheckAgain: {})
   }
 
@@ -319,6 +319,21 @@ struct StatusPopoverTests {
     view.layoutSubtreeIfNeeded()
 
     #expect(view.fittingSize.height > 200)
+  }
+
+  @Test
+  func everyOnboardingStepClearsTheSameHeightFloor() async {
+    // The popover resized between steps and the primary button slid away from the pointer. A shared
+    // floor keeps the short steps from shrinking it.
+    let store = OverviewStore(
+      reader: SequenceOverviewReader([.clientFailure(.unreadableReceipt)])
+    )
+    await store.refresh()
+    let controller = NSHostingController(rootView: StatusPopover(store: store))
+    let size = controller.sizeThatFits(
+      in: NSSize(width: StatusPopover.containerWidth, height: 0)
+    )
+    #expect(size.height >= SetupOnboardingView.stepMinimumHeight)
   }
 
   @Test

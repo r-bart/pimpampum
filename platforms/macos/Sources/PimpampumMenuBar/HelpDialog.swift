@@ -58,7 +58,9 @@ enum HelpDialogCopy {
 
 @MainActor
 struct HelpDialog: View {
-  @Environment(\.dismiss) private var dismiss
+  /// Closing is a callback owned by the presenting view. `@Environment(\.dismiss)` inside a
+  /// menu-bar popover reaches past the content and tears the popover down.
+  let onDone: () -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 18) {
@@ -86,7 +88,7 @@ struct HelpDialog: View {
 
       HStack {
         Spacer()
-        Button(HelpDialogCopy.done) { dismiss() }
+        Button(HelpDialogCopy.done) { onDone() }
           .keyboardShortcut(.defaultAction)
       }
     }
