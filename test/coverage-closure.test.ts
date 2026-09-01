@@ -152,17 +152,25 @@ describe('Store coverage closure', () => {
       actor: null,
     });
     expect(
-      store.listProjects({ workspaceId: 'workspace', state: 'open', limit: 10, offset: 0 }),
-    ).toHaveLength(1);
-    expect(
-      store.listProjects({ workspaceId: null, state: null, limit: 10, offset: 0 }),
-    ).toHaveLength(1);
-    expect(
       store.listProjectManifests({ workspaceId: 'workspace', state: 'open', limit: 10, offset: 0 }),
     ).toHaveLength(1);
-    expect(store.listSpecs(created.project.id)).toHaveLength(1);
-    expect(store.listTasks(created.spec.id)).toHaveLength(1);
-    expect(store.listContext('workspace', 'workspace')).toHaveLength(1);
+    expect(
+      store.listProjectManifests({ workspaceId: null, state: null, limit: 10, offset: 0 }),
+    ).toHaveLength(1);
+    expect(
+      store.listSpecManifests({ projectId: created.project.id, state: null, limit: 10, offset: 0 }),
+    ).toHaveLength(1);
+    expect(store.listTaskManifests({ specId: created.spec.id, limit: 10, offset: 0 })).toHaveLength(
+      1,
+    );
+    expect(
+      store.listContextManifests({
+        ownerType: 'workspace',
+        ownerId: 'workspace',
+        limit: 10,
+        offset: 0,
+      }),
+    ).toHaveLength(1);
     expect(store.getSpecCompletion(created.spec.id)).toEqual({
       completionSummary: null,
       artifacts: [],
@@ -318,6 +326,14 @@ describe('Store coverage closure', () => {
         actor: null,
       }),
     ).toThrow(/changed before this write/iu);
+    expect(() =>
+      store.cancelProject({
+        projectId: first.project.id,
+        expectedRevision: first.project.revision,
+        reason: 'race',
+        actor: null,
+      }),
+    ).toThrow(/changed before this write/iu);
     database.exec('DROP TRIGGER ignore_project_update');
 
     store.startWork({
@@ -433,6 +449,7 @@ describe('portable export pagination coverage', () => {
       completionSummary: null,
       artifacts: [],
       completedAt: null,
+      cancelledAt: null,
       createdAt: workspace.createdAt,
       updatedAt: workspace.updatedAt,
     };
@@ -465,6 +482,7 @@ describe('portable export pagination coverage', () => {
           state: 'draft' as const,
           revision: 1,
           completedAt: null,
+          cancelledAt: null,
           createdAt: workspace.createdAt,
           updatedAt: workspace.updatedAt,
           claim: null,
@@ -486,6 +504,7 @@ describe('portable export pagination coverage', () => {
           completionSummary: null,
           artifacts: [],
           completedAt: null,
+          cancelledAt: null,
           createdAt: workspace.createdAt,
           updatedAt: workspace.updatedAt,
           claim: null,

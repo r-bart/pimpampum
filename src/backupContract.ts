@@ -21,7 +21,12 @@ export interface AutomaticBackupGateway {
   disable(): Promise<AutomaticBackupStatus>;
 }
 
-const statusSchema = z
+/**
+ * Three shapes are valid: enabled with a destination, disabled with nothing,
+ * and `error` without a destination when the persisted settings file cannot be
+ * read. The last shape lets the daemon start and the user repair it.
+ */
+export const automaticBackupStatusSchema = z
   .object({
     enabled: z.boolean(),
     directory: z.string().nullable(),
@@ -46,7 +51,13 @@ const statusSchema = z
       status.directory === null &&
       status.snapshotPath === null &&
       status.error === null;
-    if (!enabledShape && !disabledShape) {
+    const unreadableSettingsShape =
+      !status.enabled &&
+      status.state === 'error' &&
+      status.directory === null &&
+      status.snapshotPath === null &&
+      status.error !== null;
+    if (!enabledShape && !disabledShape && !unreadableSettingsShape) {
       context.addIssue({ code: 'custom', message: 'inconsistent backup status' });
     }
     if (
@@ -58,7 +69,7 @@ const statusSchema = z
   });
 
 export function parseAutomaticBackupStatus(value: unknown): AutomaticBackupStatus {
-  const result = statusSchema.safeParse(value);
+  const result = automaticBackupStatusSchema.safeParse(value);
   if (!result.success) {
     throw new AppError('internal_error', 'Pimpampum returned invalid backup status', 502, true);
   }

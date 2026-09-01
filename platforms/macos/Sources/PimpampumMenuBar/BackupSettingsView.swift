@@ -21,6 +21,9 @@ enum BackupSettingsViewVariant: Equatable {
   case disabled
   case configured(BackupHealthState)
   case installationError
+  /// Automatic backup is off because the daemon could not read its settings file; the message is
+  /// the daemon's own, and choosing a folder repairs the file.
+  case needsAttention(String)
 }
 
 struct BackupSettingsViewPresentation: Equatable {
@@ -75,6 +78,8 @@ struct BackupSettingsView: View {
       variant = .configured(.pending)
     } else if let settings, settings.enabled, settings.directory != nil {
       variant = .configured(isPending ? .pending : settings.state)
+    } else if let message = settings?.unreadableSettingsMessage {
+      variant = .needsAttention(message)
     } else {
       variant = .disabled
     }
@@ -133,6 +138,8 @@ struct BackupSettingsView: View {
         disabledContent
       case .installationError:
         installationErrorContent
+      case .needsAttention(let message):
+        needsAttentionContent(message: message)
       case .configured(let state):
         if let directory = effectiveDirectory {
           configuredContent(
@@ -218,6 +225,18 @@ struct BackupSettingsView: View {
   private var disabledContent: some View {
     VStack(alignment: .leading, spacing: 16) {
       disabledStatus
+      Button(BackupSettingsCopy.chooseFolder) { chooseDirectory(currentPath: nil) }
+        .buttonStyle(.borderedProminent)
+        .disabled(presentation.controlsDisabled)
+    }
+    .padding(.vertical, 6)
+  }
+
+  /// The daemon's own reason under the attention label, then the one action that repairs the
+  /// settings file: choosing a folder writes it again.
+  private func needsAttentionContent(message: String) -> some View {
+    VStack(alignment: .leading, spacing: 16) {
+      statusRow(state: .error, lastSuccessAt: nil, backupError: message)
       Button(BackupSettingsCopy.chooseFolder) { chooseDirectory(currentPath: nil) }
         .buttonStyle(.borderedProminent)
         .disabled(presentation.controlsDisabled)

@@ -2,15 +2,18 @@ import { randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   chmodSync,
+  closeSync,
   constants,
   copyFileSync,
   mkdirSync,
+  mkdtempSync,
+  openSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { AppError } from './errors.js';
 import type {
@@ -124,6 +127,60 @@ function safeTimestamp(): string {
   return new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
 }
 
+/**
+ * Where the verified copy is staged before it is copied to the destination. The database's own
+ * directory is the 0700 data directory, so the staging file is never visible in a shared
+ * temporary directory; an in-memory database has no directory and gets a fresh 0700 one instead.
+ */
+function stagingDirectory(database: Database.Database): string {
+  return database.memory
+    ? mkdtempSync(join(tmpdir(), 'pimpampum-backup-'))
+    : dirname(resolve(database.name));
+}
+
+/**
+ * Creates the staging file exclusively with mode 0600 before SQLite writes a byte into it, so
+ * there is no window in which the copy exists with a default mode. `database.backup` accepts an
+ * existing empty file as its destination.
+ */
+function createPrivateStagingFile(directory: string, label: string): string {
+  const path = join(directory, `.pimpampum-${label}-${randomUUID()}.sqlite.partial`);
+  closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600));
+  return path;
+}
+
+async function stageVerifiedCopy(
+  database: Database.Database,
+  label: string,
+): Promise<{ path: string; cleanup(): void }> {
+  const directory = stagingDirectory(database);
+  const path = createPrivateStagingFile(directory, label);
+  // The source runs in WAL mode and the copy inherits it, so the read-only integrity check leaves
+  // `-wal`/`-shm` sidecars next to the staging file; remove them with it.
+  const cleanup = (): void => {
+    for (const suffix of ['', '-wal', '-shm', '-journal'])
+      rmSync(`${path}${suffix}`, { force: true });
+    if (database.memory) rmSync(directory, { recursive: true, force: true });
+  };
+  try {
+    await database.backup(path);
+    const snapshot = new Database(path, { readonly: true, fileMustExist: true });
+    let integrity: unknown;
+    try {
+      integrity = snapshot.pragma('integrity_check', { simple: true });
+    } finally {
+      snapshot.close();
+    }
+    if (integrity !== 'ok') {
+      throw new AppError('internal_error', 'SQLite backup failed its integrity check', 500);
+    }
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+  return { path, cleanup };
+}
+
 export async function backupDatabase(
   database: Database.Database,
   destinationDirectory: string,
@@ -134,28 +191,15 @@ export async function backupDatabase(
     `pimpampum-${safeTimestamp()}-${randomUUID()}.sqlite`,
   );
   const destinationPartialPath = `${finalPath}.partial`;
-  const localTemporaryPath = join(tmpdir(), `pimpampum-backup-${randomUUID()}.sqlite`);
+  const staged = await stageVerifiedCopy(database, 'backup');
 
   try {
-    await database.backup(localTemporaryPath);
-    chmodSync(localTemporaryPath, 0o600);
-    const snapshot = new Database(localTemporaryPath, { readonly: true, fileMustExist: true });
-    let integrity: unknown;
-    try {
-      integrity = snapshot.pragma('integrity_check', { simple: true });
-    } finally {
-      snapshot.close();
-    }
-    if (integrity !== 'ok') {
-      throw new AppError('internal_error', 'SQLite backup failed its integrity check', 500);
-    }
-
-    copyFileSync(localTemporaryPath, destinationPartialPath, constants.COPYFILE_EXCL);
+    copyFileSync(staged.path, destinationPartialPath, constants.COPYFILE_EXCL);
     chmodSync(destinationPartialPath, 0o600);
     renameSync(destinationPartialPath, finalPath);
     return finalPath;
   } finally {
-    rmSync(localTemporaryPath, { force: true });
+    staged.cleanup();
     rmSync(destinationPartialPath, { force: true });
   }
 }
@@ -169,30 +213,15 @@ export async function backupLatestDatabase(
     destinationDirectory,
     `.pimpampum-latest-${randomUUID()}.partial`,
   );
-  const localTemporaryPath = join(tmpdir(), `pimpampum-latest-${randomUUID()}.sqlite`);
+  const staged = await stageVerifiedCopy(database, 'latest');
 
   try {
-    await database.backup(localTemporaryPath);
-    chmodSync(localTemporaryPath, 0o600);
-    const snapshot = new Database(localTemporaryPath, { readonly: true, fileMustExist: true });
-    let integrity: unknown;
-    try {
-      integrity = snapshot.pragma('integrity_check', { simple: true });
-    } finally {
-      snapshot.close();
-    }
-    /* v8 ignore start -- SQLite only exposes this branch for a corrupt snapshot. */
-    if (integrity !== 'ok') {
-      throw new AppError('internal_error', 'SQLite backup failed its integrity check', 500);
-    }
-    /* v8 ignore stop */
-
-    copyFileSync(localTemporaryPath, destinationPartialPath, constants.COPYFILE_EXCL);
+    copyFileSync(staged.path, destinationPartialPath, constants.COPYFILE_EXCL);
     chmodSync(destinationPartialPath, 0o600);
     renameSync(destinationPartialPath, finalPath);
     return finalPath;
   } finally {
-    rmSync(localTemporaryPath, { force: true });
+    staged.cleanup();
     rmSync(destinationPartialPath, { force: true });
   }
 }

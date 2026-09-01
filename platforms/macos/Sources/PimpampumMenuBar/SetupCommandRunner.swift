@@ -17,6 +17,9 @@ protocol SetupCommandRunning: Sendable {
     _ id: SetupAgentID,
     onProgress: @escaping @Sendable (SetupProgressEvent) async -> Void
   ) async throws -> SetupResult
+  /// `workspace:add` through the same packaged CLI, so a native install can register its first
+  /// workspace without a terminal.
+  func registerWorkspace(_ request: WorkspaceRegistrationRequest) async throws -> RegisteredWorkspace
   @MainActor func relaunchInstalledApplicationIfNeeded() async throws -> Bool
   /// Whether this process is the copy that stays after setup. Only that copy may register the
   /// login item for its own bundle.
@@ -135,6 +138,18 @@ struct SetupCommandRunner: SetupCommandRunning {
     return try result(from: events)
   }
 
+  func registerWorkspace(_ request: WorkspaceRegistrationRequest) async throws
+    -> RegisteredWorkspace
+  {
+    // A write: like `apply`, it is never cut short by the caller's cancellation.
+    let output = try await execute(
+      bootstrap.runtime.invocation(arguments: request.arguments),
+      cancellationAllowed: false,
+      onProgress: nil
+    )
+    return try WorkspaceRegistrationDecoder.decode(output.standardOutput)
+  }
+
   @MainActor
   func relaunchInstalledApplicationIfNeeded() async throws -> Bool {
     try await InstalledApplicationRelauncher(adapters: relaunchAdapters)
@@ -151,6 +166,21 @@ struct SetupCommandRunner: SetupCommandRunning {
     cancellationAllowed: Bool,
     onProgress: (@Sendable (SetupProgressEvent) async -> Void)? = nil
   ) async throws -> [SetupWireEvent] {
+    let output = try await execute(
+      invocation,
+      cancellationAllowed: cancellationAllowed,
+      onProgress: onProgress
+    )
+    return try SetupNDJSONDecoder.decode(output.standardOutput)
+  }
+
+  /// Runs the CLI and maps the process outcome to the stable errors; what the standard output
+  /// means is the caller's decision.
+  private func execute(
+    _ invocation: EmbeddedRuntimeInvocation,
+    cancellationAllowed: Bool,
+    onProgress: (@Sendable (SetupProgressEvent) async -> Void)?
+  ) async throws -> SetupCommandOutput {
     let lineHandler: @Sendable (Data) -> Void = { line in
       guard let onProgress,
         let events = try? SetupNDJSONDecoder.decode(line),
@@ -186,7 +216,7 @@ struct SetupCommandRunner: SetupCommandRunning {
     guard output.exitCode == 0 else {
       throw SetupClientError.commandFailed(Self.failureMessage(output.standardError))
     }
-    return try SetupNDJSONDecoder.decode(output.standardOutput)
+    return output
   }
 
   private func result(from events: [SetupWireEvent]) throws -> SetupResult {

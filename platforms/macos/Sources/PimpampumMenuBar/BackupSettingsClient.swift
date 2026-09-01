@@ -171,22 +171,30 @@ struct BackupSettingsClient: BackupSettingsReading {
     return envelope.data
   }
 
+  /// The three shapes `automaticBackupStatusSchema` admits: enabled with a destination, disabled
+  /// with nothing, and `error` without a destination when the daemon could not read its settings
+  /// file (M-C6). The last one used to be rejected here, so a corrupt file showed as "invalid
+  /// payload" instead of the message that names the repair.
   private static func isValid(_ settings: BackupSettings) -> Bool {
-    guard settings.enabled == (settings.state != .disabled) else { return false }
-    if settings.enabled {
-      guard
-        let directory = settings.directory, isSafeAbsolutePath(directory),
-        let snapshotPath = settings.snapshotPath, isSafeAbsolutePath(snapshotPath)
-      else { return false }
-    } else if settings.directory != nil || settings.snapshotPath != nil || settings.error != nil {
-      return false
-    }
     if let error = settings.error,
-      error.isEmpty || error.count > 500 || error.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+      error.isEmpty || error.count > 500
+        || error.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
     {
       return false
     }
-    return true
+    if settings.enabled {
+      guard settings.state != .disabled,
+        let directory = settings.directory, isSafeAbsolutePath(directory),
+        let snapshotPath = settings.snapshotPath, isSafeAbsolutePath(snapshotPath)
+      else { return false }
+      return true
+    }
+    guard settings.directory == nil, settings.snapshotPath == nil else { return false }
+    switch settings.state {
+    case .disabled: return settings.error == nil
+    case .error: return settings.error != nil
+    case .pending, .healthy: return false
+    }
   }
 
   private static func isSafeAbsolutePath(_ path: String) -> Bool {

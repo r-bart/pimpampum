@@ -61,7 +61,9 @@ describe('HTTP API', () => {
   });
 
   it('keeps health public and protects the API', async () => {
-    await request(app).get('/health').expect(200, { status: 'ok', version: PIMPAMPUM_VERSION });
+    await request(app)
+      .get('/health')
+      .expect(200, { status: 'ok', version: PIMPAMPUM_VERSION, ready: true });
     await request(app)
       .get('/openapi.json')
       .expect(200)
@@ -200,6 +202,13 @@ describe('HTTP API', () => {
       .send({ choice: 'remote' })
       .expect(200);
     expect(resolve).toHaveBeenCalledWith('a'.repeat(64), 'remote');
+    await request(app)
+      .post('/api/v1/settings/sync/conflicts/not-a-conflict-id/resolve')
+      .set(authorization)
+      .send({ choice: 'remote' })
+      .expect(400)
+      .expect(({ body }) => expect(body.error.code).toBe('bad_request'));
+    expect(resolve).toHaveBeenCalledTimes(1);
     await request(app)
       .delete('/api/v1/settings/sync')
       .set(authorization)
@@ -398,18 +407,14 @@ describe('HTTP API', () => {
       .expect(201);
     const specId: string = createdSpec.body.data.id;
     await request(app)
-      .get(`/api/v1/specs/${specId}`)
+      .get(`/api/v1/specs/${specId}/manifest`)
       .set(authorization)
       .expect(200)
       .expect(({ body }) => {
         expect(body.data).not.toHaveProperty('body');
         expect(body.data.bodySizeBytes).toBeGreaterThan(0);
       });
-    await request(app)
-      .get(`/api/v1/specs/${specId}/manifest`)
-      .set(authorization)
-      .expect(200)
-      .expect(({ body }) => expect(body.data).not.toHaveProperty('body'));
+    await request(app).get(`/api/v1/specs/${specId}`).set(authorization).expect(404);
     const cancellableSpec = await request(app)
       .post(`/api/v1/projects/${projectId}/specs`)
       .set(authorization)
@@ -539,7 +544,7 @@ describe('HTTP API', () => {
       .send({ title: 'Build the complete API', expectedRevision: updatedTask.body.data.revision })
       .expect(200);
     await request(app)
-      .get(`/api/v1/tasks/${taskId}`)
+      .get(`/api/v1/tasks/${taskId}/manifest`)
       .set(authorization)
       .expect(200)
       .expect(({ body }) => {
@@ -560,18 +565,14 @@ describe('HTTP API', () => {
         expect(body.data.items[0].specCount).toBe(2);
       });
     await request(app)
-      .get(`/api/v1/projects/${projectId}`)
+      .get(`/api/v1/projects/${projectId}/manifest`)
       .set(authorization)
       .expect(200)
       .expect(({ body }) => {
         expect(body.data).not.toHaveProperty('prd');
         expect(body.data.specCount).toBe(2);
       });
-    await request(app)
-      .get(`/api/v1/projects/${projectId}/manifest`)
-      .set(authorization)
-      .expect(200)
-      .expect(({ body }) => expect(body.data.specCount).toBe(2));
+    await request(app).get(`/api/v1/projects/${projectId}`).set(authorization).expect(404);
     await request(app)
       .get(`/api/v1/specs/${specId}/body?offsetCodeUnits=2&limitCodeUnits=3`)
       .set(authorization)
@@ -759,6 +760,166 @@ describe('HTTP API', () => {
       .send({ prd: 'x'.repeat(2_100_000) })
       .expect(413)
       .expect(({ body }) => expect(body.error.code).toBe('payload_too_large'));
+  });
+
+  it('answers 401, 403, 405 and JSON 404 on the transport edges without leaking the server', async () => {
+    const authorization = { authorization: `Bearer ${token}` };
+    const initialize = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: { name: 'edge-test', version: '1.0.0' },
+      },
+    };
+    await request(app)
+      .post('/mcp')
+      .set('accept', 'application/json, text/event-stream')
+      .send(initialize)
+      .expect(401)
+      .expect(({ body, headers }) => {
+        expect(body.error.code).toBe('unauthorized');
+        expect(headers['x-powered-by']).toBeUndefined();
+      });
+    await request(app)
+      .post('/mcp')
+      .set(authorization)
+      .set('host', 'evil.example')
+      .set('accept', 'application/json, text/event-stream')
+      .send(initialize)
+      .expect(403);
+    await request(app)
+      .post('/mcp')
+      .set(authorization)
+      .set('origin', 'https://evil.example')
+      .set('accept', 'application/json, text/event-stream')
+      .send(initialize)
+      .expect(403);
+    await request(app)
+      .get('/api/v1/workspaces')
+      .set(authorization)
+      .set('origin', 'https://evil.example')
+      .expect(403);
+    for (const method of ['get', 'put', 'delete'] as const) {
+      await request(app)
+        [method]('/mcp')
+        .set(authorization)
+        .expect(405)
+        .expect(({ body, headers }) => {
+          expect(headers.allow).toBe('POST');
+          expect(body.error).toMatchObject({ code: 'bad_request', retryable: false });
+        });
+    }
+    await request(app)
+      .get('/nowhere')
+      .expect(404)
+      .expect(({ body, headers }) => {
+        expect(body.error.code).toBe('not_found');
+        expect(headers['content-type']).toContain('application/json');
+        expect(headers['x-powered-by']).toBeUndefined();
+      });
+  });
+
+  it('reports exact hasMore on an exact last page of every list route', async () => {
+    const authorization = { authorization: `Bearer ${token}` };
+    await request(app)
+      .post('/api/v1/workspaces')
+      .set(authorization)
+      .send({ id: 'paging', name: 'Paging', rootPath: temporaryDirectory })
+      .expect(201);
+    const projectIds: string[] = [];
+    for (const slug of ['first', 'second']) {
+      const created = await request(app)
+        .post('/api/v1/projects')
+        .set(authorization)
+        .send({ workspaceId: 'paging', slug, title: slug })
+        .expect(201);
+      projectIds.push(created.body.data.id);
+    }
+    const projectId = projectIds[0]!;
+    const specIds: string[] = [];
+    for (const slug of ['alpha', 'beta']) {
+      const created = await request(app)
+        .post(`/api/v1/projects/${projectId}/specs`)
+        .set(authorization)
+        .send({ slug, title: slug, body: '# Spec' })
+        .expect(201);
+      specIds.push(created.body.data.id);
+    }
+    for (const title of ['one', 'two']) {
+      await request(app)
+        .post(`/api/v1/specs/${specIds[0]}/tasks`)
+        .set(authorization)
+        .send({ title })
+        .expect(201);
+    }
+    for (const name of ['brief', 'notes']) {
+      await request(app)
+        .put(`/api/v1/projects/${projectId}/context/${name}`)
+        .set(authorization)
+        .send({ body: `# ${name}` })
+        .expect(200);
+      await request(app)
+        .put(`/api/v1/workspaces/paging/context/${name}`)
+        .set(authorization)
+        .send({ body: `# ${name}` })
+        .expect(200);
+    }
+    const routes = [
+      '/api/v1/projects?workspaceId=paging',
+      `/api/v1/projects/${projectId}/specs`,
+      `/api/v1/specs/${specIds[0]}/tasks`,
+      `/api/v1/projects/${projectId}/context`,
+      '/api/v1/workspaces/paging/context',
+    ];
+    for (const route of routes) {
+      const separator = route.includes('?') ? '&' : '?';
+      const exact = await request(app)
+        .get(`${route}${separator}limit=2&offset=0`)
+        .set(authorization)
+        .expect(200);
+      expect(exact.body.data).toMatchObject({ limit: 2, offset: 0, hasMore: false });
+      expect(exact.body.data.items).toHaveLength(2);
+      const partial = await request(app)
+        .get(`${route}${separator}limit=1&offset=0`)
+        .set(authorization)
+        .expect(200);
+      expect(partial.body.data).toMatchObject({ limit: 1, offset: 0, hasMore: true });
+      expect(partial.body.data.items).toHaveLength(1);
+      const tail = await request(app)
+        .get(`${route}${separator}limit=1&offset=1`)
+        .set(authorization)
+        .expect(200);
+      expect(tail.body.data).toMatchObject({ limit: 1, offset: 1, hasMore: false });
+    }
+    await request(app)
+      .get('/api/v1/projects?limit=201')
+      .set(authorization)
+      .expect(400)
+      .expect(({ body }) => expect(body.error.code).toBe('bad_request'));
+    await request(app)
+      .patch(`/api/v1/projects/${projectId}`)
+      .set(authorization)
+      .send({ expectedRevision: 1 })
+      .expect(400)
+      .expect(({ body }) => expect(body.error.details.issues[0].message).toMatch(/title/u));
+  });
+
+  it('reports readiness from the SQLite probe on /health', async () => {
+    const degraded = createHttpApp({ ping: () => false } as unknown as PimpampumHttpGateway, {
+      host: '127.0.0.1',
+      port: 7337,
+      dataDirectory: temporaryDirectory,
+      databasePath: ':memory:',
+      token,
+      baseUrl: 'http://127.0.0.1:7337',
+    });
+    await request(degraded.app)
+      .get('/health')
+      .expect(503, { status: 'degraded', version: PIMPAMPUM_VERSION, ready: false });
+    await degraded.close();
   });
 
   it('returns JSON for unknown routes, logs internal failures and enforces safe composition', async () => {

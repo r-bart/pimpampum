@@ -18,7 +18,7 @@ import type { SyncEntityKind, SyncState } from './syncContract.js';
 import { activityFingerprint, normalizedSyncState } from './syncState.js';
 import {
   boundOverview,
-  sortOverviewProjects,
+  overviewProjectOrderSql,
   statusForOverview,
   statusForProject,
 } from './overview.js';
@@ -98,7 +98,15 @@ interface SpecRow {
   created_at: string;
   updated_at: string;
 }
-interface SpecManifestRow extends SpecRow {
+/** Columns of the active Claim joined onto a Spec or Task row; all NULL when unclaimed. */
+interface ClaimColumns {
+  claim_agent_id: string | null;
+  claim_expires_at: string | null;
+  claim_created_at: string | null;
+  claim_updated_at: string | null;
+}
+interface SpecWithClaimRow extends SpecRow, ClaimColumns {}
+interface SpecManifestRow extends SpecWithClaimRow {
   body_size_bytes: number;
   task_count: number;
   open_task_count: number;
@@ -132,10 +140,17 @@ interface TaskRow {
   created_at: string;
   updated_at: string;
 }
-interface TaskManifestRow extends TaskRow {
+interface TaskWithClaimRow extends TaskRow, ClaimColumns {}
+interface TaskManifestRow extends TaskWithClaimRow {
   body_size_bytes: number;
   subtask_count: number;
   open_subtask_count: number;
+}
+interface RevokedClaimRow {
+  target_type: TargetType;
+  target_id: string;
+  agent_id: string;
+  spec_id: string;
 }
 interface ClaimRow {
   target_type: TargetType;
@@ -189,7 +204,17 @@ const AVAILABLE_WORK_CTE = `WITH available AS (
     AND NOT EXISTS(SELECT 1 FROM claims WHERE target_type='task' AND target_id=t.id AND expires_at>?)
 )`;
 
-const now = (): string => new Date().toISOString();
+const CLAIM_COLUMNS =
+  'c.agent_id claim_agent_id,c.expires_at claim_expires_at,c.created_at claim_created_at,c.updated_at claim_updated_at';
+function claimJoinSql(targetType: TargetType, alias: string): string {
+  return `LEFT JOIN claims c ON c.target_type='${targetType}' AND c.target_id=${alias}.id AND c.expires_at>?`;
+}
+function isHighSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+function isLowSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
 function requireRow<T>(row: T | null | undefined, message: string): T {
   if (row == null) throw new AppError('not_found', message, 404);
   return row;
@@ -204,13 +229,27 @@ function parseObject(value: string): Record<string, unknown> {
     ? (parsed as Record<string, unknown>)
     : {};
 }
+/**
+ * Pages Markdown by UTF-16 code units without splitting a surrogate pair: when
+ * the window would end between the two halves of one code point, it grows by
+ * one unit so the page never carries a lone surrogate.
+ */
 function page(body: string, offsetCodeUnits: number, limitCodeUnits: number): MarkdownPage {
+  let end = Math.min(offsetCodeUnits + limitCodeUnits, body.length);
+  if (
+    end > offsetCodeUnits &&
+    end < body.length &&
+    isHighSurrogate(body.charCodeAt(end - 1)) &&
+    isLowSurrogate(body.charCodeAt(end))
+  ) {
+    end += 1;
+  }
   return {
-    body: body.slice(offsetCodeUnits, offsetCodeUnits + limitCodeUnits),
+    body: body.slice(offsetCodeUnits, end),
     offsetCodeUnits,
     totalCodeUnits: body.length,
     sizeBytes: Buffer.byteLength(body, 'utf8'),
-    hasMore: offsetCodeUnits + limitCodeUnits < body.length,
+    hasMore: end < body.length,
   };
 }
 function ownerColumn(type: ContextOwnerType): 'workspace_id' | 'project_id' {
@@ -224,7 +263,20 @@ export class PimpampumStore {
     private readonly onMutation: () => void = () => undefined,
     private syncConflictGuard: (entityType: SyncEntityKind, entityId: string) => boolean = () =>
       false,
+    private readonly clock: () => Date = () => new Date(),
   ) {}
+  /** Readiness probe for `/health`: false once the connection no longer answers. */
+  ping(): boolean {
+    try {
+      this.database.prepare('SELECT 1').get();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  private now(): string {
+    return this.clock().toISOString();
+  }
   setSyncConflictGuard(guard: (entityType: SyncEntityKind, entityId: string) => boolean): void {
     this.syncConflictGuard = guard;
   }
@@ -259,13 +311,13 @@ export class PimpampumStore {
       return this.runImmediate(() => {
         this.database
           .prepare('UPDATE workspaces SET name=?,root_path=?,updated_at=? WHERE id=?')
-          .run(input.name, rootPath, now(), input.id);
+          .run(input.name, rootPath, this.now(), input.id);
         return this.getWorkspace(input.id);
       });
     }
     try {
       return this.runImmediate(() => {
-        const at = now();
+        const at = this.now();
         this.database
           .prepare(
             'INSERT INTO workspaces (id,name,root_path,created_at,updated_at) VALUES (?,?,?,?,?)',
@@ -326,7 +378,7 @@ export class PimpampumStore {
       return this.runImmediate(() => {
         this.getWorkspace(input.workspaceId);
         const id = randomUUID(),
-          at = now();
+          at = this.now();
         this.database
           .prepare(
             "INSERT INTO projects (id,workspace_id,slug,title,state,created_at,updated_at) VALUES (?,?,?,?,'draft',?,?)",
@@ -344,19 +396,6 @@ export class PimpampumStore {
         throw new AppError('conflict', 'Project slug already exists in this Workspace', 409);
       throw error;
     }
-  }
-  listProjects(input: {
-    workspaceId: string | null;
-    state: ProjectState | null;
-    limit: number;
-    offset: number;
-  }): Project[] {
-    const f = this.projectFilter(input.workspaceId, input.state);
-    return (
-      this.database
-        .prepare(`SELECT * FROM projects ${f.sql} ORDER BY updated_at DESC,id LIMIT ? OFFSET ?`)
-        .all(...f.args, input.limit, input.offset) as ProjectRow[]
-    ).map((r) => this.mapProject(r));
   }
   listProjectManifests(input: {
     workspaceId: string | null;
@@ -406,6 +445,8 @@ export class PimpampumStore {
     expectedRevision: number;
     actor: string | null;
   }): Project {
+    if (input.title === null && input.state === null)
+      throw new AppError('bad_request', 'Provide a title and/or state to update.', 400);
     this.syncWritable('project', input.projectId);
     return this.runImmediate(() => {
       const current = this.getProject(input.projectId);
@@ -421,7 +462,7 @@ export class PimpampumStore {
         .prepare(
           'UPDATE projects SET title=?,state=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?',
         )
-        .run(title, state, now(), current.id, input.expectedRevision);
+        .run(title, state, this.now(), current.id, input.expectedRevision);
       this.changed(result.changes, current.revision);
       this.projectEvent(current.id, 'project.updated', input.actor, { title, state });
       return this.getProject(current.id);
@@ -441,7 +482,7 @@ export class PimpampumStore {
       this.allowed(
         evaluateProjectTransition(current.state, 'done', this.projectFacts(current.id)).reason,
       );
-      const at = now();
+      const at = this.now();
       const result = this.database
         .prepare(
           "UPDATE projects SET state='done',completion_summary=?,artifacts_json=?,completed_at=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?",
@@ -473,7 +514,7 @@ export class PimpampumStore {
       const p = this.getProject(input.projectId);
       this.revision(p.revision, input.expectedRevision);
       this.allowed(evaluateProjectTransition(p.state, 'cancelled', this.projectFacts(p.id)).reason);
-      const at = now();
+      const at = this.now();
       const tasks = this.database
         .prepare(
           "SELECT t.id,t.spec_id FROM tasks t JOIN specs s ON s.id=t.spec_id WHERE s.project_id=? AND t.state='open'",
@@ -482,6 +523,10 @@ export class PimpampumStore {
       const specs = this.database
         .prepare("SELECT id FROM specs WHERE project_id=? AND state IN ('draft','ready')")
         .all(p.id) as Array<{ id: string }>;
+      const revoked = this.activeClaimsWithin(
+        'WHERE c.expires_at>? AND (cs.project_id=? OR ts.project_id=?)',
+        [at, p.id, p.id],
+      );
       this.database
         .prepare(
           "DELETE FROM claims WHERE (target_type='spec' AND target_id IN (SELECT id FROM specs WHERE project_id=?)) OR (target_type='task' AND target_id IN (SELECT t.id FROM tasks t JOIN specs s ON s.id=t.spec_id WHERE s.project_id=?))",
@@ -497,11 +542,13 @@ export class PimpampumStore {
           "UPDATE specs SET state='cancelled',cancelled_at=?,revision=revision+1,updated_at=? WHERE project_id=? AND state IN ('draft','ready')",
         )
         .run(at, at, p.id);
-      this.database
+      const result = this.database
         .prepare(
           "UPDATE projects SET state='cancelled',cancelled_at=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?",
         )
         .run(at, at, p.id, input.expectedRevision);
+      this.changed(result.changes, p.revision);
+      this.revokeClaims(revoked, p.id, input.actor, 'project.cancelled', input.reason);
       for (const t of tasks)
         this.taskEvent(t.id, t.spec_id, p.id, 'task.cancelled', input.actor, {
           reason: input.reason,
@@ -529,7 +576,7 @@ export class PimpampumStore {
         if (isTerminalProjectState(p.state))
           throw new AppError('invalid_state', 'Specs cannot be added to a terminal Project', 409);
         const id = randomUUID(),
-          at = now();
+          at = this.now();
         this.database
           .prepare(
             "INSERT INTO specs (id,project_id,slug,title,body,state,created_at,updated_at) VALUES (?,?,?,?,?,'draft',?,?)",
@@ -548,14 +595,6 @@ export class PimpampumStore {
       throw error;
     }
   }
-  listSpecs(projectId: string): Spec[] {
-    this.getProject(projectId);
-    return (
-      this.database
-        .prepare('SELECT * FROM specs WHERE project_id=? ORDER BY updated_at DESC,rowid DESC')
-        .all(projectId) as SpecRow[]
-    ).map((r) => this.mapSpec(r));
-  }
   listSpecManifests(input: {
     projectId: string;
     state: SpecState | null;
@@ -563,7 +602,7 @@ export class PimpampumStore {
     offset: number;
   }): SpecManifest[] {
     this.getProject(input.projectId);
-    const args: unknown[] = [input.projectId];
+    const args: unknown[] = [this.now(), input.projectId];
     const state = input.state === null ? '' : (args.push(input.state), 'AND s.state=?');
     return (
       this.database
@@ -576,7 +615,8 @@ export class PimpampumStore {
   getSpec(id: string): Spec {
     return this.mapSpec(
       requireRow(
-        this.database.prepare('SELECT * FROM specs WHERE id=?').get(id) as SpecRow | undefined,
+        this.database.prepare(`${this.specSql()} WHERE s.id=?`).get(this.now(), id) as
+          SpecWithClaimRow | undefined,
         `Spec ${id} was not found`,
       ),
     );
@@ -584,7 +624,7 @@ export class PimpampumStore {
   getSpecManifest(id: string): SpecManifest {
     return this.mapSpecManifest(
       requireRow(
-        this.database.prepare(`${this.specManifestSql()} WHERE s.id=?`).get(id) as
+        this.database.prepare(`${this.specManifestSql()} WHERE s.id=?`).get(this.now(), id) as
           SpecManifestRow | undefined,
         `Spec ${id} was not found`,
       ),
@@ -609,6 +649,8 @@ export class PimpampumStore {
     expectedRevision: number;
     actor: string | null;
   }): Spec {
+    if (input.title === null && input.body === null && input.state === null)
+      throw new AppError('bad_request', 'Provide a title, body, and/or state to update.', 400);
     this.syncWritable('spec', input.specId);
     return this.runImmediate(() => {
       const s = this.getSpec(input.specId);
@@ -626,7 +668,7 @@ export class PimpampumStore {
         .prepare(
           'UPDATE specs SET title=?,body=?,state=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?',
         )
-        .run(title, body, state, now(), s.id, input.expectedRevision);
+        .run(title, body, state, this.now(), s.id, input.expectedRevision);
       this.changed(result.changes, s.revision);
       this.specEvent(s.id, s.projectId, 'spec.updated', input.actor, {
         title,
@@ -649,10 +691,15 @@ export class PimpampumStore {
       this.allowed(
         evaluateSpecTransition(s.state, 'cancelled', this.specFacts(s.id, s.body)).reason,
       );
-      const at = now();
+      const at = this.now();
       const tasks = this.database
         .prepare("SELECT id FROM tasks WHERE spec_id=? AND state='open'")
         .all(s.id) as Array<{ id: string }>;
+      const revoked = this.activeClaimsWithin('WHERE c.expires_at>? AND (cs.id=? OR ts.id=?)', [
+        at,
+        s.id,
+        s.id,
+      ]);
       this.database
         .prepare(
           "DELETE FROM claims WHERE (target_type='spec' AND target_id=?) OR (target_type='task' AND target_id IN (SELECT id FROM tasks WHERE spec_id=?))",
@@ -669,6 +716,7 @@ export class PimpampumStore {
         )
         .run(at, at, s.id, input.expectedRevision);
       this.changed(result.changes, s.revision);
+      this.revokeClaims(revoked, s.projectId, input.actor, 'spec.cancelled', input.reason);
       for (const t of tasks)
         this.taskEvent(t.id, s.id, s.projectId, 'task.cancelled', input.actor, {
           reason: input.reason,
@@ -682,16 +730,6 @@ export class PimpampumStore {
     });
   }
 
-  listContext(ownerType: ContextOwnerType, ownerId: string): ContextDocument[] {
-    this.assertOwner(ownerType, ownerId);
-    return (
-      this.database
-        .prepare(
-          `SELECT * FROM context_documents WHERE ${ownerColumn(ownerType)}=? ORDER BY name,id`,
-        )
-        .all(ownerId) as ContextRow[]
-    ).map((r) => this.mapContext(r));
-  }
   listContextManifests(input: {
     ownerType: ContextOwnerType;
     ownerId: string;
@@ -757,7 +795,7 @@ export class PimpampumStore {
         .prepare(`SELECT * FROM context_documents WHERE ${col}=? AND name=?`)
         .get(input.ownerId, input.name) as ContextRow | undefined;
       if (existing) this.syncWritable('context', existing.id);
-      const at = now();
+      const at = this.now();
       if (existing) {
         if (input.expectedRevision === null)
           throw new AppError('conflict', 'Context document already exists', 409);
@@ -829,7 +867,7 @@ export class PimpampumStore {
           );
       }
       const id = randomUUID(),
-        at = now();
+        at = this.now();
       this.database
         .prepare(
           "INSERT INTO tasks (id,spec_id,parent_id,title,body,state,created_at,updated_at) VALUES (?,?,?,?,?,'open',?,?)",
@@ -842,16 +880,6 @@ export class PimpampumStore {
       return this.getTask(id);
     });
   }
-  listTasks(specId: string): Task[] {
-    this.getSpec(specId);
-    return (
-      this.database
-        .prepare(
-          'SELECT * FROM tasks WHERE spec_id=? ORDER BY CASE WHEN parent_id IS NULL THEN id ELSE parent_id END,parent_id IS NOT NULL,created_at,id',
-        )
-        .all(specId) as TaskRow[]
-    ).map((r) => this.mapTask(r));
-  }
   listTaskManifests(input: { specId: string; limit: number; offset: number }): TaskManifest[] {
     this.getSpec(input.specId);
     return (
@@ -859,13 +887,14 @@ export class PimpampumStore {
         .prepare(
           `${this.taskManifestSql()} WHERE t.spec_id=? ORDER BY CASE WHEN t.parent_id IS NULL THEN t.id ELSE t.parent_id END,t.parent_id IS NOT NULL,t.created_at,t.id LIMIT ? OFFSET ?`,
         )
-        .all(input.specId, input.limit, input.offset) as TaskManifestRow[]
+        .all(this.now(), input.specId, input.limit, input.offset) as TaskManifestRow[]
     ).map((r) => this.mapTaskManifest(r));
   }
   getTask(id: string): Task {
     return this.mapTask(
       requireRow(
-        this.database.prepare('SELECT * FROM tasks WHERE id=?').get(id) as TaskRow | undefined,
+        this.database.prepare(`${this.taskSql()} WHERE t.id=?`).get(this.now(), id) as
+          TaskWithClaimRow | undefined,
         `Task ${id} was not found`,
       ),
     );
@@ -873,7 +902,7 @@ export class PimpampumStore {
   getTaskManifest(id: string): TaskManifest {
     return this.mapTaskManifest(
       requireRow(
-        this.database.prepare(`${this.taskManifestSql()} WHERE t.id=?`).get(id) as
+        this.database.prepare(`${this.taskManifestSql()} WHERE t.id=?`).get(this.now(), id) as
           TaskManifestRow | undefined,
         `Task ${id} was not found`,
       ),
@@ -897,6 +926,8 @@ export class PimpampumStore {
     expectedRevision: number;
     actor: string | null;
   }): Task {
+    if (input.title === null && input.body === undefined)
+      throw new AppError('bad_request', 'Provide a title and/or body to update.', 400);
     this.syncWritable('task', input.taskId);
     return this.runImmediate(() => {
       const t = this.getTask(input.taskId);
@@ -915,7 +946,7 @@ export class PimpampumStore {
         .prepare(
           'UPDATE tasks SET title=?,body=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?',
         )
-        .run(title, body, now(), t.id, input.expectedRevision);
+        .run(title, body, this.now(), t.id, input.expectedRevision);
       this.changed(result.changes, t.revision);
       this.taskEvent(t.id, s.id, p.id, 'task.updated', input.actor, { title });
       return this.getTask(t.id);
@@ -938,10 +969,14 @@ export class PimpampumStore {
       );
       const s = this.getSpec(t.specId),
         p = this.getProject(s.projectId),
-        at = now();
+        at = this.now();
       const children = this.database
         .prepare("SELECT id FROM tasks WHERE parent_id=? AND state='open'")
         .all(t.id) as Array<{ id: string }>;
+      const revoked = this.activeClaimsWithin(
+        "WHERE c.expires_at>? AND c.target_type='task' AND (ct.id=? OR ct.parent_id=?)",
+        [at, t.id, t.id],
+      );
       this.database
         .prepare(
           "DELETE FROM claims WHERE target_type='task' AND (target_id=? OR target_id IN (SELECT id FROM tasks WHERE parent_id=?))",
@@ -958,6 +993,7 @@ export class PimpampumStore {
         )
         .run(at, at, t.id, input.expectedRevision);
       this.changed(result.changes, t.revision);
+      this.revokeClaims(revoked, p.id, input.actor, 'task.cancelled', input.reason);
       for (const child of children)
         this.taskEvent(child.id, s.id, p.id, 'task.cancelled', input.actor, {
           reason: input.reason,
@@ -978,7 +1014,7 @@ export class PimpampumStore {
     limit: number;
   }): WorkItem[] {
     this.assertWorkScope(input.workspaceId, input.projectId, input.specId);
-    const at = now(),
+    const at = this.now(),
       filters: string[] = [],
       args: unknown[] = [at, at];
     if (input.workspaceId) {
@@ -1024,7 +1060,7 @@ export class PimpampumStore {
     this.syncWritable(input.targetType, input.targetId);
     const changed = this.database
       .transaction(() => {
-        const at = now();
+        const at = this.now();
         this.database
           .prepare('DELETE FROM claims WHERE target_type=? AND target_id=? AND expires_at<=?')
           .run(input.targetType, input.targetId, at);
@@ -1032,7 +1068,9 @@ export class PimpampumStore {
         if (existing?.agentId === input.agentId) return false;
         if (existing) throw new AppError('conflict', 'Work is already claimed', 409, true);
         this.assertTargetAvailable(input.targetType, input.targetId);
-        const expiresAt = new Date(Date.now() + input.leaseSeconds * 1000).toISOString();
+        const expiresAt = new Date(
+          this.clock().getTime() + input.leaseSeconds * 1000,
+        ).toISOString();
         this.database
           .prepare(
             'INSERT INTO claims (target_type,target_id,agent_id,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?)',
@@ -1059,9 +1097,9 @@ export class PimpampumStore {
   }): Claim {
     this.syncWritable(input.targetType, input.targetId);
     return this.runImmediate(() => {
-      const at = now(),
+      const at = this.now(),
         claim = this.ownedClaim(input.targetType, input.targetId, input.agentId, at),
-        expiresAt = new Date(Date.now() + input.leaseSeconds * 1000).toISOString();
+        expiresAt = new Date(this.clock().getTime() + input.leaseSeconds * 1000).toISOString();
       this.assertTargetAvailable(input.targetType, input.targetId);
       const result = this.database
         .prepare(
@@ -1091,7 +1129,7 @@ export class PimpampumStore {
     note: string | null;
   }): void {
     this.runImmediate(() => {
-      const at = now();
+      const at = this.now();
       this.ownedClaim(input.targetType, input.targetId, input.agentId, at);
       const result = this.database
         .prepare(
@@ -1112,8 +1150,8 @@ export class PimpampumStore {
   completeWork(input: CompleteWorkInput): Spec | Task {
     this.syncWritable(input.targetType, input.targetId);
     this.runImmediate(() => {
-      this.ownedClaim(input.targetType, input.targetId, input.agentId, now());
-      const at = now();
+      this.ownedClaim(input.targetType, input.targetId, input.agentId, this.now());
+      const at = this.now();
       if (input.targetType === 'spec') {
         const s = this.getSpec(input.targetId);
         this.revision(s.revision, input.expectedRevision);
@@ -1172,7 +1210,7 @@ export class PimpampumStore {
 
   getOverview(): OverviewSnapshot {
     return this.database.transaction(() => {
-      const at = now();
+      const at = this.now();
       const rows = this.database
         .prepare(
           `${AVAILABLE_WORK_CTE},
@@ -1200,13 +1238,13 @@ export class PimpampumStore {
            JOIN workspaces w ON w.id=p.workspace_id
            LEFT JOIN available_counts ON available_counts.project_id=p.id
            LEFT JOIN active_counts ON active_counts.project_id=p.id
-           ORDER BY CASE
-             WHEN COALESCE(active_counts.active_claim_count,0)>0 THEN 0
-             WHEN COALESCE(available_counts.available_work_count,0)>0 THEN 1
-             WHEN p.state IN ('draft','open') THEN 2
-             WHEN p.state='paused' THEN 3
-             ELSE 4
-           END,p.updated_at DESC,p.id
+           ORDER BY ${overviewProjectOrderSql({
+             activeClaimCount: 'COALESCE(active_counts.active_claim_count,0)',
+             availableWorkCount: 'COALESCE(available_counts.available_work_count,0)',
+             state: 'p.state',
+             updatedAt: 'p.updated_at',
+             id: 'p.id',
+           })}
            LIMIT 501`,
         )
         .all(at, at, at, at) as Array<
@@ -1238,34 +1276,33 @@ export class PimpampumStore {
         activeClaims: this.count('SELECT COUNT(*) count FROM claims WHERE expires_at>?', at),
         availableWork: rows[0]?.total_available_work ?? 0,
       };
-      const projects = rows
-        .map<OverviewProject>((r) => {
-          const availableWorkCount = r.available_work_count,
-            status = statusForProject({
-              lifecycleState: r.state,
-              activeClaimCount: r.active_claim_count,
-              availableWorkCount,
-            });
-          return {
-            id: r.id,
-            workspace: {
-              id: r.workspace_id,
-              name: r.workspace_name,
-              rootPath: r.workspace_root_path,
-            },
-            slug: r.slug,
-            title: r.title,
+      // Rows arrive in overview order from SQL; the LIMIT above depends on it.
+      const projects = rows.map<OverviewProject>((r) => {
+        const availableWorkCount = r.available_work_count,
+          status = statusForProject({
             lifecycleState: r.state,
-            status,
-            specCount: r.spec_count,
-            openTaskCount: r.open_task_count,
-            completedTaskCount: r.completed_task_count,
             activeClaimCount: r.active_claim_count,
             availableWorkCount,
-            updatedAt: r.updated_at,
-          };
-        })
-        .sort(sortOverviewProjects);
+          });
+        return {
+          id: r.id,
+          workspace: {
+            id: r.workspace_id,
+            name: r.workspace_name,
+            rootPath: r.workspace_root_path,
+          },
+          slug: r.slug,
+          title: r.title,
+          lifecycleState: r.state,
+          status,
+          specCount: r.spec_count,
+          openTaskCount: r.open_task_count,
+          completedTaskCount: r.completed_task_count,
+          activeClaimCount: r.active_claim_count,
+          availableWorkCount,
+          updatedAt: r.updated_at,
+        };
+      });
       const activeRows = this.database
         .prepare(
           `SELECT c.target_type,c.target_id,p.workspace_id,p.id project_id,p.title project_title,s.id spec_id,s.title spec_title,t.id task_id,t.title task_title,c.agent_id,c.expires_at FROM claims c LEFT JOIN tasks t ON c.target_type='task' AND t.id=c.target_id JOIN specs s ON (c.target_type='spec' AND s.id=c.target_id) OR (c.target_type='task' AND s.id=t.spec_id) JOIN projects p ON p.id=s.project_id WHERE c.expires_at>? ORDER BY c.updated_at DESC,c.target_id LIMIT 501`,
@@ -1393,7 +1430,7 @@ export class PimpampumStore {
   exportPortable(directory: string): string {
     if (!isAbsolute(directory))
       throw new AppError('bad_request', 'Export destination must be an absolute path', 400);
-    if (this.count('SELECT COUNT(*) count FROM claims WHERE expires_at>?', now()) > 0)
+    if (this.count('SELECT COUNT(*) count FROM claims WHERE expires_at>?', this.now()) > 0)
       throw new AppError(
         'conflict',
         'Portable export requires a maintenance window with no active Claims',
@@ -1417,10 +1454,13 @@ export class PimpampumStore {
       row.cancelled_at === null ? {} : { cancelledAt: row.cancelled_at };
     const projects = (
       this.database.prepare('SELECT * FROM projects ORDER BY id').all() as ProjectRow[]
-    ).map((row) => ({ ...this.mapProject(row), ...cancelledAt(row) }));
+    ).map((row) => {
+      const { cancelledAt: _cancelledAt, ...project } = this.mapProject(row);
+      return { ...project, ...cancelledAt(row) };
+    });
     const specs = (this.database.prepare('SELECT * FROM specs ORDER BY id').all() as SpecRow[]).map(
       (row) => {
-        const { claim: _claim, ...spec } = this.mapSpec(row);
+        const { cancelledAt: _cancelledAt, ...spec } = this.mapSpecRecord(row);
         return { ...spec, ...cancelledAt(row) };
       },
     );
@@ -1429,7 +1469,7 @@ export class PimpampumStore {
     ).map((row) => this.mapContext(row));
     const tasks = (this.database.prepare('SELECT * FROM tasks ORDER BY id').all() as TaskRow[]).map(
       (row) => {
-        const { claim: _claim, ...task } = this.mapTask(row);
+        const { cancelledAt: _cancelledAt, ...task } = this.mapTaskRecord(row);
         return { ...task, ...cancelledAt(row) };
       },
     );
@@ -1796,11 +1836,46 @@ export class PimpampumStore {
   private projectManifestSql(): string {
     return `SELECT p.*,(SELECT COUNT(*) FROM specs WHERE project_id=p.id) spec_count,(SELECT COUNT(*) FROM specs WHERE project_id=p.id AND state='draft') draft_spec_count,(SELECT COUNT(*) FROM specs WHERE project_id=p.id AND state='ready') ready_spec_count,(SELECT COUNT(*) FROM specs WHERE project_id=p.id AND state IN ('done','cancelled')) terminal_spec_count FROM projects p`;
   }
+  /** Every Spec read joins its active Claim once; the first bound parameter is the clock. */
+  private specSql(): string {
+    return `SELECT s.*,${CLAIM_COLUMNS} FROM specs s ${claimJoinSql('spec', 's')}`;
+  }
   private specManifestSql(): string {
-    return `SELECT s.*,length(CAST(s.body AS BLOB)) body_size_bytes,(SELECT COUNT(*) FROM tasks WHERE spec_id=s.id) task_count,(SELECT COUNT(*) FROM tasks WHERE spec_id=s.id AND state='open') open_task_count,(SELECT COUNT(*) FROM tasks WHERE spec_id=s.id AND state IN ('done','cancelled')) terminal_task_count FROM specs s`;
+    return `SELECT s.*,length(CAST(s.body AS BLOB)) body_size_bytes,(SELECT COUNT(*) FROM tasks WHERE spec_id=s.id) task_count,(SELECT COUNT(*) FROM tasks WHERE spec_id=s.id AND state='open') open_task_count,(SELECT COUNT(*) FROM tasks WHERE spec_id=s.id AND state IN ('done','cancelled')) terminal_task_count,${CLAIM_COLUMNS} FROM specs s ${claimJoinSql('spec', 's')}`;
+  }
+  private taskSql(): string {
+    return `SELECT t.*,${CLAIM_COLUMNS} FROM tasks t ${claimJoinSql('task', 't')}`;
   }
   private taskManifestSql(): string {
-    return `SELECT t.*,length(CAST(COALESCE(t.body,'') AS BLOB)) body_size_bytes,(SELECT COUNT(*) FROM tasks c WHERE c.parent_id=t.id) subtask_count,(SELECT COUNT(*) FROM tasks c WHERE c.parent_id=t.id AND c.state='open') open_subtask_count FROM tasks t`;
+    return `SELECT t.*,length(CAST(COALESCE(t.body,'') AS BLOB)) body_size_bytes,(SELECT COUNT(*) FROM tasks child WHERE child.parent_id=t.id) subtask_count,(SELECT COUNT(*) FROM tasks child WHERE child.parent_id=t.id AND child.state='open') open_subtask_count,${CLAIM_COLUMNS} FROM tasks t ${claimJoinSql('task', 't')}`;
+  }
+  /**
+   * Active Claims under a cancellation scope, resolved to the Spec that owns
+   * them. `cs` is the claimed Spec, `ct` the claimed Task and `ts` its Spec.
+   */
+  private activeClaimsWithin(where: string, args: unknown[]): RevokedClaimRow[] {
+    return this.database
+      .prepare(
+        `SELECT c.target_type,c.target_id,c.agent_id,COALESCE(cs.id,ts.id) spec_id FROM claims c LEFT JOIN specs cs ON c.target_type='spec' AND cs.id=c.target_id LEFT JOIN tasks ct ON c.target_type='task' AND ct.id=c.target_id LEFT JOIN specs ts ON ts.id=ct.spec_id ${where}`,
+      )
+      .all(...args) as RevokedClaimRow[];
+  }
+  /** Records `work.revoked` for every Claim a cascade cancellation deleted, naming its agent. */
+  private revokeClaims(
+    claims: RevokedClaimRow[],
+    projectId: string,
+    actor: string | null,
+    cause: string,
+    reason: string,
+  ): void {
+    for (const claim of claims)
+      this.specEvent(claim.spec_id, projectId, 'work.revoked', actor, {
+        targetType: claim.target_type,
+        targetId: claim.target_id,
+        agentId: claim.agent_id,
+        cause,
+        reason,
+      });
   }
   private count(sql: string, ...args: unknown[]): number {
     return (this.database.prepare(sql).get(...args) as CountRow | undefined)?.count ?? 0;
@@ -1810,7 +1885,7 @@ export class PimpampumStore {
     nonTerminalSpecCount: number;
     activeDescendantClaimCount: number;
   } {
-    const at = now();
+    const at = this.now();
     return {
       specCount: this.count('SELECT COUNT(*) count FROM specs WHERE project_id=?', projectId),
       nonTerminalSpecCount: this.count(
@@ -1834,7 +1909,7 @@ export class PimpampumStore {
     activeClaimCount: number;
     activeDescendantClaimCount: number;
   } {
-    const at = now();
+    const at = this.now();
     return {
       body,
       nonTerminalTaskCount: this.count(
@@ -1914,7 +1989,7 @@ export class PimpampumStore {
   private specIdForTarget(type: TargetType, id: string): string {
     return type === 'spec' ? this.getSpec(id).id : this.getTask(id).specId;
   }
-  private getClaim(type: TargetType, id: string, at = now()): Claim | null {
+  private getClaim(type: TargetType, id: string, at = this.now()): Claim | null {
     const row = this.database
       .prepare('SELECT * FROM claims WHERE target_type=? AND target_id=? AND expires_at>?')
       .get(type, id, at) as ClaimRow | undefined;
@@ -1922,7 +1997,22 @@ export class PimpampumStore {
   }
   private ownedClaim(type: TargetType, id: string, agentId: string, at: string): Claim {
     const claim = this.getClaim(type, id, at);
-    if (!claim) throw new AppError('conflict', 'Work is not currently claimed', 409, true);
+    if (!claim) {
+      const state = type === 'spec' ? this.getSpec(id).state : this.getTask(id).state;
+      const terminal =
+        type === 'spec'
+          ? isTerminalSpecState(state as SpecState)
+          : isTerminalTaskState(state as TaskState);
+      if (terminal)
+        throw new AppError(
+          'invalid_state',
+          `The ${type} is ${state}; its Claim was revoked and cannot be renewed, released, or completed`,
+          409,
+          false,
+          { targetType: type, targetId: id, state },
+        );
+      throw new AppError('conflict', 'Work is not currently claimed', 409, true);
+    }
     if (claim.agentId !== agentId)
       throw new AppError('conflict', `Work is claimed by ${claim.agentId}`, 409, true);
     return claim;
@@ -2013,7 +2103,7 @@ export class PimpampumStore {
         eventType,
         actor,
         JSON.stringify(data),
-        now(),
+        this.now(),
       );
   }
   private projectEvent(
@@ -2085,6 +2175,7 @@ export class PimpampumStore {
       completionSummary: r.completion_summary,
       artifacts: parseArtifacts(r.artifacts_json),
       completedAt: r.completed_at,
+      cancelledAt: r.cancelled_at,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };
@@ -2101,7 +2192,7 @@ export class PimpampumStore {
       terminalSpecCount: r.terminal_spec_count,
     };
   }
-  private mapSpec(r: SpecRow): Spec {
+  private mapSpecRecord(r: SpecRow): Omit<Spec, 'claim'> {
     return {
       id: r.id,
       projectId: r.project_id,
@@ -2113,10 +2204,13 @@ export class PimpampumStore {
       completionSummary: r.completion_summary,
       artifacts: parseArtifacts(r.artifacts_json),
       completedAt: r.completed_at,
+      cancelledAt: r.cancelled_at,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
-      claim: this.getClaim('spec', r.id),
     };
+  }
+  private mapSpec(r: SpecWithClaimRow): Spec {
+    return { ...this.mapSpecRecord(r), claim: this.mapJoinedClaim('spec', r.id, r) };
   }
   private mapSpecManifest(r: SpecManifestRow): SpecManifest {
     const { body: _b, artifacts: _a, completionSummary: _c, ...base } = this.mapSpec(r);
@@ -2148,7 +2242,7 @@ export class PimpampumStore {
     const { body: _b, ...base } = this.mapContext(r);
     return { ...base, sizeBytes: r.size_bytes };
   }
-  private mapTask(r: TaskRow): Task {
+  private mapTaskRecord(r: TaskRow): Omit<Task, 'claim'> {
     return {
       id: r.id,
       specId: r.spec_id,
@@ -2160,9 +2254,24 @@ export class PimpampumStore {
       completionSummary: r.completion_summary,
       artifacts: parseArtifacts(r.artifacts_json),
       completedAt: r.completed_at,
+      cancelledAt: r.cancelled_at,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
-      claim: this.getClaim('task', r.id),
+    };
+  }
+  private mapTask(r: TaskWithClaimRow): Task {
+    return { ...this.mapTaskRecord(r), claim: this.mapJoinedClaim('task', r.id, r) };
+  }
+  /** The LEFT JOIN leaves every claim column NULL when the row has no active Claim. */
+  private mapJoinedClaim(targetType: TargetType, targetId: string, r: ClaimColumns): Claim | null {
+    if (r.claim_agent_id === null) return null;
+    return {
+      targetType,
+      targetId,
+      agentId: r.claim_agent_id,
+      expiresAt: r.claim_expires_at as string,
+      createdAt: r.claim_created_at as string,
+      updatedAt: r.claim_updated_at as string,
     };
   }
   private mapTaskManifest(r: TaskManifestRow): TaskManifest {

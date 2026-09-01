@@ -35,27 +35,53 @@ describe('native setup CLI security boundaries', () => {
     expect(state.stderr).toEqual([]);
   });
 
+  // Every native entry is declared in the catalog, so the shared parser rejects a typo, a surplus
+  // token or a repeated flag with that command's usage line; only the cross-option rules stay here.
   it.each([
-    [['setup', 'retry', 'codex'], /requires an agent and --events/iu],
-    [['setup', 'retry', 'codex', 'extra', '--events'], /requires an agent and --events/iu],
+    [['setup', 'retry', 'codex'], /setup retry requires --events/iu],
+    [['setup', 'retry', '--events'], /Missing connector id/iu],
+    [['setup', 'retry', 'other', '--events'], /Connector id must be codex or claude-code/iu],
+    [['setup', 'retry', 'codex', 'extra', '--events'], /at most 1 positional/iu],
     [
       ['setup', 'retry', 'codex', '--events', '--keep', 'codex'],
-      /requires an agent and --events/iu,
+      /Unknown option for setup retry/iu,
     ],
-    [['setup', 'resume', '--events', '--keep', 'codex'], /keep decisions require setup apply/iu],
-    [['setup', 'resume', '--keep', 'codex'], /reserved for native setup event mode/iu],
+    [['setup', 'resume', '--events', '--keep', 'codex'], /Unknown option for setup resume/iu],
+    [
+      ['setup', 'apply', 'operation', 'revision', '--yes', '--keep', 'codex'],
+      /reserved for native setup event mode/iu,
+    ],
     [
       ['setup', 'apply', 'operation', 'revision', '--yes', '--events', '--events'],
-      /event mode may be selected once/iu,
+      /Repeated option: --events/iu,
     ],
     [['setup', 'unknown'], /unknown setup action/iu],
+    [['setup'], /Missing setup action/iu],
   ])('rejects malformed native arguments %#', async (arguments_, message) => {
     const state = fixture();
     await runCli(arguments_ as string[], state.runtime);
     expect(errors(state)).toMatch(message as RegExp);
+    expect(JSON.parse(state.stderr[0]!)).toMatchObject({ error: { code: 'bad_request' } });
     expect(state.runtime.exit).toHaveBeenCalledWith(1);
+    expect(state.setup.apply).not.toHaveBeenCalled();
     expect(state.setup.retryConnector).not.toHaveBeenCalled();
     expect(state.setup.resume).not.toHaveBeenCalled();
+  });
+
+  it('accepts the declared native options in any order', async () => {
+    const state = fixture();
+    await runCli(
+      ['setup', 'apply', '--events', 'operation', '--keep', 'codex', 'revision', '--yes'],
+      state.runtime,
+    );
+    expect(state.setup.apply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: 'operation',
+        expectedRevision: 'revision',
+        conflictDecisions: { codex: 'keep' },
+      }),
+    );
+    expect(state.stderr).toEqual([]);
   });
 
   it('rejects contradictory keep and replace decisions before mutation', async () => {

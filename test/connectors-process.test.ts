@@ -53,7 +53,7 @@ describe('bounded connector process and configuration primitives', () => {
         timeoutMilliseconds: 1_000,
         run,
       }),
-    ).resolves.toEqual({ executable, supported: true });
+    ).resolves.toEqual({ executable, supported: true, versionOutput: 'codex-cli 0.151.0' });
     expect(run).toHaveBeenCalledOnce();
   });
 

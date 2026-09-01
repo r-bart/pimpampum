@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import { openDatabase } from '../src/db.js';
 import { PimpampumStore } from '../src/store.js';
@@ -226,68 +227,111 @@ describe('Frozen desktop-status safety contract', () => {
   });
 
   it('sorts by semantic precedence, recency, and stable id rather than title', async () => {
-    const { sortOverviewProjects } = (await import(
+    const { overviewProjectOrderSql, statusPrecedence } = (await import(
       new URL('../src/overview.ts', import.meta.url).href
     )) as {
-      sortOverviewProjects(
-        left: { id: string; title: string; status: string; updatedAt: string },
-        right: { id: string; title: string; status: string; updatedAt: string },
-      ): number;
+      overviewProjectOrderSql(columns: {
+        activeClaimCount: string;
+        availableWorkCount: string;
+        state: string;
+        updatedAt: string;
+        id: string;
+      }): string;
+      statusPrecedence: Record<string, number>;
     };
+    expect(statusPrecedence).toEqual({ active: 0, available: 1, draft: 2, paused: 3, complete: 4 });
     const projects = [
       {
         id: 'complete',
         title: 'Duplicate',
-        status: 'complete',
+        state: 'done',
+        active: 0,
+        available: 0,
         updatedAt: '2026-08-26T20:04:00.000Z',
       },
       {
         id: 'available-older',
         title: 'Duplicate',
-        status: 'available',
+        state: 'open',
+        active: 0,
+        available: 1,
         updatedAt: '2026-08-26T20:01:00.000Z',
       },
       {
         id: 'active',
         title: 'Duplicate',
-        status: 'active',
+        state: 'open',
+        active: 1,
+        available: 0,
         updatedAt: '2026-08-26T20:00:00.000Z',
       },
       {
         id: 'draft',
         title: 'Duplicate',
-        status: 'draft',
+        state: 'draft',
+        active: 0,
+        available: 0,
         updatedAt: '2026-08-26T20:03:00.000Z',
       },
       {
         id: 'paused',
         title: 'Duplicate',
-        status: 'paused',
+        state: 'paused',
+        active: 0,
+        available: 0,
         updatedAt: '2026-08-26T20:05:00.000Z',
       },
       {
         id: 'available-newer-b',
         title: 'Duplicate',
-        status: 'available',
+        state: 'open',
+        active: 0,
+        available: 1,
         updatedAt: '2026-08-26T20:02:00.000Z',
       },
       {
         id: 'available-newer-a',
         title: 'Duplicate',
-        status: 'available',
+        state: 'open',
+        active: 0,
+        available: 1,
         updatedAt: '2026-08-26T20:02:00.000Z',
       },
     ];
-
-    expect([...projects].sort(sortOverviewProjects).map(({ id }) => id)).toEqual([
-      'active',
-      'available-newer-a',
-      'available-newer-b',
-      'available-older',
-      'draft',
-      'paused',
-      'complete',
-    ]);
+    // The same ORDER BY the store binds; run it against a scratch table so the SQL is the
+    // artefact under test rather than a JavaScript twin of it.
+    const database = new Database(':memory:');
+    try {
+      database.exec(
+        'CREATE TABLE rows (id TEXT, title TEXT, state TEXT, active INTEGER, available INTEGER, updated_at TEXT)',
+      );
+      const insert = database.prepare('INSERT INTO rows VALUES (?,?,?,?,?,?)');
+      for (const row of projects) {
+        insert.run(row.id, row.title, row.state, row.active, row.available, row.updatedAt);
+      }
+      const ordered = database
+        .prepare(
+          `SELECT id FROM rows ORDER BY ${overviewProjectOrderSql({
+            activeClaimCount: 'active',
+            availableWorkCount: 'available',
+            state: 'state',
+            updatedAt: 'updated_at',
+            id: 'id',
+          })}`,
+        )
+        .all() as Array<{ id: string }>;
+      expect(ordered.map(({ id }) => id)).toEqual([
+        'active',
+        'available-newer-a',
+        'available-newer-b',
+        'available-older',
+        'draft',
+        'paused',
+        'complete',
+      ]);
+    } finally {
+      database.close();
+    }
   });
 
   it('caps the real store response while retaining total project counts', () => {

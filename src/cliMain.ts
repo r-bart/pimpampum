@@ -15,18 +15,35 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { arch, homedir, platform } from 'node:os';
-import { dirname, isAbsolute, join, relative as relativePath, resolve, sep } from 'node:path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative as relativePath,
+  resolve,
+  sep,
+} from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentCliClient } from './agentClient.js';
-import { createLocalErrorEnvelope } from './agentProtocol.js';
+import { createLocalErrorEnvelope, localErrorDetails } from './agentProtocol.js';
 import { createHttpClient } from './client.js';
 import {
   createCliConnectionsRuntime,
   createCliSetupRuntime,
   MAX_AGENT_INPUT_BYTES,
+  MAX_BODY_FILE_BYTES,
   runCli,
+  type CliRuntime,
 } from './cliProgram.js';
-import { loadConfig } from './config.js';
+import {
+  createClientConfigResolver,
+  ensureDataDirectory,
+  loadConfig,
+  missingDaemonTokenError,
+  tokenPathOf,
+  type RuntimeConfig,
+} from './config.js';
 import { createClaudeCodeConnector } from './connectors/claudeCode.js';
 import { createCodexConnector } from './connectors/codex.js';
 import {
@@ -48,7 +65,11 @@ import { createMacOSDesktopAdapter } from './service/macosApp.js';
 import { createPlatformServiceManager } from './service/manager.js';
 import { verifyServiceHealth } from './service/health.js';
 import { createOmarchyAdapter, isCompatibleOmarchyVersion } from './service/omarchy.js';
-import { findExecutable, runServiceCommand } from './service/platform.js';
+import {
+  createServiceCommandRunner,
+  findExecutable,
+  runServiceCommand,
+} from './service/platform.js';
 import {
   installReceiptPath,
   readInstallReceipt,
@@ -57,6 +78,7 @@ import {
 } from './service/receipt.js';
 import { createSystemdAdapter } from './service/systemd.js';
 import type {
+  CommandResult,
   InstallReceiptFileSnapshot,
   PackagedRuntimeMetadata,
   PlatformServiceManagerInput,
@@ -67,6 +89,7 @@ import type {
 import { startServer } from './server.js';
 import { PIMPAMPUM_VERSION } from './version.js';
 import {
+  createReleaseTrustStore,
   createUpdateManager,
   receiptUsesPackagedRelease,
   RELEASE_FETCH_TIMEOUT_MS,
@@ -87,7 +110,11 @@ import {
   type PreparedRuntimeRemoval,
   type RuntimeInstallationTransaction,
 } from './runtime/installer.js';
-import { resolvePackagedRuntimeBootstrap } from './runtime/bootstrap.js';
+import {
+  installedApplicationPath,
+  resolvePackagedRuntimeBootstrap,
+  type PackagedRuntimeBootstrap,
+} from './runtime/bootstrap.js';
 import { validateRuntimeArchiveFile } from './runtime/archive.js';
 import { createInstallationLifecycle, createSetupCoordinator } from './setup/coordinator.js';
 import {
@@ -215,23 +242,23 @@ export function createConnectionReceiptStore(dataDirectory: string, connectorId:
   };
 }
 
-function decodeToolInput(buffer: Buffer): string {
+function decodeToolInput(buffer: Buffer, label = 'Tool input'): string {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
   } catch {
-    throw new AppError('bad_request', 'Tool input must be valid UTF-8', 400);
+    throw new AppError('bad_request', `${label} must be valid UTF-8`, 400);
   }
 }
 
-function inputTooLarge(maxBytes: number): AppError {
-  return new AppError(
-    'payload_too_large',
-    `Tool input exceeds ${String(maxBytes)} UTF-8 bytes`,
-    413,
-  );
+function inputTooLarge(maxBytes: number, label = 'Tool input'): AppError {
+  return new AppError('payload_too_large', `${label} exceeds ${String(maxBytes)} UTF-8 bytes`, 413);
 }
 
-function readBoundedUtf8File(path: string, maxBytes: number): string {
+/**
+ * Every file the CLI reads on a caller's behalf — `--input-file`, `--body-file` — comes through
+ * here, so no argument can make the process load an unbounded file before the daemon refuses it.
+ */
+function readBoundedUtf8File(path: string, maxBytes: number, label = 'Tool input'): string {
   const descriptor = openSync(path, 'r');
   const chunks: Buffer[] = [];
   let total = 0;
@@ -246,8 +273,8 @@ function readBoundedUtf8File(path: string, maxBytes: number): string {
   } finally {
     closeSync(descriptor);
   }
-  if (total > maxBytes) throw inputTooLarge(maxBytes);
-  return decodeToolInput(Buffer.concat(chunks, total));
+  if (total > maxBytes) throw inputTooLarge(maxBytes, label);
+  return decodeToolInput(Buffer.concat(chunks, total), label);
 }
 
 // A rolling release that only ever carries the signed manifest and the public key. The release job
@@ -775,7 +802,9 @@ export function createConcretePackagedProvider(
         const stagedAppPath = validateCandidateInventory(candidatePath, target, version);
         if (!pathInside(candidatePath, stagedAppPath))
           throw new Error('Staged app escaped its candidate root');
-        const installedApp = join(input.homeDirectory, 'Applications', 'Pimpampum.app');
+        // The bundle setup recorded, so an adopted `/Applications` copy is the one replaced and a
+        // stale managed copy is never revived; the managed path is only the fallback.
+        const installedApp = installedApplicationPath(input);
         const candidateRuntimeRoot = join(
           stagedAppPath,
           'Contents',
@@ -929,7 +958,7 @@ export function createConcretePackagedProvider(
                 throw new Error('Packaged update receipt disappeared before staging');
               }
               backupRoot = mkdtempSync(join(applicationsDirectory, '.pimpampum-app-backup-'));
-              backupApp = join(backupRoot, 'Pimpampum.app');
+              backupApp = join(backupRoot, basename(installedApp));
               return {
                 runtimeVersion: currentReceipt.version,
                 serviceCommand: [currentReceipt.nodePath, currentReceipt.cliPath],
@@ -1013,6 +1042,8 @@ export interface StagedMacOSApplication {
  */
 export async function stagePackagedMacOSApplication(input: {
   homeDirectory: string;
+  /** When given, the accepted manifest freshness is recorded in `update-trust.json` there. */
+  dataDirectory?: string;
   version: string;
   runCommand: RunCommand;
   fetchImplementation?: typeof globalThis.fetch;
@@ -1037,7 +1068,10 @@ export async function stagePackagedMacOSApplication(input: {
       throw new Error('A staged install source is never activated as an update');
     },
   };
-  const { manifest, asset } = await resolvePackagedRelease(provider);
+  const { manifest, asset } = await resolvePackagedRelease(
+    provider,
+    input.dataDirectory === undefined ? undefined : createReleaseTrustStore(input.dataDirectory),
+  );
   if (manifest.version !== input.version) {
     throw new AppError(
       'unavailable',
@@ -1069,6 +1103,9 @@ export function createCliUpdateManager(input: CliUpdateManagerInput): UpdateMana
     npmPath: input.npmPath === undefined ? resolveNpmPath(input.nodePath) : input.npmPath,
     nodePath: input.nodePath,
     runCommand: input.runCommand,
+    // The trust store persists the newest `issuedAt` accepted, so the replay check outlives
+    // this process instead of restarting from nothing on every `update:check`.
+    dataDirectory: input.dataDirectory,
     ...(installReceipt ? { installReceipt } : {}),
     ...(input.packagedRelease
       ? { packagedRelease: input.packagedRelease }
@@ -1092,14 +1129,68 @@ async function readBoundedStdin(maxBytes: number): Promise<string> {
   return decodeToolInput(Buffer.concat(chunks, total));
 }
 
+/** Resolves once on first use, so a verb pays only for the composition it needs. */
+function lazy<T>(build: () => T): () => T {
+  let resolved: { value: T } | null = null;
+  return () => {
+    if (resolved === null) resolved = { value: build() };
+    return resolved.value;
+  };
+}
+
+type InstallKind = 'packaged' | 'npm';
+
+/** `omarchy version` answers in milliseconds; a hung dispatcher must not stall `status`. */
+const OMARCHY_PROBE_TIMEOUT_MS = 5_000;
+/** `npm install --global` fetches a tarball and runs no scripts; ten minutes covers a slow network. */
+const NPM_INSTALL_TIMEOUT_MS = 600_000;
+
+/** The reinstall that fits how this CLI was installed, so the remedy never names the wrong tool. */
+function compositionRemedy(installKind: InstallKind, hostPlatform: string): string {
+  if (installKind === 'npm') {
+    return 'Reinstall with `npm install --global pimpampum`, then run `pimpampum status`.';
+  }
+  return hostPlatform === 'darwin'
+    ? 'Reinstall the Pimpampum app and run its guided setup, then run `pimpampum status`.'
+    : 'Reinstall the Pimpampum Status plugin and run `pimpampum-bootstrap` from its directory, then run `pimpampum status`.';
+}
+
+/**
+ * A packaged-runtime or receipt failure met while composing the lifecycle managers. It surfaces
+ * only for the verbs that resolve those managers, typed, with the remedy for this install kind.
+ * `help`, `version`, `commands` and `config` never reach the composition, and nothing here escapes
+ * to `cli.ts`, which would label it a startup failure and suggest npm to a packaged install.
+ */
+function compositionFailure(
+  error: unknown,
+  installKind: InstallKind,
+  hostPlatform: string,
+): AppError {
+  if (error instanceof AppError) return error;
+  const remedy = compositionRemedy(installKind, hostPlatform);
+  const message = error instanceof Error ? error.message : 'Lifecycle composition failed';
+  return new AppError('unavailable', `${message}. ${remedy}`, 503, false, {
+    phase: 'composition',
+    installKind,
+    remedy,
+    ...(error instanceof Error ? localErrorDetails(error) : {}),
+  });
+}
+
 /**
  * The real entry point. It receives the URL of `cli.ts` rather than using its own, so
  * `compiledCliPath` keeps resolving to `dist/cli.js`, which is the bin target and the file the
  * generated LaunchAgent and systemd unit invoke.
+ *
+ * Composition is lazy. The configuration is a pure read, the packaged-runtime bootstrap, the
+ * service managers, the connectors, the setup coordinator and the update manager each resolve on
+ * first use, and the two asynchronous preparations — staging the macOS app and probing Omarchy —
+ * run only for the verbs that need them. `help` with a read-only home therefore succeeds, and a
+ * corrupt receipt fails `status` with its own remedy instead of every verb with npm advice.
  */
 export async function runCliEntrypoint(entryUrl: string): Promise<void> {
-  const config = loadConfig();
-  const tokenFromEnvironment = Boolean(process.env.PIMPAMPUM_TOKEN?.trim());
+  const argv = process.argv.slice(2);
+  const verb = argv[0] ?? '';
   const modulePath = fileURLToPath(entryUrl);
   const sourceMode = modulePath.endsWith('.ts');
   const compiledCliPath = sourceMode
@@ -1117,46 +1208,76 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
     runtimePlatform !== null &&
     !(runtimePlatform === 'darwin' && runtimeArchitecture !== 'arm64');
   const homeDirectory = homedir();
-  const packagedRuntimeBootstrap = supportedRuntimeTarget
-    ? resolvePackagedRuntimeBootstrap({
+  const tokenFromEnvironment = Boolean(process.env.PIMPAMPUM_TOKEN?.trim());
+
+  // Clients read the configuration. Only `serve` creates the data directory and mints the token,
+  // and only the lifecycle verbs create the directory their receipts and journals live in.
+  const clientConfig = createClientConfigResolver();
+  const daemonClientConfig = (): RuntimeConfig => {
+    const config = clientConfig();
+    if (config.token === '') throw missingDaemonTokenError(config.dataDirectory);
+    return config;
+  };
+
+  const packagedRuntimeBootstrap = lazy((): PackagedRuntimeBootstrap | null => {
+    if (!supportedRuntimeTarget) return null;
+    try {
+      return resolvePackagedRuntimeBootstrap({
         homeDirectory,
-        dataDirectory: config.dataDirectory,
+        dataDirectory: clientConfig().dataDirectory,
         platform: runtimePlatform,
         architecture: runtimeArchitecture,
         version: PIMPAMPUM_VERSION,
         nodePath: process.execPath,
         cliPath: compiledCliPath,
-      })
-    : null;
-  const builtMacOSApp =
-    packagedRuntimeBootstrap?.sourceApplicationPath ??
-    resolve(dirname(modulePath), '..', 'platforms', 'macos', 'dist', 'Pimpampum.app');
+      });
+    } catch (error) {
+      // Only a packaged runtime can fail here: a manifest beside the CLI or an active runtime
+      // receipt that names this exact CLI.
+      throw compositionFailure(error, 'packaged', hostPlatform);
+    }
+  });
+  const installKind = (): InstallKind => {
+    try {
+      return packagedRuntimeBootstrap() === null ? 'npm' : 'packaged';
+    } catch {
+      return 'packaged';
+    }
+  };
+  const builtMacOSApp = lazy(
+    () =>
+      packagedRuntimeBootstrap()?.sourceApplicationPath ??
+      resolve(dirname(modulePath), '..', 'platforms', 'macos', 'dist', 'Pimpampum.app'),
+  );
+
   // An npm install has no app bundle next to the CLI. Only the two commands that copy the app need
   // one, so only they pay for the download; status and uninstall keep working without a source.
   const macOSAppSourceRequested =
     hostPlatform === 'darwin' &&
     runtimeArchitecture === 'arm64' &&
-    ((process.argv[2] === 'install' && !process.argv.includes('--service-only')) ||
-      (process.argv[2] === 'setup' && process.argv[3] === 'apply'));
+    ((verb === 'install' && !argv.includes('--service-only')) ||
+      (verb === 'setup' && argv[1] === 'apply'));
   let stagedMacOSApp: StagedMacOSApplication | null = null;
-  if (macOSAppSourceRequested && !pathEntryExists(builtMacOSApp)) {
+  if (macOSAppSourceRequested) {
     try {
-      stagedMacOSApp = await stagePackagedMacOSApplication({
-        homeDirectory,
-        version: PIMPAMPUM_VERSION,
-        runCommand: runServiceCommand,
-      });
+      if (!pathEntryExists(builtMacOSApp())) {
+        stagedMacOSApp = await stagePackagedMacOSApplication({
+          homeDirectory,
+          dataDirectory: clientConfig().dataDirectory,
+          version: PIMPAMPUM_VERSION,
+          runCommand: runServiceCommand,
+        });
+        // `runCli` exits through `process.exit`, so a `finally` would not run; the exit hook does.
+        const staged = stagedMacOSApp;
+        process.once('exit', () => staged.cleanup());
+      }
     } catch (error) {
       // Report it as the command's own failure. Letting it escape would reach the bootstrap in
       // `cli.ts`, which labels every error a startup failure and suggests reinstalling from npm.
       process.stderr.write(`${JSON.stringify(createLocalErrorEnvelope(error), null, 2)}\n`);
       process.exit(1);
     }
-    // `runCli` exits through `process.exit`, so a `finally` would not run; the exit hook does.
-    const staged = stagedMacOSApp;
-    process.once('exit', () => staged.cleanup());
   }
-  const bundledMacOSApp = stagedMacOSApp?.appBundlePath ?? builtMacOSApp;
   const bundledOmarchyPlugin = resolve(
     dirname(modulePath),
     '..',
@@ -1166,229 +1287,243 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
   );
   const omarchyPath = hostPlatform === 'linux' ? findExecutable('omarchy') : null;
   const omarchyShellPath = hostPlatform === 'linux' ? findExecutable('omarchy-shell') : null;
-  const serviceLifecycleRequested = new Set(['install', 'status', 'uninstall']).has(
-    process.argv[2] ?? '',
-  );
-  let omarchyVersion = null;
+  // Every verb that installs, verifies or replaces the service must know whether Omarchy owns the
+  // desktop, or `setup apply` installs a service without the status plugin.
+  const serviceLifecycleRequested = new Set([
+    'install',
+    'status',
+    'uninstall',
+    'setup',
+    'update',
+    'update:check',
+  ]).has(verb);
+  let omarchyVersion: CommandResult | null = null;
   if (serviceLifecycleRequested && omarchyPath && omarchyShellPath) {
-    omarchyVersion = await runServiceCommand(omarchyPath, ['version']).catch(() => null);
-    if (omarchyVersion && omarchyVersion.exitCode !== 0) {
-      omarchyVersion = await runServiceCommand(omarchyPath, ['--version']).catch(() => null);
-    }
+    const probe = (flag: string): Promise<CommandResult | null> =>
+      runServiceCommand(omarchyPath, [flag], {
+        timeoutMilliseconds: OMARCHY_PROBE_TIMEOUT_MS,
+      }).catch(() => null);
+    omarchyVersion = await probe('version');
+    if (omarchyVersion && omarchyVersion.exitCode !== 0) omarchyVersion = await probe('--version');
   }
   const useOmarchy =
     omarchyVersion?.exitCode === 0 && isCompatibleOmarchyVersion(omarchyVersion.stdout);
-  const linuxSystemdAdapter = hostPlatform === 'linux' ? createSystemdAdapter() : null;
-  const linuxOmarchyAdapter =
-    hostPlatform === 'linux' && omarchyPath && omarchyShellPath && linuxSystemdAdapter
-      ? createOmarchyAdapter({
-          pluginSourcePath: bundledOmarchyPlugin,
-          daemonAdapter: linuxSystemdAdapter,
-          omarchyPath,
-          omarchyShellPath,
-        })
-      : null;
-  const macOSLaunchdAdapter = hostPlatform === 'darwin' ? createLaunchdAdapter() : null;
-  const macOSDesktopAdapter =
-    hostPlatform === 'darwin' && macOSLaunchdAdapter
-      ? createMacOSDesktopAdapter({
-          appBundlePath: bundledMacOSApp,
-          daemonAdapter: macOSLaunchdAdapter,
-        })
-      : null;
 
-  const managerInput = {
-    platform: hostPlatform,
-    homeDirectory,
-    dataDirectory: config.dataDirectory,
-    nodePath: packagedRuntimeBootstrap?.nodePath ?? process.execPath,
-    cliPath: packagedRuntimeBootstrap?.cliPath ?? compiledCliPath,
-    version: PIMPAMPUM_VERSION,
-    host: config.host,
-    port: config.port,
-    runCommand: runServiceCommand,
-    ...(packagedRuntimeBootstrap === null
-      ? {}
-      : { packagedRuntime: packagedRuntimeBootstrap.packagedRuntime }),
-  };
-  const serviceManager = createHealthVerifiedServiceManager({
-    ...managerInput,
-    ...(macOSLaunchdAdapter && macOSDesktopAdapter
-      ? {
-          adapters: { darwin: macOSDesktopAdapter },
-          receiptAdapters: {
-            [macOSLaunchdAdapter.id]: macOSLaunchdAdapter,
-            [macOSDesktopAdapter.id]: macOSDesktopAdapter,
-          },
-        }
-      : hostPlatform === 'linux' && linuxSystemdAdapter
+  const lifecycle = lazy(() => {
+    const config = clientConfig();
+    const bootstrap = packagedRuntimeBootstrap();
+    // Receipts, lifecycle locks and setup journals live here; the daemon has not necessarily run.
+    ensureDataDirectory(config.dataDirectory);
+    const bundledMacOSApp = stagedMacOSApp?.appBundlePath ?? builtMacOSApp();
+    const linuxSystemdAdapter = hostPlatform === 'linux' ? createSystemdAdapter() : null;
+    const linuxOmarchyAdapter =
+      hostPlatform === 'linux' && omarchyPath && omarchyShellPath && linuxSystemdAdapter
+        ? createOmarchyAdapter({
+            pluginSourcePath: bundledOmarchyPlugin,
+            daemonAdapter: linuxSystemdAdapter,
+            omarchyPath,
+            omarchyShellPath,
+          })
+        : null;
+    const macOSLaunchdAdapter = hostPlatform === 'darwin' ? createLaunchdAdapter() : null;
+    const macOSDesktopAdapter =
+      hostPlatform === 'darwin' && macOSLaunchdAdapter
+        ? createMacOSDesktopAdapter({
+            appBundlePath: bundledMacOSApp,
+            daemonAdapter: macOSLaunchdAdapter,
+          })
+        : null;
+
+    const managerInput = {
+      platform: hostPlatform,
+      homeDirectory,
+      dataDirectory: config.dataDirectory,
+      nodePath: bootstrap?.nodePath ?? process.execPath,
+      cliPath: bootstrap?.cliPath ?? compiledCliPath,
+      version: PIMPAMPUM_VERSION,
+      host: config.host,
+      port: config.port,
+      runCommand: runServiceCommand,
+      ...(bootstrap === null ? {} : { packagedRuntime: bootstrap.packagedRuntime }),
+    };
+    const serviceManager = createHealthVerifiedServiceManager({
+      ...managerInput,
+      ...(macOSLaunchdAdapter && macOSDesktopAdapter
         ? {
-            adapters: {
-              linux: useOmarchy && linuxOmarchyAdapter ? linuxOmarchyAdapter : linuxSystemdAdapter,
-            },
+            adapters: { darwin: macOSDesktopAdapter },
             receiptAdapters: {
-              [linuxSystemdAdapter.id]: linuxSystemdAdapter,
-              ...(linuxOmarchyAdapter ? { [linuxOmarchyAdapter.id]: linuxOmarchyAdapter } : {}),
+              [macOSLaunchdAdapter.id]: macOSLaunchdAdapter,
+              [macOSDesktopAdapter.id]: macOSDesktopAdapter,
             },
           }
-        : {}),
-  });
-  const serviceOnlyManager =
-    macOSLaunchdAdapter && macOSDesktopAdapter
-      ? createHealthVerifiedServiceManager({
-          ...managerInput,
-          adapters: { darwin: macOSLaunchdAdapter },
-          receiptAdapters: {
-            [macOSLaunchdAdapter.id]: macOSLaunchdAdapter,
-            [macOSDesktopAdapter.id]: macOSDesktopAdapter,
-          },
-        })
-      : null;
-
-  let connections: ReturnType<typeof createCliConnectionsRuntime> | undefined;
-  let setup: ReturnType<typeof createCliSetupRuntime> | undefined;
-  let packagedUninstall: ServiceManager['uninstall'] | undefined;
-  if (supportedRuntimeTarget) {
-    const layout = resolveRuntimeLayout({
-      homeDirectory,
-      platform: runtimePlatform,
-      architecture: runtimeArchitecture,
-      version: PIMPAMPUM_VERSION,
-    });
-    const codexReceipt = createConnectionReceiptStore(config.dataDirectory, 'codex');
-    const claudeReceipt = createConnectionReceiptStore(config.dataDirectory, 'claude-code');
-    const codex = createCodexConnector({
-      launcherPath: layout.mcpLauncherPath,
-      boundedLocations: [
-        join(homeDirectory, '.local', 'bin'),
-        '/usr/local/bin',
-        '/opt/homebrew/bin',
-        '/Applications/Codex.app/Contents/Resources',
-      ],
-      path: process.env.PATH ?? '',
-      requiredTools: ['project_list', 'work_start'],
-      receipt: codexReceipt,
-    });
-    const claudeCode = createClaudeCodeConnector({
-      launcherPath: layout.mcpLauncherPath,
-      userConfigPath: join(homeDirectory, '.claude.json'),
-      boundedExecutableLocations: [
-        join(homeDirectory, '.local', 'bin'),
-        '/usr/local/bin',
-        '/opt/homebrew/bin',
-      ],
-      pathValue: process.env.PATH ?? '',
-      higherPrecedenceConfigSources: [{ path: resolve('.mcp.json'), scope: 'project' }],
-      requiredTools: ['project_list', 'work_start'],
-      receiptStore: claudeReceipt,
-    });
-    const connectorById = new Map<ConnectorId, HostConnector>([
-      ['codex', codex],
-      ['claude-code', claudeCode],
-    ]);
-    const orderedConnectors = createConnectorRegistry().map(({ id }) => connectorById.get(id)!);
-    const connectorReceiptById = new Map([
-      ['codex', codexReceipt],
-      ['claude-code', claudeReceipt],
-    ] as const);
-    connections = createCliConnectionsRuntime({
-      connectors: orderedConnectors,
-      launcherPath: layout.mcpLauncherPath,
-    });
-
-    const snapshots = new Map<ConnectorId, ConnectorSnapshot>();
-    const newSessionRequired = new Map<ConnectorId, boolean>();
-    const setupConnectors = Object.fromEntries(
-      orderedConnectors.map((connector) => [
-        connector.id,
-        {
-          inspect: async () => {
-            const inspected = await connector.inspect();
-            return {
-              state: inspected.state,
-              ...(inspected.state === 'conflict'
-                ? {
-                    comparison: 'An existing entry differs from the Pimpampum-owned launcher.',
-                    ...(inspected.entry === null
-                      ? {}
-                      : {
-                          revision: fingerprintCommand(inspected.entry),
-                          replacementSupported: inspected.entry.restorable !== false,
-                        }),
-                  }
-                : {}),
-            };
-          },
-          connect: async (input?: {
-            conflictDecision?: 'keep' | 'replace' | 'cancel';
-            reviewedEntryFingerprint?: string;
-          }) => {
-            const plan = await connector.plan(input);
-            if (
-              plan.state === 'conflict' &&
-              (plan.conflictDecision !== 'replace' || plan.mutations.length === 0)
-            ) {
-              throw Object.assign(new Error('The existing connector entry requires a decision'), {
-                code: 'CONNECTOR_CONFLICT',
-              });
+        : hostPlatform === 'linux' && linuxSystemdAdapter
+          ? {
+              adapters: {
+                linux:
+                  useOmarchy && linuxOmarchyAdapter ? linuxOmarchyAdapter : linuxSystemdAdapter,
+              },
+              receiptAdapters: {
+                [linuxSystemdAdapter.id]: linuxSystemdAdapter,
+                ...(linuxOmarchyAdapter ? { [linuxOmarchyAdapter.id]: linuxOmarchyAdapter } : {}),
+              },
             }
-            snapshots.set(connector.id, await connector.snapshot());
-            newSessionRequired.set(connector.id, plan.newSessionRequired);
-            await connector.connect(plan);
-          },
-          verify: async () => {
-            const verified = await connector.verify();
-            return {
-              available: verified.available,
-              newSessionRequired: newSessionRequired.get(connector.id) ?? false,
-            };
-          },
-          restore: async () => {
-            const snapshot = snapshots.get(connector.id);
-            if (snapshot !== undefined) await connector.restore(snapshot);
-          },
-        },
-      ]),
-    ) as Parameters<typeof createSetupCoordinator>[0]['connectors'];
-    let lastInstall: Awaited<ReturnType<typeof serviceManager.install>> | null = null;
-    const setupState = createSetupStateStore(config.dataDirectory);
-    const setupPlan = createSetupPlanStore(config.dataDirectory);
-    let setupRuntimeTransaction: Awaited<
-      ReturnType<NonNullable<typeof packagedRuntimeBootstrap>['prepareInstallation']>
-    > | null = null;
-    const commitSetupRuntime = (): void => {
-      if (setupRuntimeTransaction === null) return;
-      pruneOwnedRuntimeVersions({
+          : {}),
+    });
+    const serviceOnlyManager =
+      macOSLaunchdAdapter && macOSDesktopAdapter
+        ? createHealthVerifiedServiceManager({
+            ...managerInput,
+            adapters: { darwin: macOSLaunchdAdapter },
+            receiptAdapters: {
+              [macOSLaunchdAdapter.id]: macOSLaunchdAdapter,
+              [macOSDesktopAdapter.id]: macOSDesktopAdapter,
+            },
+          })
+        : undefined;
+
+    let connections: ReturnType<typeof createCliConnectionsRuntime> | undefined;
+    let setup: ReturnType<typeof createCliSetupRuntime> | undefined;
+    let packagedUninstall: ServiceManager['uninstall'] | undefined;
+    if (supportedRuntimeTarget) {
+      const layout = resolveRuntimeLayout({
         homeDirectory,
-        dataDirectory: config.dataDirectory,
         platform: runtimePlatform,
         architecture: runtimeArchitecture,
-        ...(setupRuntimeTransaction.installation.previousVersion === null
-          ? {}
-          : { keepVersions: [setupRuntimeTransaction.installation.previousVersion] }),
+        version: PIMPAMPUM_VERSION,
       });
-      setupRuntimeTransaction.commit();
-      setupRuntimeTransaction = null;
-    };
-    const setupCoordinator = createSetupCoordinator({
-      lifecycleLock: createSetupLifecycleLock(config.dataDirectory),
-      changeTargets: {
-        runtimeDirectory: layout.runtimeDirectory,
-        servicePath:
-          hostPlatform === 'darwin'
-            ? join(homeDirectory, 'Library', 'LaunchAgents', 'dev.pimpampum.daemon.plist')
-            : join(homeDirectory, '.config', 'systemd', 'user', 'pimpampum.service'),
-        dataDirectory: config.dataDirectory,
-        connectorConfigPaths: {
-          codex: join(homeDirectory, '.codex', 'config.toml'),
-          'claude-code': join(homeDirectory, '.claude.json'),
+      const codexReceipt = createConnectionReceiptStore(config.dataDirectory, 'codex');
+      const claudeReceipt = createConnectionReceiptStore(config.dataDirectory, 'claude-code');
+      const codex = createCodexConnector({
+        launcherPath: layout.mcpLauncherPath,
+        boundedLocations: [
+          join(homeDirectory, '.local', 'bin'),
+          '/usr/local/bin',
+          '/opt/homebrew/bin',
+          '/Applications/Codex.app/Contents/Resources',
+        ],
+        path: process.env.PATH ?? '',
+        requiredTools: ['project_list', 'work_start'],
+        receipt: codexReceipt,
+      });
+      const claudeCode = createClaudeCodeConnector({
+        launcherPath: layout.mcpLauncherPath,
+        userConfigPath: join(homeDirectory, '.claude.json'),
+        boundedExecutableLocations: [
+          join(homeDirectory, '.local', 'bin'),
+          '/usr/local/bin',
+          '/opt/homebrew/bin',
+        ],
+        pathValue: process.env.PATH ?? '',
+        higherPrecedenceConfigSources: [{ path: resolve('.mcp.json'), scope: 'project' }],
+        requiredTools: ['project_list', 'work_start'],
+        receiptStore: claudeReceipt,
+      });
+      const connectorById = new Map<ConnectorId, HostConnector>([
+        ['codex', codex],
+        ['claude-code', claudeCode],
+      ]);
+      const orderedConnectors = createConnectorRegistry().map(({ id }) => connectorById.get(id)!);
+      const connectorReceiptById = new Map([
+        ['codex', codexReceipt],
+        ['claude-code', claudeReceipt],
+      ] as const);
+      connections = createCliConnectionsRuntime({
+        connectors: orderedConnectors,
+        launcherPath: layout.mcpLauncherPath,
+      });
+
+      const snapshots = new Map<ConnectorId, ConnectorSnapshot>();
+      const newSessionRequired = new Map<ConnectorId, boolean>();
+      const setupConnectors = Object.fromEntries(
+        orderedConnectors.map((connector) => [
+          connector.id,
+          {
+            inspect: async () => {
+              const inspected = await connector.inspect();
+              return {
+                state: inspected.state,
+                ...(inspected.state === 'conflict'
+                  ? {
+                      comparison: 'An existing entry differs from the Pimpampum-owned launcher.',
+                      ...(inspected.entry === null
+                        ? {}
+                        : {
+                            revision: fingerprintCommand(inspected.entry),
+                            replacementSupported: inspected.entry.restorable !== false,
+                          }),
+                    }
+                  : {}),
+              };
+            },
+            connect: async (input?: {
+              conflictDecision?: 'keep' | 'replace' | 'cancel';
+              reviewedEntryFingerprint?: string;
+            }) => {
+              const plan = await connector.plan(input);
+              if (
+                plan.state === 'conflict' &&
+                (plan.conflictDecision !== 'replace' || plan.mutations.length === 0)
+              ) {
+                throw Object.assign(new Error('The existing connector entry requires a decision'), {
+                  code: 'CONNECTOR_CONFLICT',
+                });
+              }
+              snapshots.set(connector.id, await connector.snapshot());
+              newSessionRequired.set(connector.id, plan.newSessionRequired);
+              await connector.connect(plan);
+            },
+            verify: async () => {
+              const verified = await connector.verify();
+              return {
+                available: verified.available,
+                newSessionRequired: newSessionRequired.get(connector.id) ?? false,
+              };
+            },
+            restore: async () => {
+              const snapshot = snapshots.get(connector.id);
+              if (snapshot !== undefined) await connector.restore(snapshot);
+            },
+          },
+        ]),
+      ) as Parameters<typeof createSetupCoordinator>[0]['connectors'];
+      let lastInstall: Awaited<ReturnType<typeof serviceManager.install>> | null = null;
+      const setupState = createSetupStateStore(config.dataDirectory);
+      const setupPlan = createSetupPlanStore(config.dataDirectory);
+      let setupRuntimeTransaction: Awaited<
+        ReturnType<PackagedRuntimeBootstrap['prepareInstallation']>
+      > | null = null;
+      const commitSetupRuntime = (): void => {
+        if (setupRuntimeTransaction === null) return;
+        pruneOwnedRuntimeVersions({
+          homeDirectory,
+          dataDirectory: config.dataDirectory,
+          platform: runtimePlatform,
+          architecture: runtimeArchitecture,
+          ...(setupRuntimeTransaction.installation.previousVersion === null
+            ? {}
+            : { keepVersions: [setupRuntimeTransaction.installation.previousVersion] }),
+        });
+        setupRuntimeTransaction.commit();
+        setupRuntimeTransaction = null;
+      };
+      const setupCoordinator = createSetupCoordinator({
+        lifecycleLock: createSetupLifecycleLock(config.dataDirectory),
+        changeTargets: {
+          runtimeDirectory: layout.runtimeDirectory,
+          servicePath:
+            hostPlatform === 'darwin'
+              ? join(homeDirectory, 'Library', 'LaunchAgents', 'dev.pimpampum.daemon.plist')
+              : join(homeDirectory, '.config', 'systemd', 'user', 'pimpampum.service'),
+          dataDirectory: config.dataDirectory,
+          connectorConfigPaths: {
+            codex: join(homeDirectory, '.codex', 'config.toml'),
+            'claude-code': join(homeDirectory, '.claude.json'),
+          },
         },
-      },
-      runtime: {
-        install: async () => {
-          if (packagedRuntimeBootstrap === null) return { version: PIMPAMPUM_VERSION };
-          setupRuntimeTransaction = await packagedRuntimeBootstrap.prepareInstallation(
-            async (installation) => {
+        runtime: {
+          install: async () => {
+            if (bootstrap === null) return { version: PIMPAMPUM_VERSION };
+            setupRuntimeTransaction = await bootstrap.prepareInstallation(async (installation) => {
               const smoke = await runServiceCommand(installation.nodePath, [
                 installation.cliPath,
                 'version',
@@ -1402,369 +1537,401 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
               ) {
                 throw new Error('Packaged runtime CLI smoke returned an unexpected version');
               }
-            },
-          );
-          return { version: setupRuntimeTransaction.installation.version };
-        },
-        rollback: async () => {
-          setupRuntimeTransaction?.rollback();
-          setupRuntimeTransaction = null;
-        },
-      },
-      service: {
-        install: async () => {
-          lastInstall = await serviceManager.install();
-        },
-        verify: async () => {
-          // The manager's post-activation verifier completed inside service.install's rollback
-          // boundary. Keeping this coordinator phase explicit preserves durable progress ordering.
-        },
-        // Service installation has its own receipt-backed rollback transaction.
-        rollback: async () => undefined,
-      },
-      connectors: setupConnectors,
-      loginItem: {
-        register: async () => {
-          commitSetupRuntime();
-          return lastInstall?.loginItem === 'requiresApproval'
-            ? 'requires-approval'
-            : lastInstall?.loginItem === 'error'
-              ? 'denied'
-              : 'enabled';
-        },
-      },
-      dataDirectory: config.dataDirectory,
-      now: () => new Date().toISOString(),
-      stateStore: setupState,
-      planStore: setupPlan,
-    });
-    setup = createCliSetupRuntime(setupCoordinator, setupState);
-
-    packagedUninstall = async () => {
-      const serviceReceiptPath = installReceiptPath(config.dataDirectory);
-      const serviceReceipt = readInstallReceipt(serviceReceiptPath, config.dataDirectory);
-      const packaged =
-        serviceReceipt !== null &&
-        (serviceReceipt.updateProvider === 'packaged-release' ||
-          serviceReceipt.packagedRuntime !== undefined ||
-          ['launchd-macos-app', 'macos-app', 'systemd-omarchy-quattro'].includes(
-            serviceReceipt.adapter,
-          ));
-      if (!packaged) return serviceManager.uninstall();
-      if (!serviceManager.prepareUninstall) {
-        throw new Error('Packaged service removal transaction is unavailable');
-      }
-
-      let preparedService: PreparedServiceUninstall | null = null;
-      let preparedRuntime: PreparedRuntimeRemoval | null = null;
-      let capturedServiceReceipt: InstallReceiptFileSnapshot | null = null;
-      let disconnectedConnectorIds: ConnectorId[] = [];
-      const lifecycle = createInstallationLifecycle({
-        dataDirectory: config.dataDirectory,
-        homeDirectory,
-        lifecycleLock: createSetupLifecycleLock(config.dataDirectory),
-        runtime: {
-          stage: async () => {
-            throw new Error('Runtime staging is unavailable during removal');
-          },
-          activate: async () => undefined,
-          restore: async () => {
-            preparedRuntime?.rollback();
-            preparedRuntime = null;
-          },
-          removeOwned: async () => {
-            preparedRuntime = prepareOwnedRuntimeRemoval({
-              homeDirectory,
-              dataDirectory: config.dataDirectory,
-              platform: runtimePlatform,
-              architecture: runtimeArchitecture,
             });
+            return { version: setupRuntimeTransaction.installation.version };
           },
-          finalizeRemoval: async () => {
-            preparedRuntime?.commit();
-            preparedRuntime = null;
+          rollback: async () => {
+            setupRuntimeTransaction?.rollback();
+            setupRuntimeTransaction = null;
           },
         },
         service: {
-          // prepareUninstall deactivates the native registration inside its rollback boundary.
-          stop: async () => undefined,
           install: async () => {
-            throw new Error('Service installation is unavailable during removal');
+            lastInstall = await serviceManager.install();
           },
-          start: async () => undefined,
-          verify: async () => undefined,
-          restore: async () => {
-            if (preparedService === null) return;
-            const transaction = preparedService;
-            preparedService = null;
-            await transaction.rollback();
+          verify: async () => {
+            // The manager's post-activation verifier completed inside service.install's rollback
+            // boundary. Keeping this coordinator phase explicit preserves durable progress ordering.
           },
-          removeOwned: async () => {
-            preparedService = await serviceManager.prepareUninstall!();
-            if (preparedService === null) {
-              throw new Error('Packaged service receipt disappeared during removal');
-            }
-          },
-          finalizeRemoval: async () => {
-            if (preparedService === null) return;
-            const transaction = preparedService;
-            await transaction.finalize();
-            preparedService = null;
+          // Service installation has its own receipt-backed rollback transaction.
+          rollback: async () => undefined,
+        },
+        connectors: setupConnectors,
+        loginItem: {
+          register: async () => {
+            commitSetupRuntime();
+            return lastInstall?.loginItem === 'requiresApproval'
+              ? 'requires-approval'
+              : lastInstall?.loginItem === 'error'
+                ? 'denied'
+                : 'enabled';
           },
         },
-        connectors: {
-          reconcileOwned: async () => undefined,
-          snapshotOwned: async () => ({}),
-          planRemoval: async () => {
-            const ownedEntries: Record<string, unknown> = {};
-            const unprovenConnectorIds: string[] = [];
-            for (const connector of orderedConnectors) {
-              const inspection = await connector.inspect();
-              const receiptStore = connectorReceiptById.get(connector.id)!;
-              const receipt = await receiptStore.read();
-              if (
-                (inspection.state === 'ownedCurrent' || inspection.state === 'ownedStale') &&
-                inspection.entry !== null &&
-                receipt !== null
-              ) {
-                const snapshot = await connector.snapshot();
+        dataDirectory: config.dataDirectory,
+        now: () => new Date().toISOString(),
+        stateStore: setupState,
+        planStore: setupPlan,
+      });
+      setup = createCliSetupRuntime(setupCoordinator, setupState);
+
+      packagedUninstall = async () => {
+        const serviceReceiptPath = installReceiptPath(config.dataDirectory);
+        const serviceReceipt = readInstallReceipt(serviceReceiptPath, config.dataDirectory);
+        const packaged =
+          serviceReceipt !== null &&
+          (serviceReceipt.updateProvider === 'packaged-release' ||
+            serviceReceipt.packagedRuntime !== undefined ||
+            ['launchd-macos-app', 'macos-app', 'systemd-omarchy-quattro'].includes(
+              serviceReceipt.adapter,
+            ));
+        if (!packaged) return serviceManager.uninstall();
+        if (!serviceManager.prepareUninstall) {
+          throw new Error('Packaged service removal transaction is unavailable');
+        }
+
+        let preparedService: PreparedServiceUninstall | null = null;
+        let preparedRuntime: PreparedRuntimeRemoval | null = null;
+        let capturedServiceReceipt: InstallReceiptFileSnapshot | null = null;
+        let disconnectedConnectorIds: ConnectorId[] = [];
+        const removal = createInstallationLifecycle({
+          dataDirectory: config.dataDirectory,
+          homeDirectory,
+          lifecycleLock: createSetupLifecycleLock(config.dataDirectory),
+          runtime: {
+            stage: async () => {
+              throw new Error('Runtime staging is unavailable during removal');
+            },
+            activate: async () => undefined,
+            restore: async () => {
+              preparedRuntime?.rollback();
+              preparedRuntime = null;
+            },
+            removeOwned: async () => {
+              preparedRuntime = prepareOwnedRuntimeRemoval({
+                homeDirectory,
+                dataDirectory: config.dataDirectory,
+                platform: runtimePlatform,
+                architecture: runtimeArchitecture,
+              });
+            },
+            finalizeRemoval: async () => {
+              preparedRuntime?.commit();
+              preparedRuntime = null;
+            },
+          },
+          service: {
+            // prepareUninstall deactivates the native registration inside its rollback boundary.
+            stop: async () => undefined,
+            install: async () => {
+              throw new Error('Service installation is unavailable during removal');
+            },
+            start: async () => undefined,
+            verify: async () => undefined,
+            restore: async () => {
+              if (preparedService === null) return;
+              const transaction = preparedService;
+              preparedService = null;
+              await transaction.rollback();
+            },
+            removeOwned: async () => {
+              preparedService = await serviceManager.prepareUninstall!();
+              if (preparedService === null) {
+                throw new Error('Packaged service receipt disappeared during removal');
+              }
+            },
+            finalizeRemoval: async () => {
+              if (preparedService === null) return;
+              const transaction = preparedService;
+              await transaction.finalize();
+              preparedService = null;
+            },
+          },
+          connectors: {
+            reconcileOwned: async () => undefined,
+            snapshotOwned: async () => ({}),
+            planRemoval: async () => {
+              const ownedEntries: Record<string, unknown> = {};
+              const unprovenConnectorIds: string[] = [];
+              for (const connector of orderedConnectors) {
+                const inspection = await connector.inspect();
+                const receiptStore = connectorReceiptById.get(connector.id)!;
+                const receipt = await receiptStore.read();
                 if (
-                  snapshot.entry !== null &&
-                  fingerprintCommand(snapshot.entry) === fingerprintCommand(inspection.entry)
+                  (inspection.state === 'ownedCurrent' || inspection.state === 'ownedStale') &&
+                  inspection.entry !== null &&
+                  receipt !== null
                 ) {
-                  ownedEntries[connector.id] = { snapshot, receipt };
-                  continue;
+                  const snapshot = await connector.snapshot();
+                  if (
+                    snapshot.entry !== null &&
+                    fingerprintCommand(snapshot.entry) === fingerprintCommand(inspection.entry)
+                  ) {
+                    ownedEntries[connector.id] = { snapshot, receipt };
+                    continue;
+                  }
+                }
+                if (inspection.entry !== null || receipt !== null) {
+                  unprovenConnectorIds.push(connector.id);
                 }
               }
-              if (inspection.entry !== null || receipt !== null) {
-                unprovenConnectorIds.push(connector.id);
+              return { ownedEntries, unprovenConnectorIds };
+            },
+            disconnectOwned: async (entries = {}) => {
+              disconnectedConnectorIds = [];
+              for (const connector of orderedConnectors) {
+                if (!Object.hasOwn(entries, connector.id)) continue;
+                disconnectedConnectorIds.push(connector.id);
+                const result = await connector.disconnect();
+                if (!result.changed) {
+                  throw new Error(`${connector.displayName} owned entry changed during removal`);
+                }
               }
-            }
-            return { ownedEntries, unprovenConnectorIds };
-          },
-          disconnectOwned: async (entries = {}) => {
-            disconnectedConnectorIds = [];
-            for (const connector of orderedConnectors) {
-              if (!Object.hasOwn(entries, connector.id)) continue;
-              disconnectedConnectorIds.push(connector.id);
-              const result = await connector.disconnect();
-              if (!result.changed) {
-                throw new Error(`${connector.displayName} owned entry changed during removal`);
+            },
+            restoreOwned: async (entries) => {
+              const errors: unknown[] = [];
+              for (const connectorId of [...disconnectedConnectorIds].reverse()) {
+                const value = entries[connectorId];
+                if (!isRecord(value) || !isRecord(value.snapshot) || !isRecord(value.receipt)) {
+                  errors.push(new Error(`Invalid ${connectorId} removal snapshot`));
+                  continue;
+                }
+                const connector = connectorById.get(connectorId)!;
+                const receiptStore = connectorReceiptById.get(connectorId)!;
+                try {
+                  await connector.restore(value.snapshot as unknown as ConnectorSnapshot);
+                  await receiptStore.write(value.receipt as unknown as ConnectionReceipt);
+                } catch (error) {
+                  errors.push(error);
+                }
               }
-            }
-          },
-          restoreOwned: async (entries) => {
-            const errors: unknown[] = [];
-            for (const connectorId of [...disconnectedConnectorIds].reverse()) {
-              const value = entries[connectorId];
-              if (!isRecord(value) || !isRecord(value.snapshot) || !isRecord(value.receipt)) {
-                errors.push(new Error(`Invalid ${connectorId} removal snapshot`));
-                continue;
+              if (errors.length > 0) {
+                throw new AggregateError(errors, 'Agent connection removal rollback failed');
               }
-              const connector = connectorById.get(connectorId)!;
-              const receiptStore = connectorReceiptById.get(connectorId)!;
-              try {
-                await connector.restore(value.snapshot as unknown as ConnectorSnapshot);
-                await receiptStore.write(value.receipt as unknown as ConnectionReceipt);
-              } catch (error) {
-                errors.push(error);
+            },
+          },
+          receipt: {
+            read: async () => ({
+              runtimeVersion: serviceReceipt.version,
+              serviceCommand: [serviceReceipt.nodePath, serviceReceipt.cliPath],
+              connectorEntries: {},
+              adapter: serviceReceipt.adapter,
+              dataDirectory: serviceReceipt.dataDirectory,
+              runtimeKind: 'packaged',
+            }),
+            capture: async () => {
+              capturedServiceReceipt = snapshotInstallReceipt(
+                serviceReceiptPath,
+                config.dataDirectory,
+              );
+              if (capturedServiceReceipt === null) {
+                throw new Error('Packaged service receipt disappeared during removal planning');
               }
-            }
-            if (errors.length > 0) {
-              throw new AggregateError(errors, 'Agent connection removal rollback failed');
-            }
+              return {
+                snapshot: {
+                  runtimeVersion: capturedServiceReceipt.receipt.version,
+                  serviceCommand: [
+                    capturedServiceReceipt.receipt.nodePath,
+                    capturedServiceReceipt.receipt.cliPath,
+                  ],
+                  connectorEntries: {},
+                  adapter: capturedServiceReceipt.receipt.adapter,
+                  dataDirectory: capturedServiceReceipt.receipt.dataDirectory,
+                  runtimeKind: 'packaged',
+                },
+                contents: capturedServiceReceipt.contents,
+              };
+            },
+            commit: async () => {
+              throw new Error('Packaged removal cannot rewrite a semantic receipt snapshot');
+            },
+            restore: async ({ contents }) => {
+              if (
+                capturedServiceReceipt === null ||
+                !Buffer.from(contents).equals(capturedServiceReceipt.contents)
+              ) {
+                throw new Error('Packaged service receipt rollback snapshot changed');
+              }
+              restoreInstallReceiptSnapshot(
+                serviceReceiptPath,
+                capturedServiceReceipt,
+                config.dataDirectory,
+              );
+            },
+            remove: async () => {
+              if (preparedService === null) {
+                throw new Error('Packaged service removal was not prepared');
+              }
+              const transaction = preparedService;
+              // The coordinator merges these manual instructions with the connector ones.
+              return transaction.commit();
+            },
           },
-        },
-        receipt: {
-          read: async () => ({
-            runtimeVersion: serviceReceipt.version,
-            serviceCommand: [serviceReceipt.nodePath, serviceReceipt.cliPath],
-            connectorEntries: {},
-            adapter: serviceReceipt.adapter,
-            dataDirectory: serviceReceipt.dataDirectory,
-            runtimeKind: 'packaged',
-          }),
-          capture: async () => {
-            capturedServiceReceipt = snapshotInstallReceipt(
-              serviceReceiptPath,
-              config.dataDirectory,
-            );
-            if (capturedServiceReceipt === null) {
-              throw new Error('Packaged service receipt disappeared during removal planning');
-            }
-            return {
-              snapshot: {
-                runtimeVersion: capturedServiceReceipt.receipt.version,
-                serviceCommand: [
-                  capturedServiceReceipt.receipt.nodePath,
-                  capturedServiceReceipt.receipt.cliPath,
-                ],
-                connectorEntries: {},
-                adapter: capturedServiceReceipt.receipt.adapter,
-                dataDirectory: capturedServiceReceipt.receipt.dataDirectory,
-                runtimeKind: 'packaged',
-              },
-              contents: capturedServiceReceipt.contents,
-            };
-          },
-          commit: async () => {
-            throw new Error('Packaged removal cannot rewrite a semantic receipt snapshot');
-          },
-          restore: async ({ contents }) => {
-            if (
-              capturedServiceReceipt === null ||
-              !Buffer.from(contents).equals(capturedServiceReceipt.contents)
-            ) {
-              throw new Error('Packaged service receipt rollback snapshot changed');
-            }
-            restoreInstallReceiptSnapshot(
-              serviceReceiptPath,
-              capturedServiceReceipt,
-              config.dataDirectory,
-            );
-          },
-          remove: async () => {
-            if (preparedService === null) {
-              throw new Error('Packaged service removal was not prepared');
-            }
-            const transaction = preparedService;
-            await transaction.commit();
-          },
-        },
-      });
-      const removed = await lifecycle.remove();
-      return {
-        uninstalled: removed.removed,
-        dataPreserved: true,
-        ...(removed.manualInstructions.length === 0
-          ? {}
-          : { manualInstructions: removed.manualInstructions }),
+        });
+        const removed = await removal.remove();
+        return {
+          uninstalled: removed.removed,
+          dataPreserved: true,
+          ...(removed.manualInstructions.length === 0
+            ? {}
+            : { manualInstructions: removed.manualInstructions }),
+        };
       };
-    };
-  }
+    }
 
-  const installPackagedCommand = async (
-    manager: ServiceManager,
-  ): ReturnType<ServiceManager['install']> => {
-    if (packagedRuntimeBootstrap === null) return manager.install();
-    return createSetupLifecycleLock(config.dataDirectory).run(async () => {
-      const transaction = await packagedRuntimeBootstrap.prepareInstallation(
-        async (installation) => {
+    const installPackagedCommand = async (
+      manager: ServiceManager,
+    ): ReturnType<ServiceManager['install']> => {
+      if (bootstrap === null) return manager.install();
+      return createSetupLifecycleLock(config.dataDirectory).run(async () => {
+        const transaction = await bootstrap.prepareInstallation(async (installation) => {
           const smoke = await runServiceCommand(installation.nodePath, [
             installation.cliPath,
             'version',
           ]);
           if (smoke.exitCode !== 0) throw new Error('Packaged runtime CLI smoke failed');
-        },
-      );
-      try {
-        const result = await manager.install();
-        pruneOwnedRuntimeVersions({
-          homeDirectory,
-          dataDirectory: config.dataDirectory,
-          platform: runtimePlatform!,
-          architecture: runtimeArchitecture!,
-          ...(transaction.installation.previousVersion === null
-            ? {}
-            : { keepVersions: [transaction.installation.previousVersion] }),
         });
-        transaction.commit();
-        return result;
-      } catch (error) {
-        transaction.rollback();
-        throw error;
-      }
-    });
-  };
-
-  const commandServiceManager: ServiceManager =
-    packagedUninstall === undefined
-      ? serviceManager
-      : {
-          install: () => installPackagedCommand(serviceManager),
-          status: () => serviceManager.status(),
-          uninstall: () => packagedUninstall!(),
-          ...(serviceManager.prepareUninstall
-            ? { prepareUninstall: () => serviceManager.prepareUninstall!() }
-            : {}),
-        };
-
-  await runCli(process.argv.slice(2), {
-    createClient: () => createHttpClient(config),
-    createAgentClient: () => createAgentCliClient(config),
-    describeConfig: () => ({
-      dataDirectory: config.dataDirectory,
-      databasePath: config.databasePath,
-      baseUrl: config.baseUrl,
-      tokenPath: tokenFromEnvironment ? null : join(config.dataDirectory, 'token'),
-      tokenSource: tokenFromEnvironment ? 'environment' : 'file',
-      tokenConfigured: config.token.length > 0,
-      mcp: {
-        streamableHttpUrl: `${config.baseUrl}/mcp`,
-        stdio: {
-          command: process.execPath,
-          args: [compiledMcpStdioPath],
-        },
-      },
-    }),
-    serviceManager: commandServiceManager,
-    updateManager: createCliUpdateManager({
-      currentVersion: PIMPAMPUM_VERSION,
-      dataDirectory: config.dataDirectory,
-      homeDirectory: homedir(),
-      target:
-        runtimePlatform === 'darwin' && runtimeArchitecture === 'arm64'
-          ? 'darwin-arm64'
-          : runtimePlatform === 'linux' && runtimeArchitecture === 'arm64'
-            ? 'linux-arm64'
-            : runtimePlatform === 'linux' && runtimeArchitecture === 'x64'
-              ? 'linux-x64'
-              : null,
-      npmPath: resolveNpmPath(process.execPath),
-      nodePath: process.execPath,
-      runCommand: runServiceCommand,
-      currentServiceManager: serviceManager,
-      createCandidateServiceManager: ({
-        appBundlePath,
-        version,
-        nodePath,
-        cliPath,
-        packagedRuntime,
-      }) => {
-        if (hostPlatform !== 'darwin') {
-          throw new Error('Packaged macOS candidates can only activate on macOS');
+        try {
+          const result = await manager.install();
+          pruneOwnedRuntimeVersions({
+            homeDirectory,
+            dataDirectory: config.dataDirectory,
+            platform: runtimePlatform!,
+            architecture: runtimeArchitecture!,
+            ...(transaction.installation.previousVersion === null
+              ? {}
+              : { keepVersions: [transaction.installation.previousVersion] }),
+          });
+          transaction.commit();
+          return result;
+        } catch (error) {
+          transaction.rollback();
+          throw error;
         }
-        const daemonAdapter = createLaunchdAdapter();
-        const desktopAdapter = createMacOSDesktopAdapter({ appBundlePath, daemonAdapter });
-        return createHealthVerifiedServiceManager({
-          ...managerInput,
+      });
+    };
+
+    const commandServiceManager: ServiceManager =
+      packagedUninstall === undefined
+        ? serviceManager
+        : {
+            install: () => installPackagedCommand(serviceManager),
+            status: () => serviceManager.status(),
+            uninstall: () => packagedUninstall!(),
+            ...(serviceManager.prepareUninstall
+              ? { prepareUninstall: () => serviceManager.prepareUninstall!() }
+              : {}),
+          };
+
+    return {
+      managerInput,
+      serviceManager,
+      commandServiceManager,
+      serviceOnlyManager,
+      connections,
+      setup,
+    };
+  });
+
+  const updateManager = lazy((): UpdateManager => {
+    const composed = lifecycle();
+    try {
+      return createCliUpdateManager({
+        currentVersion: PIMPAMPUM_VERSION,
+        dataDirectory: clientConfig().dataDirectory,
+        homeDirectory,
+        target:
+          runtimePlatform === 'darwin' && runtimeArchitecture === 'arm64'
+            ? 'darwin-arm64'
+            : runtimePlatform === 'linux' && runtimeArchitecture === 'arm64'
+              ? 'linux-arm64'
+              : runtimePlatform === 'linux' && runtimeArchitecture === 'x64'
+                ? 'linux-x64'
+                : null,
+        npmPath: resolveNpmPath(process.execPath),
+        nodePath: process.execPath,
+        runCommand: createServiceCommandRunner({ timeoutMilliseconds: NPM_INSTALL_TIMEOUT_MS }),
+        currentServiceManager: composed.serviceManager,
+        createCandidateServiceManager: ({
+          appBundlePath,
           version,
           nodePath,
           cliPath,
           packagedRuntime,
-          adapters: { darwin: desktopAdapter },
-          receiptAdapters: {
-            [daemonAdapter.id]: daemonAdapter,
-            [desktopAdapter.id]: desktopAdapter,
+        }) => {
+          if (hostPlatform !== 'darwin') {
+            throw new Error('Packaged macOS candidates can only activate on macOS');
+          }
+          const daemonAdapter = createLaunchdAdapter();
+          const desktopAdapter = createMacOSDesktopAdapter({ appBundlePath, daemonAdapter });
+          return createHealthVerifiedServiceManager({
+            ...composed.managerInput,
+            version,
+            nodePath,
+            cliPath,
+            packagedRuntime,
+            adapters: { darwin: desktopAdapter },
+            receiptAdapters: {
+              [daemonAdapter.id]: daemonAdapter,
+              [desktopAdapter.id]: desktopAdapter,
+            },
+          });
+        },
+      });
+    } catch (error) {
+      // `readUpdateReceipt` refuses an invalid receipt; that is this verb's failure, typed.
+      throw compositionFailure(error, installKind(), hostPlatform);
+    }
+  });
+
+  const runtime: CliRuntime = {
+    createClient: () => createHttpClient(daemonClientConfig()),
+    createAgentClient: () => createAgentCliClient(daemonClientConfig()),
+    describeConfig: () => {
+      const config = clientConfig();
+      return {
+        dataDirectory: config.dataDirectory,
+        databasePath: config.databasePath,
+        baseUrl: config.baseUrl,
+        tokenPath: tokenFromEnvironment ? null : tokenPathOf(config.dataDirectory),
+        tokenSource: tokenFromEnvironment ? 'environment' : 'file',
+        tokenConfigured: config.token.length > 0,
+        mcp: {
+          streamableHttpUrl: `${config.baseUrl}/mcp`,
+          stdio: {
+            command: process.execPath,
+            args: [compiledMcpStdioPath],
           },
-        });
-      },
-    }),
-    ...(connections === undefined ? {} : { connections }),
-    ...(setup === undefined ? {} : { setup }),
-    ...(serviceOnlyManager ? { serviceOnlyManager } : {}),
-    startServer: () => startServer(config),
+        },
+      };
+    },
+    get serviceManager() {
+      return lifecycle().commandServiceManager;
+    },
+    get serviceOnlyManager() {
+      return lifecycle().serviceOnlyManager;
+    },
+    get updateManager() {
+      return updateManager();
+    },
+    get connections() {
+      return lifecycle().connections;
+    },
+    get setup() {
+      return lifecycle().setup;
+    },
+    // The daemon is the one process that creates the data directory and mints the token.
+    startServer: () => startServer(loadConfig()),
     // The stdio bridge entry point wires its own signals and runs on import.
     startStdioBridge: async () => {
       await import('./mcpStdio.js');
     },
-    readFile: (path, maxBytes) =>
-      maxBytes === undefined ? readFileSync(path, 'utf8') : readBoundedUtf8File(path, maxBytes),
+    readFile: (path, maxBytes = MAX_BODY_FILE_BYTES) => readBoundedUtf8File(path, maxBytes, 'File'),
     readStdin: (maxBytes = MAX_AGENT_INPUT_BYTES) => readBoundedStdin(maxBytes),
     resolvePath: resolve,
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
     onSignal: (signal, callback) => process.once(signal, callback),
     exit: (code) => process.exit(code),
-  });
+  };
+  await runCli(argv, runtime);
 }

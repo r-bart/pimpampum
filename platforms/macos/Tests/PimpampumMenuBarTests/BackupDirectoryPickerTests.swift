@@ -191,6 +191,39 @@ struct BackupDirectoryPickerTests {
   }
 
   @Test
+  func unreadableSettingsShowTheDaemonsReasonAndOfferTheFolderThatRepairsThem() async {
+    // M-C6: `enabled: false, state: .error` used to fall into the plain "off" variant and hide the
+    // message. The covered model names it; the view shows it under "Backup needs attention".
+    let message = "Backup settings file is corrupt; choose a folder to write it again."
+    let unreadable = BackupSettings(
+      enabled: false, directory: nil, snapshotPath: nil, state: .error,
+      lastAttemptAt: nil, lastSuccessAt: nil, error: message)
+    #expect(unreadable.unreadableSettingsMessage == message)
+    #expect(backupSettings(.disabled).unreadableSettingsMessage == nil)
+    #expect(backupSettings(.error).unreadableSettingsMessage == nil)
+    #expect(BackupHealthState.error.label == "Backup needs attention")
+    #expect(
+      presentation(settings: unreadable)
+        == BackupSettingsViewPresentation(
+          variant: .needsAttention(message),
+          controlsDisabled: false,
+          refreshDisabled: false,
+          primaryActionTitle: "Back Up Now",
+          inlineError: nil
+        ))
+    let store = BackupSettingsStore(client: SequenceStaticBackupReader(settings: unreadable))
+    await store.load()
+    #expect(store.settings == unreadable)
+    let view = BackupSettingsView(
+      store: store,
+      directoryPicker: BackupDirectoryPicker { _ in nil },
+      directoryOpener: BackupDirectoryOpener(
+        validateDirectory: { _ in true }, openDirectory: { _ in true })
+    )
+    _ = view.body
+  }
+
+  @Test
   func pendingAndEveryInFlightOperationDisableAllCompetingControls() {
     #expect(
       presentation(settings: backupSettings(.pending))
@@ -279,9 +312,17 @@ struct BackupDirectoryPickerTests {
 
 private struct SequenceStaticBackupReader: BackupSettingsReading {
   let state: BackupHealthState
+  let settings: BackupSettings?
 
   init(state: BackupHealthState = .disabled) {
     self.state = state
+    self.settings = nil
+  }
+
+  /// One exact answer, for shapes the state alone cannot describe.
+  init(settings: BackupSettings) {
+    self.state = settings.state
+    self.settings = settings
   }
 
   func fetchBackupSettings() async throws -> BackupSettings { value }
@@ -290,7 +331,8 @@ private struct SequenceStaticBackupReader: BackupSettingsReading {
   func disableBackup() async throws -> BackupSettings { value }
 
   private var value: BackupSettings {
-    BackupSettings(
+    if let settings { return settings }
+    return BackupSettings(
       enabled: state != .disabled,
       directory: state == .disabled ? nil : "/tmp/Backup",
       snapshotPath: state == .disabled ? nil : "/tmp/Backup/pimpampum-latest.sqlite",

@@ -353,4 +353,63 @@ describe('Codex connector', () => {
     await expect(connector.connect(replacement)).rejects.toThrow(/verification/iu);
     expect(configured).toEqual(previous);
   });
+
+  it('spawns at most twelve host processes for one plan, snapshot, and connect', async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    let configured = false;
+    const run = vi.fn(async (invocation: { arguments: string[] }) => {
+      const args = invocation.arguments;
+      if (args[0] === '--version') return { exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' };
+      if (args.at(-1) === '--help') {
+        return { exitCode: 0, stdout: args[1] === 'get' ? '--json' : 'Usage', stderr: '' };
+      }
+      if (args[1] === 'get') {
+        return configured
+          ? {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                name: 'pimpampum',
+                transport: { type: 'stdio', command: launcher, args: [] },
+              }),
+              stderr: '',
+            }
+          : { exitCode: 1, stdout: '', stderr: "No MCP server named 'pimpampum' found." };
+      }
+      if (args[1] === 'add') configured = true;
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+    const verify = vi.fn(async () => ({
+      available: true,
+      serverName: 'pimpampum',
+      tools: ['project_list'],
+      diagnostics: [],
+    }));
+    const connector = createCodexConnector({
+      launcherPath: launcher,
+      boundedLocations: [bin],
+      path: bin,
+      requiredTools: ['project_list'],
+      run,
+      verify,
+      receipt: {
+        read: async () => null,
+        write: async () => undefined,
+        remove: async () => undefined,
+      },
+    });
+
+    // The guided setup plans, snapshots, then connects; count every host process it costs.
+    const plan = await connector.plan();
+    await connector.snapshot();
+    await expect(connector.connect(plan)).resolves.toMatchObject({ changed: true });
+    const versionProbes = run.mock.calls.filter(([call]) => call.arguments[0] === '--version');
+    const helpProbes = run.mock.calls.filter(([call]) => call.arguments.at(-1) === '--help');
+    expect(versionProbes).toHaveLength(1);
+    expect(helpProbes).toHaveLength(4);
+    expect(run.mock.calls.length + verify.mock.calls.length).toBe(11);
+    expect(run.mock.calls.length + verify.mock.calls.length).toBeLessThanOrEqual(12);
+  });
 });

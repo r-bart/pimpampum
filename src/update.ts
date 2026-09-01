@@ -1,7 +1,9 @@
-import { accessSync, constants, existsSync, realpathSync } from 'node:fs';
+import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { z } from 'zod';
 import { AppError } from './errors.js';
 import { findExecutable } from './service/platform.js';
+import { assertNoSymlinkTraversal, writePrivateFileAtomic } from './service/receipt.js';
 import type { RunCommand } from './service/types.js';
 
 export interface UpdateStatus {
@@ -123,6 +125,109 @@ export interface UpdateManagerInput {
   pathExists?: (path: string) => boolean;
   installReceipt?: UpdateInstallReceiptMetadata;
   packagedRelease?: PackagedReleaseProviderInput;
+  /**
+   * Where the packaged provider remembers the newest `issuedAt` it accepted. Without it the
+   * replay check lives only in this process, so every packaged installation should pass it.
+   */
+  dataDirectory?: string;
+}
+
+/** Remembers the newest manifest `issuedAt` this installation accepted; older ones are replays. */
+export interface ReleaseTrustStore {
+  lastAcceptedIssuedAt(): string | null;
+  recordAcceptedIssuedAt(issuedAt: string): void;
+}
+
+export const RELEASE_TRUST_STATE_NAME = 'update-trust.json';
+const MAX_RELEASE_TRUST_STATE_BYTES = 4_096;
+
+const releaseTrustStateSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    lastAcceptedIssuedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u),
+  })
+  .strict();
+
+function unreadableTrustState(path: string, cause?: unknown): AppError {
+  const error = new AppError(
+    'unavailable',
+    `Update trust state at ${path} is unreadable; delete the file to reset replay protection and retry`,
+    503,
+    false,
+    { path },
+  );
+  if (cause !== undefined) error.cause = cause;
+  return error;
+}
+
+/**
+ * A small private file in the 0700 data directory. Reads fail closed: a file that exists but does
+ * not parse blocks updates until the operator removes it, because silently treating it as absent
+ * would reopen the replay window it exists to close.
+ */
+export function createReleaseTrustStore(dataDirectory: string): ReleaseTrustStore {
+  if (!isAbsolute(dataDirectory) || dataDirectory.includes('\0')) {
+    throw new AppError('unavailable', 'Update trust state directory must be absolute', 503);
+  }
+  const path = join(dataDirectory, RELEASE_TRUST_STATE_NAME);
+  return {
+    lastAcceptedIssuedAt() {
+      if (!existsSync(path)) return null;
+      assertNoSymlinkTraversal(path, 'Update trust state path', dataDirectory);
+      const metadata = lstatSync(path);
+      if (!metadata.isFile() || metadata.size > MAX_RELEASE_TRUST_STATE_BYTES) {
+        throw unreadableTrustState(path);
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+      } catch (error) {
+        throw unreadableTrustState(path, error);
+      }
+      const result = releaseTrustStateSchema.safeParse(parsed);
+      if (!result.success || !validIssuedAt(result.data.lastAcceptedIssuedAt)) {
+        throw unreadableTrustState(path);
+      }
+      return result.data.lastAcceptedIssuedAt;
+    },
+    recordAcceptedIssuedAt(issuedAt) {
+      writePrivateFileAtomic(
+        path,
+        `${JSON.stringify({ schemaVersion: 1, lastAcceptedIssuedAt: issuedAt }, null, 2)}\n`,
+        0o600,
+        dataDirectory,
+      );
+    },
+  };
+}
+
+function createVolatileReleaseTrustStore(): ReleaseTrustStore {
+  let lastAccepted: string | null = null;
+  return {
+    lastAcceptedIssuedAt: () => lastAccepted,
+    recordAcceptedIssuedAt(issuedAt) {
+      lastAccepted = issuedAt;
+    },
+  };
+}
+
+/**
+ * Rejects a manifest older than the newest one this installation accepted, then records the
+ * accepted instant. Equal timestamps are the same publication and pass; a signer that reissues
+ * the channel always moves `issuedAt` forward.
+ */
+function assertFreshManifest(manifest: PackagedReleaseManifest, trust: ReleaseTrustStore): void {
+  const lastAccepted = trust.lastAcceptedIssuedAt();
+  if (lastAccepted !== null && Date.parse(manifest.issuedAt) < Date.parse(lastAccepted)) {
+    throw new AppError(
+      'unavailable',
+      `Packaged release manifest issued at ${manifest.issuedAt} is older than the last accepted manifest issued at ${lastAccepted}; a replayed channel manifest is rejected`,
+      503,
+      false,
+      { issuedAt: manifest.issuedAt, lastAcceptedIssuedAt: lastAccepted },
+    );
+  }
+  if (lastAccepted !== manifest.issuedAt) trust.recordAcceptedIssuedAt(manifest.issuedAt);
 }
 
 export const MAX_RELEASE_MANIFEST_BYTES = 64 * 1024;
@@ -495,6 +600,7 @@ function validatePackagedReleaseProvider(provider: PackagedReleaseProviderInput)
  */
 export async function resolvePackagedRelease(
   provider: PackagedReleaseProviderInput,
+  trust?: ReleaseTrustStore,
 ): Promise<ResolvedPackagedRelease> {
   const channelManifestUrl = validatePackagedReleaseProvider(provider);
   let raw: string | Uint8Array;
@@ -533,15 +639,19 @@ export async function resolvePackagedRelease(
   if (!signatureValid) {
     throw new AppError('unavailable', 'Packaged release manifest signature is invalid', 503);
   }
+  if (trust !== undefined) assertFreshManifest(parsed.manifest, trust);
   return { manifest: parsed.manifest, asset: parsed.asset };
 }
 
 export function createPackagedReleaseUpdateManager(input: {
   currentVersion: string;
   provider: PackagedReleaseProviderInput;
+  /** Defaults to a per-manager memory; pass the data directory store to persist across runs. */
+  trust?: ReleaseTrustStore;
 }): UpdateManager {
   validatePackagedReleaseProvider(input.provider);
-  const release = () => resolvePackagedRelease(input.provider);
+  const trust = input.trust ?? createVolatileReleaseTrustStore();
+  const release = () => resolvePackagedRelease(input.provider, trust);
 
   return {
     async check() {
@@ -666,6 +776,9 @@ export function createUpdateManager(input: UpdateManagerInput): UpdateManager {
     return createPackagedReleaseUpdateManager({
       currentVersion: input.currentVersion,
       provider: input.packagedRelease,
+      ...(input.dataDirectory === undefined
+        ? {}
+        : { trust: createReleaseTrustStore(input.dataDirectory) }),
     });
   }
   return createLegacyNpmUpdateManager(input);

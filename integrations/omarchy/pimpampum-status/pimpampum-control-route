@@ -59,6 +59,35 @@ case $surface in
       *) fail 69 'invalid update action' ;;
     esac
     ;;
+  workspace)
+    # `workspace add DIRECTORY [NAME]` is the one registration the popout offers: the folder the
+    # user picked becomes `workspace:add ID NAME DIRECTORY`, with the name defaulting to the folder
+    # name and the id derived from the name by the CLI's slug rule. The daemon validates again.
+    action=${1:-}
+    [ "$action" = add ] || fail 69 'invalid workspace action'
+    [ "$#" -eq 2 ] || [ "$#" -eq 3 ] ||
+      fail 69 'workspace add requires one directory and an optional name'
+    workspace_root=$2
+    case $workspace_root in
+      /?*) ;;
+      *) fail 69 'workspace directory must be an absolute path' ;;
+    esac
+    case $workspace_root in
+      *[[:cntrl:]]*) fail 69 'workspace directory contains control characters' ;;
+    esac
+    [ "${#workspace_root}" -le 4096 ] || fail 69 'workspace directory path is too long'
+    workspace_name=${3:-$(/usr/bin/basename -- "$workspace_root")}
+    case $workspace_name in
+      *[[:cntrl:]]*) fail 69 'workspace name contains control characters' ;;
+    esac
+    [ -n "$workspace_name" ] && [ "${#workspace_name}" -le 120 ] ||
+      fail 69 'workspace name must be 1 to 120 characters'
+    workspace_id=$(printf '%s' "$workspace_name" | /usr/bin/tr '[:upper:]' '[:lower:]' |
+      /usr/bin/sed -E 's/[^a-z0-9]+/-/g; s/^-+//' | /usr/bin/cut -c1-80 |
+      /usr/bin/sed -E 's/-+$//')
+    [ -n "$workspace_id" ] || fail 69 'cannot derive a workspace id from the folder name'
+    set -- workspace:add "$workspace_id" "$workspace_name" "$workspace_root"
+    ;;
   *) fail 69 'unknown bounded surface' ;;
 esac
 

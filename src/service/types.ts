@@ -4,7 +4,20 @@ export interface CommandResult {
   stderr: string;
 }
 
-export type RunCommand = (executable: string, arguments_: string[]) => Promise<CommandResult>;
+/**
+ * Per-call bounds a caller may ask of the command runner. Every field is optional and the runner
+ * keeps its own defaults for the rest, so a runner built with fixed bounds is still a `RunCommand`.
+ */
+export interface RunCommandOptions {
+  /** Wall-clock limit before the runner stops the child. */
+  timeoutMilliseconds?: number;
+}
+
+export type RunCommand = (
+  executable: string,
+  arguments_: string[],
+  options?: RunCommandOptions,
+) => Promise<CommandResult>;
 
 export type SupportedServicePlatform = 'darwin' | 'linux';
 

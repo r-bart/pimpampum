@@ -1,9 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
+  closeSync,
+  constants,
   existsSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -11,6 +15,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { z } from 'zod';
+import { AppError } from '../errors.js';
 import type {
   InstallReceipt,
   InstallReceiptFileSnapshot,
@@ -19,6 +24,29 @@ import type {
 } from './types.js';
 
 export const INSTALL_RECEIPT_NAME = 'install-receipt.json';
+
+/**
+ * The receipt exists but cannot be trusted: torn bytes, a foreign schema, or a special file. The
+ * message names the file and the repair so `install`, `status` and `uninstall` stop with a typed
+ * `invalid_state` instead of a bare internal error. Snapshot and restore keep their own messages.
+ */
+export class InstallReceiptError extends AppError {
+  constructor(
+    public readonly path: string,
+    reason: string,
+    cause?: unknown,
+  ) {
+    super(
+      'invalid_state',
+      `Pimpampum cannot read the installation receipt at ${path}: ${reason}. Move the file away and run \`pimpampum install\` again, or restore it from a backup of the data directory.`,
+      409,
+      false,
+      { receiptPath: path, reason },
+    );
+    this.name = 'InstallReceiptError';
+    if (cause !== undefined) this.cause = cause;
+  }
+}
 
 export function assertNoSymlinkTraversal(path: string, label: string, trustedRoot = path): void {
   if (!isAbsolute(path) || path.includes('\0') || !isAbsolute(trustedRoot)) {
@@ -119,25 +147,46 @@ export function readInstallReceipt(
 ): InstallReceipt | null {
   if (!existsSync(path)) return null;
   assertNoSymlinkTraversal(path, 'Installation receipt path', trustedRoot);
-  if (!lstatSync(path).isFile()) throw new Error('Installation receipt must be a regular file');
+  if (!lstatSync(path).isFile()) {
+    throw new InstallReceiptError(path, 'it is not a regular file');
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
   } catch (error) {
-    throw new Error('Invalid Pimpampum installation receipt JSON', { cause: error });
+    throw new InstallReceiptError(path, 'it is not valid JSON', error);
   }
-  return parseReceipt(parsed);
+  try {
+    return parseReceipt(parsed);
+  } catch (error) {
+    throw new InstallReceiptError(path, 'its contents do not match the receipt schema', error);
+  }
 }
 
+function fsyncDirectory(directory: string): void {
+  const descriptor = openSync(directory, constants.O_RDONLY);
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/**
+ * Durable private write: an exclusive unique temporary file receives the bytes and an fsync, the
+ * rename publishes it, and the directory fsync makes the rename itself survive a power loss. A
+ * receipt that vouches for a service must not evaporate with the page cache.
+ */
 export function writePrivateFileAtomic(
   path: string,
   content: string | Buffer,
   mode: number,
   trustedRoot = dirname(path),
 ): void {
-  assertNoSymlinkTraversal(dirname(path), 'Private file parent path', trustedRoot);
-  mkdirSync(dirname(path), { recursive: true });
-  assertNoSymlinkTraversal(dirname(path), 'Private file parent path', trustedRoot);
+  const directory = dirname(path);
+  assertNoSymlinkTraversal(directory, 'Private file parent path', trustedRoot);
+  mkdirSync(directory, { recursive: true });
+  assertNoSymlinkTraversal(directory, 'Private file parent path', trustedRoot);
   if (existsSync(path)) {
     const metadata = lstatSync(path);
     if (!metadata.isFile() || metadata.isSymbolicLink()) {
@@ -145,12 +194,24 @@ export function writePrivateFileAtomic(
     }
   }
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  let descriptor: number | null = null;
   try {
-    writeFileSync(temporaryPath, content, { mode, flag: 'wx' });
-    assertNoSymlinkTraversal(dirname(path), 'Private file parent path', trustedRoot);
+    descriptor = openSync(
+      temporaryPath,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+      mode,
+    );
+    writeFileSync(descriptor, content);
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = null;
+    chmodSync(temporaryPath, mode);
+    assertNoSymlinkTraversal(directory, 'Private file parent path', trustedRoot);
     renameSync(temporaryPath, path);
     chmodSync(path, mode);
+    fsyncDirectory(directory);
   } finally {
+    if (descriptor !== null) closeSync(descriptor);
     rmSync(temporaryPath, { force: true });
   }
 }

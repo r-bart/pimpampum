@@ -9,6 +9,10 @@ Item {
   property string currentVersion: ""
   property string latestVersion: ""
   property string errorMessage: ""
+  // The one machine-readable remedy the CLI names: `details.remedy` of the typed `unavailable`
+  // rejection the Linux `update` verb returns, because the Omarchy plugin owns that runtime and
+  // `pimpampum-bootstrap` installs the pinned version. Empty for every other failure.
+  property string remedy: ""
   property string operation: ""
   property string processError: ""
   // Only the read-only check is bounded. Killing a half-finished install is worse than waiting,
@@ -26,6 +30,7 @@ Item {
       return
     }
     errorMessage = ""
+    remedy = ""
     processOutput = ""
     processError = ""
     timedOut = false
@@ -83,6 +88,21 @@ Item {
     }
   }
 
+  // `details.remedy` names a helper of this plugin, so it is accepted only as a bare helper name
+  // and only for the typed `unavailable` code; the popout resolves it against its own directory.
+  function actionableRemedy(stream) {
+    if (typeof stream !== "string" || stream.length === 0 || stream.length > 4096) return ""
+    try {
+      var envelope = JSON.parse(stream)
+      if (!isObject(envelope) || !isObject(envelope.error)) return ""
+      if (envelope.error.code !== "unavailable" || !isObject(envelope.error.details)) return ""
+      var remedy = envelope.error.details.remedy
+      return typeof remedy === "string" && /^pimpampum-[a-z]{1,40}$/.test(remedy) ? remedy : ""
+    } catch (error) {
+      return ""
+    }
+  }
+
   function handleExit(exitCode) {
     checkDeadline.stop()
     // The deadline already published the cause; a terminated child also exits non-zero.
@@ -96,6 +116,7 @@ Item {
       } else {
         root.errorMessage = root.actionableFailure(
           root.processError, root.actionableFailure(root.processOutput, fallback))
+        root.remedy = root.actionableRemedy(root.processError)
       }
       console.warn("Pimpampum update command failed with exit code", exitCode)
       return

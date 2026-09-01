@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { verifyMcpRoute } from '../src/connectors/verifier.js';
+import { killBridgeProcess, verifyMcpRoute } from '../src/connectors/verifier.js';
 
 const route = {
   command: '/Users/example/.local/share/pimpampum/bin/pimpampum-mcp',
@@ -134,5 +134,34 @@ describe('installed MCP route verifier', () => {
       }),
     ).rejects.toThrow(/cancelled/i);
     expect(cancelledClose).toHaveBeenCalledOnce();
+  });
+
+  it('kills the bridge once the graceful close misses its deadline', async () => {
+    const kill = vi.fn();
+    const neverCloses = new Promise<void>(() => undefined);
+    await expect(
+      verifyMcpRoute({
+        ...route,
+        timeoutMilliseconds: 10,
+        spawn: () => ({
+          initialize: async () => ({ serverInfo: { name: 'pimpampum' } }),
+          listTools: async () => ({ tools: [{ name: 'project_list' }, { name: 'work_claim' }] }),
+          close: () => neverCloses,
+          kill,
+        }),
+      }),
+    ).rejects.toThrow(/could not reap the stdio route/i);
+    expect(kill).toHaveBeenCalledOnce();
+
+    const signal = vi.fn();
+    killBridgeProcess(undefined, signal);
+    expect(signal).not.toHaveBeenCalled();
+    killBridgeProcess(4321, signal);
+    expect(signal).toHaveBeenCalledWith(4321, 'SIGKILL');
+    expect(() =>
+      killBridgeProcess(4321, () => {
+        throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+      }),
+    ).not.toThrow();
   });
 });

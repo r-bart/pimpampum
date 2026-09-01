@@ -27,6 +27,8 @@ interface McpRouteProbe {
   initialize(): Promise<ProbeInitialization>;
   listTools(): Promise<ProbeToolList>;
   close(): Promise<void>;
+  /** Last resort once `close()` misses its deadline: the bridge must not outlive the verifier. */
+  kill?(): void;
   requiresProtocolVersion?: boolean;
   acceptsNegotiatedProtocolVersion?(protocolVersion: string): boolean;
   diagnostics?(): unknown[];
@@ -154,6 +156,20 @@ function collectStderr(stream: Stream | null): {
   };
 }
 
+/** SIGKILL for a bridge that ignored the graceful close; an already-gone process is not an error. */
+export function killBridgeProcess(
+  pid: number | null | undefined,
+  signal: (pid: number, signal: NodeJS.Signals) => void = (target, name) =>
+    process.kill(target, name),
+): void {
+  if (typeof pid !== 'number') return;
+  try {
+    signal(pid, 'SIGKILL');
+  } catch {
+    // The process exited between the close deadline and the signal.
+  }
+}
+
 function spawnSdkProbe(command: string, arguments_: string[]): McpRouteProbe {
   const transport = new StdioClientTransport({
     command,
@@ -167,6 +183,8 @@ function spawnSdkProbe(command: string, arguments_: string[]): McpRouteProbe {
     maxBufferSize: MAX_PROTOCOL_MESSAGE_BYTES,
   });
   const stderr = collectStderr(transport.stderr);
+  // `close()` forgets the child before it escalates, so remember the pid while it is connected.
+  let bridgePid: number | null = null;
   const client = new Client(
     { name: 'pimpampum-connector-verifier', version: '1.0.0' },
     { versionNegotiation: { mode: 'auto' } },
@@ -180,6 +198,7 @@ function spawnSdkProbe(command: string, arguments_: string[]): McpRouteProbe {
     diagnosticsOverflowed: stderr.overflowed,
     async initialize() {
       await client.connect(transport);
+      bridgePid = transport.pid;
       if (stderr.overflowed()) throw new Error('MCP diagnostics exceeded the bounded output limit');
       const serverInfo = client.getServerVersion();
       const protocolVersion = client.getNegotiatedProtocolVersion();
@@ -195,6 +214,7 @@ function spawnSdkProbe(command: string, arguments_: string[]): McpRouteProbe {
       return { tools: result.tools, diagnostics: stderr.diagnostics() };
     },
     close: () => client.close(),
+    kill: () => killBridgeProcess(bridgePid),
   };
 }
 
@@ -221,6 +241,8 @@ export async function verifyMcpRoute(input: {
   command: string;
   arguments: string[];
   timeoutMilliseconds: number;
+  /** Bound for the graceful close; a bridge still alive afterwards is killed. Defaults to the phase timeout. */
+  shutdownTimeoutMilliseconds?: number;
   requiredTools: string[];
   expectedServerName: string;
   supportedProtocolVersions?: string[];
@@ -307,9 +329,14 @@ export async function verifyMcpRoute(input: {
   }
   let closeError: unknown;
   try {
-    await withDeadline(probe.close(), input.timeoutMilliseconds, 'shutdown');
+    await withDeadline(
+      probe.close(),
+      input.shutdownTimeoutMilliseconds ?? input.timeoutMilliseconds,
+      'shutdown',
+    );
   } catch (error) {
     closeError = error;
+    probe.kill?.();
   }
   const finalDiagnostics = diagnosticValues(probe.diagnostics?.());
   if (probe.diagnosticsOverflowed?.() === true || secretLeak(boundedSerialized(finalDiagnostics))) {

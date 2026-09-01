@@ -32,6 +32,10 @@ private actor FixtureSetupRunner: SetupCommandRunning {
 
   private func recordRelaunch() { relaunchCalls += 1 }
 
+  func registerWorkspace(_: WorkspaceRegistrationRequest) async throws -> RegisteredWorkspace {
+    throw SetupClientError.unavailable
+  }
+
   func plan(selectedConnectors: [SetupAgentID]) async throws -> SetupPlan {
     if let failure { throw failure }
     plannedSelections.append(selectedConnectors)
@@ -208,6 +212,10 @@ private final class ActivityProbeRunner: SetupCommandRunning, @unchecked Sendabl
     _: SetupAgentID,
     onProgress _: @escaping @Sendable (SetupProgressEvent) async -> Void
   ) async throws -> SetupResult {
+    throw SetupClientError.unavailable
+  }
+
+  func registerWorkspace(_: WorkspaceRegistrationRequest) async throws -> RegisteredWorkspace {
     throw SetupClientError.unavailable
   }
 }

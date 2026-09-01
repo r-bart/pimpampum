@@ -162,7 +162,7 @@ describe('PimpampumStore v2', () => {
     state.specs = [];
     store.applySyncState(state);
     expect(
-      store.listProjects({ workspaceId: 'workspace', state: null, limit: 50, offset: 0 }),
+      store.listProjectManifests({ workspaceId: 'workspace', state: null, limit: 50, offset: 0 }),
     ).toEqual([]);
     error(() => store.getProject(createdProject.id), 'not_found');
     expect(
@@ -685,6 +685,30 @@ describe('PimpampumStore v2', () => {
       'cancelled',
       'cancelled',
     ]);
+    const readySpecOf = (created: Spec): Spec =>
+      store.updateSpec({
+        specId: created.id,
+        title: null,
+        body: null,
+        state: 'ready',
+        expectedRevision: created.revision,
+        actor: 'test',
+      });
+    const third = readySpecOf(spec(first.project.id));
+    store.startWork({
+      targetType: 'spec',
+      targetId: third.id,
+      agentId: 'spec-agent',
+      leaseSeconds: 60,
+    });
+    const fourth = readySpecOf(spec(first.project.id));
+    const fourthTask = task(fourth.id);
+    store.startWork({
+      targetType: 'task',
+      targetId: fourthTask.id,
+      agentId: 'task-agent',
+      leaseSeconds: 60,
+    });
     const cancelledProject = store.cancelProject({
       projectId: first.project.id,
       expectedRevision: first.project.revision,
@@ -692,10 +716,287 @@ describe('PimpampumStore v2', () => {
       actor: 'owner',
     });
     expect(cancelledProject.state).toBe('cancelled');
+    expect(cancelledProject.cancelledAt).toMatch(/^\d{4}-/u);
     expect(store.getOverview().counts.activeClaims).toBe(0);
+    const events = store.listActivity(first.project.id, 100);
+    expect(events.some((event) => event.targetType === 'spec')).toBe(true);
+    // Every cascade names the agent it revoked and why, so the agent's next call is explainable.
+    const revoked = events.filter((event) => event.eventType === 'work.revoked');
+    expect(revoked).toHaveLength(3);
+    expect(revoked.map((event) => event.data)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetType: 'task',
+          targetId: child.id,
+          agentId: 'agent',
+          cause: 'task.cancelled',
+          reason: 'obsolete',
+        }),
+        expect.objectContaining({
+          targetType: 'spec',
+          targetId: third.id,
+          agentId: 'spec-agent',
+          cause: 'project.cancelled',
+          reason: 'portfolio choice',
+        }),
+        expect.objectContaining({
+          targetType: 'task',
+          targetId: fourthTask.id,
+          agentId: 'task-agent',
+          cause: 'project.cancelled',
+          reason: 'portfolio choice',
+        }),
+      ]),
+    );
+    expect(revoked.every((event) => event.actor === 'owner')).toBe(true);
+    const terminal = error(
+      () =>
+        store.renewWork({
+          targetType: 'task',
+          targetId: child.id,
+          agentId: 'agent',
+          leaseSeconds: 60,
+        }),
+      'invalid_state',
+      /task is cancelled; its Claim was revoked/u,
+    );
+    expect(terminal.details).toEqual({
+      targetType: 'task',
+      targetId: child.id,
+      state: 'cancelled',
+    });
+    error(
+      () =>
+        store.completeWork({
+          targetType: 'spec',
+          targetId: third.id,
+          agentId: 'spec-agent',
+          expectedRevision: third.revision,
+          summary: 'late',
+          artifacts: [],
+        }),
+      'invalid_state',
+      /spec is cancelled/u,
+    );
+  });
+
+  it('revokes Claims under a cancelled Spec and names each agent', () => {
+    const { project: p, spec: s } = readyProject();
+    const claimedTask = task(s.id);
+    store.startWork({
+      targetType: 'task',
+      targetId: claimedTask.id,
+      agentId: 'worker',
+      leaseSeconds: 60,
+    });
+    const draft = spec(p.id);
+    const other = store.updateSpec({
+      specId: draft.id,
+      title: null,
+      body: null,
+      state: 'ready',
+      expectedRevision: draft.revision,
+      actor: 'test',
+    });
+    store.startWork({ targetType: 'spec', targetId: other.id, agentId: 'other', leaseSeconds: 60 });
+    store.cancelSpec({
+      specId: s.id,
+      expectedRevision: s.revision,
+      reason: 'scope',
+      actor: 'owner',
+    });
+    const revoked = store
+      .listActivity(p.id, 100)
+      .filter((event) => event.eventType === 'work.revoked');
+    expect(revoked).toHaveLength(1);
+    expect(revoked[0]).toMatchObject({
+      specId: s.id,
+      targetType: 'task',
+      targetId: claimedTask.id,
+      data: { agentId: 'worker', cause: 'spec.cancelled', reason: 'scope' },
+    });
+    expect(store.getSpec(other.id).claim?.agentId).toBe('other');
+  });
+
+  it('rejects an update that changes nothing before touching the row', () => {
+    const { project: p, spec: s } = readyProject();
+    const t = task(s.id);
+    const before = store.mutationCount;
+    const eventsBefore = store.listActivity(p.id, 100).length;
+    error(
+      () =>
+        store.updateProject({
+          projectId: p.id,
+          title: null,
+          state: null,
+          expectedRevision: p.revision,
+          actor: null,
+        }),
+      'bad_request',
+      /title and\/or state/u,
+    );
+    error(
+      () =>
+        store.updateSpec({
+          specId: s.id,
+          title: null,
+          body: null,
+          state: null,
+          expectedRevision: s.revision,
+          actor: null,
+        }),
+      'bad_request',
+      /title, body, and\/or state/u,
+    );
+    error(
+      () =>
+        store.updateTask({
+          taskId: t.id,
+          title: null,
+          body: undefined,
+          expectedRevision: t.revision,
+          actor: null,
+        }),
+      'bad_request',
+      /title and\/or body/u,
+    );
+    expect(store.mutationCount).toBe(before);
+    expect(store.getProject(p.id).revision).toBe(p.revision);
+    expect(store.getSpec(s.id).revision).toBe(s.revision);
+    expect(store.getTask(t.id).revision).toBe(t.revision);
+    expect(store.listActivity(p.id, 100)).toHaveLength(eventsBefore);
     expect(
-      store.listActivity(first.project.id, 100).some((event) => event.targetType === 'spec'),
-    ).toBe(true);
+      store.updateTask({
+        taskId: t.id,
+        title: null,
+        body: null,
+        expectedRevision: t.revision,
+        actor: null,
+      }).body,
+    ).toBeNull();
+  });
+
+  it('expires Claims exactly at the lease boundary of the injected clock', () => {
+    let nowMilliseconds = Date.parse('2026-09-01T10:00:00.000Z');
+    const clockDatabase = openDatabase(':memory:');
+    const clockStore = new PimpampumStore(
+      clockDatabase,
+      () => undefined,
+      () => false,
+      () => new Date(nowMilliseconds),
+    );
+    try {
+      clockStore.registerWorkspace({ id: 'clock', name: 'Clock', rootPath: root, actor: null });
+      let p = clockStore.createProject({
+        workspaceId: 'clock',
+        slug: 'timed',
+        title: 'Timed',
+        actor: null,
+      });
+      let s = clockStore.createSpec({
+        projectId: p.id,
+        slug: 'timed',
+        title: 'Timed',
+        body: '# Timed',
+        actor: null,
+      });
+      s = clockStore.updateSpec({
+        specId: s.id,
+        title: null,
+        body: null,
+        state: 'ready',
+        expectedRevision: s.revision,
+        actor: null,
+      });
+      p = clockStore.updateProject({
+        projectId: p.id,
+        title: null,
+        state: 'open',
+        expectedRevision: p.revision,
+        actor: null,
+      });
+      expect(s.createdAt).toBe('2026-09-01T10:00:00.000Z');
+      const bundle = clockStore.startWork({
+        targetType: 'spec',
+        targetId: s.id,
+        agentId: 'a',
+        leaseSeconds: 60,
+      });
+      expect(bundle.claim.expiresAt).toBe('2026-09-01T10:01:00.000Z');
+      const scope = { workspaceId: null, projectId: p.id, specId: null, limit: 10 };
+
+      nowMilliseconds = Date.parse('2026-09-01T10:00:59.999Z');
+      expect(clockStore.getSpecManifest(s.id).claim?.agentId).toBe('a');
+      expect(clockStore.listWork(scope)).toEqual([]);
+      expect(clockStore.getOverview().counts.activeClaims).toBe(1);
+      error(
+        () =>
+          clockStore.startWork({
+            targetType: 'spec',
+            targetId: s.id,
+            agentId: 'b',
+            leaseSeconds: 60,
+          }),
+        'conflict',
+      );
+
+      nowMilliseconds = Date.parse('2026-09-01T10:01:00.000Z');
+      expect(clockStore.getSpecManifest(s.id).claim).toBeNull();
+      expect(clockStore.listWork(scope)).toMatchObject([{ targetId: s.id }]);
+      expect(clockStore.getOverview().counts.activeClaims).toBe(0);
+      error(
+        () =>
+          clockStore.renewWork({
+            targetType: 'spec',
+            targetId: s.id,
+            agentId: 'a',
+            leaseSeconds: 60,
+          }),
+        'conflict',
+        /not currently claimed/u,
+      );
+      const renewedBundle = clockStore.startWork({
+        targetType: 'spec',
+        targetId: s.id,
+        agentId: 'b',
+        leaseSeconds: 120,
+      });
+      expect(renewedBundle.claim.expiresAt).toBe('2026-09-01T10:03:00.000Z');
+      nowMilliseconds = Date.parse('2026-09-01T10:02:00.000Z');
+      expect(
+        clockStore.renewWork({ targetType: 'spec', targetId: s.id, agentId: 'b', leaseSeconds: 60 })
+          .expiresAt,
+      ).toBe('2026-09-01T10:03:00.000Z');
+      expect(clockStore.ping()).toBe(true);
+    } finally {
+      clockStore.close();
+    }
+    expect(clockStore.ping()).toBe(false);
+  });
+
+  it('pages Markdown on code units without splitting a surrogate pair', () => {
+    const { project: p } = readyProject();
+    const emoji = spec(p.id, '😀x');
+    expect(store.readSpecBody(emoji.id, 0, 1)).toEqual({
+      body: '😀',
+      offsetCodeUnits: 0,
+      totalCodeUnits: 3,
+      sizeBytes: 5,
+      hasMore: true,
+    });
+    expect(store.readSpecBody(emoji.id, 2, 1)).toEqual({
+      body: 'x',
+      offsetCodeUnits: 2,
+      totalCodeUnits: 3,
+      sizeBytes: 5,
+      hasMore: false,
+    });
+    expect(store.readSpecBody(emoji.id, 0, 2).body).toBe('😀');
+    expect(store.readSpecBody(emoji.id, 0, 3)).toMatchObject({ body: '😀x', hasMore: false });
+    const trailing = spec(p.id, 'ab😀');
+    expect(store.readSpecBody(trailing.id, 0, 3)).toMatchObject({ body: 'ab😀', hasMore: false });
+    expect(store.readSpecBody(trailing.id, 0, 2)).toMatchObject({ body: 'ab', hasMore: true });
+    expect(store.readSpecBody(trailing.id, 4, 5)).toMatchObject({ body: '', hasMore: false });
   });
 
   it('calls the mutation callback exactly once after commits and never after rollback', () => {
@@ -768,11 +1069,12 @@ describe('PimpampumStore v2', () => {
     const state = store.exportSyncState();
     state.tasks = state.tasks.filter((item) => item.id !== parent.id && item.id !== child.id);
     store.applySyncState(state);
-    expect(store.listTasks(readySpec.id).map((item) => item.id)).toEqual([sibling.id]);
+    const tasks = () => store.listTaskManifests({ specId: readySpec.id, limit: 10, offset: 0 });
+    expect(tasks().map((item) => item.id)).toEqual([sibling.id]);
     const cleared = store.exportSyncState();
     cleared.tasks = [];
     store.applySyncState(cleared);
-    expect(store.listTasks(readySpec.id)).toEqual([]);
+    expect(tasks()).toEqual([]);
   });
 
   it('imports and prunes 33,000 Tasks in one snapshot', () => {

@@ -249,6 +249,14 @@ final class SetupStore: ObservableObject {
     }
   }
 
+  /// Registers one folder as a workspace through the same packaged CLI. Not a setup phase: it does
+  /// not touch `activity`, so the session can run it from the final step or from the overview.
+  func registerWorkspace(_ request: WorkspaceRegistrationRequest) async throws
+    -> RegisteredWorkspace
+  {
+    try await runner.registerWorkspace(request)
+  }
+
   /// Relaunching terminates this process. Doing it inside `apply` meant the view never reached
   /// `onFinished`, so the popover kept showing a half-finished setup until it was reopened. The
   /// caller runs this once the outcome is on screen and the popover has moved on.
@@ -571,6 +579,10 @@ struct UnavailableSetupCommandRunner: SetupCommandRunning {
   ) async throws -> SetupResult {
     _ = id
     _ = onProgress
+    throw SetupClientError.unavailable
+  }
+
+  func registerWorkspace(_: WorkspaceRegistrationRequest) async throws -> RegisteredWorkspace {
     throw SetupClientError.unavailable
   }
 }

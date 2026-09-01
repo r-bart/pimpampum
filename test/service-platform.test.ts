@@ -219,6 +219,23 @@ describe('service command runner', () => {
       bound: 'timeout',
     });
   });
+
+  it('lets a per-call bound override the fixed one in both directions', async () => {
+    const patient = createServiceCommandRunner({ timeoutMilliseconds: 10_000 });
+    await expect(
+      patient(process.execPath, ['--eval', HANG_FOREVER], { timeoutMilliseconds: 100 }),
+    ).rejects.toMatchObject({ code: 'unavailable', bound: 'timeout' });
+    const impatient = createServiceCommandRunner({ timeoutMilliseconds: 100 });
+    await expect(
+      impatient(
+        process.execPath,
+        ['--eval', 'setTimeout(() => process.stdout.write("late"), 300)'],
+        {
+          timeoutMilliseconds: 10_000,
+        },
+      ),
+    ).resolves.toEqual({ exitCode: 0, stdout: 'late', stderr: '' });
+  });
 });
 
 describe('service executable discovery', () => {

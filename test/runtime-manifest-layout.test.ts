@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { resolveRuntimeLayout } from '../src/runtime/layout.js';
-import { parseRuntimeManifest, parseRuntimeTargetId } from '../src/runtime/manifest.js';
+import { parseRuntimeManifest } from '../src/runtime/manifest.js';
 import type { RuntimeManifest } from '../src/runtime/types.js';
 
 function sha256(content: string): string {
@@ -49,10 +49,6 @@ describe('runtime manifest', () => {
 
     expect(parsed).toEqual(candidate);
     expect(parsed).not.toBe(candidate);
-    expect(parseRuntimeTargetId('darwin-arm64')).toEqual({
-      platform: 'darwin',
-      architecture: 'arm64',
-    });
   });
 
   it.each([
@@ -81,7 +77,6 @@ describe('runtime manifest', () => {
     };
     withKind.files[0]!.kind = 'symlink';
     expect(() => parseRuntimeManifest(withKind, options)).toThrow(/unexpected field/iu);
-    expect(() => parseRuntimeTargetId('darwin-x64')).toThrow(/unsupported/iu);
   });
 });
 

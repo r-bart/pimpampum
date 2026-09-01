@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, readFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, normalize, relative } from 'node:path';
+import { createSetupLifecycleLock } from '../lifecycleLock.js';
 import { createLaunchdAdapter } from './launchd.js';
 import { restoreServiceLogs, rotateServiceLogs, snapshotServiceLogs } from './logs.js';
 import {
@@ -33,59 +33,11 @@ type ArtifactSnapshot =
   | { path: string; trustedRoot: string; existed: false }
   | { path: string; trustedRoot: string; existed: true; content: Buffer; mode: number };
 
-const SERVICE_LIFECYCLE_LOCK_NAME = '.service-lifecycle.lock';
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
-}
-
-function acquireLifecycleLock(dataDirectory: string): () => void {
-  const lockPath = join(dataDirectory, SERVICE_LIFECYCLE_LOCK_NAME);
-  const lock = `${JSON.stringify({ pid: process.pid, nonce: randomUUID() })}\n`;
-  while (true) {
-    assertNoSymlinkTraversal(dataDirectory, 'Data directory', dataDirectory);
-    try {
-      writeFileSync(lockPath, lock, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-      return () => {
-        if (existsSync(lockPath)) {
-          assertNoSymlinkTraversal(lockPath, 'Service lifecycle lock', dataDirectory);
-          if (readFileSync(lockPath, 'utf8') === lock) rmSync(lockPath);
-        }
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      assertNoSymlinkTraversal(lockPath, 'Service lifecycle lock', dataDirectory);
-      let owner: unknown;
-      try {
-        owner = JSON.parse(readFileSync(lockPath, 'utf8')) as unknown;
-      } catch (parseError) {
-        throw new Error('Invalid Pimpampum service lifecycle lock', { cause: parseError });
-      }
-      const pid = (owner as { pid?: unknown }).pid;
-      if (!Number.isInteger(pid) || (pid as number) < 1 || processIsAlive(pid as number)) {
-        throw new Error('Another Pimpampum service lifecycle operation is in progress');
-      }
-      rmSync(lockPath);
-    }
-  }
-}
-
-async function withLifecycleLock<T>(
-  context: ServiceAdapterContext,
-  action: () => Promise<T>,
-): Promise<T> {
-  const release = acquireLifecycleLock(context.dataDirectory);
-  try {
-    return await action();
-  } finally {
-    release();
-  }
-}
+/**
+ * A read-only `status` must not fail because an install is mid-flight: it waits this long for the
+ * shared lifecycle lock before reporting a typed conflict. Mutations keep the lock's default wait.
+ */
+const STATUS_LOCK_WAIT_MILLISECONDS = 5_000;
 
 async function repairRegistration(
   adapter: PlatformServiceAdapter,
@@ -467,18 +419,19 @@ function repairMissingArtifacts(
 }
 
 export function createPlatformServiceManager(input: PlatformServiceManagerInput): ServiceManager {
-  const receiptPath = installReceiptPath(absolutePath(input.dataDirectory, 'Data directory'));
+  const dataDirectory = absolutePath(input.dataDirectory, 'Data directory');
+  const receiptPath = installReceiptPath(dataDirectory);
+  // One lock for every owner of the data directory. Nested acquisitions inside `setup apply` or
+  // the packaged removal re-enter it, so the coordinator can drive the manager without deadlock.
+  const mutationLock = createSetupLifecycleLock(dataDirectory);
+  const statusLock = createSetupLifecycleLock(dataDirectory, {
+    timeoutMilliseconds: STATUS_LOCK_WAIT_MILLISECONDS,
+  });
 
   async function prepareUninstall(): Promise<PreparedServiceUninstall | null> {
     requireAdapter(input);
     const context = adapterContext(input);
-    const release = acquireLifecycleLock(context.dataDirectory);
-    let released = false;
-    const releaseOnce = (): void => {
-      if (released) return;
-      released = true;
-      release();
-    };
+    const releaseOnce = await mutationLock.acquire();
     try {
       const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
       if (!receipt) {
@@ -574,7 +527,7 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
     async install(): Promise<InstallResult> {
       const defaultAdapter = requireAdapter(input);
       const context = adapterContext(input);
-      return withLifecycleLock(context, async () => {
+      return mutationLock.run(async () => {
         const existing = readInstallReceipt(receiptPath, context.dataDirectory);
         // A private-runtime setup is also the explicit migration boundary from the legacy npm
         // service. Promote that receipt to the currently selected native adapter so macOS gains
@@ -760,7 +713,7 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
     async status(): Promise<ServiceStatus> {
       requireAdapter(input);
       const context = adapterContext(input);
-      return withLifecycleLock(context, async () => {
+      return statusLock.run(async () => {
         const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
         if (!receipt) return { installed: false, running: false, adapter: null, version: null };
         const adapter = requireReceiptAdapter(input, receipt);

@@ -1,5 +1,14 @@
 import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -7,7 +16,9 @@ import { createBoundedReleaseManifestFetcher, createCliUpdateManager } from '../
 import { installReceiptPath, writeInstallReceipt } from '../src/service/receipt.js';
 import type { ServiceManager } from '../src/service/types.js';
 import {
+  RELEASE_TRUST_STATE_NAME,
   createPackagedReleaseUpdateManager,
+  createReleaseTrustStore,
   createUpdateManager,
   releaseSignaturePayload,
   resolvePackagedRelease,
@@ -501,5 +512,128 @@ describe('legacy npm fail-closed edges', () => {
     });
     await expect(manager.check()).rejects.toThrow(/provider is unavailable/iu);
     await expect(manager.update()).rejects.toThrow(/provider is unavailable/iu);
+  });
+});
+
+describe('release manifest freshness', () => {
+  const OLDER = '2026-08-01T12:00:00.000Z';
+  const NEWER = '2027-01-01T00:00:00.000Z';
+
+  function trustedProvider(issuedAt: string): PackagedReleaseProviderInput {
+    return provider({ fetchManifest: async () => releaseManifest({ issuedAt }) });
+  }
+
+  it('accepts the first manifest, an equal one, and a newer one while recording each acceptance', async () => {
+    const dataDirectory = join(root(), 'data');
+    mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
+    const managerFor = (issuedAt: string) =>
+      createUpdateManager({
+        currentVersion: '1.0.0',
+        npmPath: null,
+        nodePath: '/usr/bin/node',
+        runCommand: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        installReceipt: {
+          schemaVersion: 1,
+          adapter: 'systemd',
+          updateProvider: 'packaged-release',
+        },
+        packagedRelease: trustedProvider(issuedAt),
+        dataDirectory,
+      });
+    const trustPath = join(dataDirectory, RELEASE_TRUST_STATE_NAME);
+
+    await expect(managerFor(ISSUED_AT).check()).resolves.toMatchObject({ latestVersion: '2.0.0' });
+    expect(statSync(trustPath).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(trustPath, 'utf8'))).toEqual({
+      schemaVersion: 1,
+      lastAcceptedIssuedAt: ISSUED_AT,
+    });
+    await expect(managerFor(ISSUED_AT).check()).resolves.toMatchObject({ latestVersion: '2.0.0' });
+    await expect(managerFor(NEWER).update()).resolves.toMatchObject({ updated: true });
+    expect(JSON.parse(readFileSync(trustPath, 'utf8'))).toMatchObject({
+      lastAcceptedIssuedAt: NEWER,
+    });
+    expect(readdirSync(dataDirectory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('rejects a replayed manifest older than the last accepted one across processes', async () => {
+    const dataDirectory = join(root(), 'data');
+    mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
+    const trust = createReleaseTrustStore(dataDirectory);
+    await expect(
+      createPackagedReleaseUpdateManager({
+        currentVersion: '1.0.0',
+        provider: trustedProvider(ISSUED_AT),
+        trust,
+      }).check(),
+    ).resolves.toMatchObject({ latestVersion: '2.0.0' });
+
+    const replay = createPackagedReleaseUpdateManager({
+      currentVersion: '1.0.0',
+      provider: trustedProvider(OLDER),
+      trust: createReleaseTrustStore(dataDirectory),
+    });
+    const error = await replay.update().catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: 'unavailable',
+      status: 503,
+      retryable: false,
+      details: { issuedAt: OLDER, lastAcceptedIssuedAt: ISSUED_AT },
+    });
+    expect((error as Error).message).toMatch(/older than the last accepted manifest.*replayed/u);
+    await expect(replay.check()).rejects.toMatchObject({ code: 'unavailable' });
+    expect(trust.lastAcceptedIssuedAt()).toBe(ISSUED_AT);
+  });
+
+  it('rejects a replay within one process even without a data directory', async () => {
+    let issuedAt = ISSUED_AT;
+    const manager = createPackagedReleaseUpdateManager({
+      currentVersion: '1.0.0',
+      provider: provider({ fetchManifest: async () => releaseManifest({ issuedAt }) }),
+    });
+    await expect(manager.check()).resolves.toMatchObject({ latestVersion: '2.0.0' });
+    issuedAt = OLDER;
+    await expect(manager.check()).rejects.toThrow(/older than the last accepted/u);
+  });
+
+  it('fails closed on an unreadable, oversized, invalid, or symlinked trust state', async () => {
+    const dataDirectory = join(root(), 'data');
+    mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
+    const trustPath = join(dataDirectory, RELEASE_TRUST_STATE_NAME);
+    const trust = createReleaseTrustStore(dataDirectory);
+    expect(trust.lastAcceptedIssuedAt()).toBeNull();
+
+    writeFileSync(trustPath, '{torn', { mode: 0o600 });
+    const torn = (() => {
+      try {
+        trust.lastAcceptedIssuedAt();
+        return null;
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(torn).toMatchObject({ code: 'unavailable', status: 503, details: { path: trustPath } });
+    expect((torn as Error).message).toMatch(
+      /Update trust state at .* is unreadable; delete the file/u,
+    );
+    expect((torn as Error).cause).toBeInstanceOf(SyntaxError);
+    writeFileSync(trustPath, JSON.stringify({ schemaVersion: 2, lastAcceptedIssuedAt: ISSUED_AT }));
+    expect(() => trust.lastAcceptedIssuedAt()).toThrow(/unreadable/u);
+    writeFileSync(
+      trustPath,
+      JSON.stringify({ schemaVersion: 1, lastAcceptedIssuedAt: '2026-02-30T12:00:00.000Z' }),
+    );
+    expect(() => trust.lastAcceptedIssuedAt()).toThrow(/unreadable/u);
+    writeFileSync(trustPath, `${' '.repeat(5_000)}{}`);
+    expect(() => trust.lastAcceptedIssuedAt()).toThrow(/unreadable/u);
+    rmSync(trustPath);
+    mkdirSync(trustPath);
+    expect(() => trust.lastAcceptedIssuedAt()).toThrow(/unreadable/u);
+    rmSync(trustPath, { recursive: true });
+    writeFileSync(join(dataDirectory, 'elsewhere.json'), '{}', { mode: 0o600 });
+    symlinkSync(join(dataDirectory, 'elsewhere.json'), trustPath);
+    expect(() => trust.lastAcceptedIssuedAt()).toThrow(/symbolic links/u);
+
+    expect(() => createReleaseTrustStore('relative/data')).toThrow(/must be absolute/u);
   });
 });

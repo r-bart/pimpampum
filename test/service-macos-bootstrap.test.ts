@@ -91,6 +91,21 @@ describe('macOS embedded runtime source', () => {
     ).toBe(true);
     const receipt = readFileSync(join(data, 'install-receipt.json'), 'utf8');
     expect(receipt).not.toContain('PimpampumRuntime');
+    // The copied bundle is sealed: the marker sits outside it, and its first launches carry the
+    // Gatekeeper deadline the default runner would otherwise cut short.
+    expect(receipt).not.toContain('installation.json');
+    expect(existsSync(join(installedApp, 'Contents/Resources/installation.json'))).toBe(false);
+    expect(
+      JSON.parse(
+        readFileSync(join(home, 'Library/Application Support/Pimpampum/installation.json'), 'utf8'),
+      ),
+    ).toEqual({ schemaVersion: 2, dataDirectory: data });
+    const launches = runCommand.mock.calls.filter(
+      ([executable, arguments_]) =>
+        executable === '/usr/bin/open' && arguments_[1] === installedApp,
+    );
+    expect(launches).toHaveLength(2);
+    for (const launch of launches) expect(launch[2]).toEqual({ timeoutMilliseconds: 180_000 });
   });
 
   it('rolls back the copied runtime when stable app registration fails', async () => {

@@ -22,7 +22,9 @@ import { delimiter, dirname, isAbsolute, join, normalize } from 'node:path';
 import type { CommandInvocation } from './types.js';
 
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
-const DEFAULT_MAX_CONFIG_BYTES = 1_000_000;
+// `~/.claude.json` carries every project's history; a busy machine passes 1 MB. 16 MiB still bounds
+// the read, and an oversized file surfaces as a typed diagnostic instead of a silent neutral state.
+const DEFAULT_MAX_CONFIG_BYTES = 16 * 1024 * 1024;
 const TERMINATION_GRACE_MILLISECONDS = 250;
 const SAFE_ENVIRONMENT_KEYS = [
   'HOME',
@@ -207,6 +209,13 @@ function accessibleExecutable(path: string): boolean {
   }
 }
 
+export interface ExecutableDetection {
+  executable: string | null;
+  supported: boolean;
+  /** Standard output of the one `--version` probe, so hosts never run it a second time. */
+  versionOutput: string | null;
+}
+
 export async function detectExecutable(input: {
   id: string;
   names: string[];
@@ -214,9 +223,9 @@ export async function detectExecutable(input: {
   path: string;
   timeoutMilliseconds: number;
   run: (invocation: CommandInvocation) => Promise<unknown>;
-}): Promise<{ executable: string | null; supported: boolean }> {
+}): Promise<ExecutableDetection> {
   const executable = executableCandidates(input).find(accessibleExecutable) ?? null;
-  if (executable === null) return { executable: null, supported: false };
+  if (executable === null) return { executable: null, supported: false, versionOutput: null };
 
   const invocation: CommandInvocation = {
     executable,
@@ -236,12 +245,14 @@ export async function detectExecutable(input: {
       exitCode?: unknown;
       stdout?: unknown;
     };
+    const supported = result.exitCode === 0 && typeof result.stdout === 'string';
     return {
       executable,
-      supported: result.exitCode === 0 && typeof result.stdout === 'string',
+      supported,
+      versionOutput: supported ? (result.stdout as string) : null,
     };
   } catch {
-    return { executable, supported: false };
+    return { executable, supported: false, versionOutput: null };
   } finally {
     clearTimeout(timer);
   }

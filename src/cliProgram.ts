@@ -14,8 +14,9 @@ import {
   renderUsage,
   renderUsageLine,
   type CliCommand,
+  type CliOption,
 } from './cliCommands.js';
-import { AppError } from './errors.js';
+import { AppError, type ErrorCode } from './errors.js';
 import { MAX_AGENT_INPUT_BYTES } from './limits.js';
 import type { ServiceManager } from './service/types.js';
 import type { ArtifactReference, TargetType } from './types.js';
@@ -26,16 +27,17 @@ import { PIMPAMPUM_VERSION } from './version.js';
 
 export type CliConnectorId = 'codex' | 'claude-code';
 
+export interface CliConnectorMutationInput {
+  confirmed: boolean;
+  conflictDecision: 'replace' | undefined;
+  /** The revision `connections` reported; replacement proceeds only while that entry is on disk. */
+  reviewedEntryFingerprint?: string;
+}
+
 export interface CliConnectionsRuntime {
   list(): Promise<unknown>;
-  connect(
-    id: CliConnectorId,
-    input: { confirmed: boolean; conflictDecision: 'replace' | undefined },
-  ): Promise<unknown>;
-  repair(
-    id: CliConnectorId,
-    input: { confirmed: boolean; conflictDecision: 'replace' | undefined },
-  ): Promise<unknown>;
+  connect(id: CliConnectorId, input: CliConnectorMutationInput): Promise<unknown>;
+  repair(id: CliConnectorId, input: CliConnectorMutationInput): Promise<unknown>;
   disconnect(id: CliConnectorId, input: { confirmed: boolean }): Promise<unknown>;
   instructions(): Promise<unknown>;
 }
@@ -104,14 +106,19 @@ export function createCliConnectionsRuntime(input: {
   const act = async (
     id: CliConnectorId,
     action: 'connect' | 'repair',
-    confirmed: boolean,
-    decision: 'replace' | undefined,
+    options: CliConnectorMutationInput,
   ): Promise<unknown> => {
-    if (!confirmed) {
+    if (!options.confirmed) {
       throw new AppError('bad_request', 'Connector mutation requires explicit confirmation', 400);
     }
+    const decision = options.conflictDecision;
     const connector = resolveConnector(id);
-    const plan = await connector.plan(decision === undefined ? {} : { conflictDecision: decision });
+    const plan = await connector.plan({
+      ...(decision === undefined ? {} : { conflictDecision: decision }),
+      ...(options.reviewedEntryFingerprint === undefined
+        ? {}
+        : { reviewedEntryFingerprint: options.reviewedEntryFingerprint }),
+    });
     if (plan.state === 'conflict') {
       if (decision !== 'replace' || plan.mutations.length === 0) {
         throw new AppError(
@@ -141,13 +148,15 @@ export function createCliConnectionsRuntime(input: {
             id: connector.id,
             displayName: connector.displayName,
             state: inspection.state,
+            // The value a reviewer passes back as `--replace <revision>`.
+            revision: inspection.entryFingerprint,
             available,
           };
         }),
       );
     },
-    connect: (id, options) => act(id, 'connect', options.confirmed, options.conflictDecision),
-    repair: (id, options) => act(id, 'repair', options.confirmed, options.conflictDecision),
+    connect: (id, options) => act(id, 'connect', options),
+    repair: (id, options) => act(id, 'repair', options),
     disconnect: async (id, options) => {
       if (!options.confirmed) {
         throw new AppError('bad_request', 'Connector removal requires explicit confirmation', 400);
@@ -190,11 +199,14 @@ export interface CliRuntime {
   createClient(): PimpampumHttpClient;
   createAgentClient(): Promise<AgentCliClient>;
   describeConfig(): AgentCliConfiguration;
+  // The entry point resolves these behind getters on first use, so a verb that never touches the
+  // service composition never pays for it or fails on its receipts. `undefined` marks a host
+  // without that capability.
   serviceManager: ServiceManager;
-  serviceOnlyManager?: ServiceManager;
+  serviceOnlyManager?: ServiceManager | undefined;
   updateManager: UpdateManager;
-  connections?: CliConnectionsRuntime;
-  setup?: CliSetupRuntime;
+  connections?: CliConnectionsRuntime | undefined;
+  setup?: CliSetupRuntime | undefined;
   startServer(): Promise<{ config: { baseUrl: string }; close(): Promise<void> }>;
   startStdioBridge(): Promise<void>;
   readFile(path: string, maxBytes?: number): string;
@@ -208,7 +220,36 @@ export interface CliRuntime {
 
 export { MAX_AGENT_INPUT_BYTES } from './limits.js';
 
+/**
+ * `--body-file` cap. The daemon's body limit is the authority; this bound only stops the CLI from
+ * loading an arbitrary file into memory before the daemon can refuse it.
+ */
+export const MAX_BODY_FILE_BYTES = 1_000_000;
+
 export const CLI_USAGE = renderUsage(PIMPAMPUM_VERSION);
+
+/**
+ * A gateway whose real client is resolved on every method call. The stdio bridge lives for a whole
+ * host session and may start before the daemon has minted its token; resolving per call lets the
+ * bridge adopt the token the moment it appears and lets a still-missing token fail typed inside
+ * the tool handler, where the MCP layer envelopes it. Only methods are forwarded: a gateway has no
+ * data properties, and answering `then` or a symbol would make the proxy look like a thenable.
+ */
+export function createLazyGateway<T extends object>(resolve: () => T): T {
+  return new Proxy({} as T, {
+    get(_target, property) {
+      if (typeof property === 'symbol' || property === 'then') return undefined;
+      return (...arguments_: unknown[]) => {
+        const current = resolve() as Record<PropertyKey, unknown>;
+        const method = current[property];
+        if (typeof method !== 'function') {
+          throw new AppError('internal_error', `Gateway has no method ${property}`, 500);
+        }
+        return (method as (...input: unknown[]) => unknown).apply(current, arguments_);
+      };
+    },
+  });
+}
 
 function required(value: string | undefined, label: string): string {
   if (!value) throw new AppError('bad_request', `Missing ${label}`, 400);
@@ -229,13 +270,6 @@ function revision(value: string | undefined): number {
     throw new AppError('bad_request', 'Revision must be a positive integer', 400);
   }
   return parsed;
-}
-
-function acceptOptionalJsonFlag(arguments_: string[], startIndex: number): void {
-  const trailing = arguments_.slice(startIndex);
-  if (trailing.length > 1 || trailing.some((argument) => argument !== '--json')) {
-    throw new AppError('bad_request', 'Only the optional --json flag is accepted', 400);
-  }
 }
 
 /**
@@ -287,37 +321,40 @@ function printSetupEvent(runtime: CliRuntime, event: 'progress' | 'result', data
   );
 }
 
-function setupNativeOptions(arguments_: string[]): {
-  arguments: string[];
-  events: boolean;
-  keeps: CliConnectorId[];
-} {
-  const filtered: string[] = [];
-  const keeps: CliConnectorId[] = [];
-  let events = false;
-  for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index]!;
-    if (argument === '--events') {
-      if (events) throw new AppError('bad_request', 'Setup event mode may be selected once', 400);
-      events = true;
-      continue;
-    }
-    if (argument === '--keep') {
-      keeps.push(connectorId(arguments_[index + 1]));
-      index += 1;
-      continue;
-    }
-    filtered.push(argument);
-  }
-  if (keeps.length > 0 && !events) {
-    throw new AppError(
-      'bad_request',
-      'Keep decisions are reserved for native setup event mode',
-      400,
-    );
-  }
-  return { arguments: filtered, events, keeps };
+/**
+ * Emits the setup result through the channel the caller selected: the NDJSON event stream when
+ * `--events` was passed, the one redacted envelope otherwise.
+ */
+function printSetupResult(runtime: CliRuntime, events: boolean, result: unknown): void {
+  if (events) printSetupEvent(runtime, 'result', result);
+  else printBoundary(runtime, result);
 }
+
+function setupProgressReporter(
+  runtime: CliRuntime,
+  events: boolean,
+): ((event: SetupProgressEvent) => void) | undefined {
+  return events ? (event) => printSetupEvent(runtime, 'progress', event) : undefined;
+}
+
+/**
+ * The setup and connector layers throw plain errors that carry a stable `code` property. This
+ * table is the only translation to an agent error code; message text is never classified, so a
+ * diagnostic that happens to mention a conflict cannot change the exit contract.
+ *
+ * `CONNECTOR_CONFLICT` is thrown today. The `SETUP_*` codes name the coordinator's plain-error
+ * sites so they map correctly the moment the coordinator adopts them.
+ */
+const LOCAL_ERROR_CODES: Readonly<Record<string, { code: ErrorCode; status: number }>> = {
+  CONNECTOR_CONFLICT: { code: 'conflict', status: 409 },
+  SETUP_PLAN_STALE: { code: 'conflict', status: 409 },
+  SETUP_OPERATION_IN_PROGRESS: { code: 'conflict', status: 409 },
+  SETUP_JOURNAL_REVISION_MISMATCH: { code: 'conflict', status: 409 },
+  SETUP_CONFIRMATION_REQUIRED: { code: 'bad_request', status: 400 },
+  SETUP_CONNECTOR_NOT_SELECTED: { code: 'bad_request', status: 400 },
+  SETUP_UNSUPPORTED_CONNECTOR: { code: 'bad_request', status: 400 },
+  SETUP_NOTHING_TO_RESUME: { code: 'not_found', status: 404 },
+};
 
 async function callBoundary<T>(operation: () => Promise<T>): Promise<T> {
   try {
@@ -336,8 +373,9 @@ async function callBoundary<T>(operation: () => Promise<T>): Promise<T> {
     const message = redactText(
       error instanceof Error ? error.message : 'The local operation failed',
     );
-    if (/CONFLICT/iu.test(code) || /conflict|requires a decision/iu.test(message)) {
-      throw new AppError('conflict', message || 'An explicit conflict decision is required', 409);
+    const typed = LOCAL_ERROR_CODES[code];
+    if (typed !== undefined) {
+      throw new AppError(typed.code, message || 'The local operation failed', typed.status);
     }
     throw new AppError(
       'internal_error',
@@ -365,6 +403,16 @@ function requireConfirmation(command: CliCommand, input: CommandInput): void {
   }
 }
 
+/** `--replace` alone, or `--replace <revision>` pinning the exact entry the reviewer saw. */
+function replacementOf(input: CommandInput): CliConnectorMutationInput {
+  const revision = input.option('--replace');
+  return {
+    confirmed: true,
+    conflictDecision: input.boolean('--replace') ? 'replace' : undefined,
+    ...(revision === undefined ? {} : { reviewedEntryFingerprint: revision }),
+  };
+}
+
 function connectionsRuntime(runtime: CliRuntime): CliConnectionsRuntime {
   if (runtime.connections === undefined) {
     throw new AppError('unavailable', 'Connection management is unavailable in this runtime', 503);
@@ -387,14 +435,47 @@ export function describe(name: string): CliCommand {
   return command;
 }
 
+/**
+ * Resolves `<group> <action>` from user input. An action the catalog does not declare is the
+ * caller's mistake, so it fails as `bad_request` with the whole banner, never as the
+ * `internal_error` that `describe` reserves for a verb the program forgot to declare.
+ */
+function describeAction(group: string, action: string | undefined): CliCommand {
+  const name = `${group} ${required(action, `${group} action`)}`;
+  const command = commandsByName.get(name);
+  if (!command) {
+    throw new AppError('bad_request', `Unknown ${group} action: ${String(action)}`, 400, false, {
+      usage: CLI_USAGE,
+    });
+  }
+  return command;
+}
+
 function badArgument(command: CliCommand, message: string): AppError {
   return new AppError('bad_request', message, 400, false, { usage: renderUsageLine(command) });
+}
+
+/**
+ * Reads a `--body-file` through the runtime's bounded reader. A missing or unreadable file is the
+ * caller's argument problem and names the path; a bounded-read failure keeps its own typed code.
+ */
+function readBodyFile(runtime: CliRuntime, path: string): string {
+  const resolved = runtime.resolvePath(path);
+  try {
+    return runtime.readFile(resolved, MAX_BODY_FILE_BYTES);
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError('bad_request', `Could not read body file: ${resolved}`, 400, false, {
+      path: resolved,
+    });
+  }
 }
 
 export interface CommandInput {
   positional: string[];
   option(flag: string): string | undefined;
   optionAll(flag: string): string[];
+  /** `true` when the flag appeared, bare or with a value. */
   boolean(flag: string): boolean;
 }
 
@@ -425,8 +506,14 @@ export function parseCommandArguments(command: CliCommand, args: string[]): Comm
     if (!option) {
       throw badArgument(command, `Unknown option for ${command.name}: ${token}`);
     }
-    if (option.value === null) {
-      if (flags.has(token)) throw badArgument(command, `Repeated option: ${token}`);
+    const existing = values.get(token);
+    if (
+      option.value === null ||
+      (option.valueOptional === true && !takesOptionalValue(option, remaining))
+    ) {
+      if (flags.has(token) || existing !== undefined) {
+        throw badArgument(command, `Repeated option: ${token}`);
+      }
       flags.add(token);
       continue;
     }
@@ -434,8 +521,7 @@ export function parseCommandArguments(command: CliCommand, args: string[]): Comm
     if (value === undefined || value.startsWith('--')) {
       throw badArgument(command, `Option ${token} requires a value`);
     }
-    const existing = values.get(token);
-    if (existing && option.repeatable !== true) {
+    if ((existing !== undefined && option.repeatable !== true) || flags.has(token)) {
       throw badArgument(command, `Repeated option: ${token}`);
     }
     values.set(token, [...(existing ?? []), value]);
@@ -452,8 +538,16 @@ export function parseCommandArguments(command: CliCommand, args: string[]): Comm
     positional,
     option: (flag) => values.get(flag)?.[0],
     optionAll: (flag) => values.get(flag) ?? [],
-    boolean: (flag) => flags.has(flag),
+    // Present in either form: bare, or with a value.
+    boolean: (flag) => flags.has(flag) || values.has(flag),
   };
+}
+
+/** Whether the next token is the optional value of `option` rather than a positional or a flag. */
+function takesOptionalValue(option: CliOption, remaining: readonly string[]): boolean {
+  const next = remaining[remaining.length - 1];
+  if (next === undefined || next.startsWith('--')) return false;
+  return option.valuePattern === undefined || new RegExp(option.valuePattern, 'u').test(next);
 }
 
 /**
@@ -535,54 +629,30 @@ async function parseToolInput(
   arguments_: string[],
   runtime: CliRuntime,
 ): Promise<{ name: string; input: Record<string, unknown> }> {
-  const name = required(arguments_[0], 'tool name');
-  const sources: Array<
-    { kind: 'inline'; value: string } | { kind: 'stdin' } | { kind: 'file'; path: string }
-  > = [];
-  let index = 1;
-  while (index < arguments_.length) {
-    const argument = arguments_[index];
-    if (argument === '--input') {
-      sources.push({
-        kind: 'inline',
-        value: required(arguments_[index + 1], 'inline JSON input'),
-      });
-      index += 2;
-      continue;
-    }
-    if (argument === '--stdin') {
-      sources.push({ kind: 'stdin' });
-      index += 1;
-      continue;
-    }
-    if (argument === '--input-file') {
-      sources.push({
-        kind: 'file',
-        path: runtime.resolvePath(required(arguments_[index + 1], 'input file path')),
-      });
-      index += 2;
-      continue;
-    }
-    throw new AppError('bad_request', `Unknown call argument: ${String(argument)}`, 400);
-  }
-  if (sources.length > 1) {
-    throw new AppError('bad_request', 'Choose only one tool input source', 400);
-  }
-  const source = sources[0];
+  const descriptor = describe('call');
+  const parsed = parseCommandArguments(descriptor, arguments_);
+  const name = required(parsed.positional[0], 'tool name');
+  const inline = parsed.option('--input');
+  const inputFile = parsed.option('--input-file');
+  const selected = [inline, inputFile, parsed.boolean('--stdin') ? 'stdin' : undefined].filter(
+    (source) => source !== undefined,
+  );
+  if (selected.length > 1) throw badArgument(descriptor, 'Choose only one tool input source');
   let serialized: string;
-  if (!source) {
-    serialized = '{}';
-  } else if (source.kind === 'inline') {
-    serialized = source.value;
-  } else if (source.kind === 'stdin') {
+  if (inline !== undefined) {
+    serialized = inline;
+  } else if (parsed.boolean('--stdin')) {
     serialized = await runtime.readStdin(MAX_AGENT_INPUT_BYTES);
-  } else {
+  } else if (inputFile !== undefined) {
+    const path = runtime.resolvePath(inputFile);
     try {
-      serialized = runtime.readFile(source.path, MAX_AGENT_INPUT_BYTES);
+      serialized = runtime.readFile(path, MAX_AGENT_INPUT_BYTES);
     } catch (error) {
       if (error instanceof AppError) throw error;
-      throw new AppError('bad_request', `Could not read tool input file: ${source.path}`, 400);
+      throw new AppError('bad_request', `Could not read tool input file: ${path}`, 400);
     }
+  } else {
+    serialized = '{}';
   }
   if (Buffer.byteLength(serialized, 'utf8') > MAX_AGENT_INPUT_BYTES) {
     throw new AppError(
@@ -625,16 +695,20 @@ async function executeCli(
   }
 
   // `help` is the one command that prints text rather than an envelope, because it is the human
-  // affordance. `commands` returns the same catalog as JSON for everything else.
+  // affordance. `commands` returns the same catalog as JSON for everything else. Even these parse
+  // their arguments, so a typo never passes silently on any verb.
   if (command === 'help' || command === '--help' || command === '-h') {
+    parseCommandArguments(describe('help'), args);
     runtime.stdout(CLI_USAGE);
     return null;
   }
   if (command === 'version' || command === '--version' || command === '-v') {
+    parseCommandArguments(describe('version'), args);
     print(runtime, { name: 'pimpampum', version: PIMPAMPUM_VERSION });
     return null;
   }
   if (command === 'commands') {
+    parseCommandArguments(describe(command), args);
     print(runtime, describeCommands(PIMPAMPUM_VERSION));
     return null;
   }
@@ -642,11 +716,13 @@ async function executeCli(
   // stdout carries the MCP protocol for this command, so it writes no envelope. The bridge owns
   // its own shutdown signals and keeps the process alive until the host closes the transport.
   if (command === 'mcp') {
+    parseCommandArguments(describe(command), args);
     await runtime.startStdioBridge();
     return null;
   }
 
   if (command === 'serve') {
+    parseCommandArguments(describe(command), args);
     const running = await runtime.startServer();
     print(runtime, { listening: true, baseUrl: running.config.baseUrl });
     const shutdown = async () => {
@@ -659,6 +735,7 @@ async function executeCli(
   }
 
   if (command === 'config') {
+    parseCommandArguments(describe(command), args);
     print(runtime, runtime.describeConfig());
     return null;
   }
@@ -684,15 +761,7 @@ async function executeCli(
     }
     requireConfirmation(descriptor, input);
     const id = connectorId(input.positional[0]);
-    printBoundary(
-      runtime,
-      await callBoundary(() =>
-        connections.connect(id, {
-          confirmed: true,
-          conflictDecision: input.boolean('--replace') ? 'replace' : undefined,
-        }),
-      ),
-    );
+    printBoundary(runtime, await callBoundary(() => connections.connect(id, replacementOf(input))));
     return null;
   }
   if (command === 'repair') {
@@ -702,12 +771,7 @@ async function executeCli(
     const id = connectorId(input.positional[0]);
     printBoundary(
       runtime,
-      await callBoundary(() =>
-        connectionsRuntime(runtime).repair(id, {
-          confirmed: true,
-          conflictDecision: input.boolean('--replace') ? 'replace' : undefined,
-        }),
-      ),
+      await callBoundary(() => connectionsRuntime(runtime).repair(id, replacementOf(input))),
     );
     return null;
   }
@@ -723,87 +787,71 @@ async function executeCli(
     return null;
   }
   if (command === 'setup') {
-    const action = required(args[0], 'setup action');
+    const descriptor = describeAction(command, args[0]);
+    const input = parseCommandArguments(descriptor, args.slice(1));
     const setup = setupRuntime(runtime);
-    if (action === 'plan') {
-      const descriptor = describe('setup plan');
-      const input = parseCommandArguments(descriptor, args.slice(1));
-      const selectedConnectors = input.optionAll('--connector').map(connectorId);
-      printBoundary(runtime, await callBoundary(() => setup.plan({ selectedConnectors })));
-      return null;
-    }
-    if (action === 'apply') {
-      const descriptor = describe('setup apply');
-      const native = setupNativeOptions(args.slice(1));
-      const input = parseCommandArguments(descriptor, native.arguments);
-      requireConfirmation(descriptor, input);
-      const replacements = input.optionAll('--replace').map(connectorId);
-      if (native.keeps.some((id) => replacements.includes(id))) {
-        throw new AppError(
-          'bad_request',
-          'A connector cannot be both kept and replaced in one setup decision',
-          400,
+    const events = input.boolean('--events');
+    switch (descriptor.name) {
+      case 'setup plan': {
+        const selectedConnectors = input.optionAll('--connector').map(connectorId);
+        printBoundary(runtime, await callBoundary(() => setup.plan({ selectedConnectors })));
+        return null;
+      }
+      case 'setup apply': {
+        requireConfirmation(descriptor, input);
+        const replacements = input.optionAll('--replace').map(connectorId);
+        const keeps = input.optionAll('--keep').map(connectorId);
+        if (keeps.length > 0 && !events) {
+          throw badArgument(descriptor, 'Keep decisions are reserved for native setup event mode');
+        }
+        if (keeps.some((id) => replacements.includes(id))) {
+          throw badArgument(
+            descriptor,
+            'A connector cannot be both kept and replaced in one setup decision',
+          );
+        }
+        const conflictDecisions = Object.fromEntries([
+          ...replacements.map((id) => [id, 'replace' as const] as const),
+          ...keeps.map((id) => [id, 'keep' as const] as const),
+        ]) as Partial<Record<CliConnectorId, 'replace' | 'keep'>>;
+        const onProgress = setupProgressReporter(runtime, events);
+        const result = await callBoundary(() =>
+          setup.apply({
+            operationId: required(input.positional[0], 'operation id'),
+            expectedRevision: required(input.positional[1], 'expected revision'),
+            confirmed: true,
+            ...(replacements.length === 0 && keeps.length === 0 ? {} : { conflictDecisions }),
+            ...(onProgress === undefined ? {} : { onProgress }),
+          }),
         );
+        printSetupResult(runtime, events, result);
+        return null;
       }
-      const conflictDecisions = Object.fromEntries([
-        ...replacements.map((id) => [id, 'replace' as const] as const),
-        ...native.keeps.map((id) => [id, 'keep' as const] as const),
-      ]) as Partial<Record<CliConnectorId, 'replace' | 'keep'>>;
-      const result = await callBoundary(() =>
-        setup.apply({
-          operationId: required(input.positional[0], 'operation id'),
-          expectedRevision: required(input.positional[1], 'expected revision'),
-          confirmed: true,
-          ...(replacements.length === 0 && native.keeps.length === 0 ? {} : { conflictDecisions }),
-          ...(native.events
-            ? {
-                onProgress: (event: SetupProgressEvent) =>
-                  printSetupEvent(runtime, 'progress', event),
-              }
-            : {}),
-        }),
-      );
-      if (native.events) printSetupEvent(runtime, 'result', result);
-      else printBoundary(runtime, result);
-      return null;
-    }
-    if (action === 'retry') {
-      const native = setupNativeOptions(args.slice(1));
-      if (!native.events || native.keeps.length > 0 || native.arguments.length !== 1) {
-        throw new AppError('bad_request', 'Native setup retry requires an agent and --events', 400);
+      case 'setup retry': {
+        if (!events) throw badArgument(descriptor, 'setup retry requires --events');
+        const id = connectorId(input.positional[0]);
+        const result = await callBoundary(() =>
+          setup.retryConnector(id, setupProgressReporter(runtime, true)),
+        );
+        printSetupResult(runtime, true, result);
+        return null;
       }
-      const id = connectorId(native.arguments[0]);
-      const result = await callBoundary(() =>
-        setup.retryConnector(id, (event) => printSetupEvent(runtime, 'progress', event)),
-      );
-      printSetupEvent(runtime, 'result', result);
-      return null;
-    }
-    if (action === 'status') {
-      parseCommandArguments(describe('setup status'), args.slice(1));
-      printBoundary(runtime, await callBoundary(() => setup.status()));
-      return null;
-    }
-    if (action === 'resume') {
-      const native = setupNativeOptions(args.slice(1));
-      if (native.keeps.length > 0) {
-        throw new AppError('bad_request', 'Keep decisions require setup apply', 400);
+      case 'setup status': {
+        printBoundary(runtime, await callBoundary(() => setup.status()));
+        return null;
       }
-      parseCommandArguments(describe('setup resume'), native.arguments);
-      const result = await callBoundary(() =>
-        setup.resume(
-          native.events
-            ? { onProgress: (event) => printSetupEvent(runtime, 'progress', event) }
-            : undefined,
-        ),
-      );
-      if (native.events) printSetupEvent(runtime, 'result', result);
-      else printBoundary(runtime, result);
-      return null;
+      default: {
+        const onProgress = setupProgressReporter(runtime, events);
+        const result = await callBoundary(() =>
+          setup.resume(onProgress === undefined ? undefined : { onProgress }),
+        );
+        printSetupResult(runtime, events, result);
+        return null;
+      }
     }
-    throw new AppError('bad_request', `Unknown setup action: ${action}`, 400);
   }
   if (command === 'tools') {
+    parseCommandArguments(describe(command), args);
     const catalog = await withAgentClient(runtime, (client) => client.listTools());
     print(runtime, catalog);
     return null;
@@ -819,46 +867,49 @@ async function executeCli(
   }
 
   if (command === 'install') {
-    if (args.length > 1 || (args.length === 1 && args[0] !== '--service-only')) {
-      throw new AppError(
-        'bad_request',
-        'Install accepts only the optional --service-only flag',
-        400,
-      );
-    }
-    const manager =
-      args[0] === '--service-only'
-        ? (runtime.serviceOnlyManager ?? runtime.serviceManager)
-        : runtime.serviceManager;
+    const input = parseCommandArguments(describe(command), args);
+    const manager = input.boolean('--service-only')
+      ? (runtime.serviceOnlyManager ?? runtime.serviceManager)
+      : runtime.serviceManager;
     print(runtime, await manager.install());
     return null;
   }
   if (command === 'status') {
+    parseCommandArguments(describe(command), args);
     print(runtime, await runtime.serviceManager.status());
     return null;
   }
   if (command === 'update:check') {
+    parseCommandArguments(describe(command), args);
     print(runtime, await runtime.updateManager.check());
     return null;
   }
   if (command === 'update') {
+    parseCommandArguments(describe(command), args);
     print(runtime, await runtime.updateManager.update());
     return null;
   }
   if (command === 'uninstall') {
+    parseCommandArguments(describe(command), args);
     print(runtime, await runtime.serviceManager.uninstall());
     return null;
   }
 
+  // Reject an unknown verb before the client exists: resolving the client may itself fail typed
+  // when no daemon token is stored, and that failure must not hide the argument mistake.
+  if (!commandsByName.has(command) && command !== 'sync') throw unknownCommand(command);
   const client = runtime.createClient();
   switch (command) {
     case 'health':
+      parseCommandArguments(describe(command), args);
       print(runtime, await client.health());
       return null;
     case 'overview':
+      parseCommandArguments(describe(command), args);
       print(runtime, await client.getOverview());
       return null;
     case 'workspace:list':
+      parseCommandArguments(describe(command), args);
       print(runtime, await client.listWorkspaces());
       return null;
     case 'workspace:add': {
@@ -1003,7 +1054,7 @@ async function executeCli(
           projectId: required(input.positional[0], 'project id'),
           slug: required(input.positional[1], 'spec slug'),
           title: required(input.positional[2], 'spec title'),
-          body: bodyFile ? runtime.readFile(bodyFile) : '',
+          body: bodyFile ? readBodyFile(runtime, bodyFile) : '',
           actor: actorOf(input),
         }),
       );
@@ -1053,7 +1104,7 @@ async function executeCli(
           specId: required(input.positional[0], 'spec id'),
           title: required(input.positional[1], 'task title'),
           parentId: exclusive(descriptor, input, '--parent', 2, 'parent-id') ?? null,
-          body: bodyFile ? runtime.readFile(bodyFile) : null,
+          body: bodyFile ? readBodyFile(runtime, bodyFile) : null,
           actor: actorOf(input),
         }),
       );
@@ -1077,102 +1128,106 @@ async function executeCli(
       );
       return null;
     }
-    case 'backup':
-      if (args[0] === 'status') {
-        acceptOptionalJsonFlag(args, 1);
-        print(runtime, await client.getAutomaticBackupStatus());
-        return null;
-      }
-      if (args[0] === 'configure') {
-        acceptOptionalJsonFlag(args, 2);
+    case 'backup': {
+      // `backup <directory>` and the automatic-backup subcommands share one verb; a first token
+      // the catalog declares as an action selects the subcommand, anything else is the directory.
+      const subcommand =
+        args[0] === undefined ? undefined : commandsByName.get(`backup ${args[0]}`);
+      if (subcommand === undefined) {
+        const input = parseCommandArguments(describe(command), args);
         print(
           runtime,
-          await client.configureAutomaticBackup(
-            runtime.resolvePath(required(args[1], 'backup directory')),
+          await client.backup(
+            runtime.resolvePath(required(input.positional[0], 'backup directory')),
           ),
         );
         return null;
       }
-      if (args[0] === 'retry') {
-        acceptOptionalJsonFlag(args, 1);
-        const status = await client.retryAutomaticBackup();
-        if (status.state === 'error') {
-          throw new AppError(
-            'internal_error',
-            status.error ?? 'Automatic backup retry failed',
-            500,
-            true,
+      const input = parseCommandArguments(subcommand, args.slice(1));
+      switch (subcommand.name) {
+        case 'backup status':
+          print(runtime, await client.getAutomaticBackupStatus());
+          return null;
+        case 'backup configure':
+          print(
+            runtime,
+            await client.configureAutomaticBackup(
+              runtime.resolvePath(required(input.positional[0], 'backup directory')),
+            ),
           );
-        }
-        print(runtime, status);
-        return null;
+          return null;
+        case 'backup retry':
+          // A retry that ends in `state: 'error'` is a successful report of a failed backup: the
+          // data carries `error`, and the caller decides. Exit 1 would hide that data.
+          print(runtime, await client.retryAutomaticBackup());
+          return null;
+        default:
+          print(runtime, await client.disableAutomaticBackup());
+          return null;
       }
-      if (args[0] === 'disable') {
-        acceptOptionalJsonFlag(args, 1);
-        print(runtime, await client.disableAutomaticBackup());
-        return null;
-      }
+    }
+    case 'export': {
+      const input = parseCommandArguments(describe(command), args);
       print(
         runtime,
-        await client.backup(runtime.resolvePath(required(args[0], 'backup directory'))),
+        await client.exportPortable(
+          runtime.resolvePath(required(input.positional[0], 'export directory')),
+        ),
       );
-      return null;
-    case 'export':
-      print(
-        runtime,
-        await client.exportPortable(runtime.resolvePath(required(args[0], 'export directory'))),
-      );
-      return null;
-    case 'sync': {
-      const action = required(args[0], 'sync action');
-      if (action === 'status') {
-        acceptOptionalJsonFlag(args, 1);
-        print(runtime, await client.getSyncStatus());
-        return null;
-      }
-      if (action === 'configure') {
-        const directory = runtime.resolvePath(required(args[1], 'shared folder'));
-        const deviceIndex = args.indexOf('--device');
-        if (deviceIndex !== 2 || !args[3] || args.slice(4).some((value) => value !== '--json')) {
-          throw new AppError(
-            'bad_request',
-            'Use sync configure <directory> --device <device-id> [--json]',
-            400,
-          );
-        }
-        print(runtime, await client.configureSync(directory, args[3]));
-        return null;
-      }
-      if (action === 'resolve') {
-        const conflictId = required(args[1], 'conflict id');
-        const choice = required(args[2], 'conflict choice');
-        if (
-          (choice !== 'local' && choice !== 'remote') ||
-          args.slice(3).some((value) => value !== '--json')
-        ) {
-          throw new AppError(
-            'bad_request',
-            'Use sync resolve <conflict-id> <local|remote> [--json]',
-            400,
-          );
-        }
-        print(runtime, await client.resolveSyncConflict(conflictId, choice));
-        return null;
-      }
-      acceptOptionalJsonFlag(args, 1);
-      if (action === 'now') print(runtime, await client.reconcileSync());
-      else if (action === 'pause') print(runtime, await client.pauseSync());
-      else if (action === 'resume') print(runtime, await client.resumeSync());
-      else if (action === 'conflicts') print(runtime, await client.listSyncConflicts());
-      else if (action === 'forget') print(runtime, await client.forgetSync());
-      else throw new AppError('bad_request', `Unknown sync action: ${action}`, 400);
       return null;
     }
+    case 'sync': {
+      const descriptor = describeAction(command, args[0]);
+      const input = parseCommandArguments(descriptor, args.slice(1));
+      switch (descriptor.name) {
+        case 'sync status':
+          print(runtime, await client.getSyncStatus());
+          return null;
+        case 'sync configure': {
+          const directory = runtime.resolvePath(required(input.positional[0], 'shared folder'));
+          const deviceId = input.option('--device');
+          if (deviceId === undefined) {
+            throw badArgument(descriptor, 'sync configure requires --device <id>');
+          }
+          print(runtime, await client.configureSync(directory, deviceId));
+          return null;
+        }
+        case 'sync resolve': {
+          const conflictId = required(input.positional[0], 'conflict id');
+          const choice = required(input.positional[1], 'conflict choice');
+          if (choice !== 'local' && choice !== 'remote') {
+            throw badArgument(descriptor, 'Conflict choice must be local or remote');
+          }
+          print(runtime, await client.resolveSyncConflict(conflictId, choice));
+          return null;
+        }
+        case 'sync now':
+          print(runtime, await client.reconcileSync());
+          return null;
+        case 'sync pause':
+          print(runtime, await client.pauseSync());
+          return null;
+        case 'sync resume':
+          print(runtime, await client.resumeSync());
+          return null;
+        case 'sync conflicts':
+          print(runtime, await client.listSyncConflicts());
+          return null;
+        default:
+          print(runtime, await client.forgetSync());
+          return null;
+      }
+    }
     default:
-      throw new AppError('bad_request', `Unknown command: ${command}`, 400, false, {
-        usage: CLI_USAGE,
-      });
+      // A declared multi-token name passed as one token, such as `"setup plan"`.
+      throw unknownCommand(command);
   }
+}
+
+function unknownCommand(command: string): AppError {
+  return new AppError('bad_request', `Unknown command: ${command}`, 400, false, {
+    usage: CLI_USAGE,
+  });
 }
 
 export async function runCli(arguments_: string[], runtime: CliRuntime): Promise<void> {

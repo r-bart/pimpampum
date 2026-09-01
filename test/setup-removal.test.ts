@@ -6,7 +6,12 @@ import {
   createInstallationLifecycle,
   type InstallationLifecycleDependencies,
 } from '../src/setup/coordinator.js';
-import type { InstallationSnapshot } from '../src/setup/types.js';
+import { createSetupPlanStore, createSetupStateStore } from '../src/setup/state.js';
+import {
+  SETUP_SCHEMA_VERSION,
+  type InstallationSnapshot,
+  type SetupJournal,
+} from '../src/setup/types.js';
 import { createPlatformServiceManager } from '../src/service/manager.js';
 import { installReceiptPath } from '../src/service/receipt.js';
 import type { PlatformServiceAdapter } from '../src/service/types.js';
@@ -312,5 +317,130 @@ describe('prepared service uninstall transaction', () => {
     });
     await committed!.finalize();
     expect(existsSync(receiptPath)).toBe(false);
+  });
+});
+
+describe('removal supersedes the guided-setup journal and merges manual instructions', () => {
+  function finishedJournal(): SetupJournal {
+    return {
+      schemaVersion: SETUP_SCHEMA_VERSION,
+      operationId: 'finished-operation',
+      revision: 'a'.repeat(64),
+      phase: 'complete',
+      selectedConnectors: ['codex'],
+      conflictDecisions: {},
+      completedPhases: ['runtime.install', 'service.install', 'service.verify'],
+      diagnostics: [],
+      service: { installed: true, running: true, verified: true },
+      connectors: [],
+      loginItem: 'enabled',
+      status: 'complete',
+      updatedAt: '2026-09-01T10:00:00.000Z',
+    };
+  }
+
+  it('removes the setup journal and plan so a later popover cannot rehydrate a finished setup', async () => {
+    const root = temporaryDirectory();
+    const dependencies = removalDependencies(root);
+    mkdirSync(dependencies.dataDirectory, { recursive: true, mode: 0o700 });
+    const stateStore = createSetupStateStore(dependencies.dataDirectory);
+    const planStore = createSetupPlanStore(dependencies.dataDirectory);
+    stateStore.write(finishedJournal());
+    planStore.write({
+      operationId: 'finished-operation',
+      revision: 'a'.repeat(64),
+      selectedConnectors: ['codex'],
+      changes: [],
+      conflicts: [],
+      requiresConfirmation: true,
+    });
+    writeFileSync(join(dependencies.dataDirectory, 'token'), 'private-token');
+
+    await expect(createInstallationLifecycle(dependencies).remove()).resolves.toMatchObject({
+      removed: true,
+    });
+    expect(existsSync(stateStore.path)).toBe(false);
+    expect(existsSync(planStore.path)).toBe(false);
+    expect(readFileSync(join(dependencies.dataDirectory, 'token'), 'utf8')).toBe('private-token');
+  });
+
+  it('removes a journal that no longer parses instead of letting it block the removal', async () => {
+    const root = temporaryDirectory();
+    const dependencies = removalDependencies(root);
+    mkdirSync(dependencies.dataDirectory, { recursive: true, mode: 0o700 });
+    const journalPath = join(dependencies.dataDirectory, 'setup-state.json');
+    writeFileSync(journalPath, '{torn', { mode: 0o600 });
+    await expect(createInstallationLifecycle(dependencies).remove()).resolves.toMatchObject({
+      removed: true,
+    });
+    expect(existsSync(journalPath)).toBe(false);
+  });
+
+  it('restores a readable journal when superseding it fails and the removal rolls back', async () => {
+    const root = temporaryDirectory();
+    const dependencies = removalDependencies(root);
+    const written: SetupJournal[] = [];
+    const setupStateStore = {
+      path: join(dependencies.dataDirectory, 'setup-state.json'),
+      read: () => finishedJournal(),
+      write: (state: SetupJournal) => {
+        written.push(state);
+      },
+      remove: () => {
+        throw new Error('journal is busy');
+      },
+    };
+    const setupPlanStore = {
+      path: join(dependencies.dataDirectory, 'setup-plan.json'),
+      read: () => null,
+      write: () => undefined,
+      remove: vi.fn(),
+    };
+    await expect(
+      createInstallationLifecycle({ ...dependencies, setupStateStore, setupPlanStore }).remove(),
+    ).rejects.toThrow('journal is busy');
+    expect(setupPlanStore.remove).toHaveBeenCalledOnce();
+    expect(written).toEqual([finishedJournal()]);
+    expect(dependencies.events.slice(-4)).toEqual([
+      'runtime.restore',
+      'service.restore',
+      'connectors.restore',
+      'receipt.restore',
+    ]);
+  });
+
+  it('merges bounded service, receipt, and connector manual instructions into one list', async () => {
+    const root = temporaryDirectory();
+    const dependencies = removalDependencies(root);
+    const loginItem = 'Open System Settings > General > Login Items and remove Pimpampum by hand.';
+    vi.mocked(dependencies.service.removeOwned).mockImplementationOnce(async () => {
+      dependencies.events.push('service.remove');
+      return {
+        manualInstructions: [loginItem, loginItem, 'x'.repeat(513), 'bad\u0001control', ''],
+      };
+    });
+    vi.mocked(dependencies.receipt.remove).mockImplementationOnce(async () => {
+      dependencies.events.push('receipt.remove');
+      return {
+        manualInstructions: ['Delete ~/Applications/Pimpampum.app if it is still present.'],
+      };
+    });
+    vi.mocked(dependencies.service.finalizeRemoval!).mockImplementationOnce(async () => {
+      dependencies.events.push('service.finalize');
+      return { manualInstructions: Array.from({ length: 20 }, (_, index) => `Step ${index}`) };
+    });
+
+    const removed = await createInstallationLifecycle(dependencies).remove();
+    expect(removed.manualInstructions.slice(0, 2)).toEqual([
+      loginItem,
+      'Delete ~/Applications/Pimpampum.app if it is still present.',
+    ]);
+    expect(removed.manualInstructions).toHaveLength(16);
+    expect(removed.manualInstructions).not.toContain(
+      "The claude-code entry was left unchanged because Pimpampum could not prove ownership. Review only the Pimpampum entry in that agent's settings.",
+    );
+    expect(
+      removed.manualInstructions.some((item) => item.includes('\u0001') || item.length > 512),
+    ).toBe(false);
   });
 });

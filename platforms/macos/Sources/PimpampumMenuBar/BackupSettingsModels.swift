@@ -33,6 +33,13 @@ struct BackupSettings: Codable, Equatable, Sendable {
   let lastAttemptAt: Date?
   let lastSuccessAt: Date?
   let error: String?
+
+  /// The third valid shape (M-C6): the daemon could not read its persisted backup settings, so
+  /// automatic backup is off with no destination and `error` says why. The panel shows that line
+  /// under "Backup needs attention"; choosing a folder rewrites the file and repairs it.
+  var unreadableSettingsMessage: String? {
+    !enabled && state == .error ? error : nil
+  }
 }
 
 enum BackupSettingsActivity: Equatable, Sendable {

@@ -1,9 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -230,6 +232,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
     expect(await executeCli(environment, 'health')).toEqual({
       status: 'ok',
       version: PIMPAMPUM_VERSION,
+      ready: true,
     });
     const workspace = await executeCli<Workspace>(
       environment,
@@ -389,10 +392,10 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
       reason: 'Task obsolete',
       actor: 'owner',
     });
-    expect([cancelledTask.state, (await api<Task>(`/api/v1/tasks/${child.id}`)).state]).toEqual([
-      'cancelled',
-      'cancelled',
-    ]);
+    expect([
+      cancelledTask.state,
+      (await api<Task>(`/api/v1/tasks/${child.id}/manifest`)).state,
+    ]).toEqual(['cancelled', 'cancelled']);
 
     let specProject = await createProject('spec-cancel');
     let cancelledSpec = await ready(await createSpec(specProject.id, 'cancelled-spec'));
@@ -412,7 +415,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
       actor: 'owner',
     });
     expect(cancelledSpec.state).toBe('cancelled');
-    expect((await api<Task>(`/api/v1/tasks/${specTask.id}`)).state).toBe('cancelled');
+    expect((await api<Task>(`/api/v1/tasks/${specTask.id}/manifest`)).state).toBe('cancelled');
 
     let cancelledProject = await createProject('project-cancel');
     let projectSpec = await ready(await createSpec(cancelledProject.id, 'project-spec'));
@@ -431,11 +434,11 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
       reason: 'Portfolio decision',
       actor: 'owner',
     });
-    projectSpec = await api<Spec>(`/api/v1/specs/${projectSpec.id}`);
+    projectSpec = await api<Spec>(`/api/v1/specs/${projectSpec.id}/manifest`);
     expect([
       cancelledProject.state,
       projectSpec.state,
-      (await api<Task>(`/api/v1/tasks/${projectTask.id}`)).state,
+      (await api<Task>(`/api/v1/tasks/${projectTask.id}/manifest`)).state,
     ]).toEqual(['cancelled', 'cancelled', 'cancelled']);
     expect((await executeCli<Overview>(environment, 'overview')).activeWork).toEqual([]);
   }, 15_000);
@@ -509,7 +512,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
     rmSync(`${databasePath}-shm`, { force: true });
     copyFileSync(snapshotPath, databasePath);
     await startDaemon();
-    expect(await api<Project>(`/api/v1/projects/${persisted.id}`)).toMatchObject({
+    expect(await api<Project>(`/api/v1/projects/${persisted.id}/manifest`)).toMatchObject({
       id: persisted.id,
     });
   }, 20_000);
@@ -572,4 +575,69 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
       await client.close();
     }
   }, 15_000);
+
+  // The commands every suggestion points at must work on a machine where nothing was installed
+  // and nothing can be written: no data directory, no token, no receipt. Before this, `loadConfig`
+  // created `~/.pimpampum` and minted a token for `help`.
+  it('answers help, version, commands and config from a read-only home without writing', async () => {
+    const readOnlyHome = join(temporaryDirectory, 'read-only-home');
+    mkdirSync(readOnlyHome);
+    chmodSync(readOnlyHome, 0o500);
+    const offline: NodeJS.ProcessEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !key.startsWith('PIMPAMPUM_')),
+    );
+    offline.HOME = readOnlyHome;
+    try {
+      const help = spawn(process.execPath, [compiledCli, 'help'], {
+        cwd: repositoryRoot,
+        env: offline,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let banner = '';
+      help.stdout?.on('data', (chunk: Buffer) => (banner += chunk.toString()));
+      const helpExit = await new Promise<number | null>((resolveExit) =>
+        help.on('exit', (code) => resolveExit(code)),
+      );
+      expect(helpExit).toBe(0);
+      expect(banner).toContain(`Pimpampum ${PIMPAMPUM_VERSION}`);
+      expect(banner).toContain('Native desktop mode');
+
+      expect(await executeCli(offline, 'version')).toEqual({
+        name: 'pimpampum',
+        version: PIMPAMPUM_VERSION,
+      });
+      const catalog = await executeCli<{ commands: Array<{ name: string }> }>(offline, 'commands');
+      expect(catalog.commands.map((command) => command.name)).toContain('setup retry');
+      expect(await executeCli(offline, 'config')).toMatchObject({
+        dataDirectory: join(readOnlyHome, '.pimpampum'),
+        tokenPath: join(readOnlyHome, '.pimpampum', 'token'),
+        tokenSource: 'file',
+        tokenConfigured: false,
+      });
+
+      // A client verb reports the missing daemon token typed, with the install remedy, instead of
+      // minting a credential of its own.
+      const health = spawn(process.execPath, [compiledCli, 'health'], {
+        cwd: repositoryRoot,
+        env: offline,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let failure = '';
+      health.stderr?.on('data', (chunk: Buffer) => (failure += chunk.toString()));
+      const healthExit = await new Promise<number | null>((resolveExit) =>
+        health.on('exit', (code) => resolveExit(code)),
+      );
+      expect(healthExit).toBe(1);
+      expect(JSON.parse(failure)).toMatchObject({
+        error: {
+          code: 'unavailable',
+          message: expect.stringContaining('No daemon token at'),
+          suggestion: expect.stringContaining('pimpampum install'),
+        },
+      });
+      expect(readdirSync(readOnlyHome)).toEqual([]);
+    } finally {
+      chmodSync(readOnlyHome, 0o700);
+    }
+  }, 20_000);
 });

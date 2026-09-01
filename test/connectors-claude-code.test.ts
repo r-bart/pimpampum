@@ -277,7 +277,7 @@ describe('Claude Code connector', () => {
     ).toEqual([]);
   });
 
-  it('stays neutral when the bounded configuration cannot be parsed safely', async () => {
+  it('reports a typed unavailable error with a bounded diagnostic when the configuration cannot be parsed', async () => {
     const root = temporaryDirectory();
     const bin = join(root, 'bin');
     mkdirSync(bin);
@@ -305,11 +305,23 @@ describe('Claude Code connector', () => {
       },
     });
 
-    await expect(connector.plan()).resolves.toMatchObject({
-      state: 'unavailable',
-      selectedByDefault: false,
-      mutations: [],
+    const error = await connector.plan().catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: 'unavailable',
+      status: 503,
+      retryable: false,
+      details: { connectorId: 'claude-code' },
     });
+    expect((error as Error).message).toBe(
+      'Claude Code configuration could not be inspected: Host configuration must contain valid JSON',
+    );
+    await expect(connector.inspect()).rejects.toMatchObject({ code: 'unavailable' });
+    expect(
+      run.mock.calls.filter(
+        ([invocation]) =>
+          invocation.arguments.at(-1) !== '--help' && invocation.arguments[0] !== '--version',
+      ),
+    ).toEqual([]);
   });
 
   it('rolls back a just-added entry and leaves no receipt when route verification fails', async () => {
@@ -423,5 +435,53 @@ describe('Claude Code connector', () => {
     expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({
       mcpServers: { pimpampum: { type: 'stdio', ...previous } },
     });
+  });
+
+  it('spawns at most twelve host processes for one plan, snapshot, and connect', async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    const configPath = join(root, '.claude.json');
+    writeFileSync(join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(configPath, JSON.stringify({ mcpServers: {} }));
+    const run = vi.fn(async (invocation: CommandInvocation) => {
+      if (invocation.arguments[0] === '--version') {
+        return { exitCode: 0, stdout: '2.1.251 (Claude Code)', stderr: '', signal: null };
+      }
+      if (invocation.arguments.at(-1) === '--help') {
+        return { exitCode: 0, stdout: '--scope user', stderr: '', signal: null };
+      }
+      if (invocation.arguments[1] === 'add-json') {
+        writeFileSync(
+          configPath,
+          JSON.stringify({
+            mcpServers: { pimpampum: JSON.parse(invocation.arguments.at(-1)!) as unknown },
+          }),
+        );
+      }
+      return { exitCode: 0, stdout: '', stderr: '', signal: null };
+    });
+    const verifyRoute = vi.fn(async () => verification());
+    const connector = createClaudeCodeConnector({
+      launcherPath: launcher,
+      userConfigPath: configPath,
+      boundedExecutableLocations: [bin],
+      pathValue: bin,
+      runCommand: run,
+      verifyRoute,
+      receiptStore: {
+        read: async () => null,
+        write: async () => undefined,
+        remove: async () => undefined,
+      },
+    });
+
+    const plan = await connector.plan();
+    await connector.snapshot();
+    await expect(connector.connect(plan)).resolves.toMatchObject({ changed: true });
+    const versionProbes = run.mock.calls.filter(([call]) => call.arguments[0] === '--version');
+    expect(versionProbes).toHaveLength(1);
+    expect(run.mock.calls.length + verifyRoute.mock.calls.length).toBe(7);
+    expect(run.mock.calls.length + verifyRoute.mock.calls.length).toBeLessThanOrEqual(12);
   });
 });

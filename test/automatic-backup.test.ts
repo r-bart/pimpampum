@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -34,6 +34,11 @@ describe('automatic backup controller', () => {
       error: null,
     };
     expect(parseAutomaticBackupStatus(status)).toEqual(status);
+    const unreadableSettings = { ...status, state: 'error' as const, error: 'settings unreadable' };
+    expect(parseAutomaticBackupStatus(unreadableSettings)).toEqual(unreadableSettings);
+    expect(() => parseAutomaticBackupStatus({ ...status, state: 'error' })).toThrow(
+      'invalid backup status',
+    );
     expect(() => parseAutomaticBackupStatus({ ...status, unexpected: true })).toThrow(
       'invalid backup status',
     );
@@ -102,22 +107,43 @@ describe('automatic backup controller', () => {
     expect(disabled.getStatus().state).toBe('disabled');
     await disabled.close();
 
+    // A corrupt settings file must not keep the daemon down: the controller starts in `error`
+    // without a destination, the public contract accepts that shape, and configure() repairs it.
     const corruptPath = join(directory, 'corrupt.json');
-    writeFileSync(corruptPath, 'not json');
-    expect(() => new AutomaticBackupController({ settingsPath: corruptPath, snapshotter })).toThrow(
-      'backup settings are invalid',
-    );
-    writeFileSync(corruptPath, '{"schemaVersion":1,"backupDirectory":"relative"}\n');
-    expect(() => new AutomaticBackupController({ settingsPath: corruptPath, snapshotter })).toThrow(
-      'backup settings are invalid',
-    );
-    writeFileSync(
-      corruptPath,
+    const unreadable = {
+      enabled: false,
+      directory: null,
+      snapshotPath: null,
+      state: 'error',
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      error: `Pimpampum backup settings are invalid: ${corruptPath}`,
+    };
+    for (const contents of [
+      'not json',
+      '{"schemaVersion":1,"backupDirectory":"relative"}\n',
       `${JSON.stringify({ schemaVersion: 1, backupDirectory: destination, extra: true })}\n`,
-    );
-    expect(() => new AutomaticBackupController({ settingsPath: corruptPath, snapshotter })).toThrow(
-      'backup settings are invalid',
-    );
+    ]) {
+      writeFileSync(corruptPath, contents);
+      const corrupt = new AutomaticBackupController({ settingsPath: corruptPath, snapshotter });
+      corrupt.start();
+      expect(corrupt.getStatus()).toEqual(unreadable);
+      expect(parseAutomaticBackupStatus(corrupt.getStatus())).toEqual(unreadable);
+      await expect(corrupt.retry()).rejects.toMatchObject({ code: 'invalid_state' });
+      await corrupt.close();
+    }
+    writeFileSync(corruptPath, 'not json');
+    const repaired = new AutomaticBackupController({ settingsPath: corruptPath, snapshotter });
+    expect((await repaired.configure(destination)).state).toBe('healthy');
+    expect(JSON.parse(readFileSync(corruptPath, 'utf8'))).toEqual({
+      schemaVersion: 1,
+      backupDirectory: destination,
+    });
+    await repaired.close();
+    writeFileSync(corruptPath, 'not json');
+    const disabled2 = new AutomaticBackupController({ settingsPath: corruptPath, snapshotter });
+    expect((await disabled2.disable()).state).toBe('disabled');
+    await disabled2.close();
 
     const configuredPath = join(directory, 'configured.json');
     writeFileSync(

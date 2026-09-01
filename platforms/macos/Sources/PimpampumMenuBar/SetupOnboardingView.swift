@@ -85,6 +85,8 @@ struct SetupOnboardingView: View {
 
   /// Owned by the app. This view is one rendering of a session that outlives it.
   @ObservedObject var session: SetupSession
+  /// The folder dialog behind "Add a workspace"; the session turns its answer into a request.
+  var workspaceFolderPicker: any WorkspaceFolderPicking = WorkspaceFolderPicker()
 
   @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
   @State private var isChangesHelpPresented = false
@@ -321,6 +323,10 @@ struct SetupOnboardingView: View {
           .fixedSize(horizontal: false, vertical: true)
       }
 
+      if SetupOnboardingPresentation.showsAddWorkspace(completion: store.completion) {
+        addWorkspace
+      }
+
       if SetupOnboardingPresentation.showsDone(completion: store.completion) {
         Button(SetupOnboardingCopy.finishButton) {
           Task { await session.finish() }
@@ -337,6 +343,27 @@ struct SetupOnboardingView: View {
         Button(SetupOnboardingPresentation.startOverButton) { session.startOver() }
           .buttonStyle(GuidedSecondaryButtonStyle())
           .accessibilityLabel(SetupOnboardingPresentation.startOverAccessibilityLabel)
+      }
+    }
+  }
+
+  /// The first workspace, registered here so the overview has something to show after Done. The
+  /// folder dialog is a real window; the popover survives it the same way it survives the backup
+  /// folder dialog, because nothing here presents a sheet.
+  private var addWorkspace: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(WorkspaceRegistrationCopy.onboardingDetail)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      Button(WorkspaceRegistrationCopy.button) {
+        Task { await session.addWorkspace(using: workspaceFolderPicker) }
+      }
+      .buttonStyle(GuidedSecondaryButtonStyle())
+      .disabled(session.workspaceRegistration.isRegistering)
+      .accessibilityLabel(WorkspaceRegistrationCopy.buttonAccessibilityLabel)
+      if let notice = session.workspaceRegistration.notice {
+        WorkspaceRegistrationNoticeRow(notice: notice)
       }
     }
   }
@@ -544,6 +571,31 @@ struct SetupOnboardingView: View {
   }
 }
 
+/// One row for the workspace registration outcome, shared by the final step and the overview.
+@MainActor
+struct WorkspaceRegistrationNoticeRow: View {
+  let notice: WorkspaceRegistrationNotice
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      if notice.inProgress {
+        ProgressView().controlSize(.small)
+      } else {
+        Image(systemName: notice.symbol)
+          .foregroundStyle(notice.isFailure ? Color.red : Color.secondary)
+          .accessibilityHidden(true)
+      }
+      Text(notice.text)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(minHeight: 24, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(notice.text)
+  }
+}
+
 struct GuidedPrimaryButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
@@ -556,7 +608,7 @@ struct GuidedPrimaryButtonStyle: ButtonStyle {
   }
 }
 
-private struct GuidedSecondaryButtonStyle: ButtonStyle {
+struct GuidedSecondaryButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .font(.body.weight(.medium))

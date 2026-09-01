@@ -281,4 +281,17 @@ extension StatusPopover {
   static func showsSettingsButton(content: StatusPopoverContent) -> Bool {
     content != .guidedSetup
   }
+
+  /// A portfolio with no workspace can never fill itself: nothing an agent does lands anywhere.
+  /// That is the one overview state that offers the workspace action.
+  static func showsAddWorkspace(overview: Overview?) -> Bool {
+    overview.map { $0.counts.workspaces == 0 } ?? false
+  }
+
+  /// Why the project list is empty, in the words the Omarchy popout uses for the same two cases.
+  static func emptyProjectsDetail(overview: Overview) -> String {
+    overview.counts.workspaces == 0
+      ? WorkspaceRegistrationCopy.emptyWorkspacesDetail
+      : WorkspaceRegistrationCopy.emptyProjectsDetail
+  }
 }

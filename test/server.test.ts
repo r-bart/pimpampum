@@ -3,6 +3,7 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -13,7 +14,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeConfig } from '../src/config.js';
-import { startServer, type RunningServer } from '../src/server.js';
+import {
+  acquireInstanceLock,
+  startServer,
+  type InstanceLockIo,
+  type RunningServer,
+} from '../src/server.js';
 import { PIMPAMPUM_VERSION } from '../src/version.js';
 import { canonicalJson, syncHash } from '../src/syncState.js';
 
@@ -42,7 +48,11 @@ describe('server composition', () => {
     running = await startServer({ ...config(), databasePath: ':memory:' });
     const address = running.server.address() as AddressInfo;
     const response = await fetch(`http://127.0.0.1:${address.port}/health`);
-    expect(await response.json()).toEqual({ status: 'ok', version: PIMPAMPUM_VERSION });
+    expect(await response.json()).toEqual({
+      status: 'ok',
+      version: PIMPAMPUM_VERSION,
+      ready: true,
+    });
     const shared = join(directory, 'shared');
     mkdirSync(shared);
     const syncResponse = await fetch(`http://127.0.0.1:${address.port}/api/v1/settings/sync`, {
@@ -173,16 +183,35 @@ describe('server composition', () => {
     expect(existsSync(join(directory, '.instance.lock'))).toBe(false);
   });
 
-  it('closes a newly opened database when persisted backup settings are corrupt', async () => {
+  it('starts with backup in state error when persisted backup settings are corrupt', async () => {
     directory = mkdtempSync(join(tmpdir(), 'pimpampum-server-settings-'));
     const settingsPath = join(directory, 'settings.json');
     writeFileSync(settingsPath, 'not json');
 
-    await expect(startServer(config())).rejects.toThrow('backup settings are invalid');
-    expect(existsSync(join(directory, '.instance.lock'))).toBe(false);
-
-    writeFileSync(settingsPath, '{"schemaVersion":1,"backupDirectory":null}\n');
     running = await startServer(config());
+    const address = running.server.address() as AddressInfo;
+    const headers = { authorization: `Bearer ${running.config.token}` };
+    const status = await fetch(`http://127.0.0.1:${address.port}/api/v1/settings/backup`, {
+      headers,
+    });
+    expect(status.status).toBe(200);
+    expect(((await status.json()) as { data: unknown }).data).toMatchObject({
+      enabled: false,
+      state: 'error',
+      error: expect.stringContaining('backup settings are invalid'),
+    });
+    const backupDirectory = join(directory, 'repaired');
+    mkdirSync(backupDirectory);
+    const repaired = await fetch(`http://127.0.0.1:${address.port}/api/v1/settings/backup`, {
+      method: 'PUT',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ directory: backupDirectory }),
+    });
+    expect(((await repaired.json()) as { data: { state: string } }).data.state).toBe('healthy');
+    expect(JSON.parse(readFileSync(settingsPath, 'utf8'))).toEqual({
+      schemaVersion: 1,
+      backupDirectory,
+    });
   });
 
   it('propagates instance-lock filesystem failures', async () => {
@@ -219,5 +248,159 @@ describe('server composition', () => {
 
     linkSync(target, databasePath);
     await expect(startServer(config())).rejects.toMatchObject({ code: 'bad_request' });
+  });
+});
+
+describe('instance lock takeover', () => {
+  const directory = '/locks';
+  const lockPath = join(directory, '.instance.lock');
+
+  function fakeIo(overrides: Partial<InstanceLockIo> = {}, files = new Map<string, string>()) {
+    const errno = (code: string) => Object.assign(new Error(code), { code });
+    const io: InstanceLockIo = {
+      writeFileSync: vi.fn((path: string, data: string) => {
+        if (files.has(path)) throw errno('EEXIST');
+        files.set(path, data);
+      }),
+      readFileSync: vi.fn((path: string) => {
+        const content = files.get(path);
+        if (content === undefined) throw errno('ENOENT');
+        return content;
+      }),
+      renameSync: vi.fn((from: string, to: string) => {
+        const content = files.get(from);
+        if (content === undefined) throw errno('ENOENT');
+        files.delete(from);
+        files.set(to, content);
+      }),
+      rmSync: vi.fn((path: string) => {
+        files.delete(path);
+      }),
+      processIsAlive: vi.fn(() => false),
+      ...overrides,
+    };
+    return { io, files };
+  }
+
+  it('renames a stale lock aside and takes over without deleting a fresh one', () => {
+    const { io, files } = fakeIo();
+    files.set(lockPath, '4242\n');
+    const release = acquireInstanceLock(directory, io);
+    expect(files.get(lockPath)).toBe(`${process.pid}\n`);
+    expect([...files.keys()]).toEqual([lockPath]);
+    release();
+    expect(files.size).toBe(0);
+  });
+
+  it('retries when the lock vanishes between the create and the read or the rename', () => {
+    const vanishing = fakeIo();
+    vanishing.files.set(lockPath, '4242\n');
+    let reads = 0;
+    vanishing.io.readFileSync = vi.fn(() => {
+      reads += 1;
+      if (reads === 1) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return vanishing.files.get(lockPath) ?? `${process.pid}\n`;
+    });
+    vanishing.io.writeFileSync = vi.fn((path: string, data: string) => {
+      if (reads === 0) throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
+      vanishing.files.set(path, data);
+    });
+    acquireInstanceLock(directory, vanishing.io);
+    expect(vanishing.files.get(lockPath)).toBe(`${process.pid}\n`);
+
+    const renamed = fakeIo();
+    renamed.files.set(lockPath, '4242\n');
+    let renames = 0;
+    const originalRename = renamed.io.renameSync;
+    renamed.io.renameSync = vi.fn((from: string, to: string) => {
+      renames += 1;
+      if (renames === 1) {
+        renamed.files.delete(from);
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      }
+      originalRename(from, to);
+    });
+    acquireInstanceLock(directory, renamed.io);
+    expect(renamed.files.get(lockPath)).toBe(`${process.pid}\n`);
+  });
+
+  it('gives a live lock back when it replaced the stale one during the takeover', () => {
+    const { io, files } = fakeIo({ processIsAlive: (pid) => pid === 777 });
+    files.set(lockPath, '4242\n');
+    const originalRename = io.renameSync;
+    io.renameSync = vi.fn((from: string, to: string) => {
+      files.set(from, '777\n');
+      originalRename(from, to);
+    });
+    expect(() => acquireInstanceLock(directory, io)).toThrow(/Another Pimpampum daemon/u);
+    expect(files.get(lockPath)).toBe('777\n');
+    expect(files.size).toBe(1);
+
+    const contended = fakeIo({ processIsAlive: (pid) => pid === 777 });
+    contended.files.set(lockPath, '4242\n');
+    const rename = contended.io.renameSync;
+    contended.io.renameSync = vi.fn((from: string, to: string) => {
+      contended.files.set(from, '777\n');
+      rename(from, to);
+      contended.files.set(lockPath, '999\n');
+    });
+    expect(() => acquireInstanceLock(directory, contended.io)).toThrow(/Another Pimpampum daemon/u);
+    expect(contended.files.get(lockPath)).toBe('999\n');
+  });
+
+  it('treats a vanished or unchanged moved file as a completed takeover', () => {
+    const { io, files } = fakeIo();
+    files.set(lockPath, '4242\n');
+    const originalRename = io.renameSync;
+    io.renameSync = vi.fn((from: string, to: string) => {
+      originalRename(from, to);
+      files.delete(to);
+    });
+    acquireInstanceLock(directory, io);
+    expect(files.get(lockPath)).toBe(`${process.pid}\n`);
+  });
+
+  it('gives up after bounded attempts and propagates unexpected filesystem failures', () => {
+    const { io } = fakeIo({
+      writeFileSync: () => {
+        throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
+      },
+      readFileSync: () => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      },
+    });
+    expect(() => acquireInstanceLock(directory, io)).toThrow(/Another Pimpampum daemon/u);
+
+    const unreadable = fakeIo({
+      readFileSync: () => {
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      },
+    });
+    unreadable.files.set(lockPath, '4242\n');
+    expect(() => acquireInstanceLock(directory, unreadable.io)).toThrow(/EACCES/u);
+
+    const unmovable = fakeIo({
+      renameSync: () => {
+        throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      },
+    });
+    unmovable.files.set(lockPath, '4242\n');
+    expect(() => acquireInstanceLock(directory, unmovable.io)).toThrow(/EPERM/u);
+
+    const restoreFails = fakeIo({ processIsAlive: (pid) => pid === 777 });
+    restoreFails.files.set(lockPath, '4242\n');
+    const rename = restoreFails.io.renameSync;
+    restoreFails.io.renameSync = vi.fn((from: string, to: string) => {
+      restoreFails.files.set(from, '777\n');
+      rename(from, to);
+    });
+    const write = restoreFails.io.writeFileSync;
+    let writes = 0;
+    restoreFails.io.writeFileSync = vi.fn((path: string, data: string, options) => {
+      writes += 1;
+      if (writes === 2) throw Object.assign(new Error('EROFS'), { code: 'EROFS' });
+      write(path, data, options);
+    });
+    expect(() => acquireInstanceLock(directory, restoreFails.io)).toThrow(/EROFS/u);
   });
 });

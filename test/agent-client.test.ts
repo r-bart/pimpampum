@@ -139,9 +139,40 @@ describe('agent CLI MCP client', () => {
       expected: { code: 'not_found', retryable: false },
     },
     {
-      name: 'the SDK tool-not-found variant',
+      name: 'the SDK tool-not-found wording without a typed code',
       error: new ProtocolError(ProtocolErrorCode.InvalidParams, 'Tool unknown not found'),
-      expected: { code: 'not_found', retryable: false },
+      expected: { code: 'bad_request', retryable: false },
+    },
+    {
+      name: 'an HTTP 404 from the daemon',
+      error: new SdkHttpError(SdkErrorCode.ClientHttpFailedToOpenStream, 'Missing', {
+        status: 404,
+      }),
+      expected: {
+        code: 'not_found',
+        retryable: false,
+        message: 'The Pimpampum daemon answered HTTP 404',
+      },
+    },
+    {
+      name: 'an HTTP 409 from the daemon',
+      error: new SdkHttpError(SdkErrorCode.ClientHttpFailedToOpenStream, 'Busy', { status: 409 }),
+      expected: { code: 'conflict', retryable: false, status: 409 },
+    },
+    {
+      name: 'an HTTP 413 from the daemon',
+      error: new SdkHttpError(SdkErrorCode.ClientHttpFailedToOpenStream, 'Large', { status: 413 }),
+      expected: { code: 'payload_too_large', retryable: false },
+    },
+    {
+      name: 'an HTTP 400 from the daemon',
+      error: new SdkHttpError(SdkErrorCode.ClientHttpFailedToOpenStream, 'Bad', { status: 400 }),
+      expected: { code: 'bad_request', retryable: false },
+    },
+    {
+      name: 'an HTTP 500 from the daemon',
+      error: new SdkHttpError(SdkErrorCode.ClientHttpFailedToOpenStream, 'Boom', { status: 500 }),
+      expected: { code: 'internal_error', retryable: true },
     },
     {
       name: 'invalid parameters',

@@ -204,7 +204,7 @@ describe('Agent-first CLI', () => {
     {
       name: 'unknown option',
       command: ['call', 'work_list', '--wat'],
-      message: 'Unknown call argument: --wat',
+      message: 'Unknown option for call: --wat',
     },
   ])('US-3/AC-5: rejects $name with structured JSON', async ({ command, message }) => {
     // Spec: US-3/AC-5, US-4/AC-2, US-4/AC-3

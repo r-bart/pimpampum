@@ -188,7 +188,9 @@ describe('shared-folder synchronization acceptance', () => {
         .map((p) => p.slug)
         .sort(),
     ).toEqual(['from-linux', 'from-mac', 'seeded']);
-    expect(b.store.listTasks(seededSpec.id)).toHaveLength(2);
+    expect(b.store.listTaskManifests({ specId: seededSpec.id, limit: 10, offset: 0 })).toHaveLength(
+      2,
+    );
     expect(b.store.readContext('workspace', 'product', 'agents').body).toBe('Workspace');
     expect(b.store.readContext('project', seededProject.id, 'agents').body).toBe('Project');
     expect(a.controller.getStatus()).toMatchObject({

@@ -55,6 +55,9 @@ actor ScriptedSetupRunner: SetupCommandRunning {
   var retryEvents: [SetupProgressEvent] = []
   var planGate: SetupGate?
   var applyGate: SetupGate?
+  var workspaceGate: SetupGate?
+  var workspaceResult: Result<RegisteredWorkspace, any Error> = .success(
+    SetupFixtures.registeredWorkspace)
   var runsFromInstalled = true
 
   private(set) var planCalls: [[SetupAgentID]] = []
@@ -63,6 +66,7 @@ actor ScriptedSetupRunner: SetupCommandRunning {
   private(set) var resumeCalls = 0
   private(set) var retryCalls: [SetupAgentID] = []
   private(set) var relaunchCalls = 0
+  private(set) var workspaceCalls: [WorkspaceRegistrationRequest] = []
 
   func plan(selectedConnectors: [SetupAgentID]) async throws -> SetupPlan {
     planCalls.append(selectedConnectors)
@@ -106,6 +110,14 @@ actor ScriptedSetupRunner: SetupCommandRunning {
     return try retryResult.get()
   }
 
+  func registerWorkspace(_ request: WorkspaceRegistrationRequest) async throws
+    -> RegisteredWorkspace
+  {
+    workspaceCalls.append(request)
+    if let workspaceGate { await workspaceGate.wait() }
+    return try workspaceResult.get()
+  }
+
   @MainActor
   func relaunchInstalledApplicationIfNeeded() async throws -> Bool {
     await recordRelaunch()
@@ -132,6 +144,10 @@ actor ScriptedSetupRunner: SetupCommandRunning {
   func setRetryEvents(_ values: [SetupProgressEvent]) { retryEvents = values }
   func setPlanGate(_ gate: SetupGate?) { planGate = gate }
   func setApplyGate(_ gate: SetupGate?) { applyGate = gate }
+  func setWorkspaceGate(_ gate: SetupGate?) { workspaceGate = gate }
+  func setWorkspaceResult(_ value: Result<RegisteredWorkspace, any Error>) {
+    workspaceResult = value
+  }
 }
 
 struct SetupTestError: Error {}
@@ -170,6 +186,9 @@ enum SetupFixtures {
   }
 
   static let installedService = SetupServiceResult(installed: true, running: true, verified: true)
+
+  static let registeredWorkspace = RegisteredWorkspace(
+    id: "storefront", name: "Storefront", rootPath: "/Users/example/Projects/Storefront")
 
   static let completeResult = SetupResult(
     status: .complete,

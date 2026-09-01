@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  SetupError,
   createInstallationLifecycle,
   createSetupCoordinator,
   type InstallationLifecycleDependencies,
@@ -444,5 +445,164 @@ describe('installation lifecycle non-Error rollback diagnostics', () => {
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(AggregateError);
     expect(String(error)).toMatch(/installation removal failed/iu);
+  });
+});
+
+describe('base-phase preconditions for retry and resume', () => {
+  const basePhases = [
+    'runtime.install',
+    'service.install',
+    'service.verify',
+    'login-item.register',
+  ];
+
+  it('refuses a connector retry while the base phases never completed', async () => {
+    const root = temporaryDirectory('retry-precondition');
+    const input = setupDependencies(root);
+    const store = createSetupStateStore(input.dataDirectory);
+    store.write(
+      journal('stranded-operation', {
+        selectedConnectors: ['codex'],
+        completedPhases: ['runtime.install', 'service.install'],
+        status: 'failed',
+      }),
+    );
+    await expect(
+      createSetupCoordinator({ ...input, stateStore: store }).retryConnector('codex'),
+    ).rejects.toThrow(/service phases have not completed.*setup resume/iu);
+    expect(input.connectors.codex.connect).not.toHaveBeenCalled();
+    expect(store.read()).toMatchObject({ status: 'failed', connectors: [] });
+  });
+
+  it('re-runs incomplete base phases when a partial journal is resumed', async () => {
+    const root = temporaryDirectory('resume-partial-base');
+    const input = setupDependencies(root);
+    const store = createSetupStateStore(input.dataDirectory);
+    // An older retry could leave a `partial` journal whose service never verified.
+    store.write(
+      journal('partial-without-base', {
+        selectedConnectors: ['codex'],
+        completedPhases: ['connector:codex.connect', 'connector:codex.verify'],
+        connectors: [
+          {
+            id: 'codex',
+            configured: true,
+            available: true,
+            newSessionRequired: false,
+            state: 'connected',
+          },
+        ],
+        status: 'partial',
+      }),
+    );
+    await expect(
+      createSetupCoordinator({ ...input, stateStore: store }).resume(),
+    ).resolves.toMatchObject({
+      status: 'complete',
+      service: { installed: true, running: true, verified: true },
+    });
+    expect(input.runtime.install).toHaveBeenCalledOnce();
+    expect(input.service.install).toHaveBeenCalledOnce();
+    expect(input.service.verify).toHaveBeenCalledOnce();
+    expect(input.connectors.codex.connect).not.toHaveBeenCalled();
+    expect(store.read()?.completedPhases).toEqual(
+      expect.arrayContaining([...basePhases, 'connector:codex.connect', 'connector:codex.verify']),
+    );
+  });
+
+  it('returns finished and conflicting journals without touching the base owners', async () => {
+    const root = temporaryDirectory('resume-finished');
+    const input = setupDependencies(root);
+    const store = createSetupStateStore(input.dataDirectory);
+    store.write(
+      journal('finished-operation', {
+        completedPhases: basePhases,
+        service: { installed: true, running: true, verified: true },
+        loginItem: 'enabled',
+        status: 'complete',
+      }),
+    );
+    const coordinator = createSetupCoordinator({ ...input, stateStore: store });
+    await expect(coordinator.resume()).resolves.toMatchObject({ status: 'complete' });
+    store.write(
+      journal('conflict-operation', {
+        selectedConnectors: ['codex'],
+        completedPhases: [],
+        phase: 'conflict',
+        status: 'conflict',
+      }),
+    );
+    await expect(coordinator.resume()).resolves.toMatchObject({
+      status: 'conflict',
+      nextAction: 'resolve-conflict',
+    });
+    expect(input.runtime.install).not.toHaveBeenCalled();
+    expect(input.service.install).not.toHaveBeenCalled();
+  });
+});
+
+describe('stable setup error codes', () => {
+  it('attaches the code the CLI maps for every coordinator refusal', async () => {
+    const root = temporaryDirectory('setup-error-codes');
+    const input = setupDependencies(root);
+    const store = createSetupStateStore(input.dataDirectory);
+    const coordinator = createSetupCoordinator({ ...input, stateStore: store });
+    const codeOf = async (operation: () => Promise<unknown>): Promise<unknown> => {
+      const error = await operation().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(SetupError);
+      return (error as SetupError).code;
+    };
+
+    await expect(
+      codeOf(() => coordinator.plan({ selectedConnectors: ['unknown' as 'codex'] })),
+    ).resolves.toBe('SETUP_UNSUPPORTED_CONNECTOR');
+    await expect(codeOf(() => coordinator.retryConnector('unknown' as 'codex'))).resolves.toBe(
+      'SETUP_UNSUPPORTED_CONNECTOR',
+    );
+    await expect(codeOf(() => coordinator.resume())).resolves.toBe('SETUP_NOTHING_TO_RESUME');
+    await expect(codeOf(() => coordinator.retryConnector('codex'))).resolves.toBe(
+      'SETUP_CONNECTOR_NOT_SELECTED',
+    );
+
+    const plan = await coordinator.plan({ selectedConnectors: [] });
+    await expect(
+      codeOf(() =>
+        coordinator.apply({
+          operationId: plan.operationId,
+          expectedRevision: 'stale',
+          confirmed: true,
+        }),
+      ),
+    ).resolves.toBe('SETUP_PLAN_STALE');
+    await expect(
+      codeOf(() =>
+        coordinator.apply({
+          operationId: plan.operationId,
+          expectedRevision: plan.revision,
+          confirmed: false,
+        }),
+      ),
+    ).resolves.toBe('SETUP_CONFIRMATION_REQUIRED');
+
+    store.write(journal('another-operation'));
+    await expect(
+      codeOf(() =>
+        coordinator.apply({
+          operationId: plan.operationId,
+          expectedRevision: plan.revision,
+          confirmed: true,
+        }),
+      ),
+    ).resolves.toBe('SETUP_OPERATION_IN_PROGRESS');
+    store.write(journal(plan.operationId, { revision: 'a'.repeat(64) }));
+    await expect(
+      codeOf(() =>
+        coordinator.apply({
+          operationId: plan.operationId,
+          expectedRevision: plan.revision,
+          confirmed: true,
+        }),
+      ),
+    ).resolves.toBe('SETUP_JOURNAL_REVISION_MISMATCH');
   });
 });

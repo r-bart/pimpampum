@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { z } from 'zod';
+import { readRecordedApplicationPath } from '../runtime/bootstrap.js';
 import { acceptLoginAcknowledgement } from './loginHandshake.js';
 import { assertNoSymlinkTraversal, writePrivateFileAtomic } from './receipt.js';
 import type {
@@ -32,7 +33,25 @@ const SYSTEM_APPLICATIONS = '/Applications';
 const APP_NAME = 'Pimpampum.app';
 const LEGACY_APP_NAMES = ['pim • pam • pum.app', 'PimpampumMenuBar.app'] as const;
 const APP_EXECUTABLE = 'Contents/MacOS/PimpampumMenuBar';
-const INSTALLATION_CONFIGURATION = 'Contents/Resources/installation.json';
+/**
+ * Where releases before 1.2.12 wrote the installation marker: inside the managed copy. Adding a
+ * file under `Contents/Resources` breaks the code seal of a Developer ID copy (`codesign --verify
+ * --deep --strict` reports "file added"), so the marker is only read from here now, for one
+ * release, and never written.
+ */
+const LEGACY_INSTALLATION_CONFIGURATION = 'Contents/Resources/installation.json';
+/**
+ * Where the marker lives now: one fixed path outside every bundle, derived from the home directory
+ * alone, so the app can find its data directory before it knows anything else. Swift reads the same
+ * path in `ApplicationConfiguration.swift`.
+ */
+const INSTALLATION_MARKER_RELATIVE_PATH = [
+  'Library',
+  'Application Support',
+  'Pimpampum',
+  'installation.json',
+] as const;
+const INSTALLATION_MARKER_SCHEMA_VERSION = 2;
 const EMBEDDED_RUNTIME = 'Contents/Resources/PimpampumRuntime';
 const REQUEST_FILE = 'login-registration-request.json';
 const ACKNOWLEDGEMENT_FILE = 'login-registration-acknowledgement.json';
@@ -49,6 +68,12 @@ const CONTROL_FILES = [
 ] as const;
 /** How long the helper app gets to answer a handshake. Registration requests carry it as `expiresAt`. */
 const LOGIN_HANDSHAKE_WINDOW_MS = 30_000;
+/**
+ * Deadline for the launches of the installed app. The first `open -n` of a freshly copied signed
+ * bundle waits on Gatekeeper's assessment, which can take well over the runner's 60 s default; a
+ * launch stopped early leaves the login item unregistered and the install rolled back for nothing.
+ */
+export const GATEKEEPER_OPEN_TIMEOUT_MS = 180_000;
 /** What the user must do when uninstall cannot reach the helper that owns the login item. */
 export const LOGIN_ITEM_MANUAL_INSTRUCTION = 'Remove Pimpampum from System Settings › Login Items';
 
@@ -56,6 +81,8 @@ interface FileSnapshot {
   path: string;
   content: Buffer | null;
   mode: number;
+  /** The directory the path was validated against; restoring re-validates against the same one. */
+  trustedRoot: string;
 }
 
 interface MacOSLoginAcknowledgement extends LoginAcknowledgement {
@@ -129,7 +156,9 @@ function sourceFiles(root: string): Array<{ relativePath: string; content: Buffe
         continue;
       }
       if (!entry.isFile()) throw new Error('macOS app bundle may contain only regular files');
-      if (relativePath === INSTALLATION_CONFIGURATION) continue;
+      // A source bundle that still carries the pre-1.2.12 marker — the managed copy re-running
+      // setup from the installed CLI — must not propagate it; nothing writes inside a bundle now.
+      if (relativePath === LEGACY_INSTALLATION_CONFIGURATION) continue;
       files.push({
         relativePath,
         content: readFileSync(path),
@@ -229,49 +258,27 @@ function removeEmbeddedRuntimeSource(installedApp: string): void {
   rmSync(runtime, { recursive: true });
 }
 
-const applicationPathSchema = z
-  .string()
-  .refine(
-    (value) => isAbsolute(value) && !value.includes('\0'),
-    'Application path must be absolute',
-  );
-
-/**
- * `application-path.json`. Schema 1 recorded only the path; schema 2 also says whether setup put
- * the bundle there. Swift reads the same file to find the copy it must relaunch.
- */
-const applicationRecordSchema = z.union([
-  z.strictObject({ schemaVersion: z.literal(1), path: applicationPathSchema }),
-  z.strictObject({
-    schemaVersion: z.literal(2),
-    path: applicationPathSchema,
-    managed: z.boolean(),
-  }),
-]);
-
 const installationMarkerSchema = z.object({ dataDirectory: z.string() });
 
 function managedApplicationPath(context: ServiceAdapterContext): string {
   return join(context.homeDirectory, 'Applications', APP_NAME);
 }
 
+/**
+ * `application-path.json`, read through the one reader the updater and the runtime bootstrap
+ * share (`runtime/bootstrap.ts`): it validates the record — a regular bounded file, schema 1 or 2,
+ * an absolute NUL-free path, a boolean `managed` on schema 2 — and yields the path. Only `managed`
+ * is read here. Schema 1 predates it: the only path setup ever recorded for a copy it made is the
+ * managed one, so anything else was an adopted bundle. Swift reads the same file to find the copy
+ * it must relaunch.
+ */
 function recordedApplicationLocation(context: ServiceAdapterContext): ApplicationLocation | null {
-  const file = controlPath(context, APPLICATION_PATH_FILE);
-  if (!existsSync(file)) return null;
-  let value: unknown;
-  try {
-    value = readJsonObject(file, context.dataDirectory);
-  } catch {
-    return null;
-  }
-  const record = applicationRecordSchema.safeParse(value);
-  if (!record.success) return null;
-  const path = normalize(record.data.path);
-  // Schema 1 predates `managed`. The only path it ever recorded for a copy setup made is the
-  // managed one; anything else was an adopted bundle.
+  const path = readRecordedApplicationPath(context.dataDirectory);
+  if (path === null) return null;
+  const record = readJsonObject(controlPath(context, APPLICATION_PATH_FILE), context.dataDirectory);
   const managed =
-    record.data.schemaVersion === 2
-      ? record.data.managed
+    record.schemaVersion === 2 && typeof record.managed === 'boolean'
+      ? record.managed
       : path === managedApplicationPath(context);
   return { path, managed };
 }
@@ -292,22 +299,64 @@ function recordApplicationLocation(
   );
 }
 
-/**
- * Only a managed install writes the installation marker, and it names the data directory that
- * wrote it. An adopted bundle never receives one, so the marker tells a managed copy installed
- * before the location record existed apart from a bundle the user placed at the same path.
- */
-function carriesInstallationMarker(bundlePath: string, context: ServiceAdapterContext): boolean {
-  const marker = join(bundlePath, INSTALLATION_CONFIGURATION);
+/** Whether the marker at `path` is a regular file naming exactly this data directory. */
+function markerNamesDataDirectory(path: string, dataDirectory: string): boolean {
   try {
-    if (!existsSync(marker) || !lstatSync(marker).isFile()) return false;
+    if (!existsSync(path) || !lstatSync(path).isFile()) return false;
     const parsed = installationMarkerSchema.safeParse(
-      JSON.parse(readFileSync(marker, 'utf8')) as unknown,
+      JSON.parse(readFileSync(path, 'utf8')) as unknown,
     );
-    return parsed.success && normalize(parsed.data.dataDirectory) === context.dataDirectory;
+    return parsed.success && normalize(parsed.data.dataDirectory) === dataDirectory;
   } catch {
     return false;
   }
+}
+
+/**
+ * Before the location record existed, only a managed install wrote the marker, and it wrote it
+ * inside the managed copy. An adopted bundle never received one, so that legacy marker still tells
+ * a managed copy installed by a release before 1.2.12 apart from a bundle the user placed at the
+ * same path. The fixed-path marker is deliberately not consulted here: every install that writes
+ * it also writes the record, which decides first.
+ */
+function carriesInstallationMarker(bundlePath: string, context: ServiceAdapterContext): boolean {
+  return markerNamesDataDirectory(
+    join(bundlePath, LEGACY_INSTALLATION_CONFIGURATION),
+    context.dataDirectory,
+  );
+}
+
+/** The fixed-path marker that tells the menu app which data directory setup used. */
+export function installationMarkerPath(
+  context: Pick<ServiceAdapterContext, 'homeDirectory'>,
+): string {
+  return join(context.homeDirectory, ...INSTALLATION_MARKER_RELATIVE_PATH);
+}
+
+/**
+ * A control file, not a receipt artifact: it lives outside every adapter-owned root, next to the
+ * runtime the installer keeps under `Application Support`, so it is written after the record and
+ * removed with the other control files. Written for managed and adopted bundles alike — the old
+ * reason to skip adopted ones, that the marker would land inside the user's app, is gone.
+ */
+function writeInstallationMarker(context: ServiceAdapterContext): void {
+  writePrivateFileAtomic(
+    installationMarkerPath(context),
+    `${JSON.stringify(
+      { schemaVersion: INSTALLATION_MARKER_SCHEMA_VERSION, dataDirectory: context.dataDirectory },
+      null,
+      2,
+    )}\n`,
+    0o600,
+    context.homeDirectory,
+  );
+}
+
+function removeControlFile(path: string, trustedRoot: string): void {
+  if (!existsSync(path)) return;
+  assertNoSymlinkTraversal(path, 'Login item control file', trustedRoot);
+  if (!lstatSync(path).isFile()) throw new Error('Login item control path must be a file');
+  rmSync(path);
 }
 
 /**
@@ -355,18 +404,19 @@ function controlPath(context: ServiceAdapterContext, name: string): string {
 
 function snapshot(path: string, trustedRoot: string): FileSnapshot {
   assertNoSymlinkTraversal(path, 'Login item control file', trustedRoot);
-  if (!existsSync(path)) return { path, content: null, mode: 0o600 };
+  if (!existsSync(path)) return { path, content: null, mode: 0o600, trustedRoot };
   const metadata = lstatSync(path);
   if (!metadata.isFile() || metadata.isSymbolicLink()) {
     throw new Error('Login item control path must be a regular file');
   }
-  return { path, content: readFileSync(path), mode: metadata.mode & 0o777 };
+  return { path, content: readFileSync(path), mode: metadata.mode & 0o777, trustedRoot };
 }
 
-function restoreSnapshots(snapshots: FileSnapshot[], trustedRoot: string): void {
+/** Puts every snapshot back, bytes and mode, each under the root it was taken against. */
+function restoreSnapshots(snapshots: FileSnapshot[]): void {
   for (const item of snapshots) {
     if (item.content === null) rmSync(item.path, { force: true });
-    else writePrivateFileAtomic(item.path, item.content, item.mode, trustedRoot);
+    else writePrivateFileAtomic(item.path, item.content, item.mode, item.trustedRoot);
   }
 }
 
@@ -589,22 +639,18 @@ export function createMacOSDesktopAdapter(
     // Install is the one operation that genuinely needs the source, and `preflight` rejects it.
     if (!bundleIsPresent()) return [];
     const location = applicationLocation(context, options.appBundlePath);
-    // The app is already where it belongs: setup owns no file inside it, not even the installation
-    // marker, which would land outside the home directory. The app falls back to `~/.pimpampum`.
+    // The app is already where it belongs: setup owns no file inside it.
     if (!location.managed) return [];
     ensureAbsoluteDirectory(options.appBundlePath);
     const destination = location.path;
-    const files: ServiceArtifact[] = sourceFiles(options.appBundlePath).map((file) => ({
+    // Exactly the source files and nothing else. A managed copy must stay byte-identical to the
+    // signed bundle it came from, or its code seal breaks; the installation marker that used to be
+    // added here lives at `installationMarkerPath` now.
+    return sourceFiles(options.appBundlePath).map((file) => ({
       path: join(destination, file.relativePath),
       content: file.content,
       mode: file.mode,
     }));
-    files.push({
-      path: join(destination, INSTALLATION_CONFIGURATION),
-      content: `${JSON.stringify({ dataDirectory: context.dataDirectory }, null, 2)}\n`,
-      mode: 0o644,
-    });
-    return files;
   };
 
   const registerLoginItem = async (
@@ -632,13 +678,13 @@ export function createMacOSDesktopAdapter(
         context.dataDirectory,
       );
       const installedApp = applicationLocation(context, options.appBundlePath).path;
-      const launch = await context.runCommand(openPath, [
-        '-n',
-        installedApp,
-        '--args',
-        '--register-login-item',
-        request.requestId,
-      ]);
+      // The first launch of a freshly copied signed app is where Gatekeeper assesses it, so this
+      // `open` and the one below get a longer deadline than any other command the adapter runs.
+      const launch = await context.runCommand(
+        openPath,
+        ['-n', installedApp, '--args', '--register-login-item', request.requestId],
+        { timeoutMilliseconds: GATEKEEPER_OPEN_TIMEOUT_MS },
+      );
       if (launch.exitCode !== 0) {
         throw new Error(
           `Unable to launch the macOS login registration helper (${launch.exitCode})`,
@@ -669,7 +715,9 @@ export function createMacOSDesktopAdapter(
       // The registration helper exits immediately. Force a fresh instance at the exact stable
       // path so LaunchServices cannot reuse that terminating process or another bundle with the
       // same identifier (for example the copy the user launched from Downloads).
-      const open = await context.runCommand(openPath, ['-n', installedApp]);
+      const open = await context.runCommand(openPath, ['-n', installedApp], {
+        timeoutMilliseconds: GATEKEEPER_OPEN_TIMEOUT_MS,
+      });
       if (open.exitCode !== 0)
         throw new Error(`Unable to open the macOS menu app (${open.exitCode})`);
       return { loginItem: status };
@@ -688,7 +736,7 @@ export function createMacOSDesktopAdapter(
         }
       }
       try {
-        restoreSnapshots(snapshots, context.dataDirectory);
+        restoreSnapshots(snapshots);
       } catch (restoreError) {
         rollbackErrors.push(restoreError);
       }
@@ -738,7 +786,9 @@ export function createMacOSDesktopAdapter(
         controlPath(context, APPLICATION_PATH_FILE),
         context.dataDirectory,
       );
+      const markerSnapshot = snapshot(installationMarkerPath(context), context.homeDirectory);
       recordApplicationLocation(context, location);
+      writeInstallationMarker(context);
       // Nothing to copy when the app is already in place — an adopted bundle, or the managed copy
       // itself running setup again from the installed CLI: its embedded runtime is the source.
       const runtime =
@@ -768,7 +818,7 @@ export function createMacOSDesktopAdapter(
           errors.push(rollbackError);
         }
         try {
-          restoreSnapshots([recordSnapshot], context.dataDirectory);
+          restoreSnapshots([recordSnapshot, markerSnapshot]);
         } catch (restoreError) {
           errors.push(restoreError);
         }
@@ -822,6 +872,7 @@ export function createMacOSDesktopAdapter(
       const controlSnapshots = CONTROL_FILES.map((name) =>
         snapshot(controlPath(context, name), context.dataDirectory),
       );
+      const markerSnapshot = snapshot(installationMarkerPath(context), context.homeDirectory);
       const priorLoginItem = integrationStatus(
         controlPath(context, STATUS_FILE),
         context.dataDirectory,
@@ -842,7 +893,7 @@ export function createMacOSDesktopAdapter(
           errors.push(error);
         }
         try {
-          restoreSnapshots(controlSnapshots, context.dataDirectory);
+          restoreSnapshots([...controlSnapshots, markerSnapshot]);
         } catch (error) {
           errors.push(error);
         }
@@ -887,13 +938,9 @@ export function createMacOSDesktopAdapter(
       // Last on purpose: a failure above leaves the record that names the bundle for the retry,
       // and the rollback prepared earlier restores whatever this loop already removed.
       for (const name of CONTROL_FILES) {
-        const path = controlPath(context, name);
-        if (existsSync(path)) {
-          assertNoSymlinkTraversal(path, 'Login item control file', context.dataDirectory);
-          if (!lstatSync(path).isFile()) throw new Error('Login item control path must be a file');
-          rmSync(path);
-        }
+        removeControlFile(controlPath(context, name), context.dataDirectory);
       }
+      removeControlFile(installationMarkerPath(context), context.homeDirectory);
       return manualInstructions.length > 0 ? { manualInstructions } : undefined;
     },
     async integrationStatus(context) {

@@ -3,19 +3,23 @@ import {
   chmodSync,
   closeSync,
   constants,
-  existsSync,
-  fstatSync,
   fsyncSync,
   lstatSync,
-  mkdirSync,
   openSync,
-  readFileSync,
   renameSync,
   rmSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
+import {
+  MAXIMUM_PRIVATE_STATE_BYTES,
+  PRIVATE_FILE_MODE,
+  assertPrivateDirectory,
+  createSetupLifecycleLock,
+  isRecord,
+  readPrivateJsonFile,
+  removePrivateFile,
+} from '../lifecycleLock.js';
 import {
   SETUP_CONNECTOR_IDS,
   SETUP_SCHEMA_VERSION,
@@ -31,37 +35,12 @@ import {
 
 const stateFileName = 'setup-state.json';
 const planFileName = 'setup-plan.json';
-const lifecycleLockFileName = '.setup-lifecycle.lock';
 const migrationStateFileName = 'installation-migration-state.json';
-const maximumStateBytes = 1_000_000;
-const privateDirectoryMode = 0o700;
-const privateFileMode = 0o600;
+const maximumStateBytes = MAXIMUM_PRIVATE_STATE_BYTES;
+const privateFileMode = PRIVATE_FILE_MODE;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function assertPrivateDirectory(dataDirectory: string): void {
-  mkdirSync(dataDirectory, { recursive: true, mode: privateDirectoryMode });
-  const metadata = lstatSync(dataDirectory);
-  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-    throw new Error('Setup data directory must be a regular private directory');
-  }
-  chmodSync(dataDirectory, privateDirectoryMode);
-}
-
-function assertSafeExistingDirectory(directory: string): boolean {
-  try {
-    const metadata = lstatSync(directory);
-    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-      throw new Error('Setup data directory must be a regular private directory');
-    }
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  }
-}
+// The lock moved to a neutral module so the service layer can share it; keep the setup-side name.
+export { createSetupLifecycleLock };
 
 function assertStringArray(value: unknown, label: string): asserts value is string[] {
   if (
@@ -372,30 +351,6 @@ function parseMigrationJournal(value: unknown): InstallationMigrationJournal {
   };
 }
 
-function readPrivateJsonFile(path: string, label: string): unknown | null {
-  if (!assertSafeExistingDirectory(dirname(path))) return null;
-  if (!existsSync(path)) return null;
-  const metadata = lstatSync(path);
-  if (metadata.isSymbolicLink() || !metadata.isFile()) {
-    throw new Error(`${label} must be a regular file and not a symlink`);
-  }
-  if (metadata.size > maximumStateBytes) throw new Error(`${label} exceeds the size limit`);
-  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const opened = fstatSync(descriptor);
-    if (!opened.isFile() || opened.dev !== metadata.dev || opened.ino !== metadata.ino) {
-      throw new Error(`${label} changed while it was being opened`);
-    }
-    const contents = readFileSync(descriptor, 'utf8');
-    if (Buffer.byteLength(contents) > maximumStateBytes) {
-      throw new Error(`${label} exceeds the size limit`);
-    }
-    return JSON.parse(contents) as unknown;
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
 function readStateFile(path: string): SetupJournal | null {
   const value = readPrivateJsonFile(path, 'Setup state');
   return value === null ? null : parseSetupJournal(value);
@@ -460,21 +415,6 @@ function writeStateFile(path: string, state: SetupJournal): void {
   writePrivateJsonFile(path, parseSetupJournal(state));
 }
 
-function removePrivateFile(path: string, label: string): void {
-  if (!assertSafeExistingDirectory(dirname(path))) return;
-  let metadata: ReturnType<typeof lstatSync>;
-  try {
-    metadata = lstatSync(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw error;
-  }
-  if (metadata.isSymbolicLink() || !metadata.isFile()) {
-    throw new Error(`${label} must be a regular file and not a symlink`);
-  }
-  unlinkSync(path);
-}
-
 export function createSetupStateStore(dataDirectory: string): SetupStateStore {
   if (!isAbsolute(dataDirectory) || dataDirectory.includes('\0')) {
     throw new Error('Setup data directory must be an absolute, NUL-free path');
@@ -537,122 +477,5 @@ export function createInstallationMigrationStateStore(
       writePrivateJsonFile(path, parseMigrationJournal(state));
     },
     remove: () => removePrivateFile(path, 'Installation migration state'),
-  };
-}
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') return false;
-    if (code === 'EPERM') return true;
-    throw error;
-  }
-}
-
-function recoverStaleLock(path: string): boolean {
-  let metadata: ReturnType<typeof lstatSync>;
-  try {
-    metadata = lstatSync(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
-    throw error;
-  }
-  if (metadata.isSymbolicLink() || !metadata.isFile()) {
-    throw new Error('Setup lifecycle lock must be a regular file and not a symlink');
-  }
-  if ((metadata.mode & 0o077) !== 0) {
-    throw new Error('Setup lifecycle lock must be private');
-  }
-  const value = readPrivateJsonFile(path, 'Setup lifecycle lock');
-  if (
-    !isRecord(value) ||
-    !Number.isSafeInteger(value.pid) ||
-    (value.pid as number) <= 0 ||
-    typeof value.nonce !== 'string' ||
-    !/^[a-f0-9-]{36}$/u.test(value.nonce)
-  ) {
-    throw new Error('Setup lifecycle lock has an invalid owner');
-  }
-  if (processIsAlive(value.pid as number)) return false;
-  const current = lstatSync(path);
-  if (current.dev !== metadata.dev || current.ino !== metadata.ino) return false;
-  unlinkSync(path);
-  return true;
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-export function createSetupLifecycleLock(
-  dataDirectory: string,
-  options: { timeoutMilliseconds?: number; retryMilliseconds?: number } = {},
-): { run<T>(operation: () => Promise<T>): Promise<T> } {
-  if (!isAbsolute(dataDirectory) || dataDirectory.includes('\0')) {
-    throw new Error('Setup data directory must be an absolute, NUL-free path');
-  }
-  const timeoutMilliseconds = options.timeoutMilliseconds ?? 30_000;
-  const retryMilliseconds = options.retryMilliseconds ?? 25;
-  if (
-    !Number.isSafeInteger(timeoutMilliseconds) ||
-    timeoutMilliseconds <= 0 ||
-    !Number.isSafeInteger(retryMilliseconds) ||
-    retryMilliseconds <= 0
-  ) {
-    throw new Error('Setup lifecycle lock timing must use positive integers');
-  }
-  const path = join(dataDirectory, lifecycleLockFileName);
-  return {
-    async run<T>(operation: () => Promise<T>): Promise<T> {
-      assertPrivateDirectory(dataDirectory);
-      const nonce = randomUUID();
-      const startedAt = Date.now();
-      while (true) {
-        let descriptor: number | null = null;
-        let created = false;
-        try {
-          descriptor = openSync(
-            path,
-            constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
-            privateFileMode,
-          );
-          created = true;
-          writeFileSync(
-            descriptor,
-            `${JSON.stringify({ schemaVersion: 1, pid: process.pid, nonce })}\n`,
-          );
-          fsyncSync(descriptor);
-          closeSync(descriptor);
-          descriptor = null;
-          break;
-        } catch (error) {
-          if (descriptor !== null) closeSync(descriptor);
-          if (created) {
-            try {
-              unlinkSync(path);
-            } catch {
-              // A failed lock write must not mask its original error.
-            }
-          }
-          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-          if (recoverStaleLock(path)) continue;
-          if (Date.now() - startedAt >= timeoutMilliseconds) {
-            throw new Error('Timed out waiting for the setup lifecycle lock');
-          }
-          await delay(retryMilliseconds);
-        }
-      }
-      try {
-        return await operation();
-      } finally {
-        const owner = readPrivateJsonFile(path, 'Setup lifecycle lock');
-        if (isRecord(owner) && owner.nonce === nonce) {
-          removePrivateFile(path, 'Setup lifecycle lock');
-        }
-      }
-    },
   };
 }

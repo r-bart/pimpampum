@@ -69,6 +69,13 @@ enum SetupOnboardingPresentation {
     completion?.status == .complete
   }
 
+  /// The first workspace is registered right before Done, so a user who followed only the app
+  /// never needs a terminal for the overview to show anything. A setup that did not complete has
+  /// no daemon to register it with.
+  static func showsAddWorkspace(completion: SetupResult?) -> Bool {
+    showsDone(completion: completion)
+  }
+
   /// A finished or failed setup has no Back button; this is the way back to the first step, to run
   /// setup again with another selection or after fixing the cause.
   static func showsStartOver(activity: SetupActivity, completion: SetupResult?) -> Bool {

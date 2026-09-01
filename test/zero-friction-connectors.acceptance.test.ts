@@ -149,7 +149,7 @@ describe('Codex and Claude Code connector contract', () => {
         path: string;
         timeoutMilliseconds: number;
         run: (invocation: CommandInvocation) => Promise<unknown>;
-      }): Promise<{ executable: string | null; supported: boolean }>;
+      }): Promise<{ executable: string | null; supported: boolean; versionOutput: string | null }>;
     };
     const run = vi.fn(async () => ({ exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' }));
 
@@ -162,7 +162,11 @@ describe('Codex and Claude Code connector contract', () => {
       run,
     });
 
-    expect(result).toEqual({ executable: join(bin, 'codex'), supported: true });
+    expect(result).toEqual({
+      executable: join(bin, 'codex'),
+      supported: true,
+      versionOutput: 'codex-cli 0.151.0',
+    });
     expect(run).toHaveBeenCalledWith(
       expect.objectContaining({ executable: join(bin, 'codex'), arguments: ['--version'] }),
     );
@@ -306,48 +310,107 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('US-4/AC-1/AC-2: disconnect is allowed only for receipt-proven ownership', async () => {
     // Spec: US-4/AC-1, US-4/AC-2, FR-2.8, FR-8.3, FR-8.4, EC-15
-    const disconnectUrl = new URL('../src/connectors/registry.ts', import.meta.url).href;
-    const { planDisconnect } = (await import(disconnectUrl)) as {
-      planDisconnect(input: {
-        connectorId: string;
-        entry: HostEntry | null;
-        receipt: ConnectionReceipt | null;
-        daemonRunning: boolean;
-        dataDirectory: string;
-      }): { mutations: CommandInvocation[]; preserveDaemon: boolean; preserveData: boolean };
+    const root = temporaryDirectory('disconnect');
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const { fingerprintCommand } = await connectorContract();
+    const codexUrl = new URL('../src/connectors/codex.ts', import.meta.url).href;
+    const { createCodexConnector } = (await import(codexUrl)) as {
+      createCodexConnector(input: Record<string, unknown>): {
+        disconnect(): Promise<{ state: ConnectorState; changed: boolean }>;
+      };
     };
     const entry: HostEntry = {
       command: '/Users/roberto/.local/share/pimpampum/bin/pimpampum-mcp',
       arguments: [],
       scope: 'global',
     };
-    const receipt: ConnectionReceipt = {
+    const connectorFor = (receipt: ConnectionReceipt | null) => {
+      let stored = receipt;
+      let current: HostEntry | null = entry;
+      const run = vi.fn(async (invocation: CommandInvocation) => {
+        const args = invocation.arguments;
+        if (args[0] === '--version') {
+          return { exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' };
+        }
+        if (args.at(-1) === '--help') {
+          return { exitCode: 0, stdout: args[1] === 'get' ? '--json' : 'Usage', stderr: '' };
+        }
+        if (args[1] === 'get') {
+          return current === null
+            ? { exitCode: 1, stdout: '', stderr: "No MCP server named 'pimpampum' found." }
+            : {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  name: 'pimpampum',
+                  transport: { type: 'stdio', command: current.command, args: current.arguments },
+                }),
+                stderr: '',
+              };
+        }
+        if (args[1] === 'remove') current = null;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      });
+      const connector = createCodexConnector({
+        launcherPath: entry.command,
+        boundedLocations: [bin],
+        path: bin,
+        requiredTools: [],
+        run,
+        verify: async () => ({
+          available: true,
+          serverName: 'pimpampum',
+          tools: [],
+          diagnostics: [],
+        }),
+        receipt: {
+          read: async () => stored,
+          write: async (value: ConnectionReceipt) => {
+            stored = value;
+          },
+          remove: async () => {
+            stored = null;
+          },
+        },
+      });
+      return { connector, run, current: () => current, stored: () => stored };
+    };
+    const mutations = (run: ReturnType<typeof vi.fn>) =>
+      run.mock.calls.filter(
+        ([invocation]) =>
+          (invocation as CommandInvocation).arguments[0] === 'mcp' &&
+          (invocation as CommandInvocation).arguments.at(-1) !== '--help' &&
+          (invocation as CommandInvocation).arguments[1] !== 'get',
+      );
+
+    const unknown = connectorFor(null);
+    await expect(unknown.connector.disconnect()).resolves.toMatchObject({
+      state: 'equivalentUnowned',
+      changed: false,
+    });
+    expect(unknown.current()).toEqual(entry);
+    expect(mutations(unknown.run)).toEqual([]);
+
+    const owned = connectorFor({
       schemaVersion: 1,
       connectorId: 'codex',
       scope: 'global',
-      commandFingerprint: 'matching-fingerprint',
+      commandFingerprint: fingerprintCommand(entry),
       configuredAt: '2026-08-31T08:00:00.000Z',
       lastVerifiedAt: null,
-    };
-
-    const unknown = planDisconnect({
-      connectorId: 'codex',
-      entry,
-      receipt: null,
-      daemonRunning: true,
-      dataDirectory: '/Users/roberto/.pimpampum',
     });
-    expect(unknown.mutations).toEqual([]);
-
-    const owned = planDisconnect({
-      connectorId: 'codex',
-      entry,
-      receipt,
-      daemonRunning: true,
-      dataDirectory: '/Users/roberto/.pimpampum',
+    await expect(owned.connector.disconnect()).resolves.toMatchObject({
+      state: 'notConnected',
+      changed: true,
     });
-    expect(owned).toMatchObject({ preserveDaemon: true, preserveData: true });
-    expect(owned.mutations).toHaveLength(1);
+    expect(owned.current()).toBeNull();
+    expect(owned.stored()).toBeNull();
+    expect(mutations(owned.run)).toEqual([
+      [{ executable: join(bin, 'codex'), arguments: ['mcp', 'remove', 'pimpampum'] }],
+    ]);
+    // The daemon and the data directory are never part of a connector removal.
+    expect(JSON.stringify(owned.run.mock.calls)).not.toMatch(/launchctl|systemctl|sqlite|rm /u);
   });
 
   it('US-4/AC-3: missing or unsupported clients stay neutral and never install third-party software', async () => {
@@ -435,26 +498,59 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('FR-2.9/US-4/AC-4: diagnostics and manual instructions are useful but redacted', async () => {
     // Spec: US-4/AC-4, FR-2.9, FR-6.5, FR-9.1, SEC-4
-    const typesUrl = new URL('../src/connectors/types.ts', import.meta.url).href;
-    const { redactConnectorDiagnostics } = (await import(typesUrl)) as {
-      redactConnectorDiagnostics(input: {
-        connectorId: string;
-        executablePath: string;
-        token: string;
-        stderr: string;
-      }): { message: string; instructions: string[] };
+    const root = temporaryDirectory('diagnostics');
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const codexUrl = new URL('../src/connectors/codex.ts', import.meta.url).href;
+    const { createCodexConnector } = (await import(codexUrl)) as {
+      createCodexConnector(input: Record<string, unknown>): {
+        plan(): Promise<ConnectionPlan>;
+        connect(plan: ConnectionPlan): Promise<unknown>;
+      };
     };
     const token = 'private-bearer-token-000000000000';
-    const result = redactConnectorDiagnostics({
-      connectorId: 'codex',
-      executablePath: '/Users/roberto/.local/bin/codex',
-      token,
-      stderr: `Could not connect with Bearer ${token}`,
+    const run = async (invocation: CommandInvocation) => {
+      const args = invocation.arguments;
+      if (args[0] === '--version') return { exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' };
+      if (args.at(-1) === '--help') {
+        return { exitCode: 0, stdout: args[1] === 'get' ? '--json' : 'Usage', stderr: '' };
+      }
+      if (args[1] === 'get') {
+        return { exitCode: 1, stdout: '', stderr: "No MCP server named 'pimpampum' found." };
+      }
+      return {
+        exitCode: 7,
+        stdout: '',
+        stderr: `Could not connect with Bearer ${token} from /Users/roberto/private\n${'x'.repeat(2_000)}`,
+      };
+    };
+    const connector = createCodexConnector({
+      launcherPath: '/Users/roberto/.local/share/pimpampum/bin/pimpampum-mcp',
+      boundedLocations: [bin],
+      path: bin,
+      requiredTools: [],
+      run,
+      receipt: {
+        read: async () => null,
+        write: async () => undefined,
+        remove: async () => undefined,
+      },
     });
 
-    expect(result.message).toMatch(/Codex|connect/iu);
-    expect(result.instructions.length).toBeGreaterThan(0);
-    expect(JSON.stringify(result)).not.toContain(token);
-    expect(JSON.stringify(result)).not.toMatch(/Bearer\s+\S+/iu);
+    const error = await connector
+      .connect(await connector.plan())
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: 'unavailable',
+      status: 503,
+      details: { connectorId: 'codex' },
+    });
+    const message = (error as Error).message;
+    expect(message).toMatch(/^Codex could not update the Pimpampum MCP entry: /u);
+    expect(message.length).toBeLessThan(400);
+    expect(message).not.toContain(token);
+    expect(message).not.toMatch(/Bearer\s+\S+/iu);
+    expect(message).not.toContain('/Users/roberto');
   });
 });

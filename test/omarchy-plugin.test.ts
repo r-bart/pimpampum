@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
@@ -146,7 +147,17 @@ describe('Omarchy Quattro plugin', () => {
     // resolves it on its own surface, never one sentence with the shell verb buried in prose.
     expect(popout).toContain('"Register a folder as a workspace to start tracking projects."');
     expect(popout).toContain('"Projects appear here as your agents create them."');
-    expect(popout).toContain('text: "pimpampum workspace:add"');
+    // D-01: the native CLI lives at `~/.local/share/pimpampum/bin/pimpampum-control` and nothing
+    // links it onto PATH, so the command names it by its absolute path, never as a bare
+    // `pimpampum` that only the npm package would satisfy.
+    expect(popout).toContain(
+      'text: root.controlLauncherPath + " workspace:add <id> <name> /absolute/folder"',
+    );
+    expect(popout).toContain('homeDirectory + "/.local/share/pimpampum/bin/pimpampum-control"');
+    expect(popout).toContain(
+      'readonly property string homeDirectory: Quickshell.env("HOME") || ""',
+    );
+    expect(popout).not.toContain('text: "pimpampum workspace:add"');
     expect(popout).not.toContain('No workspaces. Run:');
     expect(popout).toContain('text: "Authentication required"');
     expect(popout).toContain('text: "pimpampum install"');
@@ -311,6 +322,19 @@ describe('Omarchy Quattro plugin', () => {
 
     expect(service).toContain('command: [root.helperPath, "status"]');
     expect(service).toContain('arguments.push(path)');
+    // M-C6: `enabled: false, state: "error"` with a message and no destination is the daemon's
+    // answer to a corrupt settings file; it must decode, and only that shape may lack a folder.
+    expect(service).toContain('if (value.state === "disabled") return value.error === null');
+    expect(service).toContain('return value.state === "error" && value.error !== null');
+    expect(service).toContain('if (value.snapshotPath !== null) return false');
+    expect(service).toContain('value.error.length > 500');
+    expect(service).not.toContain('value.state !== "disabled" || value.snapshotPath !== null');
+    expect(popout).toContain(
+      'if (backupService.backupState === "error") return "Backup needs attention"',
+    );
+    expect(popout).toContain(
+      'text: root.backupService.operationError !== "" ? root.backupService.operationError : root.backupService.statusError',
+    );
     expect(service).toContain('var arguments = ["xdg-open", directory]');
     expect(service).toContain('JSON.parse(processError)');
     expect(service).toContain('processError.length > 4096');
@@ -441,6 +465,18 @@ describe('Omarchy Quattro plugin', () => {
       'var data = isObject(envelope) && isObject(envelope.data) ? envelope.data : envelope',
     );
     expect(service).toContain('if (!isObject(data)) throw new Error("invalid update response")');
+    // The Linux `update` verb is refused with a typed `unavailable` whose `details.remedy` names
+    // `pimpampum-bootstrap`; the panel shows that message and the helper as a command resolved
+    // against the plugin directory, instead of "Could not install the update".
+    expect(service).toContain('property string remedy: ""');
+    expect(service).toContain('function actionableRemedy(stream)');
+    expect(service).toContain('envelope.error.code !== "unavailable"');
+    expect(service).toContain('/^pimpampum-[a-z]{1,40}$/.test(remedy)');
+    expect(service).toContain('root.remedy = root.actionableRemedy(root.processError)');
+    expect(service).toMatch(/run\(operation\) \{[\s\S]*?remedy = ""/u);
+    expect(popout).toContain('visible: root.updateService.remedy !== ""');
+    expect(popout).toContain('text: root.pluginDirectory + "/" + root.updateService.remedy');
+    expect(popout).toContain('readonly property string pluginDirectory: pickerHelperPath.replace(');
     // Omarchy installs from the packaged release provider; the popout copy must not send the user
     // to npm.
     expect(popout).not.toMatch(/\bnpm\b/u);
@@ -493,5 +529,113 @@ describe('Omarchy Quattro plugin', () => {
     expect(result.status).toBe(42);
     expect(readFileSync(fake.log, 'utf8')).toBe('install\n');
     expect(readdirSync(fake.untouched)).toEqual(before);
+  });
+});
+
+// D-01: the popout's "Add a workspace" hands the chosen folder to the bounded route, which turns it
+// into the CLI's `workspace:add <id> <name> <root-path>` through the receipt-owned launcher.
+describe('bounded Omarchy workspace route', () => {
+  const route = join(pluginSource, 'pimpampum-control-route');
+
+  function launcherFixture(label: string, homeName = 'home') {
+    const root = temporaryDirectory(label);
+    const home = join(root, homeName);
+    const data = join(home, '.pimpampum');
+    const launcher = join(home, '.local/share/pimpampum/bin/pimpampum-control');
+    const log = join(root, 'arguments.log');
+    mkdirSync(data, { recursive: true });
+    mkdirSync(join(home, '.local/share/pimpampum/bin'), { recursive: true });
+    writeFileSync(
+      launcher,
+      `#!/bin/sh
+printf '%s\\n' "$@" >> "$PIMPAMPUM_FAKE_LOG"
+printf -- '---\\n' >> "$PIMPAMPUM_FAKE_LOG"
+printf '%s\\n' '{ "data": { "id": "x", "name": "X", "rootPath": "/x" } }'
+`,
+      { mode: 0o755 },
+    );
+    const launcherSha256 = createHash('sha256').update(readFileSync(launcher)).digest('hex');
+    writeFileSync(
+      join(data, 'runtime-install-receipt.json'),
+      `${JSON.stringify(
+        { schemaVersion: 1, controlLauncherPath: launcher, controlLauncherSha256: launcherSha256 },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o600 },
+    );
+    writeFileSync(log, '');
+    return { home, log };
+  }
+
+  function run(state: { home: string; log: string }, arguments_: string[]) {
+    return spawnSync('/bin/sh', [route, ...arguments_], {
+      encoding: 'utf8',
+      env: { HOME: state.home, PIMPAMPUM_FAKE_LOG: state.log },
+    });
+  }
+
+  function loggedInvocations(state: { log: string }): string[][] {
+    return readFileSync(state.log, 'utf8')
+      .split('---\n')
+      .filter((block) => block.length > 0)
+      .map((block) => block.replace(/\n$/u, '').split('\n'));
+  }
+
+  it('derives the id and name from the folder and passes them as separate arguments', () => {
+    const state = launcherFixture('workspace-add');
+    const folder = join(state.home, 'Projects', 'My Store Front');
+    const accented = join(state.home, 'Projects', 'Señor Ünïcode 2026.09');
+
+    expect(run(state, ['workspace', 'add', folder]).status).toBe(0);
+    expect(run(state, ['workspace', 'add', accented, 'Custom  Name']).status).toBe(0);
+    expect(run(state, ['workspace', 'add', `${folder}/`]).status).toBe(0);
+    // An empty name means "the folder name", exactly like an absent one.
+    expect(run(state, ['workspace', 'add', folder, '']).status).toBe(0);
+
+    expect(loggedInvocations(state)).toEqual([
+      ['workspace:add', 'my-store-front', 'My Store Front', folder],
+      ['workspace:add', 'custom-name', 'Custom  Name', accented],
+      ['workspace:add', 'my-store-front', 'My Store Front', `${folder}/`],
+      ['workspace:add', 'my-store-front', 'My Store Front', folder],
+    ]);
+  });
+
+  it('caps the derived id at eighty characters without a trailing hyphen', () => {
+    const state = launcherFixture('workspace-id-cap');
+    const name = `${'a'.repeat(79)} b`;
+    expect(run(state, ['workspace', 'add', join(state.home, name)]).status).toBe(0);
+    expect(loggedInvocations(state)[0]?.[1]).toBe('a'.repeat(79));
+  });
+
+  it('refuses every argument shape outside the closed verb', () => {
+    const state = launcherFixture('workspace-rejections');
+    const folder = join(state.home, 'Projects', 'Store');
+    const rejected: Array<[string, string[]]> = [
+      ['unknown action', ['workspace', 'list']],
+      ['missing directory', ['workspace', 'add']],
+      ['too many arguments', ['workspace', 'add', folder, 'Name', 'extra']],
+      ['relative directory', ['workspace', 'add', 'relative/folder']],
+      ['filesystem root', ['workspace', 'add', '/']],
+      ['control character in directory', ['workspace', 'add', `${folder}\nrm -rf /`]],
+      ['control character in name', ['workspace', 'add', folder, 'Bad\tName']],
+      ['name over 120 characters', ['workspace', 'add', folder, 'n'.repeat(121)]],
+      ['directory over 4096 characters', ['workspace', 'add', `/${'d'.repeat(4096)}`]],
+      ['no letter or digit in the name', ['workspace', 'add', join(state.home, '···')]],
+    ];
+    for (const [label, arguments_] of rejected) {
+      const result = run(state, arguments_);
+      expect(result.status, label).toBe(69);
+      expect(result.stderr, label).toMatch(/^pimpampum-control-route: /u);
+    }
+    expect(readFileSync(state.log, 'utf8')).toBe('');
+  });
+
+  it('keeps the route free of every other project-domain verb', () => {
+    const source = readFileSync(route, 'utf8');
+    expect(source).not.toMatch(/(?:health|uninstall|work:|project:|task:)/u);
+    expect(source).toContain(
+      'set -- workspace:add "$workspace_id" "$workspace_name" "$workspace_root"',
+    );
   });
 });

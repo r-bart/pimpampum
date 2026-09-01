@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
-import { createInstallationMigrationStateStore, createSetupStateStore } from './state.js';
+import { AppError } from '../errors.js';
+import {
+  createInstallationMigrationStateStore,
+  createSetupPlanStore,
+  createSetupStateStore,
+} from './state.js';
 import {
   SETUP_CONNECTOR_IDS,
   SETUP_SCHEMA_VERSION,
@@ -21,6 +26,43 @@ import {
 } from './types.js';
 
 type ConflictDecision = 'keep' | 'replace' | 'cancel';
+
+/**
+ * Stable codes for the coordinator's own refusals. `src/cliProgram.ts` maps each one to an agent
+ * error code (`conflict`, `bad_request`, `not_found`) by this property alone, never by message text.
+ */
+export type SetupErrorCode =
+  | 'SETUP_PLAN_STALE'
+  | 'SETUP_CONFIRMATION_REQUIRED'
+  | 'SETUP_OPERATION_IN_PROGRESS'
+  | 'SETUP_JOURNAL_REVISION_MISMATCH'
+  | 'SETUP_NOTHING_TO_RESUME'
+  | 'SETUP_UNSUPPORTED_CONNECTOR'
+  | 'SETUP_CONNECTOR_NOT_SELECTED';
+
+export class SetupError extends Error {
+  constructor(
+    public readonly code: SetupErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SetupError';
+  }
+}
+
+/**
+ * What a removal step could not finish on the user's behalf. The service manager reports a login
+ * item whose helper app is already gone this way; the lifecycle merges every step's instructions
+ * with the connector ones so `uninstall` returns one list.
+ */
+export type RemovalOutcome = void | { manualInstructions?: string[] | undefined };
+
+const BASE_SETUP_PHASES = [
+  'runtime.install',
+  'service.install',
+  'service.verify',
+  'login-item.register',
+] as const;
 
 export interface SetupCoordinatorDependencies {
   lifecycleLock: { run<T>(operation: () => Promise<T>): Promise<T> };
@@ -87,8 +129,8 @@ export interface InstallationLifecycleDependencies {
     start(): Promise<void>;
     verify(): Promise<void>;
     restore(snapshot: InstallationSnapshot): Promise<void>;
-    removeOwned(): Promise<void>;
-    finalizeRemoval?(): Promise<void>;
+    removeOwned(): Promise<RemovalOutcome>;
+    finalizeRemoval?(): Promise<RemovalOutcome>;
   };
   connectors: {
     reconcileOwned(): Promise<void>;
@@ -103,11 +145,17 @@ export interface InstallationLifecycleDependencies {
   receipt: {
     read(): Promise<InstallationSnapshot>;
     commit(snapshot: InstallationSnapshot): Promise<void>;
-    remove(): Promise<void>;
+    remove(): Promise<RemovalOutcome>;
     capture?(): Promise<InstallationReceiptCapture>;
     restore?(capture: InstallationReceiptCapture): Promise<void>;
   };
   migrationStateStore?: InstallationMigrationStateStore;
+  /**
+   * The guided setup journal and plan. Removal supersedes both, so a later popover does not
+   * rehydrate a finished journal as a completed setup on a machine that no longer has the service.
+   */
+  setupStateStore?: SetupStateStore;
+  setupPlanStore?: SetupPlanStore;
   now?(): string;
 }
 
@@ -121,6 +169,35 @@ function safeManualConnectorInstructions(connectorIds: readonly string[]): strin
     );
 }
 
+const MAX_MANUAL_INSTRUCTIONS = 16;
+const MAX_MANUAL_INSTRUCTION_LENGTH = 512;
+
+/** Bounded, control-character-free, deduplicated; the list reaches a desktop panel verbatim. */
+function mergeManualInstructions(...sources: (RemovalOutcome | string[])[]): string[] {
+  const merged: string[] = [];
+  for (const source of sources) {
+    const items = Array.isArray(source) ? source : source?.manualInstructions;
+    for (const item of items ?? []) {
+      if (
+        typeof item !== 'string' ||
+        item.length === 0 ||
+        item.length > MAX_MANUAL_INSTRUCTION_LENGTH ||
+        /[\p{Cc}]/u.test(item) ||
+        merged.includes(item)
+      ) {
+        continue;
+      }
+      if (merged.length === MAX_MANUAL_INSTRUCTIONS) break;
+      merged.push(item);
+    }
+  }
+  return merged;
+}
+
+function basePhasesComplete(state: SetupJournal): boolean {
+  return state.completedPhases.includes('service.verify');
+}
+
 function assertPrivatePath(value: string, label: string): void {
   if (!isAbsolute(value) || value.includes('\0')) {
     throw new Error(`${label} must be an absolute, NUL-free path`);
@@ -130,7 +207,9 @@ function assertPrivatePath(value: string, label: string): void {
 function selectedConnectorIds(values: readonly SetupConnectorId[]): SetupConnectorId[] {
   const result: SetupConnectorId[] = [];
   for (const value of values) {
-    if (!SETUP_CONNECTOR_IDS.includes(value)) throw new Error(`Unsupported connector: ${value}`);
+    if (!SETUP_CONNECTOR_IDS.includes(value)) {
+      throw new SetupError('SETUP_UNSUPPORTED_CONNECTOR', `Unsupported connector: ${value}`);
+    }
     if (!result.includes(value)) result.push(value);
   }
   return result;
@@ -385,11 +464,7 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
         rollbackErrors.push(rollbackError);
       }
       state.completedPhases = state.completedPhases.filter(
-        (phase) =>
-          phase !== 'runtime.install' &&
-          phase !== 'service.install' &&
-          phase !== 'service.verify' &&
-          phase !== 'login-item.register',
+        (phase) => !(BASE_SETUP_PHASES as readonly string[]).includes(phase),
       );
       for (const rollbackError of rollbackErrors) {
         const diagnostic = redactDiagnostic(rollbackError);
@@ -574,21 +649,27 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
         plans.get(input.operationId) ??
         (persistedPlan?.operationId === input.operationId ? persistedPlan : undefined);
       if (plan === undefined || plan.revision !== input.expectedRevision) {
-        throw new Error('Setup plan is missing, stale, or changed');
+        throw new SetupError('SETUP_PLAN_STALE', 'Setup plan is missing, stale, or changed');
       }
-      if (!input.confirmed) throw new Error('Setup requires explicit confirmation');
+      if (!input.confirmed) {
+        throw new SetupError('SETUP_CONFIRMATION_REQUIRED', 'Setup requires explicit confirmation');
+      }
       const decisions = input.conflictDecisions ?? {};
       return withProgressObserver(plan.operationId, input.onProgress, () =>
         dependencies.lifecycleLock.run(async () => {
           const existing = stateStore.read();
           if (existing?.status === 'running' && existing.operationId !== plan.operationId) {
-            throw new Error(
+            throw new SetupError(
+              'SETUP_OPERATION_IN_PROGRESS',
               'Another durable setup operation must be resumed before applying a new plan',
             );
           }
           if (existing?.operationId === plan.operationId) {
             if (existing.revision !== plan.revision) {
-              throw new Error('Durable setup journal revision does not match the reviewed plan');
+              throw new SetupError(
+                'SETUP_JOURNAL_REVISION_MISMATCH',
+                'Durable setup journal revision does not match the reviewed plan',
+              );
             }
             if (existing.status === 'running' || existing.status === 'conflict') {
               existing.conflictDecisions = {
@@ -649,8 +730,19 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
     async resume(input) {
       return dependencies.lifecycleLock.run(async () => {
         const state = stateStore.read();
-        if (state === null) throw new Error('There is no durable setup operation to resume');
-        if (state.status !== 'running' && state.status !== 'failed') {
+        if (state === null) {
+          throw new SetupError(
+            'SETUP_NOTHING_TO_RESUME',
+            'There is no durable setup operation to resume',
+          );
+        }
+        // A journal that reads `partial` or `complete` while its base phases never finished — an
+        // older retry could leave one — is not done: re-run the incomplete base phases first.
+        if (
+          state.status !== 'running' &&
+          state.status !== 'failed' &&
+          (state.status === 'conflict' || basePhasesComplete(state))
+        ) {
           return resultFromJournal(state);
         }
         state.status = 'running';
@@ -672,11 +764,25 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
     },
 
     async retryConnector(id, onProgress) {
-      if (!SETUP_CONNECTOR_IDS.includes(id)) throw new Error(`Unsupported connector: ${id}`);
+      if (!SETUP_CONNECTOR_IDS.includes(id)) {
+        throw new SetupError('SETUP_UNSUPPORTED_CONNECTOR', `Unsupported connector: ${id}`);
+      }
       return dependencies.lifecycleLock.run(async () => {
         const state = stateStore.read();
         if (state === null || !state.selectedConnectors.includes(id)) {
-          throw new Error('Connector is not part of the durable setup operation');
+          throw new SetupError(
+            'SETUP_CONNECTOR_NOT_SELECTED',
+            'Connector is not part of the durable setup operation',
+          );
+        }
+        if (!basePhasesComplete(state)) {
+          throw new AppError(
+            'invalid_state',
+            'The runtime and service phases have not completed; run `pimpampum setup resume` before retrying a connector',
+            409,
+            false,
+            { operationId: state.operationId, phase: state.phase },
+          );
         }
         const existing = connectorResult(state, id);
         if (existing?.available) return resultFromJournal(state);
@@ -725,7 +831,21 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
   const migrationStateStore =
     dependencies.migrationStateStore ??
     createInstallationMigrationStateStore(dependencies.dataDirectory);
+  const setupStateStore =
+    dependencies.setupStateStore ?? createSetupStateStore(dependencies.dataDirectory);
+  const setupPlanStore =
+    dependencies.setupPlanStore ?? createSetupPlanStore(dependencies.dataDirectory);
   const now = dependencies.now ?? (() => new Date().toISOString());
+
+  // Removal supersedes the guided-setup journal. A journal that no longer parses is removed too;
+  // only a readable one is restored when the removal rolls back.
+  function readSupersededJournal(): SetupJournal | null {
+    try {
+      return setupStateStore.read();
+    } catch {
+      return null;
+    }
+  }
 
   function validatePrevious(previous: InstallationSnapshot): void {
     assertVersion(previous.runtimeVersion);
@@ -1013,33 +1133,46 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
               ownedEntries: await dependencies.connectors.snapshotOwned(),
               unprovenConnectorIds: [],
             };
-        const manualInstructions = safeManualConnectorInstructions(
+        const connectorInstructions = safeManualConnectorInstructions(
           removalPlan.unprovenConnectorIds,
         );
+        const outcomes: RemovalOutcome[] = [];
+        const previousJournal = readSupersededJournal();
         let connectorsAttempted = false;
         let runtimeRemovalAttempted = false;
         let receiptRemovalAttempted = false;
+        let journalRemovalAttempted = false;
         try {
           await dependencies.service.stop();
           connectorsAttempted = true;
           await dependencies.connectors.disconnectOwned(removalPlan.ownedEntries);
-          await dependencies.service.removeOwned();
+          outcomes.push(await dependencies.service.removeOwned());
           runtimeRemovalAttempted = true;
           await dependencies.runtime.removeOwned();
           receiptRemovalAttempted = true;
-          await dependencies.receipt.remove();
+          outcomes.push(await dependencies.receipt.remove());
           await dependencies.runtime.finalizeRemoval?.();
-          await dependencies.service.finalizeRemoval?.();
-          return { removed: true, dataPreserved: true, manualInstructions };
+          outcomes.push(await dependencies.service.finalizeRemoval?.());
+          journalRemovalAttempted = true;
+          setupPlanStore.remove();
+          setupStateStore.remove();
+          return {
+            removed: true,
+            dataPreserved: true,
+            manualInstructions: mergeManualInstructions(...outcomes, connectorInstructions),
+          };
         } catch (error) {
           const rollbackErrors: unknown[] = [error];
-          const attempt = async (operation: () => Promise<void>): Promise<void> => {
+          const attempt = async (operation: () => Promise<void> | void): Promise<void> => {
             try {
               await operation();
             } catch (rollbackError) {
               rollbackErrors.push(rollbackError);
             }
           };
+          if (journalRemovalAttempted && previousJournal !== null) {
+            await attempt(() => setupStateStore.write(previousJournal));
+          }
           if (runtimeRemovalAttempted) {
             await attempt(() => dependencies.runtime.restore(previous.runtimeVersion));
           }

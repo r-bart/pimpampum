@@ -233,6 +233,44 @@ struct SetupCommandRunnerBranchTests {
   }
 
   @Test
+  func registersAWorkspaceThroughTheSameCliAndDecodesItsEnvelope() async throws {
+    // D-01: `workspace:add <id> <name> <root-path>`, the CLI's own argument order, through the
+    // packaged runtime; the answer is one `{data}` envelope, not a setup wire event.
+    let answer = """
+      {
+        "data": {
+          "id": "storefront",
+          "name": "Storefront",
+          "rootPath": "/Users/example/Projects/Storefront",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z"
+        }
+      }
+      """
+    let process = ScriptedStreamingProcessRunner(lines: [], output: output(stdout: answer))
+    let request = WorkspaceRegistrationRequest(
+      id: "storefront", name: "Storefront", rootPath: "/Users/example/Projects/Storefront")
+    let registered = try await runner(process).registerWorkspace(request)
+    #expect(registered == SetupFixtures.registeredWorkspace)
+    #expect(
+      await process.arguments.suffix(4)
+        == ["workspace:add", "storefront", "Storefront", "/Users/example/Projects/Storefront"])
+
+    await #expect(throws: SetupClientError.invalidResponse) {
+      try await runner(ScriptedProcessRunner(output: output(stdout: planLine)))
+        .registerWorkspace(request)
+    }
+    await #expect(throws: SetupClientError.commandFailed("Workspace already exists")) {
+      try await runner(
+        ScriptedProcessRunner(
+          output: output(
+            exitCode: 1,
+            stderr: #"{"error":{"code":"conflict","message":"Workspace already exists"}}"#))
+      ).registerWorkspace(request)
+    }
+  }
+
+  @Test
   func deliversOnlyProgressLinesAndOnlyWhenSomeoneListens() async throws {
     let recorder = LineRecorder()
     let noise = [Data("not json".utf8), Data(resultLine.utf8), Data(progressLine.utf8)]

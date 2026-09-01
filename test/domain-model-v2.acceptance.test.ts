@@ -137,7 +137,7 @@ describe('Domain Model v2 acceptance', () => {
     ]);
 
     const projectPayload = await request(app)
-      .get(`/api/v1/projects/${project.id}`)
+      .get(`/api/v1/projects/${project.id}/manifest`)
       .set(authorization)
       .expect(200);
     expect(projectPayload.body.data).not.toHaveProperty('prd');
@@ -338,7 +338,7 @@ describe('Domain Model v2 acceptance', () => {
     expect(cancelledResponse.body.data.state).toBe('cancelled');
 
     const cancelledTask = await request(app)
-      .get(`/api/v1/tasks/${task.id}`)
+      .get(`/api/v1/tasks/${task.id}/manifest`)
       .set(authorization)
       .expect(200);
     expect(cancelledTask.body.data.state).toBe('cancelled');

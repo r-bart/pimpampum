@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PimpampumHttpClient } from '../src/client.js';
-import { MAX_AGENT_INPUT_BYTES, runCli, type CliRuntime } from '../src/cliProgram.js';
+import {
+  createLazyGateway,
+  MAX_AGENT_INPUT_BYTES,
+  MAX_BODY_FILE_BYTES,
+  runCli,
+  type CliRuntime,
+} from '../src/cliProgram.js';
 import { AppError } from '../src/errors.js';
 
 function fixture() {
@@ -209,31 +215,69 @@ describe('CLI program', () => {
     );
   });
 
-  it('returns a non-zero agent error when automatic backup retry reports failure', async () => {
+  // A retry that ends in `state: 'error'` is a successful report: the daemon answered 200 and the
+  // payload carries the failure. The desktop cards read `state` and `error` from the data; exit 1
+  // would replace that data with a generic envelope.
+  it('returns the automatic backup status as data even when the retry reports an error', async () => {
     const state = fixture();
     state.client.retryAutomaticBackup = vi.fn(async () => ({
       state: 'error',
       enabled: true,
       error: 'cloud volume unavailable',
     })) as never;
-    state.runtime.exit = vi.fn((code: number) => {
+
+    await runCli(['backup', 'retry', '--json'], state.runtime);
+
+    expect(state.errors).toEqual([]);
+    expect(state.runtime.exit).not.toHaveBeenCalled();
+    expect(JSON.parse(state.output[0] ?? '')).toEqual({
+      data: { state: 'error', enabled: true, error: 'cloud volume unavailable' },
+    });
+  });
+
+  it('reads --body-file through the bounded reader and names an unreadable path', async () => {
+    const state = fixture();
+    await runCli(
+      ['spec:create', 'project-id', 'feature', 'Feature', '--body-file', 'spec.md'],
+      state.runtime,
+    );
+    await runCli(['task:create', 'spec-id', 'Task', '--body-file', 'task.md'], state.runtime);
+    expect(state.runtime.readFile).toHaveBeenCalledWith('/resolved/spec.md', MAX_BODY_FILE_BYTES);
+    expect(state.runtime.readFile).toHaveBeenCalledWith('/resolved/task.md', MAX_BODY_FILE_BYTES);
+    expect(MAX_BODY_FILE_BYTES).toBe(1_000_000);
+
+    const unreadable = fixture();
+    unreadable.runtime.exit = vi.fn((code: number) => {
       throw new Error(`exit:${code}`);
     });
+    vi.spyOn(unreadable.runtime, 'readFile').mockImplementationOnce(() => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    await expect(
+      runCli(['task:create', 'spec-id', 'Task', '--body-file', 'missing.md'], unreadable.runtime),
+    ).rejects.toThrow('exit:1');
+    expect(JSON.parse(unreadable.errors[0] ?? '')).toMatchObject({
+      error: {
+        code: 'bad_request',
+        message: 'Could not read body file: /resolved/missing.md',
+        details: { path: '/resolved/missing.md' },
+      },
+    });
+    expect(unreadable.client.createTask).not.toHaveBeenCalled();
 
-    await expect(runCli(['backup', 'retry', '--json'], state.runtime)).rejects.toThrow('exit:1');
-    expect(state.errors.join('\n')).toContain('cloud volume unavailable');
-
-    const withoutMessage = fixture();
-    withoutMessage.client.retryAutomaticBackup = vi.fn(async () => ({
-      state: 'error',
-      enabled: true,
-      error: null,
-    })) as never;
-    withoutMessage.runtime.exit = vi.fn((code: number) => {
+    const bounded = fixture();
+    bounded.runtime.exit = vi.fn((code: number) => {
       throw new Error(`exit:${code}`);
     });
-    await expect(runCli(['backup', 'retry'], withoutMessage.runtime)).rejects.toThrow('exit:1');
-    expect(withoutMessage.errors.join('\n')).toContain('Automatic backup retry failed');
+    vi.spyOn(bounded.runtime, 'readFile').mockImplementationOnce(() => {
+      throw new AppError('payload_too_large', 'File exceeds 1000000 UTF-8 bytes', 413);
+    });
+    await expect(
+      runCli(['spec:create', 'project-id', 'feature', 'Feature', 'huge.md'], bounded.runtime),
+    ).rejects.toThrow('exit:1');
+    expect(JSON.parse(bounded.errors[0] ?? '')).toMatchObject({
+      error: { code: 'payload_too_large' },
+    });
   });
 
   it('routes the macOS onboarding install flag to the service-only manager', async () => {
@@ -325,10 +369,16 @@ describe('CLI program', () => {
     await expect(
       runCli(['install', '--service-only', '--service-only'], state.runtime),
     ).rejects.toThrow('exit:1');
+    await expect(runCli(['install', 'extra'], state.runtime)).rejects.toThrow('exit:1');
 
     expect(state.runtime.serviceManager.install).not.toHaveBeenCalled();
     expect(state.runtime.serviceOnlyManager?.install).not.toHaveBeenCalled();
-    expect(state.errors.join('\n')).toContain('optional --service-only flag');
+    const messages = state.errors.map((entry) => JSON.parse(entry).error.message as string);
+    expect(messages).toEqual([
+      'Unknown option for install: --unknown',
+      'Repeated option: --service-only',
+      'install accepts at most 0 positional arguments',
+    ]);
   });
 
   it('rejects ambiguous automatic backup subcommand arguments before transport', async () => {
@@ -346,10 +396,22 @@ describe('CLI program', () => {
     await expect(
       runCli(['backup', 'configure', '/backup', '--pretty'], state.runtime),
     ).rejects.toThrow('exit:1');
+    await expect(runCli(['backup', 'configure'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(runCli(['backup'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(runCli(['backup', '--json'], state.runtime)).rejects.toThrow('exit:1');
     expect(state.client.getAutomaticBackupStatus).not.toHaveBeenCalled();
     expect(state.client.configureAutomaticBackup).not.toHaveBeenCalled();
     expect(state.client.disableAutomaticBackup).not.toHaveBeenCalled();
-    expect(state.errors.join('\n')).toContain('Only the optional --json flag is accepted');
+    expect(state.client.backup).not.toHaveBeenCalled();
+    const messages = state.errors.map((entry) => JSON.parse(entry).error.message as string);
+    expect(messages).toEqual([
+      'backup status accepts at most 0 positional arguments',
+      'Repeated option: --json',
+      'Unknown option for backup configure: --pretty',
+      'Missing backup directory',
+      'Missing backup directory',
+      'Unknown option for backup: --json',
+    ]);
   });
 
   it('rejects malformed and unknown synchronization commands before transport', async () => {
@@ -358,13 +420,55 @@ describe('CLI program', () => {
       throw new Error(`exit:${code}`);
     });
     await expect(runCli(['sync', 'configure', '/shared'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(runCli(['sync', 'configure', '--device', 'x'], state.runtime)).rejects.toThrow(
+      'exit:1',
+    );
     await expect(runCli(['sync', 'resolve', 'conflict', 'either'], state.runtime)).rejects.toThrow(
       'exit:1',
     );
+    await expect(runCli(['sync', 'resolve', 'conflict'], state.runtime)).rejects.toThrow('exit:1');
     await expect(runCli(['sync', 'wat'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(runCli(['sync'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(runCli(['sync', 'now', 'extra'], state.runtime)).rejects.toThrow('exit:1');
     expect(state.client.configureSync).not.toHaveBeenCalled();
-    expect(state.errors.join('\n')).toContain('sync configure');
-    expect(state.errors.join('\n')).toContain('Unknown sync action');
+    expect(state.client.resolveSyncConflict).not.toHaveBeenCalled();
+    expect(state.client.reconcileSync).not.toHaveBeenCalled();
+    const failures = state.errors.map(
+      (entry) => JSON.parse(entry).error as { message: string; details: { usage?: string } },
+    );
+    expect(failures.map((failure) => failure.message)).toEqual([
+      'sync configure requires --device <id>',
+      'Missing shared folder',
+      'Conflict choice must be local or remote',
+      'Missing conflict choice',
+      'Unknown sync action: wat',
+      'Missing sync action',
+      'sync now accepts at most 0 positional arguments',
+    ]);
+    expect(failures[0]?.details.usage).toBe(
+      'pimpampum sync configure <directory> --device <id> [--json]',
+    );
+    expect(failures[4]?.details.usage).toContain('Usage:');
+  });
+
+  it('accepts the declared backup and sync options in any order', async () => {
+    const state = fixture();
+    await runCli(['sync', 'configure', '--json', '/shared', '--device', 'laptop'], state.runtime);
+    await runCli(['backup', 'configure', '--json', '/backup'], state.runtime);
+    expect(state.client.configureSync).toHaveBeenCalledWith('/resolved//shared', 'laptop');
+    expect(state.client.configureAutomaticBackup).toHaveBeenCalledWith('/resolved//backup');
+    expect(state.errors).toEqual([]);
+  });
+
+  it('rejects a declared multi-token name passed as one token', async () => {
+    const state = fixture();
+    state.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+    await expect(runCli(['setup plan'], state.runtime)).rejects.toThrow('exit:1');
+    expect(JSON.parse(state.errors[0] ?? '')).toMatchObject({
+      error: { code: 'bad_request', message: 'Unknown command: setup plan' },
+    });
   });
 
   it('starts the server and closes it through either signal', async () => {
@@ -455,5 +559,36 @@ describe('CLI program', () => {
     ).rejects.toThrow('exit:1');
     expect(oversized.errors.join('\n')).toContain('payload_too_large');
     expect(oversized.runtime.createAgentClient).not.toHaveBeenCalled();
+  });
+
+  // The stdio bridge can outlive the daemon's first start, so its gateway resolves the real client
+  // on every call: a missing token fails typed inside the handler, and the token that appears
+  // later is adopted without restarting the host.
+  it('resolves the gateway on every call so a late daemon token is adopted', async () => {
+    const first = { health: vi.fn(async () => ({ status: 'ok', version: '1' })) };
+    const second = { health: vi.fn(async () => ({ status: 'ok', version: '2' })) };
+    let target: typeof first | null = null;
+    const gateway = createLazyGateway<typeof first>(() => {
+      if (target === null) throw new AppError('unavailable', 'No daemon token at /data/token', 503);
+      return target;
+    });
+
+    // The resolver throws synchronously inside the call; the MCP `execute` boundary runs every
+    // handler inside its `try`, so the throw becomes that tool's typed failure envelope.
+    expect(() => gateway.health()).toThrow(
+      expect.objectContaining({ code: 'unavailable', message: 'No daemon token at /data/token' }),
+    );
+    target = first;
+    await expect(gateway.health()).resolves.toEqual({ status: 'ok', version: '1' });
+    target = second;
+    await expect(gateway.health()).resolves.toEqual({ status: 'ok', version: '2' });
+    expect(first.health).toHaveBeenCalledOnce();
+    expect(second.health).toHaveBeenCalledOnce();
+    expect(second.health.mock.contexts[0]).toBe(second);
+
+    expect((gateway as unknown as { then?: unknown }).then).toBeUndefined();
+    expect((gateway as unknown as Record<symbol, unknown>)[Symbol.toPrimitive]).toBeUndefined();
+    const missing = gateway as unknown as { absent(): unknown };
+    expect(() => missing.absent()).toThrow(/Gateway has no method absent/u);
   });
 });

@@ -39,11 +39,15 @@ Item {
     if (value.directory !== null && !isAbsolutePath(value.directory)) return false
     if (value.snapshotPath !== null && !isAbsolutePath(value.snapshotPath)) return false
     if (!isNullableTimestamp(value.lastAttemptAt) || !isNullableTimestamp(value.lastSuccessAt)) return false
-    if (value.error !== null && typeof value.error !== "string") return false
+    if (value.error !== null && (typeof value.error !== "string" || value.error.length === 0
+        || value.error.length > 500)) return false
     if (value.enabled !== (value.directory !== null)) return false
-    if (value.enabled && !isAbsolutePath(value.snapshotPath)) return false
-    if (!value.enabled && (value.state !== "disabled" || value.snapshotPath !== null)) return false
-    return true
+    if (value.enabled) return value.state !== "disabled" && isAbsolutePath(value.snapshotPath)
+    if (value.snapshotPath !== null) return false
+    // Off with nothing, or `error` with a message and no destination: the daemon could not read
+    // its settings file (M-C6) and the card shows the reason under "Backup needs attention".
+    if (value.state === "disabled") return value.error === null
+    return value.state === "error" && value.error !== null
   }
 
   function fail(message) {

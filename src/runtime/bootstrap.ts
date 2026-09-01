@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 
 import {
   inspectInstalledRuntime,
@@ -18,6 +18,65 @@ import type {
 
 const MAXIMUM_MANIFEST_BYTES = 1024 * 1024;
 const MAXIMUM_RUNTIME_BYTES = 175 * 1024 * 1024;
+const APPLICATION_PATH_FILE = 'application-path.json';
+const MAXIMUM_APPLICATION_RECORD_BYTES = 16 * 1024;
+const MANAGED_APPLICATION_NAME = 'Pimpampum.app';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The bundle path the macOS desktop adapter recorded in `application-path.json` when setup ran.
+ * Schema 2 is `{ schemaVersion: 2, path, managed }`; schema 1 recorded only the path. The adapter
+ * in `service/macosApp.ts` keeps the writer and its own private reader; this one exists so the
+ * updater and the bootstrap stop assuming `~/Applications/Pimpampum.app` for an adopted bundle.
+ * Anything unreadable or malformed yields `null`, and the caller falls back to the managed path.
+ */
+export function readRecordedApplicationPath(dataDirectory: string): string | null {
+  const file = join(dataDirectory, APPLICATION_PATH_FILE);
+  let metadata: ReturnType<typeof lstatSync>;
+  try {
+    metadata = lstatSync(file);
+  } catch {
+    return null;
+  }
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.size > MAXIMUM_APPLICATION_RECORD_BYTES
+  ) {
+    return null;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+  } catch {
+    return null;
+  }
+  if (
+    !isRecord(value) ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
+    (value.schemaVersion === 2 && typeof value.managed !== 'boolean') ||
+    typeof value.path !== 'string' ||
+    !isAbsolute(value.path) ||
+    value.path.includes('\0')
+  ) {
+    return null;
+  }
+  return normalize(value.path);
+}
+
+/** The installed app bundle: the recorded location when setup left one, the managed path otherwise. */
+export function installedApplicationPath(input: {
+  homeDirectory: string;
+  dataDirectory: string;
+}): string {
+  return (
+    readRecordedApplicationPath(input.dataDirectory) ??
+    join(input.homeDirectory, 'Applications', MANAGED_APPLICATION_NAME)
+  );
+}
 
 export interface PackagedRuntimeBootstrap {
   manifest: RuntimeManifest | null;
@@ -90,7 +149,7 @@ export function resolvePackagedRuntimeBootstrap(
     if (active.version !== input.version) {
       throw new Error('Active packaged runtime version does not match the Pimpampum CLI');
     }
-    const installedApplication = join(input.homeDirectory, 'Applications', 'Pimpampum.app');
+    const installedApplication = installedApplicationPath(input);
     return {
       manifest: null,
       sourceDirectory: null,

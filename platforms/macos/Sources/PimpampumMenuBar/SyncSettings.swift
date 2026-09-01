@@ -144,6 +144,12 @@ struct SyncSettingsView: View {
           .foregroundStyle(settings.state == .conflict ? .orange : .secondary)
           .textSelection(.enabled)
       }
+      if let blockedSnapshot = SyncSettingsPresentation.blockedSnapshotLine(settings) {
+        Label(blockedSnapshot, systemImage: "doc.badge.ellipsis")
+          .font(.caption)
+          .foregroundStyle(.orange)
+          .textSelection(.enabled)
+      }
       Text("Pending snapshots: \(settings.pendingSnapshotCount)")
         .font(.caption).foregroundStyle(.secondary)
       Text("Last sync: \(Self.lastSyncLabel(settings))")

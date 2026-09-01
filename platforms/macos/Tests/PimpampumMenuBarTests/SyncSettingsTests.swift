@@ -81,6 +81,23 @@ struct SyncSettingsClientTests {
       { (data: inout [String: Any]) in data["pendingSnapshotCount"] = -1 },
       { (data: inout [String: Any]) in data["error"] = "bad\nmessage" },
       { (data: inout [String: Any]) in data["extra"] = true },
+      { (data: inout [String: Any]) in data["error"] = "leaked \(token)" },
+      { (data: inout [String: Any]) in data.removeValue(forKey: "blockedSnapshot") },
+      { (data: inout [String: Any]) in data["blockedSnapshot"] = "text" },
+      { (data: inout [String: Any]) in data["blockedSnapshot"] = ["path": "a"] },
+      { (data: inout [String: Any]) in
+        data["blockedSnapshot"] = ["path": "a", "reason": "r", "extra": true]
+      },
+      { (data: inout [String: Any]) in data["blockedSnapshot"] = ["path": "", "reason": "r"] },
+      { (data: inout [String: Any]) in
+        data["blockedSnapshot"] = ["path": "a", "reason": "bad\ncontrol"]
+      },
+      { (data: inout [String: Any]) in
+        data["blockedSnapshot"] = ["path": "a", "reason": "leaked \(token)"]
+      },
+      { (data: inout [String: Any]) in
+        data["blockedSnapshot"] = ["path": "\(token).json", "reason": "r"]
+      },
     ] {
       var root = rootPayload()
       var data = root["data"] as! [String: Any]
@@ -185,6 +202,42 @@ struct SyncSettingsClientTests {
   // A paused instance keeps its directory and device, so it is valid only while it reports the
   // paused state. Every other pairing of the pause flag and the health state is a payload the
   // daemon cannot produce.
+  @Test
+  func decodesABlockedSnapshotAndItsAbsence() async throws {
+    // The daemon skips a shared snapshot that fails validation and names it in its status. The
+    // panel shows it on one line; a null means every snapshot was accepted.
+    var root = rootPayload()
+    var data = root["data"] as! [String: Any]
+    data["state"] = "error"
+    data["error"] = "One snapshot was skipped."
+    data["blockedSnapshot"] = ["path": "devices/laptop/snapshot-7.json", "reason": "checksum mismatch"]
+    root["data"] = data
+    let blocked = try await makeClient(data: json(root)).fetch()
+    #expect(
+      blocked.blockedSnapshot
+        == SyncBlockedSnapshot(path: "devices/laptop/snapshot-7.json", reason: "checksum mismatch"))
+    #expect(
+      SyncSettingsPresentation.blockedSnapshotLine(blocked)
+        == "Blocked snapshot devices/laptop/snapshot-7.json: checksum mismatch")
+
+    let clean = try await makeClient(data: payload()).fetch()
+    #expect(clean.blockedSnapshot == nil)
+    #expect(SyncSettingsPresentation.blockedSnapshotLine(clean) == nil)
+
+    // Disabled synchronization has no shared folder, so it cannot have refused a file.
+    var disabled = rootPayload()
+    var disabledData = disabled["data"] as! [String: Any]
+    disabledData["enabled"] = false
+    disabledData["state"] = "disabled"
+    disabledData["directory"] = NSNull()
+    disabledData["deviceId"] = NSNull()
+    disabledData["blockedSnapshot"] = ["path": "a", "reason": "r"]
+    disabled["data"] = disabledData
+    await #expect(throws: SyncSettingsClientError.invalidPayload) {
+      try await makeClient(data: json(disabled)).fetch()
+    }
+  }
+
   @Test
   func tiesThePauseFlagToThePausedState() async throws {
     var root = rootPayload()
@@ -294,6 +347,7 @@ struct SyncSettingsClientTests {
         "pendingSnapshotCount": 0,
         "conflictCount": 0,
         "error": NSNull(),
+        "blockedSnapshot": NSNull(),
       ],
     ]
   }
@@ -407,7 +461,8 @@ struct SyncSettingsStoreTests {
       lastExportAt: nil,
       pendingSnapshotCount: 0,
       conflictCount: 0,
-      error: nil
+      error: nil,
+      blockedSnapshot: nil
     )
   }
 }
@@ -447,8 +502,33 @@ struct SyncSettingsPresentationTests {
       lastExportAt: nil,
       pendingSnapshotCount: 0,
       conflictCount: conflicts,
-      error: nil
+      error: nil,
+      blockedSnapshot: nil
     )
+  }
+
+  @Test
+  func namesTheBlockedSnapshotOnOneLineOrStaysSilent() {
+    let clean = settings(state: .healthy)
+    #expect(SyncSettingsPresentation.blockedSnapshotLine(clean) == nil)
+    let blocked = SyncSettings(
+      enabled: true,
+      paused: false,
+      state: .error,
+      directory: "/tmp/Shared/Pimpampum",
+      deviceId: "macbook",
+      lastAttemptAt: nil,
+      lastImportAt: nil,
+      lastExportAt: nil,
+      pendingSnapshotCount: 1,
+      conflictCount: 0,
+      error: "One snapshot was skipped.",
+      blockedSnapshot: SyncBlockedSnapshot(
+        path: "devices/laptop/snapshot-7.json", reason: "checksum mismatch")
+    )
+    #expect(
+      SyncSettingsPresentation.blockedSnapshotLine(blocked)
+        == "Blocked snapshot devices/laptop/snapshot-7.json: checksum mismatch")
   }
 }
 

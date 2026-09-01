@@ -49,6 +49,7 @@ struct StatusPopover: View {
   let openLoginSettings: () -> Void
   let settingsWindowOpener: any SettingsWindowOpening
   let setupAssistant: SetupAssistant
+  let workspaceFolderPicker: any WorkspaceFolderPicking
   let quitApplication: () -> Void
 
   @State private var isCompletedExpanded = false
@@ -69,6 +70,7 @@ struct StatusPopover: View {
     },
     settingsWindowOpener: any SettingsWindowOpening = SettingsWindowOpener(),
     setupAssistant: SetupAssistant = SetupAssistant(),
+    workspaceFolderPicker: any WorkspaceFolderPicking = WorkspaceFolderPicker(),
     quitApplication: @escaping () -> Void = { NSApplication.shared.terminate(nil) }
   ) {
     self.store = store
@@ -78,6 +80,7 @@ struct StatusPopover: View {
     self.openLoginSettings = openLoginSettings
     self.settingsWindowOpener = settingsWindowOpener
     self.setupAssistant = setupAssistant
+    self.workspaceFolderPicker = workspaceFolderPicker
     self.quitApplication = quitApplication
   }
 
@@ -315,9 +318,7 @@ struct StatusPopover: View {
           if store.incompleteProjects.isEmpty, store.completedProjects.isEmpty,
             store.cancelledProjects.isEmpty
           {
-            Text("No projects yet")
-              .font(.subheadline)
-              .foregroundStyle(.secondary)
+            emptyProjects(overview: overview)
           } else {
             ForEach(store.incompleteProjects) { project in
               projectButton(project)
@@ -468,6 +469,32 @@ struct StatusPopover: View {
           spec,
           description: error.localizedDescription
         )
+      }
+    }
+  }
+
+  /// A first run is not an error: one line says why the list is empty and, with no workspace at
+  /// all, the folder dialog registers the first one. The dialog is a real window the popover
+  /// survives, exactly like the backup folder dialog.
+  private func emptyProjects(overview: Overview) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("No projects yet")
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+      Text(Self.emptyProjectsDetail(overview: overview))
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      if Self.showsAddWorkspace(overview: overview) {
+        Button(WorkspaceRegistrationCopy.button) {
+          Task { await setupSession.addWorkspace(using: workspaceFolderPicker) }
+        }
+        .buttonStyle(GuidedSecondaryButtonStyle())
+        .disabled(setupSession.workspaceRegistration.isRegistering)
+        .accessibilityLabel(WorkspaceRegistrationCopy.buttonAccessibilityLabel)
+      }
+      if let notice = setupSession.workspaceRegistration.notice {
+        WorkspaceRegistrationNoticeRow(notice: notice)
       }
     }
   }

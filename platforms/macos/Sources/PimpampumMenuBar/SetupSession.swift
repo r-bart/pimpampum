@@ -9,6 +9,8 @@ import Foundation
 final class SetupSession: ObservableObject {
   let store: SetupStore
   @Published private(set) var step: SetupOnboardingStep = SetupOnboardingStep.first
+  /// The workspace action shared by the final step and the empty overview.
+  @Published private(set) var workspaceRegistration: WorkspaceRegistrationState = .idle
 
   private weak var overviewStore: OverviewStore?
   private let registerLoginItem: @MainActor () -> Void
@@ -84,7 +86,36 @@ final class SetupSession: ObservableObject {
   func startOver() {
     guard !store.activity.hasBegunMutation else { return }
     store.reset()
+    workspaceRegistration = .idle
     step = SetupOnboardingStep.first
+  }
+
+  /// Opens the folder picker and registers the choice. A cancelled picker changes nothing.
+  func addWorkspace(using picker: any WorkspaceFolderPicking) async {
+    guard !workspaceRegistration.isRegistering else { return }
+    guard let folder = picker.chooseDirectory(initialDirectory: nil) else { return }
+    await addWorkspace(at: folder)
+  }
+
+  /// Registers one folder through the packaged CLI, then refreshes the overview so the workspace
+  /// appears at once instead of on the next poll. The outcome stays on screen until the user
+  /// moves on or adds another.
+  func addWorkspace(at folder: URL) async {
+    guard !workspaceRegistration.isRegistering else { return }
+    guard let request = WorkspaceRegistrationRequest.forFolder(folder) else {
+      workspaceRegistration = .failed(WorkspaceRegistrationCopy.folderRejected)
+      return
+    }
+    workspaceRegistration = .registering(folderName: request.name)
+    do {
+      let workspace = try await store.registerWorkspace(request)
+      workspaceRegistration = .registered(workspace)
+      await overviewStore?.refresh()
+    } catch let error as SetupClientError {
+      workspaceRegistration = .failed(SetupStore.sanitize(error.message))
+    } catch {
+      workspaceRegistration = .failed(SetupStore.sanitize(error.localizedDescription))
+    }
   }
 
   func cancelConflictRecovery() {
@@ -98,6 +129,7 @@ final class SetupSession: ObservableObject {
   func finish() async {
     if store.canRegisterLoginItemFromThisProcess { registerLoginItem() }
     store.reset()
+    workspaceRegistration = .idle
     step = SetupOnboardingStep.first
     await store.relaunchInstalledApplicationIfNeeded()
   }

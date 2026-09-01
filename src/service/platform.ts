@@ -215,5 +215,8 @@ export async function runServiceCommand(
  * freshly installed app while Gatekeeper assesses it — needs a longer deadline than the default.
  */
 export function createServiceCommandRunner(options: ServiceCommandOptions): RunCommand {
-  return (executable, arguments_) => runServiceCommand(executable, arguments_, options);
+  // A caller's own bound wins over the fixed one: the macOS adapter passes a longer deadline
+  // only for the Gatekeeper-assessed first `open`, and every other call keeps the runner's.
+  return (executable, arguments_, perCall = {}) =>
+    runServiceCommand(executable, arguments_, { ...options, ...perCall });
 }

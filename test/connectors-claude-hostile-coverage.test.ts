@@ -273,9 +273,10 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
     });
     await expect(missing.detect()).resolves.toMatchObject({ executable: null, supported: false });
     await expect(missing.inspect()).resolves.toMatchObject({ state: 'notInstalled' });
-    await expect(missing.connect(await missing.plan())).resolves.toMatchObject({
-      state: 'notInstalled',
-      changed: false,
+    await expect(missing.connect(await missing.plan())).rejects.toMatchObject({
+      code: 'invalid_state',
+      status: 409,
+      details: { connectorId: 'claude-code', state: 'notInstalled' },
     });
     await expect(
       missing.restore({ connectorId: 'claude-code', revision: null, entry: null }),
@@ -294,6 +295,15 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
       supported: false,
       capabilities: { scopes: ['user'] },
     });
+    const failedVersion = createHarness({ versionExitCode: 2 });
+    await expect(failedVersion.connector.detect()).resolves.toMatchObject({
+      executable: failedVersion.executable,
+      version: null,
+      supported: false,
+    });
+    expect(
+      failedVersion.run.mock.calls.filter(([call]) => call.arguments[0] === '--version'),
+    ).toHaveLength(1);
   });
 
   it('uses JSON inspection when valid and bounded config fallback when JSON fails', async () => {
@@ -353,7 +363,11 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
     const wrongReceipt = createHarness({
       storedReceipt: { ...receipt(), connectorId: 'codex', scope: 'global' },
     });
-    await expect(wrongReceipt.connector.inspect()).resolves.toMatchObject({ state: 'unavailable' });
+    await expect(wrongReceipt.connector.inspect()).rejects.toMatchObject({
+      code: 'unavailable',
+      message:
+        'Claude Code ownership receipt could not be read: the stored receipt belongs to codex',
+    });
   });
 
   it('fails closed for symlinked and higher-precedence configuration targets', async () => {
@@ -362,7 +376,10 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
     writeFileSync(victim, JSON.stringify({ mcpServers: {} }));
     rmSync(harness.configPath);
     symlinkSync(victim, harness.configPath);
-    await expect(harness.connector.inspect()).resolves.toMatchObject({ state: 'unavailable' });
+    await expect(harness.connector.inspect()).rejects.toMatchObject({
+      code: 'unavailable',
+      message: expect.stringMatching(/could not be inspected: .*not a symlink/u),
+    });
 
     const higher = createHarness({
       higherPrecedenceTarget: { type: 'stdio', command: launcher, args: [], env: {} },
@@ -399,7 +416,7 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
 
     const rejected = createHarness({ mutationFailure: 'add' });
     await expect(rejected.connector.connect(await rejected.connector.plan())).rejects.toThrow(
-      /mutation failed/iu,
+      /Claude Code could not update the Pimpampum MCP entry: rejected/iu,
     );
     expect(rejected.storedReceipt()).toBeNull();
 
@@ -440,7 +457,9 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
       storedReceipt: receipt(),
       mutationFailure: 'remove',
     });
-    await expect(rejected.connector.disconnect()).rejects.toThrow(/mutation failed/iu);
+    await expect(rejected.connector.disconnect()).rejects.toThrow(
+      /Claude Code could not remove the Pimpampum MCP entry: rejected/iu,
+    );
   });
 
   it('restores only matching user snapshots and rejects unowned/concurrent/opaque restoration', async () => {
@@ -457,12 +476,14 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
         revision: null,
         entry: { command: '/synthetic/prior', arguments: [], scope: 'project' },
       }),
-    ).rejects.toThrow(/user-scoped/iu);
+    ).rejects.toThrow(/cannot safely restore/iu);
 
+    // Rollback never removes an entry this connector did not just write.
     const unowned = createHarness({ target: { command: '/synthetic/unowned', args: [] } });
     await expect(
       unowned.connector.restore({ connectorId: 'claude-code', revision: null, entry: null }),
-    ).rejects.toThrow(/unowned/iu);
+    ).rejects.toMatchObject({ code: 'conflict', message: expect.stringMatching(/concurrently/u) });
+    expect(unowned.readTarget()).toEqual({ command: '/synthetic/unowned', args: [] });
 
     const concurrent = createHarness({ target: { command: '/synthetic/concurrent', args: [] } });
     await expect(

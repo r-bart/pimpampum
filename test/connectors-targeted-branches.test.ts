@@ -1,11 +1,13 @@
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   unlinkSync,
@@ -35,7 +37,7 @@ import type {
   ConnectorVerification,
   HostEntry,
 } from '../src/connectors/types.js';
-import { verifyMcpRoute } from '../src/connectors/verifier.js';
+import { killBridgeProcess, verifyMcpRoute } from '../src/connectors/verifier.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -68,9 +70,13 @@ afterEach(() => {
   }
 });
 
-function writeSyntheticMcpServer(root: string, options?: { oversizedStderr?: boolean }): string {
+function writeSyntheticMcpServer(
+  root: string,
+  options?: { oversizedStderr?: boolean; ignoreTermination?: boolean },
+): string {
   const executable = join(root, 'synthetic-mcp.mjs');
   const closeMarker = join(root, 'closed.marker');
+  const pidFile = join(root, 'server.pid');
   const serverModule = import.meta.resolve('@modelcontextprotocol/server');
   const stdioModule = import.meta.resolve('@modelcontextprotocol/server/stdio');
   writeExecutable(
@@ -79,7 +85,13 @@ function writeSyntheticMcpServer(root: string, options?: { oversizedStderr?: boo
 import { McpServer } from ${JSON.stringify(serverModule)};
 import { serveStdio } from ${JSON.stringify(stdioModule)};
 import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
 ${options?.oversizedStderr ? `process.stderr.write('x'.repeat(9000));` : `process.stderr.write('safe synthetic diagnostic\\n');`}
+${
+  options?.ignoreTermination
+    ? `process.on('SIGTERM', () => undefined); process.on('SIGINT', () => undefined); process.stdin.on('end', () => setInterval(() => undefined, 1000));`
+    : ''
+}
 const handle = serveStdio(() => {
   const server = new McpServer({ name: 'pimpampum', version: '1.0.0' });
   server.registerTool('project_list', { description: 'synthetic' }, async () => ({
@@ -89,11 +101,27 @@ const handle = serveStdio(() => {
 });
 const close = async () => { await handle.close(); process.exit(0); };
 process.once('exit', () => writeFileSync(${JSON.stringify(closeMarker)}, 'closed'));
-process.once('SIGTERM', () => void close());
-process.once('SIGINT', () => void close());
+${
+  options?.ignoreTermination
+    ? ''
+    : `process.once('SIGTERM', () => void close());
+process.once('SIGINT', () => void close());`
+}
 `,
   );
   return executable;
+}
+
+async function processGone(pid: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
 }
 
 describe('targeted SDK verifier branches', () => {
@@ -126,6 +154,34 @@ describe('targeted SDK verifier branches', () => {
         supportedProtocolVersions: ['synthetic-explicit-only'],
       }),
     ).rejects.toThrow(/incompatible protocol version/iu);
+  });
+
+  it('SIGKILLs a real bridge that ignores the graceful close once the shutdown deadline passes', async () => {
+    const root = temporaryDirectory('sdk-stubborn');
+    const executable = writeSyntheticMcpServer(root, { ignoreTermination: true });
+    await expect(
+      verifyMcpRoute({
+        command: process.execPath,
+        arguments: [executable],
+        timeoutMilliseconds: 10_000,
+        shutdownTimeoutMilliseconds: 750,
+        requiredTools: ['project_list'],
+        expectedServerName: 'pimpampum',
+      }),
+    ).rejects.toThrow(/could not reap the stdio route/iu);
+    const pid = Number(readFileSync(join(root, 'server.pid'), 'utf8'));
+    expect(Number.isInteger(pid) && pid > 0).toBe(true);
+    await expect(processGone(pid)).resolves.toBe(true);
+  }, 15_000);
+
+  it('kills a real child through the default signal of the bridge reaper', async () => {
+    const child = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
+    await new Promise<void>((resolve) => child.once('spawn', resolve));
+    const exited = new Promise<NodeJS.Signals | null>((resolve) =>
+      child.once('exit', (_code, signal) => resolve(signal)),
+    );
+    killBridgeProcess(child.pid);
+    await expect(exited).resolves.toBe('SIGKILL');
   });
 
   it('fails closed and reaps a real SDK route whose stderr exceeds the diagnostic cap', async () => {
@@ -324,7 +380,7 @@ describe('targeted process branches', () => {
         timeoutMilliseconds: 20,
         run: async () => ({ exitCode: 0, stdout: 'version' }),
       }),
-    ).resolves.toEqual({ executable: null, supported: false });
+    ).resolves.toEqual({ executable: null, supported: false, versionOutput: null });
     mkdirSync(join(root, 'codex'));
     await expect(
       detectExecutable({
@@ -335,7 +391,7 @@ describe('targeted process branches', () => {
         timeoutMilliseconds: 20,
         run: async () => ({ exitCode: 0, stdout: 'version' }),
       }),
-    ).resolves.toEqual({ executable: null, supported: false });
+    ).resolves.toEqual({ executable: null, supported: false, versionOutput: null });
 
     for (const mode of [0.5, -1, 0o1000, 0o606]) {
       await expect(
@@ -593,13 +649,24 @@ describe('targeted Codex branches', () => {
         list: { exitCode: 1, stdout: '', stderr: 'failed' },
       }),
     ];
-    for (const fixture of cases) await expect(fixture.connector.inspect()).rejects.toThrow();
+    for (const fixture of cases) {
+      await expect(fixture.connector.inspect()).rejects.toMatchObject({
+        code: 'unavailable',
+        status: 503,
+        details: { connectorId: 'codex' },
+      });
+    }
 
+    // Detection and its feature probe are memoized per instance: a host that changes its answers
+    // after detection cannot flip the connector into a different inspection strategy.
     const lost = createCodexFixture();
     const detection = await lost.connector.detect();
     expect(detection.supported).toBe(true);
     lost.setSupports(false, false);
-    await expect(lost.connector.inspect()).resolves.toMatchObject({ state: 'unsupportedVersion' });
+    await expect(lost.connector.inspect()).resolves.toMatchObject({ state: 'notConnected' });
+    expect(lost.run.mock.calls.filter(([call]) => call.arguments.at(-1) === '--help')).toHaveLength(
+      4,
+    );
   });
 
   it('covers default bounded runner and neutral/unavailable restore paths', async () => {
@@ -629,12 +696,17 @@ esac
     });
     await expect(connector.detect()).resolves.toMatchObject({ executable, supported: true });
 
+    // The detection is reused; a CLI that vanishes afterwards surfaces as one typed host failure.
     unlinkSync(executable);
-    const missingPlan = await connector.plan();
-    await expect(connector.connect(missingPlan)).rejects.toThrow(/cannot be connected/iu);
+    await expect(connector.plan()).rejects.toMatchObject({
+      code: 'unavailable',
+      message: expect.stringMatching(
+        /Codex configuration could not be inspected: spawn .* ENOENT/u,
+      ),
+    });
     await expect(
       connector.restore({ connectorId: 'codex', revision: null, entry: null }),
-    ).rejects.toThrow(/unavailable/iu);
+    ).rejects.toMatchObject({ code: 'unavailable' });
   });
 
   it('executes best-effort receipt rollback catch callbacks for absent and prior receipts', async () => {
@@ -683,7 +755,7 @@ esac
         revision: null,
         entry: { command: '/synthetic/prior', arguments: [], scope: 'global' },
       }),
-    ).rejects.toThrow(/restore.*previous/iu);
+    ).rejects.toThrow(/could not remove the Pimpampum MCP entry: synthetic remove rejection/iu);
 
     const conflictJson = JSON.stringify({
       name: 'pimpampum',
@@ -698,14 +770,18 @@ esac
     await expect(conflict.connector.connect(withoutFingerprint)).rejects.toThrow(/changed/iu);
   });
 
-  it('detects a CLI disappearing only after the reviewed plan is revalidated', async () => {
+  it('reuses one detection across plan and connect, so a vanished CLI fails at persistence', async () => {
     const root = temporaryDirectory('codex-disappears');
     const executable = join(root, 'codex');
     writeExecutable(executable, '#!/bin/sh\nexit 0\n');
     let getCount = 0;
+    let versionCalls = 0;
     const run = async (invocation: CommandInvocation) => {
       const args = invocation.arguments;
-      if (args[0] === '--version') return { exitCode: 0, stdout: 'codex 1.0.0', stderr: '' };
+      if (args[0] === '--version') {
+        versionCalls += 1;
+        return { exitCode: 0, stdout: 'codex 1.0.0', stderr: '' };
+      }
       if (args.at(-1) === '--help') {
         return {
           exitCode: 0,
@@ -733,10 +809,11 @@ esac
       },
     });
     const plan = await connector.plan();
-    await expect(connector.connect(plan)).rejects.toThrow(/became unavailable/iu);
+    await expect(connector.connect(plan)).rejects.toThrow(/did not persist/iu);
+    expect(versionCalls).toBe(1);
   });
 
-  it('fails when JSON inspection support disappears between detection and inspection', async () => {
+  it('probes the host features once per connector instance', async () => {
     const root = temporaryDirectory('codex-probe-change');
     const executable = join(root, 'codex');
     writeExecutable(executable, '#!/bin/sh\nexit 0\n');
@@ -759,6 +836,9 @@ esac
             stderr: '',
           };
         }
+        if (args[1] === 'get') {
+          return { exitCode: 1, stdout: '', stderr: "No MCP server named 'pimpampum' found." };
+        }
         return { exitCode: 0, stdout: '', stderr: '' };
       },
       receipt: {
@@ -767,10 +847,12 @@ esac
         remove: async () => undefined,
       },
     });
-    await expect(connector.inspect()).rejects.toThrow(/does not support.*JSON.*inspection/iu);
+    await expect(connector.inspect()).resolves.toMatchObject({ state: 'notConnected' });
+    await expect(connector.plan()).resolves.toMatchObject({ state: 'notConnected' });
+    expect(helpCalls).toBe(4);
   });
 
-  it('returns no version when the second bounded version probe exits nonzero', async () => {
+  it('takes the version from the single detection probe and never runs --version twice', async () => {
     const root = temporaryDirectory('codex-version-exit');
     const executable = join(root, 'codex');
     writeExecutable(executable, '#!/bin/sh\nexit 0\n');
@@ -783,11 +865,10 @@ esac
       run: async (invocation) => {
         if (invocation.arguments[0] === '--version') {
           versionCalls += 1;
-          return {
-            exitCode: versionCalls === 1 ? 0 : 9,
-            stdout: versionCalls === 1 ? 'codex 1.0.0' : 'rejected',
-            stderr: '',
-          };
+          return { exitCode: 0, stdout: '  codex 1.0.0\n', stderr: '' };
+        }
+        if (invocation.arguments[1] === 'get' && invocation.arguments.at(-1) !== '--help') {
+          return { exitCode: 1, stdout: '', stderr: "No MCP server named 'pimpampum' found." };
         }
         return { exitCode: 0, stdout: '--json', stderr: '' };
       },
@@ -797,7 +878,12 @@ esac
         remove: async () => undefined,
       },
     });
-    await expect(connector.detect()).resolves.toMatchObject({ version: null, supported: false });
+    await expect(connector.detect()).resolves.toMatchObject({
+      version: 'codex 1.0.0',
+      supported: true,
+    });
+    await connector.inspect();
+    expect(versionCalls).toBe(1);
   });
 });
 
@@ -1065,7 +1151,13 @@ esac
         },
       },
     });
-    await expect(connector.disconnect()).rejects.toThrow(/receipt removal rejected/iu);
+    const error = await connector.disconnect().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).message).toMatch(/disconnect and rollback failed/iu);
+    expect((error as AggregateError).errors.map((item) => (item as Error).message)).toEqual([
+      'receipt removal rejected',
+      expect.stringMatching(/could not restore the Pimpampum MCP entry: restore rejected/iu),
+    ]);
   });
 
   it('treats config without mcpServers as absent and covers default discovery option fallbacks', async () => {

@@ -4,7 +4,6 @@ import { resolveRuntimeLayout } from '../src/runtime/layout.js';
 import {
   parseRuntimeManifest,
   parseRuntimeTarget,
-  parseRuntimeTargetId,
   parseRuntimeVersion,
   runtimeTargetId,
   validateRuntimeRelativePath,
@@ -58,13 +57,10 @@ describe('hostile runtime contract inputs', () => {
     expect(() => parseRuntimeTarget(platform, architecture)).toThrow(/runtime manifest/iu);
   });
 
-  it('parses every supported canonical target and rejects malformed IDs', () => {
-    expect(runtimeTargetId(parseRuntimeTargetId('darwin-arm64'))).toBe('darwin-arm64');
-    expect(runtimeTargetId(parseRuntimeTargetId('linux-arm64'))).toBe('linux-arm64');
-    expect(runtimeTargetId(parseRuntimeTargetId('linux-x64'))).toBe('linux-x64');
-    for (const value of ['', 'linux', '-x64', 'linux-', 'linux-x64-extra']) {
-      expect(() => parseRuntimeTargetId(value)).toThrow(/runtime manifest/iu);
-    }
+  it('renders every supported target as its canonical id', () => {
+    expect(runtimeTargetId(parseRuntimeTarget('darwin', 'arm64'))).toBe('darwin-arm64');
+    expect(runtimeTargetId(parseRuntimeTarget('linux', 'arm64'))).toBe('linux-arm64');
+    expect(runtimeTargetId(parseRuntimeTarget('linux', 'x64'))).toBe('linux-x64');
   });
 
   it.each([

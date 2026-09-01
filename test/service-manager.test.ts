@@ -13,9 +13,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createSetupLifecycleLock } from '../src/lifecycleLock.js';
 import { acceptLoginAcknowledgement } from '../src/service/loginHandshake.js';
 import { createPlatformServiceManager } from '../src/service/manager.js';
 import {
+  InstallReceiptError,
   assertNoSymlinkTraversal,
   installReceiptPath,
   installationKey,
@@ -1170,7 +1172,7 @@ describe('platform-neutral service manager', () => {
     await expect(directoryManager.install()).rejects.toThrow(/not a regular file/);
   });
 
-  it('serializes lifecycle operations and safely recovers only dead-owner locks', async () => {
+  it('waits for a concurrent install on the shared lifecycle lock instead of failing', async () => {
     const root = testRoot('lifecycle-lock');
     let enterActivation: (() => void) | undefined;
     let releaseActivation: (() => void) | undefined;
@@ -1195,31 +1197,45 @@ describe('platform-neutral service manager', () => {
 
     const installing = manager.install();
     await entered;
-    await expect(manager.status()).rejects.toThrow(/operation is in progress/);
+    // One lock for every owner of the data directory: the service manager holds the setup lock.
+    const lockPath = join(root.dataDirectory, '.setup-lifecycle.lock');
+    expect(existsSync(lockPath)).toBe(true);
+    expect(existsSync(join(root.dataDirectory, '.service-lifecycle.lock'))).toBe(false);
+    const events: string[] = [];
+    const status = manager.status().then((result) => {
+      events.push('status');
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(events).toEqual([]);
     releaseActivation?.();
     await installing;
+    await expect(status).resolves.toMatchObject({ installed: true });
+    expect(existsSync(lockPath)).toBe(false);
 
-    const lockPath = join(root.dataDirectory, '.service-lifecycle.lock');
-    writeFileSync(lockPath, `${JSON.stringify({ pid: 2_147_483_647, nonce: 'stale' })}\n`);
+    // A dead owner is recovered; a malformed lock is reported and left in place.
+    writeFileSync(
+      lockPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        pid: 2_147_483_647,
+        nonce: '00000000-0000-4000-8000-000000000000',
+      })}\n`,
+      { mode: 0o600 },
+    );
     await expect(manager.status()).resolves.toMatchObject({ installed: true });
     expect(existsSync(lockPath)).toBe(false);
 
-    writeFileSync(lockPath, '{invalid');
-    await expect(manager.status()).rejects.toThrow(/invalid.*lock/i);
+    writeFileSync(lockPath, '{invalid', { mode: 0o600 });
+    await expect(manager.status()).rejects.toThrow(SyntaxError);
     expect(existsSync(lockPath)).toBe(true);
     rmSync(lockPath);
-
-    writeFileSync(lockPath, `${JSON.stringify({ pid: 123, nonce: 'permission' })}\n`);
-    vi.spyOn(process, 'kill').mockImplementationOnce(() => {
-      throw Object.assign(new Error('permission denied'), { code: 'EPERM' });
-    });
-    await expect(manager.status()).rejects.toThrow(/operation is in progress/);
   });
 
   it('does not remove a lifecycle lock that disappeared or changed ownership', async () => {
     for (const behavior of ['remove', 'replace'] as const) {
       const root = testRoot(`lock-release-${behavior}`);
-      const lockPath = join(root.dataDirectory, '.service-lifecycle.lock');
+      const lockPath = join(root.dataDirectory, '.setup-lifecycle.lock');
       const adapter = testAdapter(root, {
         activate: async () => {
           if (behavior === 'remove') rmSync(lockPath);
@@ -1238,20 +1254,71 @@ describe('platform-neutral service manager', () => {
     }
   });
 
-  it('propagates lifecycle-lock filesystem errors', async () => {
-    const root = testRoot('lock-permissions');
+  it('reports a typed conflict when a live owner holds the lock past the status wait', async () => {
+    const root = testRoot('lock-live-owner');
     const manager = createPlatformServiceManager(
       managerInput(
         root,
         vi.fn<RunCommand>(async () => success()),
       ),
     );
-    chmodSync(root.dataDirectory, 0o500);
+    const lockPath = join(root.dataDirectory, '.setup-lifecycle.lock');
+    writeFileSync(
+      lockPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        pid: process.pid,
+        nonce: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      })}\n`,
+      { mode: 0o600 },
+    );
+    vi.useFakeTimers();
     try {
-      await expect(manager.status()).rejects.toMatchObject({ code: 'EACCES' });
+      const outcome = manager.status().then(
+        () => 'resolved',
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(5_100);
+      await expect(outcome).resolves.toMatchObject({
+        code: 'conflict',
+        status: 409,
+        retryable: true,
+        details: { lockPath },
+      });
+      expect(String(((await outcome) as Error).message)).toMatch(
+        /Timed out waiting for the setup lifecycle lock/u,
+      );
     } finally {
-      chmodSync(root.dataDirectory, 0o700);
+      vi.useRealTimers();
     }
+    expect(existsSync(lockPath)).toBe(true);
+  });
+
+  it('re-enters an outer lifecycle-lock run so the coordinator can drive it without deadlock', async () => {
+    const root = testRoot('lock-nesting');
+    const manager = createPlatformServiceManager(
+      managerInput(
+        root,
+        vi.fn<RunCommand>(async () => success()),
+        { platform: 'linux', adapters: { linux: testAdapter(root) } },
+      ),
+    );
+    const outer = createSetupLifecycleLock(root.dataDirectory, {
+      timeoutMilliseconds: 500,
+      retryMilliseconds: 5,
+    });
+    const lockPath = join(root.dataDirectory, '.setup-lifecycle.lock');
+    await expect(
+      outer.run(async () => {
+        await manager.install();
+        const prepared = await manager.prepareUninstall!();
+        expect(prepared).not.toBeNull();
+        await prepared!.rollback();
+        expect(existsSync(lockPath)).toBe(true);
+        return manager.status();
+      }),
+    ).resolves.toMatchObject({ installed: true, running: true });
+    expect(existsSync(lockPath)).toBe(false);
   });
 
   it('rejects symlinked roots and ancestor directories without writing through them', async () => {
@@ -1793,13 +1860,42 @@ describe('installation receipts', () => {
     expect(statSync(bufferPath).mode & 0o777).toBe(0o620);
   });
 
-  it('rejects invalid JSON and invalid receipt schemas', () => {
+  it('rejects invalid JSON, invalid schemas, and special files with a typed repair message', () => {
     const root = testRoot('invalid-receipt');
     const path = installReceiptPath(root.dataDirectory);
     writeFileSync(path, '{invalid-json');
-    expect(() => readInstallReceipt(path)).toThrow(/receipt JSON/);
+    const invalidJson = (() => {
+      try {
+        readInstallReceipt(path);
+        return null;
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(invalidJson).toBeInstanceOf(InstallReceiptError);
+    expect(invalidJson).toMatchObject({
+      code: 'invalid_state',
+      status: 409,
+      retryable: false,
+      path,
+      details: { receiptPath: path, reason: 'it is not valid JSON' },
+    });
+    expect((invalidJson as Error).message).toContain(path);
+    expect((invalidJson as Error).message).toMatch(
+      /Move the file away and run `pimpampum install`/u,
+    );
+    expect((invalidJson as Error).cause).toBeInstanceOf(SyntaxError);
+
     writeFileSync(path, JSON.stringify({ schemaVersion: 999 }));
-    expect(() => readInstallReceipt(path)).toThrow(/installation receipt/);
+    expect(() => readInstallReceipt(path)).toThrow(
+      /installation receipt at .*: its contents do not match the receipt schema/u,
+    );
+
+    rmSync(path);
+    mkdirSync(path);
+    expect(() => readInstallReceipt(path)).toThrow(
+      /installation receipt at .*: it is not a regular file/u,
+    );
   });
 });
 

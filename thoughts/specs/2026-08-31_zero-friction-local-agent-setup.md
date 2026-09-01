@@ -691,3 +691,47 @@ This PRD is approved when it correctly captures:
 After approval, create low-fidelity macOS and Omarchy mockups for first run, progress, partial
 failure, completion, and ongoing agent-connection management. Then perform runtime/host research and
 create the implementation plan.
+
+---
+
+## Amendments
+
+### 2026-09-01 — Register a Workspace without Terminal (D-01)
+
+The deep review of 2026-09-01 found that a native install had no route to a registered Workspace:
+the README promised that setup never opens Terminal, but the only registration was
+`pimpampum workspace:add`, and the native CLI lives at a launcher path nothing puts on `PATH`. The
+following requirements are added.
+
+**Final setup step (macOS).** Once setup reports **Complete**, the fourth step offers **Add a
+workspace** above **Done**. The action opens the native folder dialog, derives the workspace
+identifier (lowercase kebab-case, at most 80 characters) and name (the folder name, at most 120
+characters) from the chosen folder, and registers it through the packaged CLI as
+`workspace:add <id> <name> <root-path>`. The outcome is shown in place: adding, added with the
+workspace name, or the daemon's refusal. Setup itself is unchanged and a setup with no workspace
+still completes.
+
+**Empty overview (macOS).** While the overview reports zero workspaces, the Projects section
+explains that a folder must be added as a workspace and offers the same **Add a workspace**
+action. With a workspace and no projects it explains that projects appear as agents create them.
+After a registration the overview refreshes at once.
+
+**Empty popout (Omarchy).** While the overview reports zero workspaces, the popout offers **Add a
+workspace** through the plugin's isolated folder picker and routes the choice as
+`workspace add <absolute directory> [name]` through `pimpampum-control-route`, which derives the
+identifier and name and invokes the receipt-owned launcher with `workspace:add`. The command
+surface names the launcher by its absolute path,
+`~/.local/share/pimpampum/bin/pimpampum-control workspace:add <id> <name> /absolute/folder`,
+never a bare `pimpampum`. The route accepts only an absolute directory without control characters
+of at most 4,096 characters, and a name of 1 to 120 characters; everything else fails closed.
+
+**Boundaries.** Both surfaces pass the folder as one process argument and never build a shell
+string. Workspace registration is the one project-domain write the native surfaces perform; project
+work still goes only through the domain tools. The README documents the launcher path per platform
+(`~/Library/Application Support/Pimpampum/bin/pimpampum-control` on macOS,
+`~/.local/share/pimpampum/bin/pimpampum-control` on Omarchy) under **Install and connect**.
+
+**Installation marker (L-21).** The macOS installation marker moves out of the application bundle
+to `~/Library/Application Support/Pimpampum/installation.json` (schema 2), because a file added
+under `Contents/Resources` breaks the code seal of a signed copy. The app reads the legacy in-bundle
+marker for one more release.

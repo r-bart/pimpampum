@@ -104,17 +104,6 @@ export function parseRuntimeTarget(
   return { platform: platformValue, architecture: architectureValue } as RuntimeTarget;
 }
 
-export function parseRuntimeTargetId(value: unknown): RuntimeTarget {
-  const targetId = stringValue(value, 'target id');
-  const separator = targetId.indexOf('-');
-  if (separator <= 0 || separator === targetId.length - 1) {
-    fail('target id is invalid');
-  }
-  const platform = targetId.slice(0, separator);
-  const architecture = targetId.slice(separator + 1);
-  return parseRuntimeTarget(platform, architecture, 'target id');
-}
-
 export function validateRuntimeRelativePath(value: unknown, label = 'file path'): string {
   const path = stringValue(value, label);
   if (Buffer.byteLength(path, 'utf8') > MAXIMUM_MANIFEST_PATH_BYTES) {

@@ -248,8 +248,30 @@ invariant(
 invariant(
   statusPopout.includes('"Register a folder as a workspace to start tracking projects."') &&
     statusPopout.includes('"Projects appear here as your agents create them."') &&
-    statusPopout.includes('text: "pimpampum workspace:add"'),
-  'empty states must teach: headline, explanation, and the resolving command on its own surface',
+    statusPopout.includes(
+      'text: root.controlLauncherPath + " workspace:add <id> <name> /absolute/folder"',
+    ) &&
+    statusPopout.includes('"/.local/share/pimpampum/bin/pimpampum-control"') &&
+    !statusPopout.includes('text: "pimpampum workspace:add"'),
+  'empty states must teach: headline, explanation, and the absolute launcher command on its own surface',
+);
+// D-01: the first workspace is registered from the popout itself, through the same isolated
+// folder picker and the bounded route, so a native install never needs a terminal for it.
+invariant(
+  statusPopout.includes('id: addWorkspaceAction') &&
+    statusPopout.includes(
+      'label: workspaceRegistrar.running ? "Adding workspace…" : "Add a workspace"',
+    ) &&
+    statusPopout.includes('onTriggered: root.chooseDirectory("workspace")') &&
+    statusPopout.includes('var arguments = [controlRoutePath, "workspace", "add"]') &&
+    statusPopout.includes('arguments.push(path)') &&
+    statusPopout.includes('Qt.resolvedUrl("pimpampum-control-route")') &&
+    statusPopout.includes(
+      'Qt.callLater(function() { root.acceptWorkspaceRegistration(exitCode) })',
+    ) &&
+    statusPopout.includes('root.workspaceRegistrationError !== ""') &&
+    statusPopout.includes('root.workspaceRegistrationNotice !== ""'),
+  'the empty popout must register a workspace through the folder picker and the bounded route',
 );
 invariant(
   statusPopout.includes('text: "Authentication required"') &&
@@ -286,6 +308,24 @@ invariant(qml.includes('command: [root.helperPath, "status"]'), 'backup helper c
 invariant(
   qml.includes('var arguments = [helperPath, operation]') && qml.includes('arguments.push(path)'),
   'backup helper must receive the directory as a separate process argument',
+);
+// M-C6: a corrupt settings file makes the daemon answer `enabled: false, state: "error"` with a
+// message and no destination. The reader accepts exactly that third shape and the card renders
+// the message under "Backup needs attention".
+const backupService = read(join(pluginRoot, 'BackupService.qml'));
+invariant(
+  backupService.includes('if (value.state === "disabled") return value.error === null') &&
+    backupService.includes('return value.state === "error" && value.error !== null') &&
+    backupService.includes('if (value.snapshotPath !== null) return false') &&
+    backupService.includes('value.error.length > 500') &&
+    !backupService.includes('value.state !== "disabled" || value.snapshotPath !== null') &&
+    statusPopout.includes(
+      'if (backupService.backupState === "error") return "Backup needs attention"',
+    ) &&
+    statusPopout.includes(
+      'text: root.backupService.operationError !== "" ? root.backupService.operationError : root.backupService.statusError',
+    ),
+  'the backup reader must accept the unreadable-settings shape and the card must show its message',
 );
 invariant(
   !/(?:sh\s+-c|bash\s+-c|shellQuote|\+\s*(?:directory|path))/u.test(qml),
@@ -525,6 +565,25 @@ const backupHelper = read(join(pluginRoot, 'pimpampum-backup'));
 for (const action of ['status', 'configure', 'retry', 'disable']) {
   invariant(controlRoute.includes(action), `backup helper omits ${action}`);
 }
+// `workspace add DIRECTORY [NAME]` is the one project-domain write the popout may route, and it
+// is closed: the directory must be absolute and free of control characters, the name bounded, and
+// the id derived by the CLI's slug rule before `workspace:add ID NAME DIRECTORY` runs.
+invariant(
+  controlRoute.includes('  workspace)') &&
+    controlRoute.includes('[ "$action" = add ] || fail 69 \'invalid workspace action\'') &&
+    controlRoute.includes("*) fail 69 'workspace directory must be an absolute path' ;;") &&
+    controlRoute.includes(
+      "*[[:cntrl:]]*) fail 69 'workspace directory contains control characters' ;;",
+    ) &&
+    controlRoute.includes('[ "${#workspace_root}" -le 4096 ]') &&
+    controlRoute.includes('[ "${#workspace_name}" -le 120 ]') &&
+    controlRoute.includes("/usr/bin/sed -E 's/[^a-z0-9]+/-/g; s/^-+//'") &&
+    controlRoute.includes('/usr/bin/cut -c1-80') &&
+    controlRoute.includes(
+      'set -- workspace:add "$workspace_id" "$workspace_name" "$workspace_root"',
+    ),
+  'the control route must expose exactly one bounded workspace registration verb',
+);
 invariant(
   backupHelper.includes('pimpampum-control-route') && controlRoute.includes('set -- backup "$@"'),
   'backup helper must preserve every caller argument boundary',
@@ -586,6 +645,19 @@ invariant(
     'isObject(envelope) && isObject(envelope.data) ? envelope.data : envelope',
   ),
   'the update reader must accept both the bare payload and the {data} envelope',
+);
+// The Linux `update` verb refuses with a typed `unavailable` whose `details.remedy` names the
+// bootstrap helper of this plugin. The panel renders the message and that remedy as a command
+// resolved against the plugin directory, instead of a generic failure.
+invariant(
+  updateService.includes('property string remedy: ""') &&
+    updateService.includes('function actionableRemedy(stream)') &&
+    updateService.includes('envelope.error.code !== "unavailable"') &&
+    updateService.includes('/^pimpampum-[a-z]{1,40}$/.test(remedy)') &&
+    updateService.includes('root.remedy = root.actionableRemedy(root.processError)') &&
+    statusPopout.includes('visible: root.updateService.remedy !== ""') &&
+    statusPopout.includes('text: root.pluginDirectory + "/" + root.updateService.remedy'),
+  'the Updates card must render the typed remedy of a refused Linux update as a command',
 );
 invariant(
   serviceControl.includes('Qt.callLater(function() { root.accept(exitCode) })'),

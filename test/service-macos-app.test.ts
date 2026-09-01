@@ -17,12 +17,18 @@ import { join, relative } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createLaunchdAdapter } from '../src/service/launchd.js';
 import { createPlatformServiceManager } from '../src/service/manager.js';
-import { createMacOSDesktopAdapter } from '../src/service/macosApp.js';
+import {
+  GATEKEEPER_OPEN_TIMEOUT_MS,
+  createMacOSDesktopAdapter,
+  installationMarkerPath,
+} from '../src/service/macosApp.js';
 import type { PlatformServiceAdapter, RunCommand } from '../src/service/types.js';
 import { acknowledgingOpen, adapterContext, commandResult, success } from './helpers/service.js';
 
 const roots: string[] = [];
 const FROZEN_NOW = '2026-08-26T20:00:00.000Z';
+/** The bound the adapter passes to the launches of the installed app, and to nothing else. */
+const GATEKEEPER_OPEN = { timeoutMilliseconds: GATEKEEPER_OPEN_TIMEOUT_MS };
 const LOGIN_ITEM_INSTRUCTION = 'Remove Pimpampum from System Settings › Login Items';
 
 interface Fixture {
@@ -226,9 +232,17 @@ describe('macOS menu app service integration', () => {
       reconciled: false,
       loginItem: 'enabled',
     });
-    expect(
-      readFileSync(join(installedApp, 'Contents', 'Resources', 'installation.json'), 'utf8'),
-    ).toContain(root.data);
+    // The marker lives outside the bundle (L-21): a file added under `Contents/Resources` broke the
+    // code seal of the signed copy. It names the data directory and is private to the account.
+    const marker = installationMarkerPath({ homeDirectory: root.home });
+    expect(marker).toBe(
+      join(root.home, 'Library', 'Application Support', 'Pimpampum', 'installation.json'),
+    );
+    expect(readJson(marker)).toEqual({ schemaVersion: 2, dataDirectory: root.data });
+    expect(statSync(marker).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(installedApp, 'Contents', 'Resources', 'installation.json'))).toBe(
+      false,
+    );
     expect(statSync(join(installedApp, 'Contents', 'MacOS', 'PimpampumMenuBar')).mode & 0o777).toBe(
       0o755,
     );
@@ -260,6 +274,7 @@ describe('macOS menu app service integration', () => {
     });
     expect(existsSync(installedApp)).toBe(false);
     for (const name of CONTROL_FILES) expect(existsSync(join(root.data, name))).toBe(false);
+    expect(existsSync(marker)).toBe(false);
     expect(readFileSync(join(root.data, 'token'), 'utf8')).toBe('secret-token');
     expect(runCommand.mock.calls).toContainEqual([
       '/usr/bin/open',
@@ -268,7 +283,59 @@ describe('macOS menu app service integration', () => {
       // menu-bar app and `-W` waits on the wrong instance.
       ['-n', installedApp, '--args', '--unregister-login-item'],
     ]);
-    expect(runCommand.mock.calls).toContainEqual(['/usr/bin/open', ['-n', installedApp]]);
+    expect(runCommand.mock.calls).toContainEqual([
+      '/usr/bin/open',
+      ['-n', installedApp],
+      GATEKEEPER_OPEN,
+    ]);
+  });
+
+  it('writes nothing inside the managed copy beyond the signed source files', async () => {
+    // A Developer ID bundle is sealed over `Contents`; `codesign --verify --deep --strict` fails
+    // with "file added" for anything setup puts there. The installed copy must therefore hold the
+    // source files and only the source files, the pre-1.2.12 marker of the source excluded.
+    const root = fixture('sealed-copy');
+    writeEmbeddedRuntime(root.sourceApp);
+    const installer = acknowledgingOpen({ dataDirectory: root.data, fallback: launchdRunning });
+    await manager(root, installer, testDesktopAdapter(root)).install();
+
+    const files = (bundle: string) =>
+      treeSnapshot(bundle).filter(([, content]) => content !== '<directory>');
+    const expected = files(root.sourceApp).filter(
+      ([path]) => path !== join('Contents', 'Resources', 'installation.json'),
+    );
+    expect(files(join(root.home, 'Applications', 'Pimpampum.app'))).toEqual(expected);
+    expect(receiptPaths(root)).not.toContain(installationMarkerPath({ homeDirectory: root.home }));
+  });
+
+  it('bounds only the launches of the installed app by the Gatekeeper deadline', async () => {
+    // The first `open -n` of a freshly copied signed app waits on Gatekeeper, often for more than
+    // the runner's 60 s default. Every other command keeps the default.
+    const root = fixture('gatekeeper');
+    const runCommand = acknowledgingOpen({ dataDirectory: root.data, fallback: launchdRunning });
+    const lifecycle = manager(root, runCommand, testDesktopAdapter(root));
+    const installedApp = join(root.home, 'Applications', 'Pimpampum.app');
+
+    await lifecycle.install();
+    await lifecycle.uninstall();
+
+    expect(GATEKEEPER_OPEN_TIMEOUT_MS).toBe(180_000);
+    const bounded = runCommand.mock.calls.filter((call) => call.length === 3);
+    expect(bounded).toEqual([
+      [
+        '/usr/bin/open',
+        ['-n', installedApp, '--args', '--register-login-item', expect.any(String)],
+        GATEKEEPER_OPEN,
+      ],
+      ['/usr/bin/open', ['-n', installedApp], GATEKEEPER_OPEN],
+    ]);
+    const unbounded = runCommand.mock.calls.filter((call) => call.length === 2);
+    expect(unbounded).toContainEqual([
+      '/usr/bin/open',
+      ['-n', installedApp, '--args', '--unregister-login-item'],
+    ]);
+    expect(unbounded.some(([executable]) => executable === '/usr/bin/pkill')).toBe(true);
+    expect(unbounded.some(([executable]) => executable === '/bin/launchctl')).toBe(true);
   });
 
   it('serves status, reinstall and uninstall of a managed copy from the installed CLI', async () => {
@@ -285,15 +352,26 @@ describe('macOS menu app service integration', () => {
     expect(installer.mock.calls).toContainEqual([
       '/usr/bin/open',
       ['-n', managed, '--args', '--register-login-item', expect.any(String)],
+      GATEKEEPER_OPEN,
     ]);
-    expect(installer.mock.calls).toContainEqual(['/usr/bin/open', ['-n', managed]]);
+    expect(installer.mock.calls).toContainEqual([
+      '/usr/bin/open',
+      ['-n', managed],
+      GATEKEEPER_OPEN,
+    ]);
     expect(receiptPaths(root)).toEqual(
       expect.arrayContaining([
         join(managed, 'Contents', 'Info.plist'),
         join(managed, 'Contents', 'MacOS', 'PimpampumMenuBar'),
-        join(managed, 'Contents', 'Resources', 'installation.json'),
       ]),
     );
+    expect(receiptPaths(root)).not.toContain(
+      join(managed, 'Contents', 'Resources', 'installation.json'),
+    );
+    expect(readJson(installationMarkerPath({ homeDirectory: root.home }))).toEqual({
+      schemaVersion: 2,
+      dataDirectory: root.data,
+    });
     expect(existsSync(join(managed, 'Contents', 'Resources', 'PimpampumRuntime', 'node'))).toBe(
       true,
     );
@@ -361,11 +439,19 @@ describe('macOS menu app service integration', () => {
     expect(installer.mock.calls).toContainEqual([
       '/usr/bin/open',
       ['-n', userApp, '--args', '--register-login-item', expect.any(String)],
+      GATEKEEPER_OPEN,
     ]);
-    expect(installer.mock.calls).toContainEqual(['/usr/bin/open', ['-n', userApp]]);
+    expect(installer.mock.calls).toContainEqual([
+      '/usr/bin/open',
+      ['-n', userApp],
+      GATEKEEPER_OPEN,
+    ]);
     const receipt = receiptPaths(root);
     expect(receipt).toHaveLength(1);
     expect(receipt[0]!.startsWith(plist)).toBe(true);
+    // The adopted app still learns its data directory: the marker sits outside every bundle now.
+    const marker = installationMarkerPath({ homeDirectory: root.home });
+    expect(readJson(marker)).toEqual({ schemaVersion: 2, dataDirectory: root.data });
     expect(readJson(join(root.data, 'application-path.json'))).toEqual({
       schemaVersion: 2,
       path: userApp,
@@ -403,6 +489,7 @@ describe('macOS menu app service integration', () => {
     expect(treeSnapshot(userApp)).toEqual(before);
     expect(existsSync(join(root.data, 'install-receipt.json'))).toBe(false);
     for (const name of CONTROL_FILES) expect(existsSync(join(root.data, name))).toBe(false);
+    expect(existsSync(marker)).toBe(false);
   });
 
   it('uninstalls a managed copy from an installed CLI without a build tree and rolls back control files', async () => {
@@ -544,7 +631,11 @@ describe('macOS menu app service integration', () => {
     expect(existsSync(join(root.data, 'install-receipt.json'))).toBe(true);
     expect(existsSync(join(installedApp, 'Contents', 'Info.plist'))).toBe(true);
     // The menu app still opens so its notice can offer the retry.
-    expect(runCommand.mock.calls).toContainEqual(['/usr/bin/open', ['-n', installedApp]]);
+    expect(runCommand.mock.calls).toContainEqual([
+      '/usr/bin/open',
+      ['-n', installedApp],
+      GATEKEEPER_OPEN,
+    ]);
     await expect(lifecycle.status()).resolves.toMatchObject({
       installed: true,
       running: true,
@@ -678,6 +769,9 @@ describe('macOS menu app service integration', () => {
     ]) {
       writeFileSync(join(root.data, name), `prior-${name}`, { mode: 0o640 });
     }
+    const marker = installationMarkerPath({ homeDirectory: root.home });
+    mkdirSync(join(marker, '..'), { recursive: true });
+    writeFileSync(marker, 'prior-marker', { mode: 0o640 });
     // The helper answers, then the menu app itself refuses to open.
     const runCommand = acknowledgingOpen({
       dataDirectory: root.data,
@@ -693,6 +787,8 @@ describe('macOS menu app service integration', () => {
     expect(existsSync(join(root.home, 'Applications', 'Pimpampum.app'))).toBe(false);
     expect(existsSync(join(root.data, 'install-receipt.json'))).toBe(false);
     expect(existsSync(join(root.data, 'application-path.json'))).toBe(false);
+    expect(readFileSync(marker, 'utf8')).toBe('prior-marker');
+    expect(statSync(marker).mode & 0o777).toBe(0o640);
     for (const name of [
       'login-registration-request.json',
       'login-registration-acknowledgement.json',
@@ -721,7 +817,9 @@ describe('macOS menu app service integration', () => {
     writeBundle(managed);
     expect(ownedRoots(managed)).not.toContain(managed);
     expect(ownedRoots('/Applications/Pimpampum.app')).not.toContain(managed);
-    // ...unless the bundle at the managed path carries the marker only a managed install writes.
+    // ...unless the bundle at the managed path carries the in-bundle marker only a managed install
+    // by a release before 1.2.12 wrote. That legacy marker is still read for one release, because
+    // those installs have no record yet.
     writeFileSync(
       join(managed, 'Contents', 'Resources', 'installation.json'),
       JSON.stringify({ dataDirectory: join(root.root, 'another data directory') }),
@@ -734,6 +832,18 @@ describe('macOS menu app service integration', () => {
       JSON.stringify({ dataDirectory: root.data }),
     );
     expect(ownedRoots(managed)).toContain(managed);
+    // The fixed-path marker never drives this heuristic: every install that writes it also writes
+    // the record, so a marker without a record says nothing about who put the bundle there.
+    rmSync(join(managed, 'Contents', 'Resources', 'installation.json'));
+    const fixedMarker = installationMarkerPath({ homeDirectory: root.home });
+    mkdirSync(join(fixedMarker, '..'), { recursive: true });
+    writeFileSync(fixedMarker, JSON.stringify({ schemaVersion: 2, dataDirectory: root.data }));
+    expect(ownedRoots(managed)).not.toContain(managed);
+    rmSync(fixedMarker);
+    writeFileSync(
+      join(managed, 'Contents', 'Resources', 'installation.json'),
+      JSON.stringify({ dataDirectory: root.data }),
+    );
 
     // A schema 2 record overrides the heuristic in both directions.
     writeFileSync(recordPath, JSON.stringify({ schemaVersion: 2, path: managed, managed: true }));
@@ -753,13 +863,19 @@ describe('macOS menu app service integration', () => {
       expect.arrayContaining([join(root.home, 'Applications', 'PimpampumMenuBar.app')]),
     );
 
+    // A record with keys this release does not know is still a record, exactly as the Swift
+    // reader treats it; the reader is the one `runtime/bootstrap.ts` shares with the updater.
+    writeFileSync(
+      recordPath,
+      '{"schemaVersion":2,"path":"/Applications/Pimpampum.app","managed":false,"extra":1}',
+    );
+    expect(ownedRoots(runtimeBundle)).not.toContain(managed);
     // A malformed or hostile record is ignored rather than pointing the uninstaller anywhere.
     rmSync(join(managed, 'Contents', 'Resources', 'installation.json'));
     for (const invalid of [
       '{"schemaVersion":3,"path":"/Applications/Pimpampum.app","managed":true}',
       '{"schemaVersion":2,"path":"/Applications/Pimpampum.app"}',
       '{"schemaVersion":2,"path":"/Applications/Pimpampum.app","managed":"yes"}',
-      '{"schemaVersion":2,"path":"/Applications/Pimpampum.app","managed":false,"extra":1}',
       '{"schemaVersion":2,"path":"relative/Pimpampum.app","managed":false}',
       '{"schemaVersion":2,"path":"/Applications/Pim\\u0000pampum.app","managed":false}',
       '{"schemaVersion":1,"path":42}',

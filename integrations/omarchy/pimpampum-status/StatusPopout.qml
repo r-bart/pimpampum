@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
@@ -31,12 +32,28 @@ Item {
   property string folderPickerOutput: ""
   property string revealError: ""
   property string pendingWorkspacePath: ""
+  property string pendingWorkspaceFolder: ""
+  property string workspaceRegistrationError: ""
+  property string workspaceRegistrationNotice: ""
   readonly property string pickerHelperPath: decodeURIComponent(
     Qt.resolvedUrl("pimpampum-folder-picker").toString().replace(/^file:\/\//, "")
   )
   readonly property string connectionHelperPath: decodeURIComponent(
     Qt.resolvedUrl("pimpampum-connections").toString().replace(/^file:\/\//, "")
   )
+  readonly property string controlRoutePath: decodeURIComponent(
+    Qt.resolvedUrl("pimpampum-control-route").toString().replace(/^file:\/\//, "")
+  )
+  // The plugin directory, for the one remedy the Updates card can name: the bootstrap helper
+  // that installs the pinned runtime lives next to the folder picker.
+  readonly property string pluginDirectory: pickerHelperPath.replace(/\/[^/]+$/, "")
+  // The receipt-owned control launcher is the only `pimpampum` a native install has, and nothing
+  // links it onto PATH. The empty state spells its absolute path so the command can be copied as
+  // is; a bare `pimpampum` sent users to install the Node package instead.
+  readonly property string homeDirectory: Quickshell.env("HOME") || ""
+  readonly property string controlLauncherPath: homeDirectory.charAt(0) === "/"
+    ? homeDirectory + "/.local/share/pimpampum/bin/pimpampum-control"
+    : "pimpampum-control"
   readonly property bool folderDialogOpen: folderPicker.running
   readonly property bool folderDialogAvailable: pickerHelperPath.charAt(0) === "/"
   readonly property bool showGuidedAgents: connectionService.initialized
@@ -80,6 +97,8 @@ Item {
   function open() {
     if (opened) return
     opened = true
+    workspaceRegistrationError = ""
+    workspaceRegistrationNotice = ""
     service.refresh()
     backupService.refresh()
     syncService.refresh()
@@ -91,7 +110,9 @@ Item {
     pendingFolderTarget = target
     folderPickerOutput = ""
     folderPicker.command = [pickerHelperPath,
-      target === "backup" ? "Choose a backup destination" : "Choose a provider-synced location"]
+      target === "backup" ? "Choose a backup destination"
+        : target === "workspace" ? "Choose a workspace folder"
+        : "Choose a provider-synced location"]
     folderPicker.running = true
   }
 
@@ -100,16 +121,59 @@ Item {
     var path = folderPickerOutput.trim()
     if (exitCode !== 0 || !backupService.isAbsolutePath(path)) {
       if (pendingFolderTarget === "backup") backupService.operationError = "Folder picker unavailable; configure backup from the Pimpampum CLI"
+      else if (pendingFolderTarget === "workspace") workspaceRegistrationError = "Folder picker unavailable; add the workspace with the command below"
       else syncService.operationError = "Folder picker unavailable; configure synchronization from the Pimpampum CLI"
       return
     }
     if (pendingFolderTarget === "backup") {
       manualBackupDirectory = path
       confirmingBackupEnable = true
+    } else if (pendingFolderTarget === "workspace") {
+      registerWorkspace(path)
     } else {
       manualSyncDirectory = path
       confirmingSyncEnable = true
     }
+  }
+
+  // The chosen folder goes to the bounded route as one argv element; the route derives the
+  // workspace id and name and the daemon validates both again. Nothing here builds a shell string.
+  function registerWorkspace(path) {
+    workspaceRegistrationError = ""
+    workspaceRegistrationNotice = ""
+    if (!isSafeWorkspacePath(path)) return void (workspaceRegistrationError = "Workspace folder is unavailable")
+    if (controlRoutePath.charAt(0) !== "/") return void (workspaceRegistrationError = "Pimpampum control route is unavailable")
+    if (workspaceRegistrar.running) return
+    pendingWorkspaceFolder = path
+    workspaceRegistrarOutput = ""
+    workspaceRegistrarError = ""
+    var arguments = [controlRoutePath, "workspace", "add"]
+    arguments.push(path)
+    workspaceRegistrar.command = arguments
+    workspaceRegistrar.running = true
+  }
+
+  function acceptWorkspaceRegistration(exitCode) {
+    if (exitCode !== 0) {
+      // The CLI writes its typed envelope to stderr and leaves stdout empty on a failure; the
+      // route itself writes one plain line there.
+      workspaceRegistrationError = updateService.actionableFailure(workspaceRegistrarError,
+        updateService.actionableFailure(workspaceRegistrarOutput, "Could not add the workspace"))
+      return
+    }
+    var name = ""
+    try {
+      var envelope = JSON.parse(workspaceRegistrarOutput)
+      var data = updateService.isObject(envelope) && updateService.isObject(envelope.data)
+        ? envelope.data : envelope
+      if (updateService.isObject(data) && typeof data.name === "string" && data.name.length <= 120)
+        name = data.name.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim()
+    } catch (error) {
+      name = ""
+    }
+    workspaceRegistrationNotice = name.length > 0
+      ? "Workspace added: " + name : "Workspace added"
+    service.refresh()
   }
 
   function syncStatusText() {
@@ -282,6 +346,18 @@ Item {
     command: ["xdg-open", root.pendingWorkspacePath]
     onExited: function(exitCode) {
       if (exitCode !== 0) root.revealError = "Could not open the workspace directory"
+    }
+  }
+
+  property string workspaceRegistrarOutput: ""
+  property string workspaceRegistrarError: ""
+  Process {
+    id: workspaceRegistrar
+    command: [root.controlRoutePath, "workspace", "add", root.pendingWorkspaceFolder]
+    stdout: StdioCollector { onStreamFinished: root.workspaceRegistrarOutput = text }
+    stderr: StdioCollector { onStreamFinished: root.workspaceRegistrarError = text }
+    onExited: function(exitCode) {
+      Qt.callLater(function() { root.acceptWorkspaceRegistration(exitCode) })
     }
   }
 
@@ -556,9 +632,48 @@ Item {
               }
             }
 
+            // The folder dialog registers the first workspace without a terminal (D-01). The
+            // dialog is the same isolated GTK helper the backup and sync cards use.
+            PimpampumSettingsButton {
+              id: addWorkspaceAction
+              visible: emptyState.noWorkspaces && root.folderDialogAvailable
+              width: parent.width
+              height: implicitHeight
+              primary: true
+              label: workspaceRegistrar.running ? "Adding workspace…" : "Add a workspace"
+              foreground: root.foreground; background: root.background
+              accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
+              actionEnabled: !workspaceRegistrar.running && !root.folderDialogOpen
+              onTriggered: root.chooseDirectory("workspace")
+            }
+
+            Text {
+              visible: emptyState.noWorkspaces && root.workspaceRegistrationNotice !== ""
+              width: parent.width
+              wrapMode: Text.Wrap
+              text: root.workspaceRegistrationNotice
+              color: root.foreground
+              opacity: 0.72
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
+              visible: emptyState.noWorkspaces && root.workspaceRegistrationError !== ""
+              width: parent.width
+              wrapMode: Text.Wrap
+              maximumLineCount: 3
+              elide: Text.ElideRight
+              text: root.workspaceRegistrationError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
             // A translucent foreground fill composites over whatever popup background the
             // theme paints, so one value works light and dark. The command wraps rather
-            // than elides: a truncated command is worse than a taller card.
+            // than elides: a truncated command is worse than a taller card. It names the
+            // receipt-owned launcher by its absolute path, because nothing puts it on PATH.
             Rectangle {
               visible: emptyState.noWorkspaces
               width: parent.width
@@ -576,7 +691,7 @@ Item {
                 anchors.rightMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
                 wrapMode: Text.WrapAnywhere
-                text: "pimpampum workspace:add"
+                text: root.controlLauncherPath + " workspace:add <id> <name> /absolute/folder"
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -969,6 +1084,29 @@ Item {
                   : root.updateService.state === "installing" ? "Installing and restarting Pimpampum…"
                   : root.updateService.errorMessage !== "" ? root.updateService.errorMessage
                   : "Check for a newer Pimpampum release. Nothing changes until you install it."
+              }
+              // The Linux runtime is pinned by this plugin, so `update` is refused with a typed
+              // remedy: the bootstrap helper next to this file. Shown as a command on its own
+              // surface, like `pimpampum install` in the credentials state.
+              Rectangle {
+                visible: root.updateService.remedy !== ""
+                width: parent.width
+                height: updateRemedy.implicitHeight + Style.space(14)
+                radius: Style.space(4)
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+                border.width: 1
+                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+                Text {
+                  id: updateRemedy
+                  anchors.left: parent.left; anchors.leftMargin: Style.space(10)
+                  anchors.right: parent.right; anchors.rightMargin: Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                  wrapMode: Text.WrapAnywhere
+                  text: root.pluginDirectory + "/" + root.updateService.remedy
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                }
               }
               PimpampumSettingsButton {
                 width: parent.width; height: implicitHeight

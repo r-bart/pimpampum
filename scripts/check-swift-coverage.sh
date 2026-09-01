@@ -36,6 +36,7 @@ covered_sources=(
     "$package_root/Sources/PimpampumMenuBar/SetupCommandRunner.swift"
     "$package_root/Sources/PimpampumMenuBar/EmbeddedSetupBootstrap.swift"
     "$package_root/Sources/PimpampumMenuBar/ApplicationLocationRecord.swift"
+    "$package_root/Sources/PimpampumMenuBar/WorkspaceRegistration.swift"
     "$package_root/Sources/PimpampumMenuBar/ApplicationLaunchCoordinator.swift"
     "$package_root/Sources/PimpampumMenuBar/OverviewClient.swift"
     "$package_root/Sources/PimpampumMenuBar/AuthenticatedDaemonConfiguration.swift"

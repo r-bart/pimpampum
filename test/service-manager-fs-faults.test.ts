@@ -1,22 +1,40 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPlatformServiceManager } from '../src/service/manager.js';
-import { installReceiptPath } from '../src/service/receipt.js';
+import { installReceiptPath, writePrivateFileAtomic } from '../src/service/receipt.js';
 import type { PlatformServiceAdapter } from '../src/service/types.js';
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+  return {
+    ...actual,
+    rmSync: vi.fn(actual.rmSync),
+    writeFileSync: vi.fn(actual.writeFileSync),
+    closeSync: vi.fn(actual.closeSync),
+  };
 });
 
 const roots: string[] = [];
 const defaultRemove = vi.mocked(rmSync).getMockImplementation()!;
+const defaultWrite = vi.mocked(writeFileSync).getMockImplementation()!;
 
 afterEach(() => {
   vi.mocked(rmSync).mockClear();
   vi.mocked(rmSync).mockImplementation(defaultRemove);
+  vi.mocked(writeFileSync).mockClear();
+  vi.mocked(writeFileSync).mockImplementation(defaultWrite);
+  vi.mocked(closeSync).mockClear();
   for (const root of roots.splice(0)) defaultRemove(root, { recursive: true, force: true });
 });
 
@@ -107,5 +125,22 @@ describe('service manager uninstall filesystem faults', () => {
     expect(((error as AggregateError).errors[1] as AggregateError).errors).toEqual([
       expect.objectContaining({ message: 'registration rollback failed' }),
     ]);
+  });
+
+  it('closes and removes the exclusive temporary file when the durable write fails', () => {
+    const root = fixture('durable-write');
+    const target = join(root.dataDirectory, 'receipt.json');
+    writePrivateFileAtomic(target, 'first', 0o600, root.dataDirectory);
+    vi.mocked(closeSync).mockClear();
+    vi.mocked(writeFileSync).mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+    expect(() => writePrivateFileAtomic(target, 'second', 0o600, root.dataDirectory)).toThrow(
+      'disk full',
+    );
+    expect(vi.mocked(closeSync)).toHaveBeenCalledOnce();
+    expect(readFileSync(target, 'utf8')).toBe('first');
+    expect(readdirSync(root.dataDirectory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect(existsSync(target)).toBe(true);
   });
 });

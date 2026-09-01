@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { join, resolve } from 'node:path';
 import { AutomaticBackupController } from './automaticBackup.js';
@@ -15,6 +15,19 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
+/** The filesystem and process calls the instance lock needs; injectable so races are testable. */
+export interface InstanceLockIo {
+  writeFileSync(
+    path: string,
+    data: string,
+    options: { encoding: 'utf8'; mode: number; flag: 'wx' },
+  ): void;
+  readFileSync(path: string, encoding: 'utf8'): string;
+  renameSync(from: string, to: string): void;
+  rmSync(path: string, options: { force: true }): void;
+  processIsAlive(pid: number): boolean;
+}
+
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -24,21 +37,82 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-function acquireInstanceLock(dataDirectory: string): () => void {
-  const lockPath = join(dataDirectory, '.instance.lock');
-  while (true) {
-    try {
-      writeFileSync(lockPath, `${process.pid}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-      return () => rmSync(lockPath, { force: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const pid = Number(readFileSync(lockPath, 'utf8').trim());
-      if (!Number.isInteger(pid) || pid < 1 || processIsAlive(pid)) {
-        throw new AppError('conflict', 'Another Pimpampum daemon owns this data directory', 409);
-      }
-      rmSync(lockPath, { force: true });
-    }
+const defaultLockIo: InstanceLockIo = {
+  writeFileSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  processIsAlive,
+};
+
+const INSTANCE_LOCK_ATTEMPTS = 5;
+
+function errnoCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException).code;
+}
+
+function conflict(): AppError {
+  return new AppError('conflict', 'Another Pimpampum daemon owns this data directory', 409);
+}
+
+/** Returns the recorded PID, NaN for an unparsable file, or null when the file vanished. */
+function readLockOwner(path: string, io: InstanceLockIo): number | null {
+  try {
+    const text = io.readFileSync(path, 'utf8').trim();
+    return /^\d+$/.test(text) ? Number(text) : Number.NaN;
+  } catch (error) {
+    if (errnoCode(error) === 'ENOENT') return null;
+    throw error;
   }
+}
+
+function isStale(pid: number, io: InstanceLockIo): boolean {
+  return Number.isInteger(pid) && pid >= 1 && !io.processIsAlive(pid);
+}
+
+/**
+ * Takes the exclusive instance lock. A stale lock is never deleted in place:
+ * it is renamed aside, which only one contender can do, so two daemons that
+ * both read the same dead PID cannot remove each other's fresh lock. The moved
+ * file is re-verified in case a live owner re-created the lock in between.
+ */
+export function acquireInstanceLock(
+  dataDirectory: string,
+  io: InstanceLockIo = defaultLockIo,
+): () => void {
+  const lockPath = join(dataDirectory, '.instance.lock');
+  for (let attempt = 0; attempt < INSTANCE_LOCK_ATTEMPTS; attempt += 1) {
+    try {
+      io.writeFileSync(lockPath, `${process.pid}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      return () => io.rmSync(lockPath, { force: true });
+    } catch (error) {
+      if (errnoCode(error) !== 'EEXIST') throw error;
+    }
+    const owner = readLockOwner(lockPath, io);
+    if (owner === null) continue;
+    if (!isStale(owner, io)) throw conflict();
+    const stalePath = join(dataDirectory, `.instance.lock.stale-${process.pid}-${attempt}`);
+    try {
+      io.renameSync(lockPath, stalePath);
+    } catch (error) {
+      if (errnoCode(error) !== 'ENOENT') throw error;
+      continue;
+    }
+    const moved = readLockOwner(stalePath, io);
+    if (moved !== null && moved !== owner && !isStale(moved, io)) {
+      // A live daemon replaced the stale lock before the rename; give it back
+      // unless a third contender has already created a fresh lock.
+      try {
+        io.writeFileSync(lockPath, `${moved}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      } catch (error) {
+        if (errnoCode(error) !== 'EEXIST') throw error;
+      }
+      io.rmSync(stalePath, { force: true });
+      throw conflict();
+    }
+    io.rmSync(stalePath, { force: true });
+  }
+  throw conflict();
 }
 
 export async function startServer(config = loadConfig()): Promise<RunningServer> {
@@ -110,6 +184,7 @@ export async function startServer(config = loadConfig()): Promise<RunningServer>
     try {
       await closeMcp();
     } finally {
+      await syncController.close();
       await automaticBackup.close();
       store.close();
       releaseInstanceLock();

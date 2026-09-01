@@ -84,7 +84,9 @@ struct SyncSettingsClient: SyncSettingsReading {
       Set(payload.keys) == [
         "enabled", "paused", "state", "directory", "deviceId", "lastAttemptAt",
         "lastImportAt", "lastExportAt", "pendingSnapshotCount", "conflictCount", "error",
-      ]
+        "blockedSnapshot",
+      ],
+      Self.hasBlockedSnapshotShape(payload["blockedSnapshot"])
     else { throw SyncSettingsClientError.invalidPayload }
     let envelope: SyncEnvelope
     do {
@@ -95,10 +97,25 @@ struct SyncSettingsClient: SyncSettingsReading {
     guard envelope.meta.schemaVersion == Self.supportedSchemaVersion else {
       throw SyncSettingsClientError.incompatibleResponseSchema(envelope.meta.schemaVersion)
     }
-    guard Self.isValid(envelope.data), !(envelope.data.error?.contains(token) ?? false) else {
+    guard Self.isValid(envelope.data), !Self.mentions(token, in: envelope.data) else {
       throw SyncSettingsClientError.invalidPayload
     }
     return envelope.data
+  }
+
+  /// `blockedSnapshot` is either null or exactly `{ path, reason }`; the nested object is held to
+  /// the same strict key set as the envelope.
+  private static func hasBlockedSnapshotShape(_ value: Any?) -> Bool {
+    if value is NSNull { return true }
+    guard let object = value as? [String: Any] else { return false }
+    return Set(object.keys) == ["path", "reason"]
+  }
+
+  /// The daemon never echoes its own token, so a payload that does is not the daemon's.
+  private static func mentions(_ token: String, in settings: SyncSettings) -> Bool {
+    if settings.error?.contains(token) == true { return true }
+    guard let blocked = settings.blockedSnapshot else { return false }
+    return blocked.path.contains(token) || blocked.reason.contains(token)
   }
 
   static func isValid(_ settings: SyncSettings) -> Bool {
@@ -107,22 +124,29 @@ struct SyncSettingsClient: SyncSettingsReading {
       return false
     }
     if !settings.enabled {
-      return settings.state == .disabled && !settings.paused
+      return settings.state == .disabled && !settings.paused && settings.blockedSnapshot == nil
     }
     guard let directory = settings.directory, isSafeAbsolutePath(directory),
       let deviceId = settings.deviceId,
       deviceId.range(of: #"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"#, options: .regularExpression)
         != nil
     else { return false }
-    if let error = settings.error,
-      error.isEmpty || error.count > 500
-        || error.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+    if let error = settings.error, !isBoundedText(error) { return false }
+    if let blocked = settings.blockedSnapshot,
+      !isBoundedText(blocked.path) || !isBoundedText(blocked.reason)
     {
       return false
     }
     if settings.paused { return settings.state == .paused }
     guard settings.state != .disabled && settings.state != .paused else { return false }
     return true
+  }
+
+  /// One line of user-visible text from the daemon: present, bounded, and free of control
+  /// characters that could break the panel or hide part of the message.
+  private static func isBoundedText(_ value: String) -> Bool {
+    !value.isEmpty && value.count <= 500
+      && !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
   }
 
   private static func isSafeAbsolutePath(_ path: String) -> Bool {

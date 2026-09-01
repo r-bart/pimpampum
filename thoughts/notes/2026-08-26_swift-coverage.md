@@ -45,12 +45,12 @@ first-run defect in files the gate never measured (review section 8, findings X-
 - `BackupSettingsClient.swift`: authenticated requests, exact response decoding, semantic validation, redaction, and bounded errors.
 - `BackupSettingsStore.swift`: operation serialization, state publication, cancellation, and stable failure messages.
 - `UpdateSettingsStore.swift`: receipt trust, executable-path validation, operation selection, per-operation deadlines, CLI failure-envelope propagation, relaunch derivation, and every panel copy decision.
-- `SyncSettingsModels.swift`: the synchronization state vocabulary and every failure description.
+- `SyncSettingsModels.swift`: the synchronization state vocabulary, every failure description, the `blockedSnapshot` record and its one-line copy (`SyncSettingsPresentation`).
 - `SyncSettingsClient.swift`: authenticated requests, strict envelope decoding, timestamp parsing, semantic validation, token redaction, and bounded server messages.
 - `SyncSettingsStore.swift`: operation serialization, state publication, cancellation, and stable failure messages.
 
-The current result is 1523/1523 regions, 508/508 functions, and 3181/3181 lines. The suite
-executes 288 tests across 38 suites.
+The current result is 1543/1543 regions, 514/514 functions, and 3203/3203 lines. The suite
+executes 290 tests across 38 suites.
 
 Any deterministic behavior added to the macOS application must live in one of these files or be added explicitly to the coverage manifest in the gate script.
 

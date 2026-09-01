@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { classifyConnectorOwnership, fingerprintCommand } from '../src/connectors/receipt.js';
-import { createConnectorRegistry, planDisconnect } from '../src/connectors/registry.js';
-import {
-  redactConnectorDiagnostics,
-  type ConnectionReceipt,
-  type HostEntry,
-} from '../src/connectors/types.js';
+import { createConnectorRegistry } from '../src/connectors/registry.js';
+import type { ConnectionReceipt, HostEntry } from '../src/connectors/types.js';
 
 const expected: HostEntry = {
   command: '/Users/example/.local/share/pimpampum/bin/pimpampum-mcp',
@@ -60,66 +56,5 @@ describe('connector contracts', () => {
         recognizedLegacyEntries: [legacy],
       }),
     ).toBe('conflict');
-  });
-
-  it('redacts credentials and home-directory identities from diagnostics', () => {
-    const token = 'private-bearer-token-000000000000';
-    const result = redactConnectorDiagnostics({
-      connectorId: 'codex',
-      executablePath: '/Users/example/.local/bin/codex',
-      token,
-      stderr: `Authorization: Bearer ${token} in /Users/example/private`,
-    });
-    expect(JSON.stringify(result)).not.toContain(token);
-    expect(JSON.stringify(result)).not.toContain('/Users/example');
-    expect(result.instructions).not.toHaveLength(0);
-  });
-
-  it('disconnects only a known connector with a matching-scope receipt', () => {
-    expect(
-      planDisconnect({
-        connectorId: 'codex',
-        entry: expected,
-        receipt: receiptFor(),
-        daemonRunning: true,
-        dataDirectory: '/Users/example/.pimpampum',
-      }),
-    ).toMatchObject({
-      preserveDaemon: true,
-      preserveData: true,
-      mutations: [{ executable: 'codex' }],
-    });
-    expect(
-      planDisconnect({
-        connectorId: 'codex',
-        entry: expected,
-        receipt: null,
-        daemonRunning: true,
-        dataDirectory: '/Users/example/.pimpampum',
-      }).mutations,
-    ).toEqual([]);
-
-    expect(
-      planDisconnect({
-        connectorId: 'codex',
-        entry: {
-          ...expected,
-          command: '/Users/example/unowned/pimpampum-mcp',
-        },
-        receipt: receiptFor(),
-        daemonRunning: true,
-        dataDirectory: '/Users/example/.pimpampum',
-      }).mutations,
-    ).toEqual([]);
-
-    expect(
-      planDisconnect({
-        connectorId: 'codex',
-        entry: expected,
-        receipt: { ...receiptFor(), commandFingerprint: 'validated-legacy-ownership' },
-        daemonRunning: true,
-        dataDirectory: '/Users/example/.pimpampum',
-      }).mutations,
-    ).toHaveLength(1);
   });
 });

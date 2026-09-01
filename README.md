@@ -450,7 +450,8 @@ GET http://127.0.0.1:7337/openapi.json
 
 It documents all Workspace, Project, Spec, Task, scoped Context, work, activity, portfolio
 overview, synchronization, backup, and export operations. `/health` and `/openapi.json` are the
-only unauthenticated routes. Ordinary success envelopes use HTTP schema version 1; the
+only unauthenticated routes. `/health` answers 200 with `ready: true`, or 503 with `ready: false`
+when the daemon runs but its SQLite probe fails. Ordinary success envelopes use HTTP schema version 1; the
 independently versioned portfolio overview uses schema version 2 because the macOS and Omarchy
 clients validate it strictly.
 
@@ -485,10 +486,11 @@ per-argument descriptions and effect annotations.
 Pimpampum 1.2.11
 
 Every command writes one {"data": ...} envelope to stdout and exits 0, or one
-{"error": ...} envelope to stderr and exits non-zero. The only
-exceptions are `help`, which prints this text, and `mcp`, whose stdout carries
-the MCP protocol. Run `pimpampum commands` for the same catalog as JSON, and
-`pimpampum tools` for the domain tool schemas.
+{"error": ...} envelope to stderr and exits non-zero. The exceptions are
+`help`, which prints this text, `mcp`, whose stdout carries the MCP protocol,
+and `--events`, whose stdout carries schema-versioned NDJSON setup events, one
+per line, ending with the result. Run `pimpampum commands` for the same catalog
+as JSON, and `pimpampum tools` for the domain tool schemas.
 
 Use `--` to end option parsing when a value itself begins with two dashes.
 
@@ -506,8 +508,8 @@ Usage:
   pimpampum setup status
   pimpampum setup resume
   pimpampum connections
-  pimpampum connect [codex|claude-code] [--yes] [--replace] [--instructions]
-  pimpampum repair <codex|claude-code> --yes [--replace]
+  pimpampum connect [codex|claude-code] [--yes] [--replace [revision]] [--instructions]
+  pimpampum repair <codex|claude-code> --yes [--replace [revision]]
   pimpampum disconnect <codex|claude-code> --yes
   pimpampum update:check
   pimpampum update
@@ -552,6 +554,11 @@ Usage:
   pimpampum sync resolve <conflict-id> <local|remote> [--json]
   pimpampum sync forget [--json]
   pimpampum export <directory>
+
+Native desktop mode, driven by the Pimpampum app (`native` in `commands`):
+  pimpampum setup apply <operation-id> <revision> --yes [--replace <codex|claude-code>]... [--events] [--keep <codex|claude-code>]...
+  pimpampum setup resume [--events]
+  pimpampum setup retry <codex|claude-code> --events
 ```
 
 Named commands cover common human operations. `tools` and `call` expose the complete MCP contract
@@ -687,9 +694,10 @@ npm install --global pimpampum
 pimpampum install
 ```
 
-`pimpampum install` installs the per-user service without root access. `pimpampum status` verifies
-it. On macOS, `pimpampum install --service-only` deliberately leaves the separately downloaded app
-in place.
+`pimpampum install` installs the per-user service without root access. On macOS it also downloads
+the signed app of the same version from the release channel, verifies it with the embedded release
+key, and places it in `~/Applications`; `pimpampum install --service-only` skips the app.
+`pimpampum status` verifies the service.
 
 To run a development checkout:
 
@@ -734,10 +742,12 @@ npm run build
 ```
 
 `npm test` builds from a clean `dist/`, enforces 100% statement, branch, function, and line
-coverage, and runs the six compiled E2E scenarios. `npm run test:evals` runs only that deterministic
-E2E gate: four product workflows plus two synthetic Git development sessions that test handoff,
-restart, repository tests, commits, and artifact verification. It does not launch or evaluate an
-LLM. The exact boundaries and rubric live in [docs/evals.md](docs/evals.md).
+coverage, and runs the six compiled E2E scenarios. `npm run test:evals` is an alias of that
+deterministic E2E gate kept for the evals documentation: four product workflows plus two synthetic
+Git development sessions that test handoff, restart, repository tests, commits, and artifact
+verification. CI runs `npm test`, which already contains it, so the alias is not part of any
+workflow. It does not launch or evaluate an LLM. The exact boundaries and rubric live in
+[docs/evals.md](docs/evals.md).
 
 Native live validation remains separate and explicitly opt-in because it depends on the target
 desktop and may touch the current user's installed integration:
