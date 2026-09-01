@@ -246,24 +246,6 @@ function serviceIsLoaded() {
   return spawnSync('/bin/launchctl', ['print', launchDomain], { encoding: 'utf8' }).status === 0;
 }
 
-/**
- * A cold start no longer reports "offline" on its first failed poll: the daemon may still be coming
- * up right after setup, so the app retries for a few seconds before declaring the failure. Each
- * snapshot launches a fresh app, which is always a cold start, so wait for the state to settle
- * instead of reading the first frame.
- */
-async function waitForUiSnapshot(label, matches, options = {}, attempts = 20) {
-  let snapshot;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    snapshot = uiSnapshot(`${label}-${attempt}`, options);
-    if (matches(snapshot)) return snapshot;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
-  }
-  throw new Error(
-    `Native UI never settled on the expected ${label} state: ${JSON.stringify(snapshot)}`,
-  );
-}
-
 async function waitForServiceLoaded(expected, attempts = 50) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (serviceIsLoaded() === expected) return;
@@ -837,11 +819,13 @@ try {
     encoding: 'utf8',
   });
   if (offline.status === 0) throw new Error('Overview stayed online after daemon bootout.');
-  const offlineUI = await waitForUiSnapshot(
-    'offline',
-    (snapshot) => snapshot.visualState === 'Offline' && snapshot.connectionState === 'offline',
-  );
-  if (offlineUI.stale !== false || offlineUI.projectRows.length !== 0) {
+  const offlineUI = uiSnapshot('offline');
+  if (
+    offlineUI.visualState !== 'Offline' ||
+    offlineUI.connectionState !== 'offline' ||
+    offlineUI.stale !== false ||
+    offlineUI.projectRows.length !== 0
+  ) {
     throw new Error('Native UI did not render the expected offline-without-cache state.');
   }
   const staleUI = uiSnapshot('stale', { seedOverview });

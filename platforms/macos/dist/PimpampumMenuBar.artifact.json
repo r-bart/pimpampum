@@ -1,11 +1,11 @@
 {
   "schemaVersion": 3,
-  "sourceInputSha256": "f6b50421cc8e350a2a4aa8b494ff31f45377040e93939415dc5632821f9084a9",
-  "binarySha256": "e105b254174f2dd3d9151fac7c581c0967ebca83ab25605b1bd0b8fabf442d14",
+  "sourceInputSha256": "c0e48425192aa82f23f3de9060dac08d04e926645477fef1577968e8ac50d9a6",
+  "binarySha256": "1d07e02955320a5d8296aba2e4a5d84c67c881a9b209e99fa1b726cb572edc69",
   "plistSha256": "5fa387a5c60c60452611aa75b816be091028359297ebabfd7e4b62e2acba867c",
   "compactMarkSha256": "5d9f558de031b9a3c4ed1052e093fb235f9a077d077c9a027286975d4a84f463",
   "appIconSha256": "8235c85139ea19e0c7487ff6321073ac1d35e60ee98a9d2e34afc9ab88dbbf4b",
-  "assetCatalogSha256": "d577379a4f475cf2d036c9b50009050c55c91f3d0bbf132a21de4377da670153",
+  "assetCatalogSha256": "2f693be891ece762d8bba84a863bee598a44b08ff89dd4791380eb101fda837e",
   "runtimeManifestSha256": "dcff3904513b43d9c8d1171a18dee1de712a16f08b8706bd65505610cb614fc3",
   "runtimeInventorySha256": "77650aba201821d75dbce8db8644e6d180d2f549d25203c531dc94eed184a18d",
   "runtimeSbomSha256": "8fbb196251b2f20bab70786505e0cf18f2cdc916bb798fbeacc3ea61dd349855",
@@ -21,5 +21,5 @@
   "appBundle": "Pimpampum.app",
   "appName": "Pimpampum",
   "appVersion": "1.2.11",
-  "sourceGitCommit": "4b817be920ba5b5c147e69c73fe435658877342e"
+  "sourceGitCommit": "95c53fb715c4816bfeede3d998687cf90d727835"
 }
