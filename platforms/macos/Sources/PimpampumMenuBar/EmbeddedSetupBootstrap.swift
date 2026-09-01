@@ -16,7 +16,7 @@ struct EmbeddedSetupBootstrap: Sendable {
     self.installedApplicationURL =
       homeDirectory
       .appendingPathComponent("Applications", isDirectory: true)
-      .appendingPathComponent("PimpampumMenuBar.app", isDirectory: true)
+      .appendingPathComponent("Pimpampum.app", isDirectory: true)
       .standardizedFileURL
   }
 

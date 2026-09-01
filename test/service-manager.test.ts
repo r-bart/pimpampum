@@ -216,7 +216,7 @@ describe('platform-neutral service manager', () => {
 
   it('directly uninstalls receipt-owned bundle members removed by a package upgrade', async () => {
     const root = testRoot('direct-uninstall-upgrade');
-    const bundleRoot = join(root.homeDirectory, 'Applications', 'PimpampumMenuBar.app');
+    const bundleRoot = join(root.homeDirectory, 'Applications', 'Pimpampum.app');
     const currentPath = join(bundleRoot, 'Contents', 'MacOS', 'PimpampumMenuBar');
     const removedPath = join(bundleRoot, 'Contents', 'Resources', 'removed-in-v2');
     const alreadyMissingPath = join(bundleRoot, 'Contents', 'Resources', 'already-missing-in-v2');

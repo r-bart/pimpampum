@@ -189,13 +189,25 @@ enum DesktopSmokeHarness {
     activatedControlLabel: String?,
     settingsWindow: SmokeWindowInspection
   ) {
-    let content = NativeSettingsStatusPopover(
+    let root = NativeSettingsStatusPopover(
       store: store,
       workspaceOpener: opener,
       settingsWindowOpener: settingsWindowController,
       quitApplication: actionRecorder.recordQuit
     )
-      .frame(width: 360, height: 560)
+    let renderingHeight: CGFloat
+    if case .setupRequired = store.connectionState {
+      let negotiated = NSHostingController(rootView: root).sizeThatFits(
+        in: NSSize(width: StatusPopover.containerWidth, height: 0)
+      )
+      guard negotiated.height > 350 else {
+        throw DesktopSmokeError.setupOnboardingCollapsed(Int(negotiated.height.rounded()))
+      }
+      renderingHeight = min(negotiated.height, 560)
+    } else {
+      renderingHeight = 560
+    }
+    let content = root.frame(width: StatusPopover.containerWidth, height: renderingHeight)
     let renderer = ImageRenderer(content: content)
     renderer.scale = 2
     guard let image = renderer.nsImage,
@@ -208,7 +220,12 @@ enum DesktopSmokeHarness {
     }
 
     let hostingView = NSHostingView(rootView: content)
-    hostingView.frame = NSRect(x: 0, y: 0, width: 360, height: 560)
+    hostingView.frame = NSRect(
+      x: 0,
+      y: 0,
+      width: StatusPopover.containerWidth,
+      height: renderingHeight
+    )
     let window = NSWindow(
       contentRect: hostingView.frame,
       styleMask: [.borderless],

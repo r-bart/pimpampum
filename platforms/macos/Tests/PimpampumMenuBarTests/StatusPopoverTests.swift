@@ -294,7 +294,7 @@ struct StatusPopoverTests {
     #expect(StatusPopover.bodyMaximumHeight == 480)
     #expect(StatusPopover.contentTitleLineLimit == 2)
     #expect(StatusPopover.metadataLineLimit == 1)
-    #expect(PimpampumBrand.versionText() == "Version 1.2.9")
+    #expect(PimpampumBrand.versionText() == "Version 1.2.10")
   }
 
   @Test
@@ -322,17 +322,19 @@ struct StatusPopoverTests {
   }
 
   @Test
-  func setupRequiredRendersTheCompleteQuietOnboardingAtTheFixedWidth() async {
+  func setupRequiredNegotiatesVisibleOnboardingFromACompressedMenuBarProposal() async {
     let store = OverviewStore(
       reader: SequenceOverviewReader([.clientFailure(.unreadableReceipt)])
     )
     await store.refresh()
-    let view = NSHostingView(rootView: StatusPopover(store: store))
+    let controller = NSHostingController(rootView: StatusPopover(store: store))
 
-    view.layoutSubtreeIfNeeded()
+    let menuBarSize = controller.sizeThatFits(
+      in: NSSize(width: StatusPopover.containerWidth, height: 0)
+    )
 
-    #expect(view.fittingSize.width == StatusPopover.containerWidth)
-    #expect(view.fittingSize.height > 350)
+    #expect(menuBarSize.width == StatusPopover.containerWidth)
+    #expect(menuBarSize.height > 350)
   }
 }
 

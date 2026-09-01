@@ -1,7 +1,7 @@
 # Implementation Plan: Zero-friction local agent setup
 
 **Date**: 2026-08-31  
-**Status**: Approved — Tests-as-DoD frozen  
+**Status**: Complete — released as `v1.2.9`
 **Source specification**:
 [2026-08-31_zero-friction-local-agent-setup.md](../specs/2026-08-31_zero-friction-local-agent-setup.md)
 
@@ -37,21 +37,21 @@ all mutations; SwiftUI and QML remain presentation clients.
 
 ## Requirements
 
-- [ ] A clean macOS or Omarchy setup requires no external Node.js/npm and no Terminal command in
+- [x] A clean macOS or Omarchy setup requires no external Node.js/npm and no Terminal command in
       the normal path.
-- [ ] Pimpampum installs one private, versioned runtime and one OS-managed per-user daemon.
-- [ ] Codex and Claude Code are detected locally, selected by default when supported, connected
+- [x] Pimpampum installs one private, versioned runtime and one OS-managed per-user daemon.
+- [x] Codex and Claude Code are detected locally, selected by default when supported, connected
       through one explicit confirmation, and verified independently.
-- [ ] Host configuration never contains the Pimpampum bearer token.
-- [ ] Existing npm installations migrate without copying or resetting data and without running two
+- [x] Host configuration never contains the Pimpampum bearer token.
+- [x] Existing npm installations migrate without copying or resetting data and without running two
       daemons against the same SQLite database.
-- [ ] Unknown host entries named `pimpampum` stop for an explicit conflict decision.
-- [ ] Setup, migration, update, repair, disconnect, and removal are idempotent, revision-aware,
+- [x] Unknown host entries named `pimpampum` stop for an explicit conflict decision.
+- [x] Setup, migration, update, repair, disconnect, and removal are idempotent, revision-aware,
       resumable, and reversible.
-- [ ] The macOS app implements the selected three-step Guided onboarding and an Agents settings
+- [x] The macOS app implements the selected three-step Guided onboarding and an Agents settings
       section.
-- [ ] The Omarchy plugin exposes the same connection states through bounded helpers and QML.
-- [ ] Signed release assets, artifact checks, live smoke tests, and documentation cover the new
+- [x] The Omarchy plugin exposes the same connection states through bounded helpers and QML.
+- [x] Signed release assets, artifact checks, live smoke tests, and documentation cover the new
       distribution.
 
 ---
@@ -798,49 +798,49 @@ Parallel execution opportunities:
 
 ### Phase 0
 
-- [ ] Spec test manifest exists and generated tests fail for known missing behavior.
-- [ ] Generated test hashes are recorded and unchanged thereafter.
-- [ ] Runtime/SEA/Omarchy/host spike evidence is attached to the plan or a linked note.
+- [x] Spec test manifest exists and generated tests fail for known missing behavior.
+- [x] Generated test hashes are recorded and unchanged thereafter.
+- [x] Runtime/SEA/Omarchy/host spike evidence is attached to the plan or a linked note.
 
 ### Runtime and service
 
-- [ ] Target bundles pass `node scripts/check-runtime-bundle.mjs <bundle>`.
-- [ ] A clean no-Node target passes version, SQLite, HTTP health, MCP initialize, and list-tools
+- [x] Target bundles pass `node scripts/check-runtime-bundle.mjs <bundle>`.
+- [x] A clean no-Node target passes version, SQLite, HTTP health, MCP initialize, and list-tools
       smoke.
-- [ ] Forced daemon-health failure restores prior receipt, service definition, runtime, and logs.
-- [ ] macOS nested code passes `codesign --verify --deep --strict` and notarization validation.
+- [x] Forced daemon-health failure restores prior receipt, service definition, runtime, and logs.
+- [x] macOS nested code passes `codesign --verify --deep --strict` and notarization validation.
 
 ### Connectors and coordinator
 
-- [ ] Codex and Claude connector fixture matrices pass.
-- [ ] Clean connect, repeat, stale repair, disconnect, partial failure, and conflict tests pass.
-- [ ] No host config, argv, receipt, log, UI string, or clipboard fixture contains the test token.
-- [ ] MCP verifier leaves zero child processes after success, timeout, malformed output, or cancel.
+- [x] Codex and Claude connector fixture matrices pass.
+- [x] Clean connect, repeat, stale repair, disconnect, partial failure, and conflict tests pass.
+- [x] No host config, argv, receipt, log, UI string, or clipboard fixture contains the test token.
+- [x] MCP verifier leaves zero child processes after success, timeout, malformed output, or cancel.
 
 ### macOS and Omarchy
 
-- [ ] Guided clean setup takes less than two minutes, one Pimpampum confirmation, zero Terminal
+- [x] Guided clean setup takes less than two minutes, one Pimpampum confirmation, zero Terminal
       actions.
-- [ ] Mac popover resume, partial failure, conflict, completion, and Agents settings are covered by
+- [x] Mac popover resume, partial failure, conflict, completion, and Agents settings are covered by
       Swift tests and live smoke.
-- [ ] Omarchy plugin bootstrap works without Node/npm and `npm run validate:omarchy` passes.
-- [ ] Closing the app or restarting Quickshell leaves the daemon and verified connectors available.
+- [x] Omarchy plugin bootstrap works without Node/npm and `npm run validate:omarchy` passes.
+- [x] Closing the app or restarting Quickshell leaves the daemon and verified connectors available.
 
 ### Spec tests
 
-- [ ] All generated spec tests pass with their documented npm/Swift/Omarchy commands.
-- [ ] No generated spec test file was modified after creation.
+- [x] All generated spec tests pass with their documented npm/Swift/Omarchy commands.
+- [x] No generated spec test file was modified after creation.
 
 ### Overall
 
-- [ ] `npm run typecheck && npm run lint && npm run format:check && npm test` passes.
-- [ ] `npm run test:macos` passes with required Swift coverage.
-- [ ] `npm run test:omarchy` and `npm run check:desktop-contract` pass.
-- [ ] macOS and Omarchy live gates pass according to their release policies.
-- [ ] `npm audit --omit=dev` has no unresolved production vulnerability.
-- [ ] No new TODO/FIXME/HACK remains.
-- [ ] No domain rule moved out of `PimpampumStore`; UI/QML contains no connector mutation logic.
-- [ ] `/post-review` approves architecture, security, requirements, and release evidence.
+- [x] `npm run typecheck && npm run lint && npm run format:check && npm test` passes.
+- [x] `npm run test:macos` passes with required Swift coverage.
+- [x] `npm run test:omarchy` and `npm run check:desktop-contract` pass.
+- [x] macOS and Omarchy live gates pass according to their release policies.
+- [x] `npm audit --omit=dev` has no unresolved production vulnerability.
+- [x] No new TODO/FIXME/HACK remains.
+- [x] No domain rule moved out of `PimpampumStore`; UI/QML contains no connector mutation logic.
+- [x] `/post-review` approves architecture, security, requirements, and release evidence.
 
 ---
 

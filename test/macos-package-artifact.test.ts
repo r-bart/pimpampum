@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const roots: string[] = [];
-const sourceApp = join(process.cwd(), 'platforms/macos/dist/PimpampumMenuBar.app');
+const sourceApp = join(process.cwd(), 'platforms/macos/dist/Pimpampum.app');
 const checker = join(process.cwd(), 'scripts/check-macos-artifact.mjs');
 const packageVersion = (
   JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
@@ -92,7 +92,7 @@ function addRuntimeFixture(app: string): void {
 function candidate(label: string): string {
   const root = mkdtempSync(join(tmpdir(), `pimpampum-macos-artifact-${label}-`));
   roots.push(root);
-  const app = join(root, 'PimpampumMenuBar.app');
+  const app = join(root, 'Pimpampum.app');
   cpSync(sourceApp, app, { recursive: true });
   addRuntimeFixture(app);
   return app;
@@ -126,8 +126,8 @@ describe.skipIf(process.platform !== 'darwin')('packaged macOS artifact gate', (
     };
     expect(metadata).toMatchObject({
       architecture: 'arm64',
-      appBundle: 'PimpampumMenuBar.app',
-      appName: 'pim • pam • pum',
+      appBundle: 'Pimpampum.app',
+      appName: 'Pimpampum',
     });
     expect(metadata.binarySha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(metadata.plistSha256).toMatch(/^[a-f0-9]{64}$/u);

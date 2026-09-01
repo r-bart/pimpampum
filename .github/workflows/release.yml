@@ -130,23 +130,23 @@ jobs:
         env:
           SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
         run: |
-          runtime="platforms/macos/dist/PimpampumMenuBar.app/Contents/Resources/PimpampumRuntime/payload"
+          runtime="platforms/macos/dist/Pimpampum.app/Contents/Resources/PimpampumRuntime/payload"
           /usr/bin/codesign --verify --strict --verbose=2 \
             "$runtime/bin/node"
           /usr/bin/codesign --verify --strict --verbose=2 \
             "$runtime/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
           /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
-            platforms/macos/dist/PimpampumMenuBar.app
+            platforms/macos/dist/Pimpampum.app
       - name: Notarize and staple
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          submission="$RUNNER_TEMP/PimpampumMenuBar-notarization.zip"
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent platforms/macos/dist/PimpampumMenuBar.app "$submission"
+          submission="$RUNNER_TEMP/Pimpampum-notarization.zip"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent platforms/macos/dist/Pimpampum.app "$submission"
           xcrun notarytool submit "$submission" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
-          xcrun stapler staple platforms/macos/dist/PimpampumMenuBar.app
+          xcrun stapler staple platforms/macos/dist/Pimpampum.app
           scripts/check-macos-distribution.sh
       - name: Approve and exercise the exact notarized artifact
         env:
@@ -156,7 +156,7 @@ jobs:
         run: |
           mkdir -p "$TMPDIR"
           node scripts/check-macos-artifact.mjs \
-            platforms/macos/dist/PimpampumMenuBar.app \
+            platforms/macos/dist/Pimpampum.app \
             --approve --require-signature --require-notarization
           PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
           npm run check:macos-evidence
@@ -191,7 +191,7 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             "$RUNNER_TEMP/release/pimpampum-${GITHUB_REF_NAME#v}.tgz" \
-            "$RUNNER_TEMP/release/PimpampumMenuBar-${GITHUB_REF_NAME#v}-macos-arm64.zip" \
+            "$RUNNER_TEMP/release/Pimpampum-${GITHUB_REF_NAME#v}-macos-arm64.zip" \
             "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.tar.gz" \
             "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-x64.tar.gz" \
             "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.manifest.json" \

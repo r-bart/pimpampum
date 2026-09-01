@@ -134,7 +134,7 @@ jobs:
         run: |
           mkdir -p "$TMPDIR"
           node scripts/check-macos-artifact.mjs \
-            platforms/macos/dist/PimpampumMenuBar.app --approve
+            platforms/macos/dist/Pimpampum.app --approve
           PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
       - name: Upload live-smoke diagnostics
         if: failure()

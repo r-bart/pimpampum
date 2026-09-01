@@ -81,7 +81,7 @@ struct EmbeddedRuntimeBootstrapTests {
     defer { try? FileManager.default.removeItem(at: root) }
     let bootstrap = try EmbeddedSetupBootstrap.bundled(
       resourceURL: resources,
-      sourceApplicationURL: URL(fileURLWithPath: "/Volumes/Download/PimpampumMenuBar.app"),
+      sourceApplicationURL: URL(fileURLWithPath: "/Volumes/Download/Pimpampum.app"),
       homeDirectory: URL(fileURLWithPath: "/Users/example")
     )
     let runtime = bootstrap.runtime
@@ -95,7 +95,7 @@ struct EmbeddedRuntimeBootstrapTests {
     )
     #expect(bootstrap.requiresInstalledApplicationRelaunch)
     #expect(
-      bootstrap.installedApplicationURL.path == "/Users/example/Applications/PimpampumMenuBar.app")
+      bootstrap.installedApplicationURL.path == "/Users/example/Applications/Pimpampum.app")
   }
 
   @MainActor
@@ -105,8 +105,8 @@ struct EmbeddedRuntimeBootstrapTests {
       .appendingPathComponent("pimpampum-relaunch-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let home = root.appendingPathComponent("home")
-    let source = root.appendingPathComponent("Downloads/PimpampumMenuBar.app")
-    let installed = home.appendingPathComponent("Applications/PimpampumMenuBar.app")
+    let source = root.appendingPathComponent("Downloads/Pimpampum.app")
+    let installed = home.appendingPathComponent("Applications/Pimpampum.app")
     try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
     let runtime = EmbeddedControlRuntime(
@@ -144,7 +144,7 @@ struct EmbeddedRuntimeBootstrapTests {
     let home = root.appendingPathComponent("home")
     let outside = root.appendingPathComponent("outside.app")
     try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
-    let installed = home.appendingPathComponent("Applications/PimpampumMenuBar.app")
+    let installed = home.appendingPathComponent("Applications/Pimpampum.app")
     try FileManager.default.createDirectory(
       at: installed.deletingLastPathComponent(), withIntermediateDirectories: true)
     try FileManager.default.createSymbolicLink(at: installed, withDestinationURL: outside)
@@ -154,7 +154,7 @@ struct EmbeddedRuntimeBootstrapTests {
         executableURL: root.appendingPathComponent("bin/node"),
         cliURL: root.appendingPathComponent("dist/cli.js")
       ),
-      sourceApplicationURL: root.appendingPathComponent("Downloads/PimpampumMenuBar.app"),
+      sourceApplicationURL: root.appendingPathComponent("Downloads/Pimpampum.app"),
       homeDirectory: home
     )
     #expect(!bootstrap.installedApplicationExists())

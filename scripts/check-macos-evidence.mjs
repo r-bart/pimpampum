@@ -11,7 +11,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function parseArguments(arguments_) {
   const values = {
     evidence: join(root, 'thoughts/evidence/macos-live.json'),
-    app: join(root, 'platforms/macos/dist/PimpampumMenuBar.app'),
+    app: join(root, 'platforms/macos/dist/Pimpampum.app'),
     metadata: join(root, 'platforms/macos/dist/PimpampumMenuBar.artifact.json'),
   };
   for (let index = 0; index < arguments_.length; index += 1) {
@@ -103,6 +103,7 @@ const expectedChecks = [
   'completion',
   'daemonOffline',
   'nativePopoverRendering',
+  'guidedSetupPopover',
   'staleRecovery',
   'projectRowActivation',
   'finderRevealExactPath',
@@ -112,6 +113,7 @@ const expectedChecks = [
 ];
 const expectedScenarios = [
   'cleanNoNode',
+  'guidedSetupPopover',
   'legacyNpmMigration',
   'noAgent',
   'oneAgent',
@@ -218,7 +220,7 @@ invariant(
 );
 invariant(
   Object.values(evidence.renderings ?? {}).every(validHash) &&
-    ['empty', 'active', 'complete', 'stale', 'recovered'].every((name) =>
+    ['setupRequired', 'empty', 'active', 'complete', 'stale', 'recovered'].every((name) =>
       validHash(evidence.renderings?.[name]),
     ),
   'macOS live evidence has incomplete native rendering hashes.',

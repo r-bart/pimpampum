@@ -4,7 +4,7 @@ set -eu
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 output_root=${1:-"$repository_root/release"}
 version=$(node -p "require('$repository_root/package.json').version")
-app_root="$repository_root/platforms/macos/dist/PimpampumMenuBar.app"
+app_root="$repository_root/platforms/macos/dist/Pimpampum.app"
 runtime_bundles_root=${PIMPAMPUM_RUNTIME_BUNDLES_ROOT:-}
 runtime_work=""
 
@@ -105,13 +105,13 @@ fi
 
 npm pack --pack-destination "$output_root" >/dev/null
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
-  "$app_root" "$output_root/PimpampumMenuBar-$version-macos-arm64.zip"
+  "$app_root" "$output_root/Pimpampum-$version-macos-arm64.zip"
 
 (
   cd "$output_root"
   shasum -a 256 \
     "pimpampum-$version.tgz" \
-    "PimpampumMenuBar-$version-macos-arm64.zip" \
+    "Pimpampum-$version-macos-arm64.zip" \
     "pimpampum-runtime-$version-linux-arm64.tar.gz" \
     "pimpampum-runtime-$version-linux-x64.tar.gz" \
     "pimpampum-runtime-$version-linux-arm64.manifest.json" \

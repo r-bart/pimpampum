@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const appRoot = join(repositoryRoot, 'platforms/macos/dist/PimpampumMenuBar.app');
+const appRoot = join(repositoryRoot, 'platforms/macos/dist/Pimpampum.app');
 const packagePath = join(repositoryRoot, 'package.json');
 const repositoryManifestBackup = join(repositoryRoot, '.pimpampum-package.repository.json');
 

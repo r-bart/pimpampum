@@ -90,7 +90,7 @@ export function resolvePackagedRuntimeBootstrap(
     if (active.version !== input.version) {
       throw new Error('Active packaged runtime version does not match the Pimpampum CLI');
     }
-    const installedApplication = join(input.homeDirectory, 'Applications', 'PimpampumMenuBar.app');
+    const installedApplication = join(input.homeDirectory, 'Applications', 'Pimpampum.app');
     return {
       manifest: null,
       sourceDirectory: null,

@@ -28,7 +28,7 @@ describe('macOS embedded runtime source', () => {
     roots.push(root);
     const home = join(root, 'home');
     const data = join(root, 'data');
-    const sourceApp = join(root, 'Downloads', 'PimpampumMenuBar.app');
+    const sourceApp = join(root, 'Downloads', 'Pimpampum.app');
     const runtimeRoot = join(sourceApp, 'Contents/Resources/PimpampumRuntime');
     mkdirSync(join(sourceApp, 'Contents/MacOS'), { recursive: true });
     mkdirSync(join(runtimeRoot, 'payload/bin'), { recursive: true });
@@ -86,7 +86,7 @@ describe('macOS embedded runtime source', () => {
     });
 
     await manager.install();
-    const installedApp = join(home, 'Applications/PimpampumMenuBar.app');
+    const installedApp = join(home, 'Applications/Pimpampum.app');
     expect(
       existsSync(join(installedApp, 'Contents/Resources/PimpampumRuntime/payload/bin/node')),
     ).toBe(true);
@@ -99,7 +99,7 @@ describe('macOS embedded runtime source', () => {
     roots.push(root);
     const home = join(root, 'home');
     const data = join(root, 'data');
-    const sourceApp = join(root, 'Downloads', 'PimpampumMenuBar.app');
+    const sourceApp = join(root, 'Downloads', 'Pimpampum.app');
     const runtimeRoot = join(sourceApp, 'Contents/Resources/PimpampumRuntime');
     mkdirSync(join(sourceApp, 'Contents/MacOS'), { recursive: true });
     mkdirSync(join(runtimeRoot, 'payload/bin'), { recursive: true });
@@ -139,9 +139,7 @@ describe('macOS embedded runtime source', () => {
 
     await expect(manager.install()).rejects.toThrow(/registration helper/iu);
     expect(
-      existsSync(
-        join(home, 'Applications/PimpampumMenuBar.app/Contents/Resources/PimpampumRuntime'),
-      ),
+      existsSync(join(home, 'Applications/Pimpampum.app/Contents/Resources/PimpampumRuntime')),
     ).toBe(false);
     expect(existsSync(join(data, 'install-receipt.json'))).toBe(false);
   });
@@ -151,7 +149,7 @@ describe('macOS embedded runtime source', () => {
     roots.push(root);
     const home = join(root, 'home');
     const data = join(root, 'data');
-    const sourceApp = join(root, 'Downloads', 'PimpampumMenuBar.app');
+    const sourceApp = join(root, 'Downloads', 'Pimpampum.app');
     const runtimeRoot = join(sourceApp, 'Contents/Resources/PimpampumRuntime');
     const victim = join(root, 'victim');
     mkdirSync(join(sourceApp, 'Contents/MacOS'), { recursive: true });

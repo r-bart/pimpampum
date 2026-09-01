@@ -28,7 +28,7 @@ describe('runtime release integration', () => {
     const nodeEntitlements = source('platforms/macos/Resources/Node.entitlements');
     const nodeSign = workflow.indexOf('$runtime/bin/node');
     const addonSign = workflow.indexOf('better-sqlite3/build/Release/better_sqlite3.node');
-    const outerSign = workflow.indexOf('platforms/macos/dist/PimpampumMenuBar.app', addonSign);
+    const outerSign = workflow.indexOf('platforms/macos/dist/Pimpampum.app', addonSign);
 
     expect(nodeSign).toBeGreaterThan(0);
     expect(addonSign).toBeGreaterThan(nodeSign);

@@ -62,7 +62,7 @@ async function fixture() {
   const homeDirectory = join(root, 'home');
   const dataDirectory = join(root, 'data');
   const applications = join(homeDirectory, 'Applications');
-  const installedApp = join(applications, 'PimpampumMenuBar.app');
+  const installedApp = join(applications, 'Pimpampum.app');
   mkdirSync(installedApp, { recursive: true });
   mkdirSync(dataDirectory, { recursive: true });
   writeFileSync(join(installedApp, 'old-bytes'), 'old-application-bytes');
@@ -102,7 +102,7 @@ async function fixture() {
   );
   const stagingRoot = mkdtempSync(join(applications, '.pimpampum-update-'));
   const candidatePath = join(stagingRoot, 'candidate');
-  const app = join(candidatePath, 'PimpampumMenuBar.app');
+  const app = join(candidatePath, 'Pimpampum.app');
   mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true });
   writeFileSync(join(app, 'Contents', 'MacOS', 'PimpampumMenuBar'), 'binary', { mode: 0o755 });
   const next = runtime(join(app, 'Contents', 'Resources'), '2.0.0');

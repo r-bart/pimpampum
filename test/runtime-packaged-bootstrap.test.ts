@@ -33,7 +33,7 @@ function fixture() {
   roots.push(root);
   const homeDirectory = join(root, 'home');
   const dataDirectory = join(root, 'data');
-  const application = join(root, 'Downloads', 'PimpampumMenuBar.app');
+  const application = join(root, 'Downloads', 'Pimpampum.app');
   const runtimeRoot = join(application, 'Contents', 'Resources', 'PimpampumRuntime');
   const sourceDirectory = join(runtimeRoot, 'payload');
   const contents = {
@@ -192,7 +192,7 @@ describe('packaged runtime production bootstrap', () => {
         cliPath: first.cliPath,
       }),
     ).toThrow(/active packaged runtime version/iu);
-    const installedApplication = join(value.homeDirectory, 'Applications', 'PimpampumMenuBar.app');
+    const installedApplication = join(value.homeDirectory, 'Applications', 'Pimpampum.app');
     mkdirSync(installedApplication, { recursive: true, mode: 0o700 });
 
     const stable = resolvePackagedRuntimeBootstrap({

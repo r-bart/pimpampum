@@ -546,7 +546,7 @@ export function createConcretePackagedProvider(
   const installedResources = join(
     input.homeDirectory,
     'Applications',
-    'PimpampumMenuBar.app',
+    'Pimpampum.app',
     'Contents',
     'Resources',
   );
@@ -643,7 +643,7 @@ export function createConcretePackagedProvider(
         const stagedAppPath = validateCandidateInventory(candidatePath, target, version);
         if (!pathInside(candidatePath, stagedAppPath))
           throw new Error('Staged app escaped its candidate root');
-        const installedApp = join(input.homeDirectory, 'Applications', 'PimpampumMenuBar.app');
+        const installedApp = join(input.homeDirectory, 'Applications', 'Pimpampum.app');
         const candidateRuntimeRoot = join(
           stagedAppPath,
           'Contents',
@@ -797,7 +797,7 @@ export function createConcretePackagedProvider(
                 throw new Error('Packaged update receipt disappeared before staging');
               }
               backupRoot = mkdtempSync(join(applicationsDirectory, '.pimpampum-app-backup-'));
-              backupApp = join(backupRoot, 'PimpampumMenuBar.app');
+              backupApp = join(backupRoot, 'Pimpampum.app');
               return {
                 runtimeVersion: currentReceipt.version,
                 serviceCommand: [currentReceipt.nodePath, currentReceipt.cliPath],
@@ -934,7 +934,7 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
     : null;
   const bundledMacOSApp =
     packagedRuntimeBootstrap?.sourceApplicationPath ??
-    resolve(dirname(modulePath), '..', 'platforms', 'macos', 'dist', 'PimpampumMenuBar.app');
+    resolve(dirname(modulePath), '..', 'platforms', 'macos', 'dist', 'Pimpampum.app');
   const bundledOmarchyPlugin = resolve(
     dirname(modulePath),
     '..',

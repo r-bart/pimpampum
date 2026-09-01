@@ -30,7 +30,7 @@ describe('macOS embedded runtime filesystem faults', () => {
     const installedRuntime = join(
       homeDirectory,
       'Applications',
-      'PimpampumMenuBar.app',
+      'Pimpampum.app',
       'Contents',
       'Resources',
       'PimpampumRuntime',
