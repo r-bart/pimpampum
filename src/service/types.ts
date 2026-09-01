@@ -16,10 +16,18 @@ export interface PackagedRuntimeMetadata {
   runtimeDirectory: string;
 }
 
-export interface ServiceArtifact {
+/**
+ * What an operation may know about an owned file without holding its bytes. Status reads this shape
+ * straight from the install receipt, so nothing in that path can reach for content that was never
+ * planned. Every `ServiceArtifact` is also a valid reference.
+ */
+export interface ServiceArtifactRef {
   path: string;
-  content: string | Buffer;
   mode: number;
+}
+
+export interface ServiceArtifact extends ServiceArtifactRef {
+  content: string | Buffer;
 }
 
 export interface ServiceAdapterContext {
@@ -39,6 +47,12 @@ export interface PlatformServiceAdapter {
   readonly id: string;
   readonly platform: SupportedServicePlatform;
   artifacts(context: ServiceAdapterContext): ServiceArtifact[];
+  /**
+   * Whether `artifacts` can be planned right now. An adapter that reads an installation source
+   * it does not always have — the macOS app bundle lives in the build tree, never in the
+   * installed runtime — reports false so status verifies its receipt instead of throwing.
+   */
+  canPlanArtifacts?(context: ServiceAdapterContext): boolean;
   ownedArtifactRoots?(context: ServiceAdapterContext): string[];
   preflight?(
     context: ServiceAdapterContext,
@@ -51,7 +65,7 @@ export interface PlatformServiceAdapter {
     context: ServiceAdapterContext,
     artifacts: ServiceArtifact[],
   ): Promise<() => Promise<void>>;
-  isRunning(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<boolean>;
+  isRunning(context: ServiceAdapterContext, artifacts: ServiceArtifactRef[]): Promise<boolean>;
   afterInstall?(
     context: ServiceAdapterContext,
     artifacts: ServiceArtifact[],
@@ -61,7 +75,7 @@ export interface PlatformServiceAdapter {
   afterUninstall?(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
   integrationStatus?(
     context: ServiceAdapterContext,
-    artifacts: ServiceArtifact[],
+    artifacts: ServiceArtifactRef[],
   ): Promise<ServiceIntegrationStatus | undefined>;
 }
 

@@ -22,6 +22,7 @@ import type {
   PreparedServiceUninstall,
   ServiceAdapterContext,
   ServiceArtifact,
+  ServiceArtifactRef,
   ServiceManager,
   ServiceStatus,
   SupportedServicePlatform,
@@ -235,7 +236,7 @@ function adapterContext(input: PlatformServiceManagerInput): ServiceAdapterConte
   };
 }
 
-function validateArtifacts(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): void {
+function validateArtifacts(context: ServiceAdapterContext, artifacts: ServiceArtifactRef[]): void {
   const seen = new Set<string>();
   for (const artifact of artifacts) {
     artifact.path = absolutePath(artifact.path, 'Service artifact');
@@ -338,7 +339,27 @@ function restoreArtifacts(snapshots: ArtifactSnapshot[]): void {
   }
 }
 
-function artifactSetIsCurrent(receipt: InstallReceipt, artifacts: ServiceArtifact[]): boolean {
+/**
+ * Status answers "is the recorded installation still intact?". The receipt already names every
+ * owned path, mode, and digest, so verification reads the installed files and never the source the
+ * adapter would plan from. An installed CLI runs from the packaged runtime and has no build tree:
+ * re-planning there throws, and on macOS it would also read the whole app bundle only to discard
+ * every byte, because the digest compared below is always taken from disk.
+ */
+function receiptMatchesDisk(receipt: InstallReceipt): boolean {
+  return receipt.artifacts.every((expected) => {
+    if (!existsSync(expected.path)) return false;
+    const metadata = lstatSync(expected.path);
+    return (
+      metadata.isFile() &&
+      !metadata.isSymbolicLink() &&
+      (metadata.mode & 0o777) === expected.mode &&
+      sha256(readFileSync(expected.path)) === expected.sha256
+    );
+  });
+}
+
+function artifactSetIsCurrent(receipt: InstallReceipt, artifacts: ServiceArtifactRef[]): boolean {
   if (receipt.artifacts.length !== artifacts.length) return false;
   return artifacts.every((artifact, index) => {
     const expected = receipt.artifacts[index]!;
@@ -737,9 +758,17 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
         const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
         if (!receipt) return { installed: false, running: false, adapter: null, version: null };
         const adapter = requireReceiptAdapter(input, receipt);
-        const artifacts = adapter.artifacts(context);
+        // Planning detects an installation that no longer matches what this build would write. It
+        // needs the adapter's source, which an installed CLI does not carry, so fall back to the
+        // receipt rather than failing a read-only command.
+        const canPlan = adapter.canPlanArtifacts?.(context) ?? true;
+        const artifacts: ServiceArtifactRef[] = canPlan
+          ? adapter.artifacts(context)
+          : receipt.artifacts.map((artifact) => ({ path: artifact.path, mode: artifact.mode }));
         validateArtifacts(context, artifacts);
-        const installed = artifactSetIsCurrent(receipt, artifacts);
+        const installed = canPlan
+          ? artifactSetIsCurrent(receipt, artifacts)
+          : receiptMatchesDisk(receipt);
         const integration = await adapter.integrationStatus?.(context, artifacts);
         return {
           installed,
