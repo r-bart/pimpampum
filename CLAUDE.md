@@ -110,6 +110,22 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - ALWAYS update `integrations/omarchy/pimpampum-status/README.md` and the `Native status surfaces` section of `README.md` when a settings card gains a write action; both still claimed the panels were read-only apart from sync and backup after updates shipped.
 - NEVER document an MCP tool count from `src/mcp.ts` alone; the daemon registers four `sync_*` tools that `src/mcpStdio.ts` does not, so a live `tools/list` returns 36 over HTTP and 32 over stdio.
 - ALWAYS uninstall the local integration before `PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos`; it refuses to run beside a user installation, and restoring one afterwards can need a retry because the login handshake allows only 10 seconds.
+- NEVER decode CLI output in a desktop adapter by splitting on newlines alone; `printEnvelope` indents with `JSON.stringify(value, null, 2)`, so parse the whole buffer as one object first and only then fall back to NDJSON lines.
+- NEVER feed a decoder test a hand-compacted envelope the CLI cannot emit; copy the exact bytes a real `pimpampum` invocation writes, or the test pins the decoder against itself.
+- NEVER set a `SetupStore` activity that reports `hasBegunMutation` before confirming a journal is running; `SetupOnboardingView` jumps to the final step on that flag and never moves back.
+- ALWAYS derive the onboarding's initial `@State` from `SetupOnboardingStep.first`; a literal case silently hides any step inserted ahead of it.
+- NEVER plan artifacts from the app bundle in a read-only or uninstall path; an installed CLI runs from the packaged runtime with no build tree, so gate it behind `canPlanArtifacts` and verify the receipt against disk instead.
+- ALWAYS trust `check-swift-coverage.sh` only for the files in its `covered_sources` manifest; `SetupStore.swift` (56%) and `SetupCommandRunner.swift` (64%) still sit outside it, so 100% says nothing about them. `SetupModels.swift` was added on 2026-09-01; widen the manifest when you cover another file rather than reporting a number that excludes the code you changed.
+- NEVER present a `.sheet` from a menu-bar popover; the sheet is a real window, the popover closes as soon as it loses key focus, and the whole surface disappears. Render the content inside the popover and close it with a callback the presenting view owns, never `@Environment(\.dismiss)`.
+- NEVER set `createsNewApplicationInstance = true` unconditionally when relaunching; login-item registration completes several phases earlier and may already have started the installed copy, leaving two menu-bar apps fighting over one popover.
+- ALWAYS leave the progress step something to report; hiding the background service while it behaves blanks the whole screen when the user selected no agents.
+- NEVER commit `platforms/macos/dist/` binaries rebuilt during local iteration; `.gitignore` un-ignores that tree, a bare `git add -A` would add the 149 MB `PimpampumRuntime/`, and a rebuilt binary invalidates `check-macos-artifact.mjs` until `npm run approve:macos` re-approves it on a clean tree.
+- NEVER reinstall the same version with different bytes; the runtime installer verifies sizes against its inventory and fails with `size drift`. Remove `~/Library/Application Support/Pimpampum/{Runtime,bin}` first when iterating locally.
+- ALWAYS verify a macOS fix from an installed copy outside the checkout; running from `platforms/macos/dist/` hides every defect that depends on the build tree being absent, and a bundle under `~/Desktop` also triggers a TCC prompt that closes the popover.
+- NEVER gate the guided setup confirmation on a non-empty agent selection; the success metrics require a setup with no supported agents to complete, and `canReview` demanding one made the service uninstallable on a Mac where nothing was detected.
+- NEVER reject symlinks when detecting an agent; Codex and Claude Code install as links into `~/.local/bin`, so resolve with `resolvingSymlinksInPath()`. Detection reads presence only and executes nothing.
+- ALWAYS render the confirmation screen from `SetupPlan.changes`, never from a Swift constant; the plan carries the real `path` for every target and a hand-written summary silently drifts from the installer.
+- ALWAYS request the setup plan before the confirmation button, not inside its handler; otherwise the user authorizes an operation id and revision that did not exist when they agreed.
 
 ## Self-Improvement
 
