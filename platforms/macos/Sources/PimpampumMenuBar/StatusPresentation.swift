@@ -245,3 +245,40 @@ extension StatusPopover {
     }
   }
 }
+
+/// Which of the three bodies the popover renders below its header.
+enum StatusPopoverContent: Equatable, Sendable {
+  case help
+  case guidedSetup
+  case overview
+}
+
+extension StatusPopover {
+  /// The guided setup keeps the popover while its session is active, whatever the daemon reports.
+  /// Before that, a missing receipt is what opens it.
+  static func content(
+    isHelpPresented: Bool,
+    setupSessionActive: Bool,
+    connectionState: OverviewConnectionState
+  ) -> StatusPopoverContent {
+    if isHelpPresented { return .help }
+    if setupSessionActive || isSetupRequired(connectionState) { return .guidedSetup }
+    return .overview
+  }
+
+  static func isSetupRequired(_ connectionState: OverviewConnectionState) -> Bool {
+    if case .setupRequired = connectionState { return true }
+    return false
+  }
+
+  /// Help swaps the body. During a setup session that swap must not happen from the header, or the
+  /// screen the user is working in disappears under them.
+  static func showsHelpButton(setupSessionActive: Bool) -> Bool {
+    !setupSessionActive
+  }
+
+  /// Settings need an installed daemon; the guided setup shows the version instead.
+  static func showsSettingsButton(content: StatusPopoverContent) -> Bool {
+    content != .guidedSetup
+  }
+}

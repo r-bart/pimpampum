@@ -178,8 +178,34 @@ Item {
     operationFinished(completedAction, completedConnectorId, true)
   }
 
+  function boundedCliCode(value) {
+    return typeof value === "string" && /^[a-z_]{1,40}$/.test(value) ? value : ""
+  }
+
+  function boundedCliMessage(value) {
+    if (typeof value !== "string" || value.length === 0 || value.length > 200) return ""
+    return value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim()
+  }
+
+  // The helper forwards the CLI's typed error code and one bounded line of its message, like the
+  // other services read `error.message` from the CLI's stderr envelope. A stopped daemon, a
+  // missing agent CLI and a real connector failure therefore no longer read alike.
+  function actionableProcessError(envelope, fallback) {
+    var cliCode = boundedCliCode(envelope.cliCode)
+    var message = boundedCliMessage(envelope.message)
+    if (cliCode === "unavailable")
+      return "Pimpampum is not running. Start the service from Settings and retry."
+    if (cliCode === "unauthorized")
+      return "The saved credentials no longer match the local daemon. Run pimpampum install."
+    if (cliCode === "not_found" || /not installed/i.test(message))
+      return "The agent's command-line tool is not installed."
+    if (cliCode === "conflict") return "The agent connection changed and needs another review"
+    return message.length > 0 ? message : fallback
+  }
+
   function acceptFailure(text) {
     var message = "Agent connection operation failed"
+    var failedState = "Needs repair"
     if (typeof text === "string" && text.length > 0 && text.length <= 4096) {
       try {
         var envelope = JSON.parse(text)
@@ -189,22 +215,20 @@ Item {
           else if (envelope.code === "timeout") message = "The connection action took too long"
           else if (envelope.code === "connector_conflict") {
             message = "The agent connection changed and needs another review"
-            setState(pendingConnectorId, "Configuration conflict")
+            failedState = "Configuration conflict"
+          }
+          else if (envelope.code === "command_failed") {
+            message = actionableProcessError(envelope, message)
+            if (boundedCliCode(envelope.cliCode) === "unavailable") failedState = "Unavailable"
           }
         }
       } catch (error) {}
     }
     var failedAction = pendingAction
     var failedConnectorId = pendingConnectorId
-    if (validConnectorId(failedConnectorId)
-        && stateForFailure(failedConnectorId) !== "Configuration conflict")
-      setState(failedConnectorId, "Needs repair")
+    if (validConnectorId(failedConnectorId)) setState(failedConnectorId, failedState)
     fail(message)
     operationFinished(failedAction, failedConnectorId, false)
-  }
-
-  function stateForFailure(connectorId) {
-    return connectorId === "codex" ? codexState : claudeCodeState
   }
 
   function handleExit(exitCode) {

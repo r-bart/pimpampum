@@ -968,7 +968,7 @@ Item {
                   : root.updateService.state === "current" ? "Pimpampum is up to date."
                   : root.updateService.state === "installing" ? "Installing and restarting Pimpampum…"
                   : root.updateService.errorMessage !== "" ? root.updateService.errorMessage
-                  : "Check npm for a newer release. Nothing changes until you install it."
+                  : "Check for a newer Pimpampum release. Nothing changes until you install it."
               }
               PimpampumSettingsButton {
                 width: parent.width; height: implicitHeight

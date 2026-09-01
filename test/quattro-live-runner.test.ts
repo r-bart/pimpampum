@@ -18,6 +18,8 @@ import { dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createOmarchyAdapter } from '../src/service/omarchy.js';
+import type { PlatformServiceAdapter } from '../src/service/types.js';
 
 const roots: string[] = [];
 
@@ -495,8 +497,11 @@ describe('Quattro live runner hardening', () => {
     expect(existsSync(staged.cliPath)).toBe(false);
   });
 
-  it('verifies every installed plugin byte and mode against its receipt-owned transform', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'pimpampum-transform-proof-'));
+  it('verifies every installed plugin byte and mode against the receipt-owned artifacts', async () => {
+    // M-O3: the runner used to expect helpers rewritten as bash exporting PIMPAMPUM_*, a transform
+    // the installer no longer performs. The expectation is now the installer's own artifact list,
+    // so a production candidate verifies the way it is installed.
+    const root = mkdtempSync(join(tmpdir(), 'pimpampum-artifact-proof-'));
     roots.push(root);
     const repository = join(root, 'repository');
     const candidate = join(repository, 'integrations/omarchy/pimpampum-status');
@@ -512,129 +517,58 @@ describe('Quattro live runner hardening', () => {
       cliPath,
       expectedCandidateHash,
     });
-    const plugin = join(root, 'home/.config/omarchy/plugins/dev.pimpampum.status');
-    cpSync(candidate, plugin, { recursive: true });
-    const helper = `#!/bin/bash
-set -euo pipefail
-
-export PIMPAMPUM_DATA_DIR='${join(root, 'data')}'
-export PIMPAMPUM_HOST='127.0.0.1'
-export PIMPAMPUM_PORT='7337'
-exec '${process.execPath}' '${cliPath}' overview
-`;
-    writeFileSync(join(plugin, 'pimpampum-overview'), helper);
-    const backupHelper = `#!/bin/bash
-set -euo pipefail
-
-case \${1:-} in
-  status|retry|disable)
-    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-backup: invalid arguments' >&2; exit 64; }
-    ;;
-  configure)
-    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-backup: configure requires one directory' >&2; exit 64; }
-    ;;
-  *)
-    printf '%s\\n' 'pimpampum-backup: expected status, configure, retry, or disable' >&2
-    exit 64
-    ;;
-esac
-
-export PIMPAMPUM_DATA_DIR='${join(root, 'data')}'
-export PIMPAMPUM_HOST='127.0.0.1'
-export PIMPAMPUM_PORT='7337'
-exec '${process.execPath}' '${cliPath}' backup "$@"
-`;
-    writeFileSync(join(plugin, 'pimpampum-backup'), backupHelper);
-    const syncHelper = `#!/bin/bash
-set -euo pipefail
-
-case \${1:-} in
-  status|now|pause|resume|conflicts|forget)
-    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-sync: invalid arguments' >&2; exit 64; }
-    ;;
-  configure)
-    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-sync: configure requires one directory' >&2; exit 64; }
-    ;;
-  *)
-    printf '%s\\n' 'pimpampum-sync: expected status, configure, now, pause, resume, conflicts, or forget' >&2
-    exit 64
-    ;;
-esac
-
-export PIMPAMPUM_DATA_DIR='${join(root, 'data')}'
-export PIMPAMPUM_HOST='127.0.0.1'
-export PIMPAMPUM_PORT='7337'
-
-if [[ $1 == configure ]]; then
-  device_id=$(hostname | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-63)
-  [[ -n $device_id ]] || device_id=linux
-  exec '${process.execPath}' '${cliPath}' sync configure "$2" --device "$device_id" --json
-fi
-
-exec '${process.execPath}' '${cliPath}' sync "$1" --json
-`;
-    writeFileSync(join(plugin, 'pimpampum-sync'), syncHelper);
-    const serviceHelper = `#!/bin/bash
-set -euo pipefail
-
-case \${1:-} in
-  status)
-    [[ $# -eq 1 ]] || exit 64
-    ;;
-  start|stop|restart)
-    [[ $# -eq 1 ]] || exit 64
-    /usr/bin/systemctl --user "$1" pimpampum.service >/dev/null
-    ;;
-  *)
-    printf '%s\\n' 'pimpampum-service: expected status, start, stop, or restart' >&2
-    exit 64
-    ;;
-esac
-
-if /usr/bin/systemctl --user is-active --quiet pimpampum.service; then
-  printf '%s\\n' '{"running":true}'
-else
-  printf '%s\\n' '{"running":false}'
-fi
-`;
-    writeFileSync(join(plugin, 'pimpampum-service'), serviceHelper);
-    const artifacts: Array<{ path: string; sha256: string; mode: number }> = [];
-    const visit = (directory: string) => {
-      for (const name of readdirSync(directory)) {
-        const path = join(directory, name);
-        if (lstatSync(path).isDirectory()) visit(path);
-        else {
-          const child = relative(plugin, path);
-          const mode = [
-            'install.sh',
-            'uninstall.sh',
-            'pimpampum-backup',
-            'pimpampum-folder-picker',
-            'pimpampum-overview',
-            'pimpampum-service',
-            'pimpampum-sync',
-          ].includes(child)
-            ? 0o755
-            : 0o644;
-          chmodSync(path, mode);
-          artifacts.push({
-            path,
-            sha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
-            mode,
-          });
-        }
-      }
+    const home = join(root, 'home');
+    const dataDirectory = join(root, 'data');
+    const daemonAdapter: PlatformServiceAdapter = {
+      id: 'fake-systemd',
+      platform: 'linux',
+      artifacts: () => [
+        {
+          path: join(home, '.config/systemd/user/pimpampum.service'),
+          content: 'unit',
+          mode: 0o600,
+        },
+      ],
+      async activate() {},
+      async deactivate() {},
+      async isRunning() {
+        return false;
+      },
     };
-    visit(plugin);
-    const receiptPath = join(root, 'data/install-receipt.json');
-    mkdirSync(dirname(receiptPath), { recursive: true });
+    const artifacts = createOmarchyAdapter({
+      pluginSourcePath: candidate,
+      daemonAdapter,
+      omarchyPath: '/usr/bin/omarchy',
+      omarchyShellPath: '/usr/bin/omarchy-shell',
+    }).artifacts({
+      homeDirectory: home,
+      dataDirectory,
+      nodePath: process.execPath,
+      cliPath,
+      version: '1.0.0',
+      host: '127.0.0.1',
+      port: 7337,
+      logDirectory: join(dataDirectory, 'logs'),
+      runCommand: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    });
+    for (const artifact of artifacts) {
+      mkdirSync(dirname(artifact.path), { recursive: true });
+      writeFileSync(artifact.path, artifact.content);
+      chmodSync(artifact.path, artifact.mode);
+    }
+    mkdirSync(dataDirectory, { recursive: true });
+    const receiptPath = join(dataDirectory, 'install-receipt.json');
     writeFileSync(
       receiptPath,
       JSON.stringify({
         schemaVersion: 1,
         adapter: 'systemd-omarchy-quattro',
-        dataDirectory: join(root, 'data'),
-        artifacts,
+        dataDirectory,
+        artifacts: artifacts.map((artifact) => ({
+          path: artifact.path,
+          sha256: createHash('sha256').update(artifact.content).digest('hex'),
+          mode: artifact.mode,
+        })),
       }),
     );
     const verification = {
@@ -644,9 +578,29 @@ fi
       cliPath,
     };
     await dependencies.verifyInstalledCandidate(verification);
+
+    // The installer's executable list and the delivery checker's list must agree, because the
+    // runner takes its expected modes from the checker.
+    const plugin = join(home, '.config/omarchy/plugins/dev.pimpampum.status');
+    const { executableHelpers } = (await import(
+      pathToFileURL(join(process.cwd(), 'scripts/check-omarchy-delivery.mjs')).href
+    )) as { executableHelpers: string[] };
+    const pluginArtifacts = artifacts.filter((artifact) => artifact.path.startsWith(`${plugin}/`));
+    expect(pluginArtifacts.length).toBeGreaterThan(executableHelpers.length);
+    for (const artifact of pluginArtifacts) {
+      expect(artifact.mode, artifact.path).toBe(
+        executableHelpers.includes(relative(plugin, artifact.path)) ? 0o755 : 0o644,
+      );
+    }
+
+    chmodSync(join(plugin, 'pimpampum-common.sh'), 0o644);
+    await expect(dependencies.verifyInstalledCandidate(verification)).rejects.toThrow(
+      'Installed receipt-owned plugin differs from the staged candidate at pimpampum-common.sh',
+    );
+    chmodSync(join(plugin, 'pimpampum-common.sh'), 0o755);
     writeFileSync(join(plugin, 'manifest.json'), '{"tampered":true}\n');
     await expect(dependencies.verifyInstalledCandidate(verification)).rejects.toThrow(
-      'Installed receipt-owned plugin transform differs at manifest.json',
+      'Installed receipt-owned plugin differs from the staged candidate at manifest.json',
     );
     await staged.dispose();
   });

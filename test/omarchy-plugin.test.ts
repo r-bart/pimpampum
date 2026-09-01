@@ -295,6 +295,12 @@ describe('Omarchy Quattro plugin', () => {
     expect(control).toContain('onStreamFinished: root.processOutput = text');
     expect(control).toContain('JSON.parse(processOutput.trim())');
     expect(control).not.toContain('output.text = ""');
+    // The collector publishes its text on the turn the process exits; the sibling services defer
+    // the read through Qt.callLater, and this one used to read synchronously in onExited.
+    expect(control).toContain('Qt.callLater(function() { root.accept(exitCode) })');
+    expect(control).not.toMatch(
+      /onExited:\s*function\(exitCode\)\s*\{\s*root\.accept\(exitCode\)\s*\}/u,
+    );
   });
 
   it('keeps backup configuration bounded and passes paths as process arguments', () => {
@@ -429,6 +435,18 @@ describe('Omarchy Quattro plugin', () => {
     expect(service).toContain('message.length > 500');
     expect(service).toContain('"Could not install the update" : "Could not check for updates"');
     expect(service).not.toMatch(/errorMessage\s*=\s*(?:root\.)?processError\b/u);
+    // The reader accepts both the bare payload and the `{data}` envelope, like every other
+    // service, so an installed plugin survives a CLI upgrade in either direction.
+    expect(service).toContain(
+      'var data = isObject(envelope) && isObject(envelope.data) ? envelope.data : envelope',
+    );
+    expect(service).toContain('if (!isObject(data)) throw new Error("invalid update response")');
+    // Omarchy installs from the packaged release provider; the popout copy must not send the user
+    // to npm.
+    expect(popout).not.toMatch(/\bnpm\b/u);
+    expect(popout).toContain(
+      '"Check for a newer Pimpampum release. Nothing changes until you install it."',
+    );
     expect(helper).toContain('exec "$route" update "$@"');
     expect(route).toContain('set -- update:check');
     expect(route).toContain('set -- update');

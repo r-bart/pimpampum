@@ -120,6 +120,7 @@ describe('cross-platform Omarchy delivery validation', () => {
       'install.sh',
       'pimpampum-backup',
       'pimpampum-bootstrap',
+      'pimpampum-common.sh',
       'pimpampum-connections',
       'pimpampum-control-route',
       'pimpampum-folder-picker',

@@ -71,3 +71,25 @@ describe('reviewed runtime manifest', () => {
     expect(result.stderr).toContain('does not match the exact runtime archives');
   });
 });
+
+describe('reviewed runtime manifest diagnostics', () => {
+  it('prints the generated manifest on a mismatch and writes it to --output first', () => {
+    const value = fixture();
+    const manifest = JSON.parse(readFileSync(value.manifestPath, 'utf8'));
+    const expectedSha = manifest.targets['linux-x64'].sha256;
+    manifest.targets['linux-x64'].sha256 = '0'.repeat(64);
+    writeFileSync(value.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    const outputPath = join(value.repositoryRoot, 'generated-runtime-manifest.json');
+    const result = spawnSync(
+      process.execPath,
+      [checker, value.bundlesRoot, value.repositoryRoot, '--output', outputPath],
+      { encoding: 'utf8' },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('Generated Omarchy runtime manifest');
+    expect(result.stderr).toContain(expectedSha);
+    const generated = JSON.parse(readFileSync(outputPath, 'utf8'));
+    expect(generated.version).toBe(version);
+    expect(generated.targets['linux-x64'].sha256).toBe(expectedSha);
+  });
+});

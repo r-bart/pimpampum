@@ -63,7 +63,6 @@ describe('macOS embedded runtime source', () => {
       daemonAdapter: createLaunchdAdapter({ guiDomain: 'gui/501' }),
       now: () => new Date('2026-08-31T10:00:00.000Z'),
       sleep: async () => undefined,
-      acknowledgementPolls: 1,
     });
     const context = {
       platform: 'darwin' as const,
@@ -121,7 +120,6 @@ describe('macOS embedded runtime source', () => {
       daemonAdapter: createLaunchdAdapter({ guiDomain: 'gui/501' }),
       now: () => new Date('2026-08-31T10:00:00.000Z'),
       sleep: async () => undefined,
-      acknowledgementPolls: 1,
     });
     const manager = createPlatformServiceManager({
       platform: 'darwin',
@@ -173,7 +171,6 @@ describe('macOS embedded runtime source', () => {
       daemonAdapter: createLaunchdAdapter({ guiDomain: 'gui/501' }),
       now: () => new Date('2026-08-31T10:00:00.000Z'),
       sleep: async () => undefined,
-      acknowledgementPolls: 1,
     });
     const manager = createPlatformServiceManager({
       platform: 'darwin',

@@ -18,6 +18,7 @@ import { arch, homedir, platform } from 'node:os';
 import { dirname, isAbsolute, join, relative as relativePath, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentCliClient } from './agentClient.js';
+import { createLocalErrorEnvelope } from './agentProtocol.js';
 import { createHttpClient } from './client.js';
 import {
   createCliConnectionsRuntime,
@@ -67,7 +68,11 @@ import { startServer } from './server.js';
 import { PIMPAMPUM_VERSION } from './version.js';
 import {
   createUpdateManager,
+  receiptUsesPackagedRelease,
+  RELEASE_FETCH_TIMEOUT_MS,
+  RELEASE_PUBLIC_KEY_PEM,
   resolveNpmPath,
+  resolvePackagedRelease,
   type PackagedReleaseProviderInput,
   type PackagedReleaseTarget,
   type UpdateInstallReceiptMetadata,
@@ -245,10 +250,21 @@ function readBoundedUtf8File(path: string, maxBytes: number): string {
   return decodeToolInput(Buffer.concat(chunks, total));
 }
 
-const DEFAULT_RELEASE_CHANNEL_URL =
-  'https://github.com/r-bart/pimpampum/releases/download/update-channel-stable/release-manifest.json';
+// A rolling release that only ever carries the signed manifest and the public key. The release job
+// replaces both assets after every published version (`.github/workflows/release.yml`).
+const RELEASE_DOWNLOADS_URL = 'https://github.com/r-bart/pimpampum/releases/download';
+const DEFAULT_RELEASE_CHANNEL_URL = `${RELEASE_DOWNLOADS_URL}/update-channel-stable/release-manifest.json`;
 const MAX_RELEASE_KEY_BYTES = 16 * 1024;
 const MAX_RELEASE_ARCHIVE_ENTRIES = 20_000;
+const MAX_RELEASE_REDIRECTS = 3;
+// The flag that opens every development seam of the release channel at once: a public key from
+// disk and plain-HTTP loopback URLs. Nothing else reads it.
+const DEVELOPMENT_RELEASE_KEY_FLAG = 'PIMPAMPUM_DEV_RELEASE_KEY';
+
+/** The signed manifest each versioned release also carries, so an install can fetch its own version. */
+export function versionedReleaseManifestUrl(version: string): string {
+  return `${RELEASE_DOWNLOADS_URL}/v${version}/release-manifest.json`;
+}
 
 export interface CliUpdateManagerInput {
   currentVersion: string;
@@ -267,8 +283,11 @@ export interface CliUpdateManagerInput {
   }): ServiceManager;
   npmPath?: string | null;
   channelManifestUrl?: string;
+  /** Test seam: a public key file that replaces the embedded release key. */
   publicKeyPath?: string;
   fetchImplementation?: typeof globalThis.fetch;
+  /** Defaults to `process.env`; tests inject the development flag through it. */
+  environment?: NodeJS.ProcessEnv;
   packagedRelease?: PackagedReleaseProviderInput;
 }
 
@@ -287,60 +306,107 @@ function pathEntryExists(path: string): boolean {
   }
 }
 
-function assertTrustedReleaseKey(path: string, allowedRoots: string[]): Buffer {
+/**
+ * Reads a development public key. It exists for the E2E and for release-channel work on a
+ * checkout; production installs never reach it because the embedded key needs no file.
+ */
+function readDevelopmentReleaseKey(path: string): string {
   if (!isAbsolute(path) || path.includes('\0')) {
-    throw new Error('Release public key path must be absolute');
-  }
-  const root = allowedRoots.find((candidate) => pathInside(candidate, path));
-  if (!root) throw new Error('Release public key is outside a Pimpampum-owned root');
-  let current = resolve(root);
-  const child = relativePath(current, resolve(path));
-  for (const segment of child.split(sep).filter(Boolean)) {
-    const metadata = lstatSync(current);
-    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-      throw new Error('Release public key path traverses an unsafe directory');
-    }
-    current = join(current, segment);
+    throw new Error('Development release public key path must be absolute');
   }
   const metadata = lstatSync(path);
   if (metadata.isSymbolicLink() || !metadata.isFile()) {
-    throw new Error('Release public key must be a regular file');
+    throw new Error('Development release public key must be a regular file');
   }
   const currentUid = process.getuid?.();
   if (currentUid !== undefined && metadata.uid !== currentUid && metadata.uid !== 0) {
-    throw new Error('Release public key is not owned by the current user or root');
+    throw new Error('Development release public key is not owned by the current user or root');
   }
   if ((metadata.mode & 0o022) !== 0) {
-    throw new Error('Release public key must not be group- or world-writable');
-  }
-  if (pathInside(allowedRoots[0]!, path) && (metadata.mode & 0o077) !== 0) {
-    throw new Error('Release public key in private data must use mode 0600');
+    throw new Error('Development release public key must not be group- or world-writable');
   }
   if (metadata.size <= 0 || metadata.size > MAX_RELEASE_KEY_BYTES) {
-    throw new Error('Release public key has an invalid size');
+    throw new Error('Development release public key has an invalid size');
   }
-  return readFileSync(path);
+  return readFileSync(path, 'utf8');
 }
 
+/**
+ * The trust root of the release channel. The embedded key wins unless a caller injects a path
+ * (tests) or the environment opts into development mode with `PIMPAMPUM_DEV_RELEASE_KEY=1` and
+ * names a file in `PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH`. Without the flag the path variable is
+ * ignored, so an environment alone cannot swap the key an installed copy trusts.
+ */
+export function resolveReleasePublicKeyPem(input: {
+  publicKeyPath?: string | undefined;
+  environment: NodeJS.ProcessEnv;
+}): string {
+  if (input.publicKeyPath !== undefined) return readDevelopmentReleaseKey(input.publicKeyPath);
+  const developmentPath = input.environment.PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH;
+  if (input.environment[DEVELOPMENT_RELEASE_KEY_FLAG] === '1' && developmentPath) {
+    return readDevelopmentReleaseKey(developmentPath);
+  }
+  return RELEASE_PUBLIC_KEY_PEM;
+}
+
+// Standard base64 with padding: 64 signature bytes are exactly 88 characters ending in `=`.
+const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+
 export function createReleaseSignatureVerifier(input: {
-  publicKeyPath: string;
-  allowedRoots: string[];
+  /** PEM text, or a resolver evaluated on every verification so a bad dev key fails typed. */
+  publicKeyPem: string | (() => string);
 }): PackagedReleaseProviderInput['verifySignature'] {
   return ({ payload, signature }) => {
-    const bytes = assertTrustedReleaseKey(input.publicKeyPath, input.allowedRoots);
-    const key = createPublicKey(bytes);
+    const pem = typeof input.publicKeyPem === 'string' ? input.publicKeyPem : input.publicKeyPem();
+    const key = createPublicKey(pem);
     if (key.asymmetricKeyType !== 'ed25519') {
       throw new Error('Release public key must be Ed25519');
     }
-    let decoded: Buffer;
-    try {
-      decoded = Buffer.from(signature, 'base64');
-    } catch (error) {
-      throw new Error('Release signature is not valid base64', { cause: error });
-    }
+    // `Buffer.from(value, 'base64')` never throws; it silently skips characters it cannot decode.
+    if (!STRICT_BASE64.test(signature)) throw new Error('Release signature is not valid base64');
+    const decoded = Buffer.from(signature, 'base64');
     if (decoded.length !== 64) throw new Error('Release signature has an invalid size');
     return verifySignature(null, Buffer.from(payload, 'utf8'), key, decoded);
   };
+}
+
+const RELEASE_LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+function transportFailure(message: string, cause?: unknown): AppError {
+  return new AppError('unavailable', message, 503, true, cause === undefined ? {} : { cause });
+}
+
+/**
+ * Where a release fetch may go. GitHub answers `releases/download/*` with a 302 to
+ * `*.githubusercontent.com`, so that family is the only cross-host hop the channel accepts; every
+ * other redirect must stay on the host the signed URL named. HTTPS is mandatory unless the
+ * development flag opened plain-HTTP loopback for a local test server.
+ */
+function assertAllowedReleaseHop(input: {
+  candidate: URL;
+  origin: URL;
+  allowInsecureLoopback: boolean;
+}): void {
+  const { candidate, origin } = input;
+  const insecureLoopback =
+    input.allowInsecureLoopback &&
+    candidate.protocol === 'http:' &&
+    RELEASE_LOOPBACK_HOSTS.has(candidate.hostname);
+  if (candidate.protocol !== 'https:' && !insecureLoopback) {
+    throw transportFailure('Release fetch redirect left HTTPS');
+  }
+  if (candidate.username !== '' || candidate.password !== '') {
+    throw transportFailure('Release fetch redirect carries credentials');
+  }
+  const sameHost = candidate.host === origin.host;
+  const githubAssetHost =
+    origin.hostname === 'github.com' &&
+    (candidate.hostname === 'githubusercontent.com' ||
+      candidate.hostname.endsWith('.githubusercontent.com'));
+  if (!sameHost && !githubAssetHost) {
+    throw transportFailure(`Release fetch redirect to ${candidate.hostname} is not allowed`);
+  }
 }
 
 async function boundedFetchBytes(input: {
@@ -348,21 +414,49 @@ async function boundedFetchBytes(input: {
   maximumBytes: number;
   timeoutMilliseconds: number;
   fetchImplementation: typeof globalThis.fetch;
+  allowInsecureLoopback?: boolean | undefined;
 }): Promise<Uint8Array> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), input.timeoutMilliseconds);
+  const origin = new URL(input.url);
+  const allowInsecureLoopback = input.allowInsecureLoopback === true;
+  assertAllowedReleaseHop({ candidate: origin, origin, allowInsecureLoopback });
   try {
-    const response = await input.fetchImplementation(input.url, {
-      method: 'GET',
-      redirect: 'error',
-      signal: controller.signal,
-      headers: { Accept: 'application/octet-stream, application/json' },
-    });
-    if (!response.ok || response.body === null)
-      throw new Error(`Release fetch returned HTTP ${response.status}`);
+    let current = origin;
+    let response: Response;
+    let hops = 0;
+    // Follow redirects by hand so every hop passes the host and scheme policy above; `fetch`'s own
+    // follower would accept any host, and `redirect: 'error'` rejects GitHub's own asset CDN.
+    while (true) {
+      response = await input.fetchImplementation(current.toString(), {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: { Accept: 'application/octet-stream, application/json' },
+      });
+      if (!REDIRECT_STATUSES.has(response.status)) break;
+      await response.body?.cancel();
+      hops += 1;
+      if (hops > MAX_RELEASE_REDIRECTS) {
+        throw transportFailure(`Release fetch exceeded ${String(MAX_RELEASE_REDIRECTS)} redirects`);
+      }
+      const location = response.headers.get('location');
+      if (location === null) throw transportFailure('Release fetch redirect has no location');
+      let next: URL;
+      try {
+        next = new URL(location, current);
+      } catch (error) {
+        throw transportFailure('Release fetch redirect location is invalid', error);
+      }
+      assertAllowedReleaseHop({ candidate: next, origin, allowInsecureLoopback });
+      current = next;
+    }
+    if (!response.ok || response.body === null) {
+      throw transportFailure(`Release fetch returned HTTP ${String(response.status)}`);
+    }
     const declared = response.headers.get('content-length');
     if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > input.maximumBytes)) {
-      throw new Error('Release response exceeds its declared size limit');
+      throw transportFailure('Release response exceeds its declared size limit');
     }
     const chunks: Uint8Array[] = [];
     let total = 0;
@@ -373,7 +467,7 @@ async function boundedFetchBytes(input: {
       total += result.value.byteLength;
       if (total > input.maximumBytes) {
         await reader.cancel();
-        throw new Error('Release response exceeds its streaming size limit');
+        throw transportFailure('Release response exceeds its streaming size limit');
       }
       chunks.push(result.value);
     }
@@ -391,8 +485,14 @@ async function boundedFetchBytes(input: {
 
 export function createBoundedReleaseManifestFetcher(
   fetchImplementation: typeof globalThis.fetch = globalThis.fetch,
+  options: { allowInsecureLoopback?: boolean } = {},
 ): PackagedReleaseProviderInput['fetchManifest'] {
-  return (input) => boundedFetchBytes({ ...input, fetchImplementation });
+  return (input) =>
+    boundedFetchBytes({
+      ...input,
+      fetchImplementation,
+      allowInsecureLoopback: options.allowInsecureLoopback,
+    });
 }
 
 function assertSafeArchiveListing(stdout: string): void {
@@ -538,108 +638,140 @@ function readUpdateReceipt(dataDirectory: string): UpdateInstallReceiptMetadata 
     : undefined;
 }
 
+/**
+ * Linux packaged installs are owned by the Omarchy plugin: its pinned `runtime-manifest.json`
+ * and `pimpampum-bootstrap` install the exact runtime, and the plugin update replaces the pin.
+ * `update:check` still answers from the signed channel; only the activation is refused, typed, so
+ * the Updates panel can show the real remedy instead of a connection guess.
+ */
+function linuxPackagedUpdateUnavailable(version: string): AppError {
+  return new AppError(
+    'unavailable',
+    `Pimpampum ${version} is available, but a Linux packaged runtime is installed by the Omarchy plugin: update the Pimpampum Status plugin, then run pimpampum-bootstrap from the plugin directory`,
+    503,
+    false,
+    { remedy: 'pimpampum-bootstrap', version },
+  );
+}
+
+/** Downloads one signed release asset, verifies hash, size, archive and inventory, and unpacks it. */
+export function createPackagedReleaseStager(input: {
+  homeDirectory: string;
+  runCommand: RunCommand;
+  fetchImplementation: typeof globalThis.fetch;
+  allowInsecureLoopback: boolean;
+}): PackagedReleaseProviderInput['stageCandidate'] {
+  return async ({ asset, maximumBytes, timeoutMilliseconds, target, version }) => {
+    if (target !== 'darwin-arm64') throw linuxPackagedUpdateUnavailable(version);
+    const stagingParent = join(input.homeDirectory, 'Applications');
+    mkdirSync(stagingParent, { recursive: true, mode: 0o700 });
+    const parentMetadata = lstatSync(stagingParent);
+    if (parentMetadata.isSymbolicLink() || !parentMetadata.isDirectory()) {
+      throw new Error('Packaged update staging parent must be a regular directory');
+    }
+    const stagingRoot = mkdtempSync(join(stagingParent, '.pimpampum-update-'));
+    chmodSync(stagingRoot, 0o700);
+    const archivePath = join(stagingRoot, 'candidate.zip');
+    const extractedPath = join(stagingRoot, 'candidate');
+    try {
+      const bytes = await boundedFetchBytes({
+        url: asset.url,
+        maximumBytes,
+        timeoutMilliseconds,
+        fetchImplementation: input.fetchImplementation,
+        allowInsecureLoopback: input.allowInsecureLoopback,
+      });
+      if (bytes.byteLength !== asset.size)
+        throw new Error('Packaged release size does not match its manifest');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      if (sha256 !== asset.sha256)
+        throw new Error('Packaged release hash does not match its manifest');
+      writeFileSync(archivePath, bytes, { flag: 'wx', mode: 0o600 });
+      validateRuntimeArchiveFile({
+        path: archivePath,
+        format: 'zip',
+        limits: {
+          maximumArchiveBytes: maximumBytes,
+          maximumEntries: MAX_RELEASE_ARCHIVE_ENTRIES,
+          maximumFileBytes: 256 * 1024 * 1024,
+          maximumTotalBytes: 512 * 1024 * 1024,
+        },
+      });
+      mkdirSync(extractedPath, { mode: 0o700 });
+      const listing = await input.runCommand('/usr/bin/unzip', ['-Z1', archivePath]);
+      if (listing.exitCode !== 0) throw new Error('Packaged release archive listing failed');
+      assertSafeArchiveListing(listing.stdout);
+      const extraction = await input.runCommand('/usr/bin/ditto', [
+        '-x',
+        '-k',
+        archivePath,
+        extractedPath,
+      ]);
+      if (extraction.exitCode !== 0) throw new Error('Packaged release extraction failed');
+      validateCandidateInventory(extractedPath, target, version);
+      rmSync(archivePath, { force: true });
+      return {
+        path: resolve(extractedPath),
+        sha256,
+        size: bytes.byteLength,
+        contains: { app: true, runtime: true, plugin: true },
+      };
+    } catch (error) {
+      rmSync(stagingRoot, { recursive: true, force: true });
+      throw error;
+    }
+  };
+}
+
+function releaseChannelTransport(input: {
+  fetchImplementation?: typeof globalThis.fetch | undefined;
+  environment?: NodeJS.ProcessEnv | undefined;
+  publicKeyPath?: string | undefined;
+  channelManifestUrl?: string | undefined;
+}): {
+  fetchImplementation: typeof globalThis.fetch;
+  allowInsecureLoopback: boolean;
+  channelManifestUrl: string | undefined;
+  fetchManifest: PackagedReleaseProviderInput['fetchManifest'];
+  verifySignature: PackagedReleaseProviderInput['verifySignature'];
+} {
+  const environment = input.environment ?? process.env;
+  const fetchImplementation = input.fetchImplementation ?? globalThis.fetch;
+  const allowInsecureLoopback = environment[DEVELOPMENT_RELEASE_KEY_FLAG] === '1';
+  return {
+    fetchImplementation,
+    allowInsecureLoopback,
+    channelManifestUrl: input.channelManifestUrl ?? environment.PIMPAMPUM_RELEASE_MANIFEST_URL,
+    fetchManifest: createBoundedReleaseManifestFetcher(fetchImplementation, {
+      allowInsecureLoopback,
+    }),
+    verifySignature: createReleaseSignatureVerifier({
+      publicKeyPem: () =>
+        resolveReleasePublicKeyPem({ publicKeyPath: input.publicKeyPath, environment }),
+    }),
+  };
+}
+
 export function createConcretePackagedProvider(
   input: CliUpdateManagerInput,
 ): PackagedReleaseProviderInput {
   if (input.target === null) throw new Error('Packaged release target is unsupported');
-  const fetchImplementation = input.fetchImplementation ?? globalThis.fetch;
-  const installedResources = join(
-    input.homeDirectory,
-    'Applications',
-    'Pimpampum.app',
-    'Contents',
-    'Resources',
-  );
-  const keyPath =
-    input.publicKeyPath ??
-    process.env.PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH ??
-    join(installedResources, 'pimpampum-release-public-key.pem');
-  const allowedKeyRoots = [input.dataDirectory, installedResources];
+  const transport = releaseChannelTransport(input);
   return {
-    channelManifestUrl:
-      input.channelManifestUrl ??
-      process.env.PIMPAMPUM_RELEASE_MANIFEST_URL ??
-      DEFAULT_RELEASE_CHANNEL_URL,
+    channelManifestUrl: transport.channelManifestUrl ?? DEFAULT_RELEASE_CHANNEL_URL,
     target: input.target,
-    fetchManifest: createBoundedReleaseManifestFetcher(fetchImplementation),
-    verifySignature: createReleaseSignatureVerifier({
-      publicKeyPath: keyPath,
-      allowedRoots: allowedKeyRoots,
+    allowInsecureLoopback: transport.allowInsecureLoopback,
+    fetchManifest: transport.fetchManifest,
+    verifySignature: transport.verifySignature,
+    stageCandidate: createPackagedReleaseStager({
+      homeDirectory: input.homeDirectory,
+      runCommand: input.runCommand,
+      fetchImplementation: transport.fetchImplementation,
+      allowInsecureLoopback: transport.allowInsecureLoopback,
     }),
-    async stageCandidate({ asset, maximumBytes, timeoutMilliseconds, target, version }) {
-      const stagingParent = join(input.homeDirectory, 'Applications');
-      mkdirSync(stagingParent, { recursive: true, mode: 0o700 });
-      const parentMetadata = lstatSync(stagingParent);
-      if (parentMetadata.isSymbolicLink() || !parentMetadata.isDirectory()) {
-        throw new Error('Packaged update staging parent must be a regular directory');
-      }
-      const stagingRoot = mkdtempSync(join(stagingParent, '.pimpampum-update-'));
-      chmodSync(stagingRoot, 0o700);
-      const archivePath = join(
-        stagingRoot,
-        target === 'darwin-arm64' ? 'candidate.zip' : 'candidate.tar.gz',
-      );
-      const extractedPath = join(stagingRoot, 'candidate');
-      try {
-        const bytes = await boundedFetchBytes({
-          url: asset.url,
-          maximumBytes,
-          timeoutMilliseconds,
-          fetchImplementation,
-        });
-        if (bytes.byteLength !== asset.size)
-          throw new Error('Packaged release size does not match its manifest');
-        const sha256 = createHash('sha256').update(bytes).digest('hex');
-        if (sha256 !== asset.sha256)
-          throw new Error('Packaged release hash does not match its manifest');
-        writeFileSync(archivePath, bytes, { flag: 'wx', mode: 0o600 });
-        validateRuntimeArchiveFile({
-          path: archivePath,
-          format: target === 'darwin-arm64' ? 'zip' : 'tar.gz',
-          limits: {
-            maximumArchiveBytes: maximumBytes,
-            maximumEntries: MAX_RELEASE_ARCHIVE_ENTRIES,
-            maximumFileBytes: 256 * 1024 * 1024,
-            maximumTotalBytes: 512 * 1024 * 1024,
-          },
-        });
-        mkdirSync(extractedPath, { mode: 0o700 });
-        const listing =
-          target === 'darwin-arm64'
-            ? await input.runCommand('/usr/bin/unzip', ['-Z1', archivePath])
-            : await input.runCommand('/usr/bin/tar', ['-tzf', archivePath]);
-        if (listing.exitCode !== 0) throw new Error('Packaged release archive listing failed');
-        assertSafeArchiveListing(listing.stdout);
-        const extraction =
-          target === 'darwin-arm64'
-            ? await input.runCommand('/usr/bin/ditto', ['-x', '-k', archivePath, extractedPath])
-            : await input.runCommand('/usr/bin/tar', [
-                '-xzf',
-                archivePath,
-                '-C',
-                extractedPath,
-                '--no-same-owner',
-                '--no-same-permissions',
-              ]);
-        if (extraction.exitCode !== 0) throw new Error('Packaged release extraction failed');
-        validateCandidateInventory(extractedPath, target, version);
-        rmSync(archivePath, { force: true });
-        return {
-          path: resolve(extractedPath),
-          sha256,
-          size: bytes.byteLength,
-          contains: { app: true, runtime: true, plugin: true },
-        };
-      } catch (error) {
-        rmSync(stagingRoot, { recursive: true, force: true });
-        throw error;
-      }
-    },
     async reconcile({ version, candidatePath, target }) {
       try {
-        if (target !== 'darwin-arm64') {
-          throw new Error('This packaged release activator supports only macOS arm64');
-        }
+        if (target !== 'darwin-arm64') throw linuxPackagedUpdateUnavailable(version);
         const stagedAppPath = validateCandidateInventory(candidatePath, target, version);
         if (!pathInside(candidatePath, stagedAppPath))
           throw new Error('Staged app escaped its candidate root');
@@ -866,6 +998,70 @@ export function createConcretePackagedProvider(
   };
 }
 
+export interface StagedMacOSApplication {
+  appBundlePath: string;
+  version: string;
+  /** Removes the private staging directory; safe to call more than once. */
+  cleanup(): void;
+}
+
+/**
+ * The macOS app for `pimpampum install` when the CLI came from npm. The npm package carries no app
+ * bundle, so the install fetches the signed manifest of its own version, verifies it with the
+ * embedded key, downloads the zip and validates hash, size, archive and inventory exactly as an
+ * update would. The staged bundle is then the install source the desktop adapter copies from.
+ */
+export async function stagePackagedMacOSApplication(input: {
+  homeDirectory: string;
+  version: string;
+  runCommand: RunCommand;
+  fetchImplementation?: typeof globalThis.fetch;
+  environment?: NodeJS.ProcessEnv;
+  publicKeyPath?: string;
+}): Promise<StagedMacOSApplication> {
+  const transport = releaseChannelTransport(input);
+  const target: PackagedReleaseTarget = 'darwin-arm64';
+  const provider: PackagedReleaseProviderInput = {
+    channelManifestUrl: transport.channelManifestUrl ?? versionedReleaseManifestUrl(input.version),
+    target,
+    allowInsecureLoopback: transport.allowInsecureLoopback,
+    fetchManifest: transport.fetchManifest,
+    verifySignature: transport.verifySignature,
+    stageCandidate: createPackagedReleaseStager({
+      homeDirectory: input.homeDirectory,
+      runCommand: input.runCommand,
+      fetchImplementation: transport.fetchImplementation,
+      allowInsecureLoopback: transport.allowInsecureLoopback,
+    }),
+    reconcile: async () => {
+      throw new Error('A staged install source is never activated as an update');
+    },
+  };
+  const { manifest, asset } = await resolvePackagedRelease(provider);
+  if (manifest.version !== input.version) {
+    throw new AppError(
+      'unavailable',
+      `The release channel offers Pimpampum ${manifest.version}, not ${input.version}; run npm install --global pimpampum@${manifest.version} and retry`,
+      503,
+      false,
+      { channelVersion: manifest.version, installedVersion: input.version },
+    );
+  }
+  const staged = await provider.stageCandidate({
+    version: manifest.version,
+    target,
+    asset,
+    maximumBytes: asset.size,
+    timeoutMilliseconds: RELEASE_FETCH_TIMEOUT_MS,
+  });
+  const stagingRoot = dirname(staged.path);
+  return {
+    appBundlePath: findCandidateApp(staged.path),
+    version: manifest.version,
+    cleanup: () => rmSync(stagingRoot, { recursive: true, force: true }),
+  };
+}
+
 export function createCliUpdateManager(input: CliUpdateManagerInput): UpdateManager {
   const installReceipt = readUpdateReceipt(input.dataDirectory);
   return createUpdateManager({
@@ -876,9 +1072,9 @@ export function createCliUpdateManager(input: CliUpdateManagerInput): UpdateMana
     ...(installReceipt ? { installReceipt } : {}),
     ...(input.packagedRelease
       ? { packagedRelease: input.packagedRelease }
-      : (installReceipt?.adapter === 'launchd-macos-app' ||
-            installReceipt?.adapter === 'macos-app') &&
-          input.target === 'darwin-arm64'
+      : // Every packaged install — the macOS app and the Omarchy runtime alike — reads the signed
+        // channel. Linux receives a real `check` and a typed refusal on `update`.
+        receiptUsesPackagedRelease(installReceipt) && input.target !== null
         ? { packagedRelease: createConcretePackagedProvider(input) }
         : {}),
   });
@@ -932,9 +1128,35 @@ export async function runCliEntrypoint(entryUrl: string): Promise<void> {
         cliPath: compiledCliPath,
       })
     : null;
-  const bundledMacOSApp =
+  const builtMacOSApp =
     packagedRuntimeBootstrap?.sourceApplicationPath ??
     resolve(dirname(modulePath), '..', 'platforms', 'macos', 'dist', 'Pimpampum.app');
+  // An npm install has no app bundle next to the CLI. Only the two commands that copy the app need
+  // one, so only they pay for the download; status and uninstall keep working without a source.
+  const macOSAppSourceRequested =
+    hostPlatform === 'darwin' &&
+    runtimeArchitecture === 'arm64' &&
+    ((process.argv[2] === 'install' && !process.argv.includes('--service-only')) ||
+      (process.argv[2] === 'setup' && process.argv[3] === 'apply'));
+  let stagedMacOSApp: StagedMacOSApplication | null = null;
+  if (macOSAppSourceRequested && !pathEntryExists(builtMacOSApp)) {
+    try {
+      stagedMacOSApp = await stagePackagedMacOSApplication({
+        homeDirectory,
+        version: PIMPAMPUM_VERSION,
+        runCommand: runServiceCommand,
+      });
+    } catch (error) {
+      // Report it as the command's own failure. Letting it escape would reach the bootstrap in
+      // `cli.ts`, which labels every error a startup failure and suggests reinstalling from npm.
+      process.stderr.write(`${JSON.stringify(createLocalErrorEnvelope(error), null, 2)}\n`);
+      process.exit(1);
+    }
+    // `runCli` exits through `process.exit`, so a `finally` would not run; the exit hook does.
+    const staged = stagedMacOSApp;
+    process.once('exit', () => staged.cleanup());
+  }
+  const bundledMacOSApp = stagedMacOSApp?.appBundlePath ?? builtMacOSApp;
   const bundledOmarchyPlugin = resolve(
     dirname(modulePath),
     '..',

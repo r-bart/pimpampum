@@ -326,6 +326,32 @@ describe('platform-neutral service manager', () => {
     await expect(manager.uninstall()).resolves.toMatchObject({ uninstalled: true });
   });
 
+  it('forwards the manual instructions an adapter leaves after uninstall and tolerates an empty outcome', async () => {
+    for (const outcome of [
+      { label: 'empty', value: {}, expected: {} },
+      {
+        label: 'instructions',
+        value: { manualInstructions: ['Remove the login item by hand'] },
+        expected: { manualInstructions: ['Remove the login item by hand'] },
+      },
+    ]) {
+      const root = testRoot(`uninstall-outcome-${outcome.label}`);
+      const adapter = testAdapter(root, { afterUninstall: async () => outcome.value });
+      const manager = createPlatformServiceManager(
+        managerInput(root, async () => success(), {
+          platform: 'linux',
+          adapters: { linux: adapter },
+        }),
+      );
+      await manager.install();
+      await expect(manager.uninstall()).resolves.toEqual({
+        uninstalled: true,
+        dataPreserved: true,
+        ...outcome.expected,
+      });
+    }
+  });
+
   it('compensates an uninstall deactivation failure and preserves the original error', async () => {
     const root = testRoot('uninstall-deactivate');
     let deactivateAttempts = 0;

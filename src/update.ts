@@ -23,6 +23,24 @@ export interface UpdateManager {
 
 export type PackagedReleaseTarget = 'darwin-arm64' | 'linux-arm64' | 'linux-x64';
 
+export const PACKAGED_RELEASE_TARGETS: readonly PackagedReleaseTarget[] = [
+  'darwin-arm64',
+  'linux-arm64',
+  'linux-x64',
+];
+
+/**
+ * The Ed25519 public half of the release signing key. The private half lives only in the
+ * `RELEASE_MANIFEST_SIGNING_KEY` repository secret; `scripts/sign-release-manifest.mjs` signs
+ * every target of `release-manifest.json` with it and verifies the result against this constant.
+ * The key is embedded, not read from disk, so no user-writable path can replace the trust root.
+ * `scripts/sign-release-manifest.mjs` extracts it from this file between the PEM markers.
+ */
+export const RELEASE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAmtqLSdctyUmsFJGCDTSRtO49f79jn5dQAxKK77sWvJA=
+-----END PUBLIC KEY-----
+`;
+
 export interface UpdateInstallReceiptMetadata {
   schemaVersion: 1;
   adapter: string;
@@ -45,7 +63,14 @@ export interface PackagedReleaseManifest {
   schemaVersion: 1;
   channel: 'stable';
   version: string;
+  /** ISO 8601 UTC instant at which the signer issued this manifest; part of every signature. */
+  issuedAt: string;
   targets: Record<PackagedReleaseTarget, PackagedReleaseAsset | undefined>;
+}
+
+export interface ResolvedPackagedRelease {
+  manifest: PackagedReleaseManifest;
+  asset: PackagedReleaseAsset;
 }
 
 export interface StagedPackagedRelease {
@@ -58,6 +83,11 @@ export interface StagedPackagedRelease {
 export interface PackagedReleaseProviderInput {
   channelManifestUrl: string;
   target: PackagedReleaseTarget;
+  /**
+   * Development only: accept `http://` channel and asset URLs on a loopback host. The CLI sets it
+   * from `PIMPAMPUM_DEV_RELEASE_KEY=1`, the same flag that lets a test key replace the embedded one.
+   */
+  allowInsecureLoopback?: boolean;
   fetchManifest(input: {
     url: string;
     maximumBytes: number;
@@ -95,9 +125,14 @@ export interface UpdateManagerInput {
   packagedRelease?: PackagedReleaseProviderInput;
 }
 
-const MAX_RELEASE_MANIFEST_BYTES = 64 * 1024;
+export const MAX_RELEASE_MANIFEST_BYTES = 64 * 1024;
 const MAX_PACKAGED_RELEASE_BYTES = 512 * 1024 * 1024;
-const RELEASE_FETCH_TIMEOUT_MS = 15_000;
+export const RELEASE_FETCH_TIMEOUT_MS = 15_000;
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+function isLoopbackHttp(parsed: URL): boolean {
+  return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname);
+}
 
 export function resolveNpmPath(
   nodePath: string,
@@ -147,9 +182,13 @@ function versionParts(version: string): { core: number[]; prerelease: string[] }
       503,
     );
   }
-  const [core, prerelease = ''] = version.split('-', 2);
+  // Split at the first hyphen only: `1.0.0-rc-2` has the prerelease `rc-2`, and `split('-', 2)`
+  // would silently drop everything after the second hyphen.
+  const hyphen = version.indexOf('-');
+  const core = hyphen === -1 ? version : version.slice(0, hyphen);
+  const prerelease = hyphen === -1 ? '' : version.slice(hyphen + 1);
   return {
-    core: core!.split('.').map(Number),
+    core: core.split('.').map(Number),
     prerelease: prerelease ? prerelease.split('.') : [],
   };
 }
@@ -264,7 +303,20 @@ function exactKeys(value: Record<string, unknown>, expected: string[]): boolean 
   return Object.keys(value).sort().join(',') === [...expected].sort().join(',');
 }
 
-function releaseUrl(value: unknown, version: string, target: PackagedReleaseTarget): string {
+// The macOS app ships as `Pimpampum-<version>-macos-arm64.zip`; the runtime target it carries is
+// `darwin-arm64`. Both tokens name the same target in an asset path.
+const TARGET_PATH_TOKENS: Record<PackagedReleaseTarget, readonly string[]> = {
+  'darwin-arm64': ['darwin-arm64', 'macos-arm64'],
+  'linux-arm64': ['linux-arm64'],
+  'linux-x64': ['linux-x64'],
+};
+
+function releaseUrl(
+  value: unknown,
+  version: string,
+  target: PackagedReleaseTarget,
+  allowInsecureLoopback: boolean,
+): string {
   if (typeof value !== 'string' || value.length > 2_048 || value.includes('\0')) {
     throw new AppError('unavailable', 'Packaged release manifest has an invalid asset URL', 503);
   }
@@ -275,12 +327,12 @@ function releaseUrl(value: unknown, version: string, target: PackagedReleaseTarg
     throw new AppError('unavailable', 'Packaged release manifest has an invalid asset URL', 503);
   }
   if (
-    parsed.protocol !== 'https:' ||
+    (parsed.protocol !== 'https:' && !(allowInsecureLoopback && isLoopbackHttp(parsed))) ||
     parsed.username !== '' ||
     parsed.password !== '' ||
     parsed.hash !== '' ||
     !parsed.pathname.includes(`/v${version}/`) ||
-    !parsed.pathname.includes(target) ||
+    !TARGET_PATH_TOKENS[target].some((token) => parsed.pathname.includes(token)) ||
     /(?:^|\/)latest(?:\/|$)/iu.test(parsed.pathname)
   ) {
     throw new AppError(
@@ -292,9 +344,43 @@ function releaseUrl(value: unknown, version: string, target: PackagedReleaseTarg
   return parsed.toString();
 }
 
+// `toISOString()` output only: one canonical spelling keeps the signed payload byte-exact.
+const ISSUED_AT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+
+function validIssuedAt(value: unknown): value is string {
+  if (typeof value !== 'string' || !ISSUED_AT_PATTERN.test(value)) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+/**
+ * The exact bytes each target signature covers. `scripts/sign-release-manifest.mjs` produces the
+ * same string; changing one side without the other invalidates every published manifest.
+ */
+export function releaseSignaturePayload(input: {
+  version: string;
+  issuedAt: string;
+  target: PackagedReleaseTarget;
+  url: string;
+  sha256: string;
+  size: number;
+}): string {
+  return [
+    'pimpampum-packaged-release-v1',
+    'stable',
+    input.version,
+    input.issuedAt,
+    input.target,
+    input.url,
+    input.sha256,
+    String(input.size),
+  ].join('\n');
+}
+
 function parsePackagedReleaseManifest(
   raw: string | Uint8Array,
   target: PackagedReleaseTarget,
+  allowInsecureLoopback: boolean,
 ): { manifest: PackagedReleaseManifest; asset: PackagedReleaseAsset; signaturePayload: string } {
   if (typeof raw !== 'string' && !(raw instanceof Uint8Array)) {
     throw new AppError('unavailable', 'Packaged release manifest response is invalid', 503);
@@ -311,17 +397,14 @@ function parsePackagedReleaseManifest(
   } catch {
     throw new AppError('unavailable', 'Packaged release manifest is not valid JSON', 503);
   }
-  const supportedTargets = new Set<PackagedReleaseTarget>([
-    'darwin-arm64',
-    'linux-arm64',
-    'linux-x64',
-  ]);
+  const supportedTargets = new Set<PackagedReleaseTarget>(PACKAGED_RELEASE_TARGETS);
   if (
     !isRecord(parsed) ||
-    !exactKeys(parsed, ['schemaVersion', 'channel', 'version', 'targets']) ||
+    !exactKeys(parsed, ['schemaVersion', 'channel', 'version', 'issuedAt', 'targets']) ||
     parsed.schemaVersion !== 1 ||
     parsed.channel !== 'stable' ||
     !validVersion(parsed.version) ||
+    !validIssuedAt(parsed.issuedAt) ||
     !isRecord(parsed.targets) ||
     Object.keys(parsed.targets).length === 0 ||
     Object.keys(parsed.targets).length > supportedTargets.size ||
@@ -351,7 +434,7 @@ function parsePackagedReleaseManifest(
     );
   }
   const asset: PackagedReleaseAsset = {
-    url: releaseUrl(candidate.url, parsed.version, target),
+    url: releaseUrl(candidate.url, parsed.version, target, allowInsecureLoopback),
     sha256: candidate.sha256,
     signature: candidate.signature,
     size: candidate.size as number,
@@ -361,22 +444,22 @@ function parsePackagedReleaseManifest(
       schemaVersion: 1,
       channel: 'stable',
       version: parsed.version,
+      issuedAt: parsed.issuedAt,
       targets: { [target]: asset } as PackagedReleaseManifest['targets'],
     },
     asset,
-    signaturePayload: [
-      'pimpampum-packaged-release-v1',
-      'stable',
-      parsed.version,
+    signaturePayload: releaseSignaturePayload({
+      version: parsed.version,
+      issuedAt: parsed.issuedAt,
       target,
-      asset.url,
-      asset.sha256,
-      String(asset.size),
-    ].join('\n'),
+      url: asset.url,
+      sha256: asset.sha256,
+      size: asset.size,
+    }),
   };
 }
 
-function validateChannelManifestUrl(value: string): string {
+function validateChannelManifestUrl(value: string, allowInsecureLoopback: boolean): string {
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -384,7 +467,7 @@ function validateChannelManifestUrl(value: string): string {
     throw new AppError('unavailable', 'Packaged release channel URL is invalid', 503);
   }
   if (
-    parsed.protocol !== 'https:' ||
+    (parsed.protocol !== 'https:' && !(allowInsecureLoopback && isLoopbackHttp(parsed))) ||
     parsed.username !== '' ||
     parsed.password !== '' ||
     parsed.hash !== '' ||
@@ -395,50 +478,70 @@ function validateChannelManifestUrl(value: string): string {
   return parsed.toString();
 }
 
+function validatePackagedReleaseProvider(provider: PackagedReleaseProviderInput): string {
+  if (!PACKAGED_RELEASE_TARGETS.includes(provider.target)) {
+    throw new AppError('unavailable', 'Packaged release target is unsupported', 503);
+  }
+  return validateChannelManifestUrl(
+    provider.channelManifestUrl,
+    provider.allowInsecureLoopback === true,
+  );
+}
+
+/**
+ * Fetches the channel manifest, validates its schema and verifies the target signature. It is the
+ * one path through which `update:check`, `update`, and a macOS `install` from npm learn what the
+ * release channel offers; every caller receives an already-verified asset descriptor.
+ */
+export async function resolvePackagedRelease(
+  provider: PackagedReleaseProviderInput,
+): Promise<ResolvedPackagedRelease> {
+  const channelManifestUrl = validatePackagedReleaseProvider(provider);
+  let raw: string | Uint8Array;
+  try {
+    raw = await provider.fetchManifest({
+      url: channelManifestUrl,
+      maximumBytes: MAX_RELEASE_MANIFEST_BYTES,
+      timeoutMilliseconds: RELEASE_FETCH_TIMEOUT_MS,
+    });
+  } catch (error) {
+    throw new AppError('unavailable', 'Packaged release manifest fetch failed', 503, true, {
+      cause: error,
+    });
+  }
+  const parsed = parsePackagedReleaseManifest(
+    raw,
+    provider.target,
+    provider.allowInsecureLoopback === true,
+  );
+  let signatureValid = false;
+  try {
+    signatureValid = await provider.verifySignature({
+      payload: parsed.signaturePayload,
+      signature: parsed.asset.signature,
+      target: provider.target,
+    });
+  } catch (error) {
+    throw new AppError(
+      'unavailable',
+      'Packaged release manifest signature verification failed',
+      503,
+      false,
+      { cause: error },
+    );
+  }
+  if (!signatureValid) {
+    throw new AppError('unavailable', 'Packaged release manifest signature is invalid', 503);
+  }
+  return { manifest: parsed.manifest, asset: parsed.asset };
+}
+
 export function createPackagedReleaseUpdateManager(input: {
   currentVersion: string;
   provider: PackagedReleaseProviderInput;
 }): UpdateManager {
-  if (!['darwin-arm64', 'linux-arm64', 'linux-x64'].includes(input.provider.target)) {
-    throw new AppError('unavailable', 'Packaged release target is unsupported', 503);
-  }
-  const channelManifestUrl = validateChannelManifestUrl(input.provider.channelManifestUrl);
-
-  async function release() {
-    let raw: string | Uint8Array;
-    try {
-      raw = await input.provider.fetchManifest({
-        url: channelManifestUrl,
-        maximumBytes: MAX_RELEASE_MANIFEST_BYTES,
-        timeoutMilliseconds: RELEASE_FETCH_TIMEOUT_MS,
-      });
-    } catch (error) {
-      throw new AppError('unavailable', 'Packaged release manifest fetch failed', 503, true, {
-        cause: error,
-      });
-    }
-    const parsed = parsePackagedReleaseManifest(raw, input.provider.target);
-    let signatureValid = false;
-    try {
-      signatureValid = await input.provider.verifySignature({
-        payload: parsed.signaturePayload,
-        signature: parsed.asset.signature,
-        target: input.provider.target,
-      });
-    } catch (error) {
-      throw new AppError(
-        'unavailable',
-        'Packaged release manifest signature verification failed',
-        503,
-        false,
-        { cause: error },
-      );
-    }
-    if (!signatureValid) {
-      throw new AppError('unavailable', 'Packaged release manifest signature is invalid', 503);
-    }
-    return parsed;
-  }
+  validatePackagedReleaseProvider(input.provider);
+  const release = () => resolvePackagedRelease(input.provider);
 
   return {
     async check() {
@@ -509,7 +612,13 @@ export function createPackagedReleaseUpdateManager(input: {
   };
 }
 
-function usesPackagedRelease(receipt: UpdateInstallReceiptMetadata | undefined): boolean {
+/**
+ * True when the installation receipt selects the signed release channel instead of npm: an
+ * explicit `packaged-release` provenance, a packaged runtime, or the macOS app adapters.
+ */
+export function receiptUsesPackagedRelease(
+  receipt: UpdateInstallReceiptMetadata | undefined,
+): boolean {
   if (!receipt) return false;
   if (
     receipt.schemaVersion !== 1 ||
@@ -520,7 +629,7 @@ function usesPackagedRelease(receipt: UpdateInstallReceiptMetadata | undefined):
       receipt.updateProvider !== 'packaged-release') ||
     (receipt.packagedRuntime !== undefined &&
       (!validVersion(receipt.packagedRuntime.version) ||
-        !['darwin-arm64', 'linux-arm64', 'linux-x64'].includes(receipt.packagedRuntime.target) ||
+        !PACKAGED_RELEASE_TARGETS.includes(receipt.packagedRuntime.target) ||
         !isAbsolute(receipt.packagedRuntime.runtimeDirectory)))
   ) {
     throw new AppError('unavailable', 'Update install receipt schema is incompatible', 503);
@@ -535,7 +644,7 @@ function usesPackagedRelease(receipt: UpdateInstallReceiptMetadata | undefined):
 }
 
 export function createUpdateManager(input: UpdateManagerInput): UpdateManager {
-  if (usesPackagedRelease(input.installReceipt)) {
+  if (receiptUsesPackagedRelease(input.installReceipt)) {
     if (!input.packagedRelease) {
       return {
         check: async () => {

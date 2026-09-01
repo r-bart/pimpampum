@@ -1196,6 +1196,7 @@ export const openApiDocument: OpenApiDocument = {
           'pendingSnapshotCount',
           'conflictCount',
           'error',
+          'blockedSnapshot',
         ],
         {
           enabled: { type: 'boolean' },
@@ -1222,6 +1223,15 @@ export const openApiDocument: OpenApiDocument = {
           pendingSnapshotCount: { type: 'integer', minimum: 0 },
           conflictCount: { type: 'integer', minimum: 0 },
           error: nullable({ type: 'string' }),
+          blockedSnapshot: nullable(
+            objectSchema(['path', 'reason'], {
+              path: {
+                type: 'string',
+                description: 'Path of the failing snapshot, relative to the shared directory.',
+              },
+              reason: { type: 'string' },
+            }),
+          ),
         },
       ),
       SyncConflict: objectSchema(['id', 'entityType', 'entityId', 'local', 'remote', 'createdAt'], {

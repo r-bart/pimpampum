@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { AppError } from './errors.js';
 import type {
@@ -57,6 +57,33 @@ interface PortableExportSource {
 const PROJECT_EXPORT_PAGE_SIZE = 10;
 const COLLECTION_EXPORT_PAGE_SIZE = 100;
 
+/**
+ * Resolves the file a Context document is exported to and refuses any name
+ * that could leave the `context` directory. HTTP, MCP, and the sync contract
+ * all enforce slugs, but the export must hold on its own when a caller bypasses
+ * them: the shared folder is a trust boundary.
+ */
+function contextDocumentPath(contextPath: string, name: string): string {
+  const reject = (): never => {
+    throw new AppError('bad_request', 'Context name is not a safe export file name', 400, false, {
+      name,
+    });
+  };
+  if (
+    name.length === 0 ||
+    name.includes('/') ||
+    name.includes('\\') ||
+    name.includes('..') ||
+    name.includes('\0')
+  ) {
+    reject();
+  }
+  const documentPath = resolve(contextPath, `${name}.md`);
+  /* v8 ignore next -- a name without separators, `..` or NUL always resolves inside; belt and braces. */
+  if (relative(resolve(contextPath), documentPath) !== `${name}.md`) reject();
+  return documentPath;
+}
+
 function writeContextExport(
   source: PortableExportSource,
   ownerType: 'workspace' | 'project',
@@ -78,13 +105,14 @@ function writeContextExport(
     });
     for (const manifest of manifests) {
       const document = source.readContext(ownerType, ownerId, manifest.name);
+      const documentPath = contextDocumentPath(contextPath, document.name);
       const { body: _body, ...metadata } = document;
       appendFileSync(
         metadataPath,
         `${firstDocument ? '' : ',\n'}${JSON.stringify(metadata, null, 2)}`,
       );
       firstDocument = false;
-      writeFileSync(join(contextPath, `${document.name}.md`), document.body);
+      writeFileSync(documentPath, document.body);
     }
     if (manifests.length < COLLECTION_EXPORT_PAGE_SIZE) break;
     offset += manifests.length;

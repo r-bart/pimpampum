@@ -2,6 +2,7 @@ import {
   chmodSync,
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
   rmSync,
   symlinkSync,
@@ -11,7 +12,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SyncState } from '../src/syncContract.js';
+import {
+  SYNC_SNAPSHOT_SCHEMA_VERSION,
+  type SyncSnapshot,
+  type SyncState,
+} from '../src/syncContract.js';
 import { SyncController } from '../src/syncController.js';
 import { canonicalJson, syncHash } from '../src/syncState.js';
 
@@ -232,7 +237,7 @@ describe('SyncController safeguards and lifecycle', () => {
     writeFileSync(
       tampered,
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
         snapshotId: tamperedId,
         deviceId: 'linux',
         sequence: 4,
@@ -520,13 +525,16 @@ describe('SyncController safeguards and lifecycle', () => {
     writeSnapshot(1, '2026-08-26T00:00:01.000Z');
     await sync.reconcile();
     expect(importer).toHaveBeenCalledTimes(1);
+    // Two files with one sequence are siblings left by a recovered device, not a
+    // rollback: both are imported in snapshot ID order and nothing wedges.
     writeSnapshot(3, '2026-08-26T00:00:03.000Z');
     writeSnapshot(3, '2026-08-26T00:00:04.000Z');
     await sync.reconcile();
-    expect(sync.getStatus()).toMatchObject({
-      state: 'error',
-      error: 'Shared device sequence is duplicated',
-    });
+    expect(importer).toHaveBeenCalledTimes(3);
+    expect(sync.getStatus()).toMatchObject({ state: 'healthy', error: null });
+    writeSnapshot(3, '2026-08-26T00:00:05.000Z');
+    await sync.reconcile();
+    expect(importer).toHaveBeenCalledTimes(4);
     await sync.close();
   });
 
@@ -607,14 +615,17 @@ describe('SyncController safeguards and lifecycle', () => {
     const shared = join(data, 'Pimpampum');
     const remoteDirectory = join(shared, 'devices/remote');
     mkdirSync(remoteDirectory, { recursive: true });
+    const firstId = randomUUID();
     for (const sequence of [2, 1]) {
       const snapshot = {
         schemaVersion: 1 as const,
-        snapshotId: randomUUID(),
+        snapshotId: sequence === 1 ? firstId : randomUUID(),
         deviceId: 'remote',
         sequence,
         createdAt: `2026-08-26T00:00:0${sequence}.000Z`,
-        parentSnapshots: [],
+        // The second snapshot names the first as its parent, so the base is
+        // served from the snapshots already read in the same cycle.
+        parentSnapshots: sequence === 2 ? [firstId] : [],
         stateHash: syncHash(empty),
         state: empty,
       };
@@ -688,5 +699,262 @@ describe('SyncController safeguards and lifecycle', () => {
       { entityType: 'workspace', entityId: 'gone' },
     ]);
     expect(result.workspaces).toEqual([]);
+  });
+});
+
+function remoteSnapshot(
+  shared: string,
+  deviceId: string,
+  sequence: number,
+  overrides: Partial<SyncSnapshot> = {},
+  content?: string,
+): SyncSnapshot {
+  const snapshot: SyncSnapshot = {
+    schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
+    snapshotId: randomUUID(),
+    deviceId,
+    sequence,
+    createdAt: `2026-08-26T00:00:0${sequence}.000Z`,
+    parentSnapshots: [],
+    stateHash: syncHash(empty),
+    state: empty,
+    ...overrides,
+  };
+  const deviceDirectory = join(shared, 'devices', deviceId);
+  mkdirSync(deviceDirectory, { recursive: true });
+  writeFileSync(
+    join(deviceDirectory, `${String(sequence).padStart(12, '0')}-${snapshot.snapshotId}.json`),
+    content ?? canonicalJson(snapshot),
+  );
+  return snapshot;
+}
+
+function fileName(snapshot: SyncSnapshot): string {
+  return `devices/${snapshot.deviceId}/${String(snapshot.sequence).padStart(12, '0')}-${snapshot.snapshotId}.json`;
+}
+
+function ownSnapshots(shared: string, deviceId: string): SyncSnapshot[] {
+  const directory = join(shared, 'devices', deviceId);
+  return readdirSync(directory)
+    .sort()
+    .map((name) => JSON.parse(readFileSync(join(directory, name), 'utf8')) as SyncSnapshot);
+}
+
+describe('SyncController operability', () => {
+  it('names a blocked snapshot, keeps importing other devices, and still publishes', async () => {
+    const data = root();
+    const shared = join(data, 'Pimpampum');
+    const invalid = remoteSnapshot(shared, 'remote-a', 1, {}, '{}');
+    const valid = remoteSnapshot(shared, 'remote-b', 1);
+    const importer = vi.fn();
+    const sync = controller(data, { importer });
+    const status = await sync.configure(shared, 'linux');
+    expect(importer).toHaveBeenCalledTimes(1);
+    expect(status).toMatchObject({
+      state: 'error',
+      pendingSnapshotCount: 1,
+      blockedSnapshot: { path: fileName(invalid), reason: expect.stringMatching(/invalid/) },
+    });
+    expect(status.error).toBe(
+      `Blocked snapshot ${fileName(invalid)}: ${status.blockedSnapshot!.reason}`,
+    );
+    const published = ownSnapshots(shared, 'linux');
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({
+      schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
+      parentSnapshots: [valid.snapshotId],
+      appliedHeads: { 'remote-b': valid.snapshotId },
+    });
+    expect(published[0]).not.toHaveProperty('baseState');
+
+    writeFileSync(join(shared, fileName(invalid)), canonicalJson(invalid));
+    const repaired = await sync.reconcile();
+    expect(importer).toHaveBeenCalledTimes(2);
+    expect(repaired).toMatchObject({ state: 'healthy', error: null, blockedSnapshot: null });
+    await sync.close();
+  });
+
+  it('treats descendants of a blocked snapshot as blocked and reports the first path', async () => {
+    const data = root();
+    const shared = join(data, 'Pimpampum');
+    const blockedRoot = remoteSnapshot(shared, 'remote', 1, {}, 'not json');
+    remoteSnapshot(shared, 'remote', 2, { parentSnapshots: [blockedRoot.snapshotId] });
+    const other = remoteSnapshot(shared, 'aaa', 1, {}, '{}');
+    const importer = vi.fn();
+    const sync = controller(data, { importer });
+    const status = await sync.configure(shared, 'linux');
+    expect(importer).not.toHaveBeenCalled();
+    expect(status).toMatchObject({
+      state: 'error',
+      pendingSnapshotCount: 3,
+      blockedSnapshot: { path: fileName(other) },
+    });
+    // Nothing waits on the provider, so this device's own state was published.
+    expect(ownSnapshots(shared, 'linux')).toHaveLength(1);
+    await sync.close();
+  });
+
+  it('accepts a version 1 snapshot whose hash matches and blocks the ones that need an upgrade', async () => {
+    const data = root();
+    const shared = join(data, 'Pimpampum');
+    const legacy = remoteSnapshot(shared, 'legacy', 1, { schemaVersion: 1 });
+    const state: SyncState = {
+      ...empty,
+      workspaces: [
+        {
+          id: 'one',
+          name: 'One',
+          createdAt: '2026-08-26T00:00:00.000Z',
+          updatedAt: '2026-08-26T00:00:00.000Z',
+        },
+      ],
+    };
+    const localeHashed = remoteSnapshot(shared, 'danish', 1, {
+      schemaVersion: 1,
+      state,
+      stateHash: syncHash({ ...state, workspaces: [] }),
+    });
+    const future = remoteSnapshot(shared, 'future', 1, {
+      schemaVersion: 3 as unknown as 2,
+    });
+    const importer = vi.fn();
+    const sync = controller(data, { importer });
+    const status = await sync.configure(shared, 'linux');
+    expect(importer).toHaveBeenCalledTimes(1);
+    expect(status.blockedSnapshot).toEqual({
+      path: fileName(localeHashed),
+      reason: expect.stringMatching(/upgrade Pimpampum on device "danish" so it republishes/),
+    });
+    const internals = sync as unknown as {
+      readSnapshot(path: string, expected: object): unknown;
+    };
+    // The configured directory is the realpath; the temporary root may not be.
+    const directory = status.directory!;
+    expect(() =>
+      internals.readSnapshot(join(directory, fileName(future)), {
+        deviceId: 'future',
+        sequence: 1,
+        snapshotId: future.snapshotId,
+      }),
+    ).toThrow(/uses format 3; upgrade Pimpampum on this device/);
+    expect(() =>
+      internals.readSnapshot(join(directory, fileName(legacy)), {
+        deviceId: 'legacy',
+        sequence: 1,
+        snapshotId: legacy.snapshotId,
+      }),
+    ).not.toThrow();
+    await sync.close();
+  });
+
+  it('blocks a child whose applied parent file is corrupt', async () => {
+    const data = root();
+    const shared = join(data, 'Pimpampum');
+    const parent = remoteSnapshot(shared, 'remote', 1, {}, 'corrupt');
+    remoteSnapshot(shared, 'remote', 2, { parentSnapshots: [parent.snapshotId] });
+    writeFileSync(
+      join(data, 'sync.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        directory: shared,
+        deviceId: 'linux',
+        paused: false,
+        sequence: 0,
+        appliedSnapshotIds: [parent.snapshotId],
+        headSnapshotIds: [parent.snapshotId],
+        conflicts: [],
+        deviceSequences: { remote: 1 },
+      }),
+    );
+    const importer = vi.fn();
+    const sync = controller(data, { importer });
+    const status = await sync.reconcile();
+    expect(importer).not.toHaveBeenCalled();
+    expect(status).toMatchObject({
+      state: 'error',
+      pendingSnapshotCount: 1,
+      blockedSnapshot: { path: fileName(parent), reason: expect.stringMatching(/unreadable/) },
+    });
+    await sync.close();
+  });
+
+  it('skips the export when no mutation was committed and compacts the applied ledger', async () => {
+    const data = root();
+    const shared = join(data, 'Pimpampum');
+    const remote = remoteSnapshot(shared, 'remote', 1);
+    const stale = randomUUID();
+    const head = randomUUID();
+    writeFileSync(
+      join(data, 'sync.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        directory: shared,
+        deviceId: 'linux',
+        paused: false,
+        sequence: 0,
+        appliedSnapshotIds: [stale, head],
+        headSnapshotIds: [head],
+        baseState: empty,
+        conflicts: [],
+      }),
+    );
+    let mutations = 0;
+    const snapshotter = vi.fn(() => empty);
+    const sync = controller(data, { snapshotter, mutationCounter: () => mutations });
+    await sync.reconcile();
+    const settings = JSON.parse(readFileSync(join(data, 'sync.json'), 'utf8')) as {
+      appliedSnapshotIds: string[];
+      deviceHeads: Record<string, string>;
+      inheritedSequence: number;
+    };
+    const [published] = ownSnapshots(shared, 'linux');
+    // The stale id vanished; the head without a file and the present files stay.
+    expect(settings.appliedSnapshotIds).toEqual([head, remote.snapshotId, published!.snapshotId]);
+    expect(settings.deviceHeads).toEqual({
+      remote: remote.snapshotId,
+      linux: published!.snapshotId,
+    });
+    expect(settings).not.toHaveProperty('baseState');
+    expect(published).toMatchObject({ appliedHeads: { remote: remote.snapshotId } });
+
+    const exportsAfterPublish = snapshotter.mock.calls.length;
+    await sync.reconcile();
+    await sync.reconcile();
+    expect(snapshotter).toHaveBeenCalledTimes(exportsAfterPublish);
+    mutations += 1;
+    await sync.reconcile();
+    expect(snapshotter).toHaveBeenCalledTimes(exportsAfterPublish + 1);
+    expect(ownSnapshots(shared, 'linux')).toHaveLength(1);
+    await sync.reconcile();
+    expect(snapshotter).toHaveBeenCalledTimes(exportsAfterPublish + 1);
+    await sync.close();
+
+    const restored = controller(data, { snapshotter, mutationCounter: () => mutations });
+    expect(restored.getStatus()).toMatchObject({ enabled: true, deviceId: 'linux' });
+    await restored.close();
+  });
+
+  it('reports another computer publishing as this device and recovers after forget', async () => {
+    const data = root();
+    const shared = join(data, 'Pimpampum');
+    mkdirSync(shared);
+    const importer = vi.fn();
+    const sync = controller(data, { importer });
+    await sync.configure(shared, 'shared');
+    expect(ownSnapshots(shared, 'shared')).toHaveLength(1);
+    const twin = remoteSnapshot(shared, 'shared', 2);
+    const status = await sync.reconcile();
+    expect(status).toMatchObject({ state: 'error' });
+    expect(status.error).toMatch(/Another computer publishes snapshots as device "shared"/);
+    expect(importer).not.toHaveBeenCalled();
+
+    await sync.forget();
+    const recovered = await sync.configure(shared, 'shared');
+    expect(recovered).toMatchObject({ state: 'healthy', error: null });
+    // Both files already in the directory are history now: the own first
+    // snapshot and the twin's; the reset ledger imports each once.
+    expect(importer).toHaveBeenCalledTimes(2);
+    expect(ownSnapshots(shared, 'shared').map((s) => s.snapshotId)).toContain(twin.snapshotId);
+    await sync.close();
   });
 });

@@ -10,13 +10,25 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { findExecutable, runServiceCommand } from '../src/service/platform.js';
+import { AppError } from '../src/errors.js';
+import {
+  createServiceCommandRunner,
+  DEFAULT_SERVICE_COMMAND_TIMEOUT_MILLISECONDS,
+  findExecutable,
+  runServiceCommand,
+  SERVICE_COMMAND_MAX_OUTPUT_BYTES,
+  serviceCommandEnvironment,
+  ServiceCommandBoundError,
+} from '../src/service/platform.js';
 
 const roots: string[] = [];
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+const HANG_FOREVER = 'setInterval(() => {}, 1000)';
+const IGNORE_SIGTERM_AND_HANG = `process.on('SIGTERM', () => {}); ${HANG_FOREVER}`;
 
 describe('service command runner', () => {
   it('executes argument arrays without a shell and captures success', async () => {
@@ -41,6 +53,171 @@ describe('service command runner', () => {
       ]),
     ).resolves.toEqual({ exitCode: 7, stdout: '', stderr: 'failed' });
     await expect(runServiceCommand('/definitely/missing/pimpampum-command', [])).rejects.toThrow();
+  });
+
+  it('stops a command at its deadline with a typed error that names the executable', async () => {
+    const startedAt = Date.now();
+    const failure = await runServiceCommand(process.execPath, ['--eval', HANG_FOREVER], {
+      timeoutMilliseconds: 200,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ServiceCommandBoundError);
+    expect(failure).toBeInstanceOf(AppError);
+    expect(failure).toMatchObject({
+      code: 'unavailable',
+      status: 503,
+      retryable: true,
+      bound: 'timeout',
+      executable: process.execPath,
+      details: { executable: process.execPath, timeoutMilliseconds: 200 },
+    });
+    expect((failure as Error).message).toContain('node');
+    expect((failure as Error).message).toContain('0.2 s');
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it('escalates from SIGTERM to SIGKILL for a child that ignores the first signal', async () => {
+    const startedAt = Date.now();
+    const failure = await runServiceCommand(process.execPath, ['--eval', IGNORE_SIGTERM_AND_HANG], {
+      timeoutMilliseconds: 200,
+      terminationGraceMilliseconds: 100,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: 'unavailable', bound: 'timeout' });
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it('defaults to a sixty second deadline and rejects non-positive bounds', async () => {
+    expect(DEFAULT_SERVICE_COMMAND_TIMEOUT_MILLISECONDS).toBe(60_000);
+    await expect(
+      runServiceCommand(process.execPath, ['--version'], { timeoutMilliseconds: 0 }),
+    ).rejects.toThrow(/timeout must be positive/u);
+    await expect(
+      runServiceCommand(process.execPath, ['--version'], { maxOutputBytes: -1 }),
+    ).rejects.toThrow(/output limit must be positive/u);
+    await expect(
+      runServiceCommand(process.execPath, ['--version'], { terminationGraceMilliseconds: 1.5 }),
+    ).rejects.toThrow(/termination grace must be positive/u);
+  });
+
+  it('accepts more output than the largest parser cap and stops a flood beyond its own', async () => {
+    expect(SERVICE_COMMAND_MAX_OUTPUT_BYTES).toBeGreaterThanOrEqual(4 * 1024 * 1024);
+    const aboveOldCap = 1_500_000;
+    const result = await runServiceCommand(process.execPath, [
+      '--eval',
+      `process.stdout.write('x'.repeat(${aboveOldCap}))`,
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toHaveLength(aboveOldCap);
+
+    const flood = await runServiceCommand(
+      process.execPath,
+      ['--eval', "process.stdout.write('y'.repeat(200_000))"],
+      { maxOutputBytes: 64 * 1024 },
+    ).catch((error: unknown) => error);
+    expect(flood).toBeInstanceOf(ServiceCommandBoundError);
+    expect(flood).toMatchObject({
+      code: 'unavailable',
+      retryable: false,
+      bound: 'output',
+      details: { executable: process.execPath, maxOutputBytes: 64 * 1024 },
+    });
+    expect((flood as Error).message).toContain('65536 bytes');
+  });
+
+  it('forwards only the allow-listed environment to the child', async () => {
+    const source: NodeJS.ProcessEnv = {
+      PATH: `relative${delimiter}/usr/bin${delimiter}/bin${delimiter}/usr/bin`,
+      HOME: '/home/dev',
+      USER: 'dev',
+      LOGNAME: 'dev',
+      SHELL: '/bin/zsh',
+      TMPDIR: '/tmp/dev',
+      LANG: 'es_ES.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      LC_MESSAGES: 'C',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+      XDG_CONFIG_HOME: '/home/dev/.config',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      SSH_AUTH_SOCK: '/run/user/1000/agent.sock',
+      WAYLAND_DISPLAY: 'wayland-1',
+      DISPLAY: ':0',
+      HYPRLAND_INSTANCE_SIGNATURE: 'abc123',
+      OMARCHY_PATH: '/home/dev/.local/share/omarchy',
+      PIMPAMPUM_TOKEN: 'secret-bearer',
+      PIMPAMPUM_DATA_DIR: '/home/dev/.pimpampum',
+      NODE_OPTIONS: '--require /tmp/evil.js',
+      NPM_TOKEN: 'npm-secret',
+      npm_config_registry: 'https://example.invalid',
+      AWS_SECRET_ACCESS_KEY: 'aws-secret',
+      NUL_CARRIER: 'bad\0value',
+    };
+
+    expect(serviceCommandEnvironment(source)).toEqual({
+      PATH: `/usr/bin${delimiter}/bin`,
+      HOME: '/home/dev',
+      USER: 'dev',
+      LOGNAME: 'dev',
+      TMPDIR: '/tmp/dev',
+      LANG: 'es_ES.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      LC_MESSAGES: 'C',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+      XDG_CONFIG_HOME: '/home/dev/.config',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      SSH_AUTH_SOCK: '/run/user/1000/agent.sock',
+      WAYLAND_DISPLAY: 'wayland-1',
+      DISPLAY: ':0',
+      HYPRLAND_INSTANCE_SIGNATURE: 'abc123',
+      OMARCHY_PATH: '/home/dev/.local/share/omarchy',
+    });
+    expect(serviceCommandEnvironment({})).toEqual({ PATH: '' });
+
+    const child = await runServiceCommand(
+      process.execPath,
+      ['--eval', 'process.stdout.write(JSON.stringify(process.env))'],
+      { environment: { ...source, PATH: process.env.PATH ?? '' } },
+    );
+    expect(child.exitCode).toBe(0);
+    const observed = JSON.parse(child.stdout) as Record<string, string>;
+    expect(Object.keys(observed).filter((key) => key.startsWith('PIMPAMPUM_'))).toEqual([]);
+    expect(observed).not.toHaveProperty('NODE_OPTIONS');
+    expect(observed).not.toHaveProperty('NPM_TOKEN');
+    expect(observed).not.toHaveProperty('AWS_SECRET_ACCESS_KEY');
+    expect(observed).not.toHaveProperty('SHELL');
+    expect(observed).toMatchObject({
+      HOME: '/home/dev',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+    });
+    expect(JSON.stringify(observed)).not.toContain('secret');
+  });
+
+  it('never leaks the daemon token from the real process environment', async () => {
+    const previous = process.env.PIMPAMPUM_TOKEN;
+    process.env.PIMPAMPUM_TOKEN = 'live-bearer-token';
+    try {
+      const child = await runServiceCommand(process.execPath, [
+        '--eval',
+        "process.stdout.write(String('PIMPAMPUM_TOKEN' in process.env))",
+      ]);
+      expect(child).toEqual({ exitCode: 0, stdout: 'false', stderr: '' });
+    } finally {
+      if (previous === undefined) delete process.env.PIMPAMPUM_TOKEN;
+      else process.env.PIMPAMPUM_TOKEN = previous;
+    }
+  });
+
+  it('builds a RunCommand with fixed bounds for callers that need a longer deadline', async () => {
+    const patient = createServiceCommandRunner({ timeoutMilliseconds: 10_000 });
+    await expect(
+      patient(process.execPath, ['--eval', 'process.stdout.write("ok")']),
+    ).resolves.toEqual({ exitCode: 0, stdout: 'ok', stderr: '' });
+    const impatient = createServiceCommandRunner({ timeoutMilliseconds: 100 });
+    await expect(impatient(process.execPath, ['--eval', HANG_FOREVER])).rejects.toMatchObject({
+      code: 'unavailable',
+      bound: 'timeout',
+    });
   });
 });
 

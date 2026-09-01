@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createUpdateManager, isNewerVersion, resolveNpmPath } from '../src/update.js';
+import {
+  createUpdateManager,
+  isNewerVersion,
+  resolveNpmPath,
+  resolvePackagedRelease,
+} from '../src/update.js';
 
 const globalRoots: string[] = [];
 
@@ -34,7 +39,7 @@ describe('update manager', () => {
   });
 
   it('quotes only a bounded prefix of an oversized npm version', () => {
-    // `runServiceCommand` accepts 1 MB of stdout and this message reaches a desktop panel.
+    // `runServiceCommand` accepts 4 MiB of stdout and this message reaches a desktop panel.
     expect(() => isNewerVersion('x'.repeat(500), '1.1.0')).toThrow(
       `npm returned an invalid Pimpampum version: ${'x'.repeat(40)}\u2026`,
     );
@@ -251,6 +256,7 @@ describe('update manager', () => {
         schemaVersion: 1,
         channel: 'stable',
         version: '1.2.0',
+        issuedAt: '2026-09-01T12:00:00.000Z',
         targets: {
           'darwin-arm64': {
             url: 'https://github.com/r-bart/pimpampum/releases/download/v1.2.0/Pimpampum-1.2.0-darwin-arm64.zip',
@@ -323,6 +329,7 @@ describe('update manager', () => {
             schemaVersion: 1,
             channel: 'stable',
             version: '1.2.0',
+            issuedAt: '2026-09-01T12:00:00.000Z',
             targets: {
               'darwin-arm64': {
                 url: 'https://github.com/r-bart/pimpampum/releases/download/v1.2.0/Pimpampum-1.2.0-darwin-arm64.zip',
@@ -380,6 +387,7 @@ describe('update manager', () => {
               schemaVersion: 1,
               channel: 'stable',
               version: '1.2.0',
+              issuedAt: '2026-09-01T12:00:00.000Z',
               targets: {
                 'darwin-arm64': {
                   url: 'https://github.com/r-bart/pimpampum/releases/download/v1.2.0/Pimpampum-1.2.0-darwin-arm64.zip',
@@ -403,5 +411,167 @@ describe('update manager', () => {
     await expect(input(() => false).check()).rejects.toThrow(/signature/u);
     await expect(input(() => true, 'd'.repeat(64)).update()).rejects.toThrow(/hash/u);
     expect(reconcile).not.toHaveBeenCalled();
+  });
+});
+
+describe('release channel contract', () => {
+  it('splits a prerelease at its first hyphen only', () => {
+    expect(isNewerVersion('1.0.0-rc-2', '1.0.0-rc-1')).toBe(true);
+    expect(isNewerVersion('1.0.0-rc-1', '1.0.0-rc-2')).toBe(false);
+    expect(isNewerVersion('1.0.0-rc-1', '1.0.0-rc-1')).toBe(false);
+    expect(isNewerVersion('1.0.0', '1.0.0-rc-2')).toBe(true);
+  });
+
+  it('exposes issuedAt and accepts the macos-arm64 asset name for the darwin-arm64 target', async () => {
+    const fetchManifest = vi.fn(async () =>
+      JSON.stringify({
+        schemaVersion: 1,
+        channel: 'stable',
+        version: '1.2.12',
+        issuedAt: '2026-09-01T12:00:00.000Z',
+        targets: {
+          'darwin-arm64': {
+            url: 'https://github.com/r-bart/pimpampum/releases/download/v1.2.12/Pimpampum-1.2.12-macos-arm64.zip',
+            sha256: 'a'.repeat(64),
+            signature: Buffer.alloc(64, 1).toString('base64'),
+            size: 4096,
+          },
+          'linux-x64': {
+            url: 'https://github.com/r-bart/pimpampum/releases/download/v1.2.12/pimpampum-runtime-1.2.12-linux-x64.tar.gz',
+            sha256: 'b'.repeat(64),
+            signature: Buffer.alloc(64, 2).toString('base64'),
+            size: 8192,
+          },
+        },
+      }),
+    );
+    const verifySignature = vi.fn(async () => true);
+    const resolved = await resolvePackagedRelease({
+      channelManifestUrl:
+        'https://github.com/r-bart/pimpampum/releases/download/update-channel-stable/release-manifest.json',
+      target: 'darwin-arm64',
+      fetchManifest,
+      verifySignature,
+      stageCandidate: vi.fn(),
+      reconcile: vi.fn(),
+    });
+    expect(resolved.manifest).toEqual({
+      schemaVersion: 1,
+      channel: 'stable',
+      version: '1.2.12',
+      issuedAt: '2026-09-01T12:00:00.000Z',
+      targets: { 'darwin-arm64': resolved.asset },
+    });
+    expect(resolved.asset.url).toContain('macos-arm64.zip');
+    expect(verifySignature).toHaveBeenCalledWith({
+      payload: [
+        'pimpampum-packaged-release-v1',
+        'stable',
+        '1.2.12',
+        '2026-09-01T12:00:00.000Z',
+        'darwin-arm64',
+        resolved.asset.url,
+        'a'.repeat(64),
+        '4096',
+      ].join('\n'),
+      signature: Buffer.alloc(64, 1).toString('base64'),
+      target: 'darwin-arm64',
+    });
+  });
+});
+
+describe('release channel residual boundaries', () => {
+  const asset = {
+    url: 'https://updates.example.test/v2.0.0/pimpampum-darwin-arm64.zip',
+    sha256: 'a'.repeat(64),
+    signature: 'b'.repeat(64),
+    size: 1024,
+  };
+  const provider = (fetchManifest: () => Promise<string | Uint8Array>) => ({
+    channelManifestUrl: 'https://updates.example.test/channel/stable.json',
+    target: 'darwin-arm64' as const,
+    fetchManifest,
+    verifySignature: async () => true,
+    stageCandidate: vi.fn(),
+    reconcile: vi.fn(),
+  });
+  const manifest = (overrides: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      schemaVersion: 1,
+      channel: 'stable',
+      version: '2.0.0',
+      issuedAt: '2026-09-01T12:00:00.000Z',
+      targets: { 'darwin-arm64': asset },
+      ...overrides,
+    });
+
+  it('rejects a NUL asset URL, a non-text response and a calendar-invalid issuedAt', async () => {
+    await expect(
+      resolvePackagedRelease(
+        provider(async () =>
+          manifest({ targets: { 'darwin-arm64': { ...asset, url: `${asset.url}\0` } } }),
+        ),
+      ),
+    ).rejects.toThrow(/invalid asset URL/iu);
+    await expect(
+      resolvePackagedRelease(provider(async () => 42 as unknown as string)),
+    ).rejects.toThrow(/response is invalid/iu);
+    await expect(
+      resolvePackagedRelease(
+        provider(async () => manifest({ issuedAt: '2026-02-30T12:00:00.000Z' })),
+      ),
+    ).rejects.toThrow(/schema is incompatible/iu);
+    await expect(
+      resolvePackagedRelease(provider(async () => new TextEncoder().encode(manifest()))),
+    ).resolves.toMatchObject({ manifest: { version: '2.0.0' } });
+  });
+
+  it('returns without staging when the channel is not newer and rejects a relative runtime directory', async () => {
+    const current = provider(async () => manifest());
+    const manager = createUpdateManager({
+      currentVersion: '2.0.0',
+      npmPath: null,
+      nodePath: '/node',
+      runCommand: vi.fn(),
+      installReceipt: { schemaVersion: 1, adapter: 'macos-app' },
+      packagedRelease: current,
+    });
+    await expect(manager.update()).resolves.toEqual({
+      currentVersion: '2.0.0',
+      latestVersion: '2.0.0',
+      updateAvailable: false,
+      updated: false,
+      installedVersion: '2.0.0',
+      serviceReconciled: false,
+    });
+    expect(current.stageCandidate).not.toHaveBeenCalled();
+    expect(() =>
+      createUpdateManager({
+        currentVersion: '1.0.0',
+        npmPath: null,
+        nodePath: '/node',
+        runCommand: vi.fn(),
+        installReceipt: {
+          schemaVersion: 1,
+          adapter: 'systemd',
+          packagedRuntime: { version: '1.0.0', target: 'linux-x64', runtimeDirectory: 'relative' },
+        },
+      }),
+    ).toThrow(/receipt schema is incompatible/iu);
+  });
+});
+
+describe('explicit legacy provenance', () => {
+  it('keeps a macOS app receipt on npm when it declares legacy-npm provenance', async () => {
+    const runCommand = vi.fn(async () => ({ exitCode: 0, stdout: '"1.0.0"', stderr: '' }));
+    const manager = createUpdateManager({
+      currentVersion: '1.0.0',
+      npmPath: '/npm',
+      nodePath: '/node',
+      runCommand,
+      installReceipt: { schemaVersion: 1, adapter: 'macos-app', updateProvider: 'legacy-npm' },
+    });
+    await expect(manager.check()).resolves.toMatchObject({ updateAvailable: false });
+    expect(runCommand).toHaveBeenCalledOnce();
   });
 });

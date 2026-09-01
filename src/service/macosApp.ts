@@ -12,6 +12,7 @@ import {
   rmSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
+import { z } from 'zod';
 import { acceptLoginAcknowledgement } from './loginHandshake.js';
 import { assertNoSymlinkTraversal, writePrivateFileAtomic } from './receipt.js';
 import type {
@@ -24,6 +25,7 @@ import type {
   ServiceAdapterContext,
   ServiceArtifact,
   ServiceIntegrationStatus,
+  ServiceUninstallOutcome,
 } from './types.js';
 
 const SYSTEM_APPLICATIONS = '/Applications';
@@ -37,6 +39,18 @@ const ACKNOWLEDGEMENT_FILE = 'login-registration-acknowledgement.json';
 const STATUS_FILE = 'login-item-status.json';
 const UNREGISTRATION_ACKNOWLEDGEMENT_FILE = 'login-unregistration-acknowledgement.json';
 const APPLICATION_PATH_FILE = 'application-path.json';
+/** Every control file the adapter keeps in the data directory. Uninstall removes them last. */
+const CONTROL_FILES = [
+  REQUEST_FILE,
+  ACKNOWLEDGEMENT_FILE,
+  STATUS_FILE,
+  UNREGISTRATION_ACKNOWLEDGEMENT_FILE,
+  APPLICATION_PATH_FILE,
+] as const;
+/** How long the helper app gets to answer a handshake. Registration requests carry it as `expiresAt`. */
+const LOGIN_HANDSHAKE_WINDOW_MS = 30_000;
+/** What the user must do when uninstall cannot reach the helper that owns the login item. */
+export const LOGIN_ITEM_MANUAL_INSTRUCTION = 'Remove Pimpampum from System Settings › Login Items';
 
 interface FileSnapshot {
   path: string;
@@ -48,6 +62,18 @@ interface MacOSLoginAcknowledgement extends LoginAcknowledgement {
   registrationChanged: boolean;
 }
 
+/** Where the app lives once setup finishes, and whether Pimpampum put it there. */
+export interface ApplicationLocation {
+  path: string;
+  managed: boolean;
+}
+
+interface HandshakeClock {
+  now: () => Date;
+  sleep: (milliseconds: number) => Promise<void>;
+  pollIntervalMs: number;
+}
+
 export interface MacOSDesktopAdapterOptions {
   appBundlePath: string;
   daemonAdapter: PlatformServiceAdapter;
@@ -55,7 +81,6 @@ export interface MacOSDesktopAdapterOptions {
   pkillPath?: string;
   now?: () => Date;
   sleep?: (milliseconds: number) => Promise<void>;
-  acknowledgementPolls?: number;
   acknowledgementPollIntervalMs?: number;
 }
 
@@ -75,6 +100,15 @@ function ensureAbsoluteDirectory(path: string): void {
   if (!existsSync(path) || !lstatSync(path).isDirectory()) {
     throw new Error('Build the macOS app before installing Pimpampum');
   }
+}
+
+function isDirectory(path: string): boolean {
+  return existsSync(path) && lstatSync(path).isDirectory();
+}
+
+/** Quotes a path for `pkill -f`, whose pattern is an extended regular expression. */
+function regexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function sourceFiles(root: string): Array<{ relativePath: string; content: Buffer; mode: number }> {
@@ -195,8 +229,94 @@ function removeEmbeddedRuntimeSource(installedApp: string): void {
   rmSync(runtime, { recursive: true });
 }
 
+const applicationPathSchema = z
+  .string()
+  .refine(
+    (value) => isAbsolute(value) && !value.includes('\0'),
+    'Application path must be absolute',
+  );
+
+/**
+ * `application-path.json`. Schema 1 recorded only the path; schema 2 also says whether setup put
+ * the bundle there. Swift reads the same file to find the copy it must relaunch.
+ */
+const applicationRecordSchema = z.union([
+  z.strictObject({ schemaVersion: z.literal(1), path: applicationPathSchema }),
+  z.strictObject({
+    schemaVersion: z.literal(2),
+    path: applicationPathSchema,
+    managed: z.boolean(),
+  }),
+]);
+
+const installationMarkerSchema = z.object({ dataDirectory: z.string() });
+
+function managedApplicationPath(context: ServiceAdapterContext): string {
+  return join(context.homeDirectory, 'Applications', APP_NAME);
+}
+
+function recordedApplicationLocation(context: ServiceAdapterContext): ApplicationLocation | null {
+  const file = controlPath(context, APPLICATION_PATH_FILE);
+  if (!existsSync(file)) return null;
+  let value: unknown;
+  try {
+    value = readJsonObject(file, context.dataDirectory);
+  } catch {
+    return null;
+  }
+  const record = applicationRecordSchema.safeParse(value);
+  if (!record.success) return null;
+  const path = normalize(record.data.path);
+  // Schema 1 predates `managed`. The only path it ever recorded for a copy setup made is the
+  // managed one; anything else was an adopted bundle.
+  const managed =
+    record.data.schemaVersion === 2
+      ? record.data.managed
+      : path === managedApplicationPath(context);
+  return { path, managed };
+}
+
+function recordApplicationLocation(
+  context: ServiceAdapterContext,
+  location: ApplicationLocation,
+): void {
+  writePrivateFileAtomic(
+    controlPath(context, APPLICATION_PATH_FILE),
+    `${JSON.stringify(
+      { schemaVersion: 2, path: location.path, managed: location.managed },
+      null,
+      2,
+    )}\n`,
+    0o600,
+    context.dataDirectory,
+  );
+}
+
+/**
+ * Only a managed install writes the installation marker, and it names the data directory that
+ * wrote it. An adopted bundle never receives one, so the marker tells a managed copy installed
+ * before the location record existed apart from a bundle the user placed at the same path.
+ */
+function carriesInstallationMarker(bundlePath: string, context: ServiceAdapterContext): boolean {
+  const marker = join(bundlePath, INSTALLATION_CONFIGURATION);
+  try {
+    if (!existsSync(marker) || !lstatSync(marker).isFile()) return false;
+    const parsed = installationMarkerSchema.safeParse(
+      JSON.parse(readFileSync(marker, 'utf8')) as unknown,
+    );
+    return parsed.success && normalize(parsed.data.dataDirectory) === context.dataDirectory;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Where the app lives once setup finishes, and whether Pimpampum put it there.
+ *
+ * The record written at install is the authority: an installed CLI later runs `status` and
+ * `uninstall` with the managed copy as its only bundle, and the bundle's parent directory alone
+ * cannot say who put it there. Without a record — the first install, or one that predates the
+ * record — the parent directory decides.
  *
  * A bundle the user already placed in an Applications folder is the app. Copying it into a second
  * managed location leaves two menu-bar icons — the user's copy and the one macOS starts when the
@@ -210,46 +330,19 @@ function removeEmbeddedRuntimeSource(installedApp: string): void {
 function applicationLocation(
   context: ServiceAdapterContext,
   sourceBundlePath: string,
-): { path: string; managed: boolean } {
-  const managedPath = join(context.homeDirectory, 'Applications', APP_NAME);
-  const parents = [SYSTEM_APPLICATIONS, join(context.homeDirectory, 'Applications')];
-  if (parents.includes(dirname(normalize(sourceBundlePath)))) {
-    return { path: normalize(sourceBundlePath), managed: false };
-  }
-  // An installed CLI runs from the packaged runtime and has no bundle to look at, so uninstall
-  // would otherwise assume the managed path and fail to launch a helper that is not there. The
-  // install recorded where the app actually is.
-  const recorded = recordedApplicationPath(context);
-  if (recorded !== null && recorded !== managedPath) return { path: recorded, managed: false };
-  return { path: managedPath, managed: true };
-}
-
-function recordApplicationPath(context: ServiceAdapterContext, path: string): void {
-  writePrivateFileAtomic(
-    controlPath(context, APPLICATION_PATH_FILE),
-    `${JSON.stringify({ schemaVersion: 1, path }, null, 2)}\n`,
-    0o600,
-    context.dataDirectory,
-  );
-}
-
-function recordedApplicationPath(context: ServiceAdapterContext): string | null {
-  const file = controlPath(context, APPLICATION_PATH_FILE);
-  if (!existsSync(file)) return null;
-  try {
-    const value = readJsonObject(file, context.dataDirectory);
-    if (
-      value.schemaVersion !== 1 ||
-      typeof value.path !== 'string' ||
-      !isAbsolute(value.path) ||
-      value.path.includes('\0')
-    ) {
-      return null;
+): ApplicationLocation {
+  const recorded = recordedApplicationLocation(context);
+  if (recorded !== null) return recorded;
+  const managedPath = managedApplicationPath(context);
+  const source = normalize(sourceBundlePath);
+  const applicationFolders = [SYSTEM_APPLICATIONS, join(context.homeDirectory, 'Applications')];
+  if (applicationFolders.includes(dirname(source))) {
+    if (source === managedPath && carriesInstallationMarker(source, context)) {
+      return { path: managedPath, managed: true };
     }
-    return normalize(value.path);
-  } catch {
-    return null;
+    return { path: source, managed: false };
   }
+  return { path: managedPath, managed: true };
 }
 
 function legacyAppRoots(context: ServiceAdapterContext): string[] {
@@ -335,7 +428,6 @@ function assertSuccessfulUnregistration(
   startedAt: number,
   completedAt: number,
 ): LoginAcknowledgementStatus {
-  if (!existsSync(path)) throw new Error('macOS login item did not acknowledge unregistration');
   const value = readJsonObject(path, trustedRoot);
   if (
     Object.keys(value).sort().join(',') !== 'createdAt,previousStatus,status' ||
@@ -355,15 +447,35 @@ function assertSuccessfulUnregistration(
   return value.previousStatus;
 }
 
+/**
+ * Waits for the helper app to write a control file. Bounded twice: by the wall-clock deadline the
+ * handshake itself carries, and by the number of polls that window admits, so an injected clock
+ * that never advances cannot spin forever.
+ */
+async function awaitControlFile(
+  path: string,
+  deadline: number,
+  clock: HandshakeClock,
+): Promise<boolean> {
+  const maxPolls = Math.ceil(LOGIN_HANDSHAKE_WINDOW_MS / clock.pollIntervalMs) + 1;
+  for (let attempt = 0; attempt < maxPolls; attempt += 1) {
+    if (existsSync(path)) return true;
+    if (clock.now().getTime() >= deadline) return false;
+    await clock.sleep(clock.pollIntervalMs);
+  }
+  return existsSync(path);
+}
+
+/**
+ * Asks the helper to unregister the login item. Resolves with the status it replaced, or `null`
+ * when the helper never answered inside the handshake window.
+ */
 async function unregisterLoginItem(
   context: ServiceAdapterContext,
   openPath: string,
   installedApp: string,
-  now: () => Date,
-  acknowledgementPolls: number,
-  sleep: (milliseconds: number) => Promise<void>,
-  acknowledgementPollIntervalMs: number,
-): Promise<LoginAcknowledgementStatus> {
+  clock: HandshakeClock,
+): Promise<LoginAcknowledgementStatus | null> {
   const acknowledgementPath = controlPath(context, UNREGISTRATION_ACKNOWLEDGEMENT_FILE);
   if (existsSync(acknowledgementPath)) {
     assertNoSymlinkTraversal(acknowledgementPath, 'Login item control file', context.dataDirectory);
@@ -372,7 +484,7 @@ async function unregisterLoginItem(
     }
     rmSync(acknowledgementPath);
   }
-  const startedAt = Math.floor(now().getTime() / 1000) * 1000;
+  const startedAt = Math.floor(clock.now().getTime() / 1000) * 1000;
   const unregister = await context.runCommand(openPath, [
     '-n',
     installedApp,
@@ -386,16 +498,30 @@ async function unregisterLoginItem(
   // already does. `open -W` waits on the bundle, and when setup adopted an app the user had already
   // placed in an Applications folder that bundle is also the running menu-bar app, so `-W` blocks
   // on the wrong instance and reports a failure for work that succeeded.
-  for (let attempt = 0; attempt < acknowledgementPolls; attempt += 1) {
-    if (existsSync(acknowledgementPath)) break;
-    await sleep(acknowledgementPollIntervalMs);
-  }
+  const answered = await awaitControlFile(
+    acknowledgementPath,
+    startedAt + LOGIN_HANDSHAKE_WINDOW_MS,
+    clock,
+  );
+  if (!answered) return null;
   return assertSuccessfulUnregistration(
     acknowledgementPath,
     context.dataDirectory,
     startedAt,
-    now().getTime(),
+    clock.now().getTime(),
   );
+}
+
+/** Unregistration inside a compensation path, where an unanswered helper is a failure to report. */
+async function confirmUnregistration(
+  context: ServiceAdapterContext,
+  openPath: string,
+  installedApp: string,
+  clock: HandshakeClock,
+): Promise<LoginAcknowledgementStatus> {
+  const previous = await unregisterLoginItem(context, openPath, installedApp, clock);
+  if (previous === null) throw new Error('macOS login item did not acknowledge unregistration');
+  return previous;
 }
 
 function removeEmptyAppDirectories(root: string, artifacts: ServiceArtifact[]): void {
@@ -440,21 +566,21 @@ export function createMacOSDesktopAdapter(
   if (!isAbsolute(pkillPath) || pkillPath.includes('\0'))
     throw new Error('pkill path must be absolute');
   const now = options.now ?? (() => new Date());
-  const sleep =
-    options.sleep ??
-    ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
-  const acknowledgementPolls = options.acknowledgementPolls ?? 100;
-  const acknowledgementPollIntervalMs = options.acknowledgementPollIntervalMs ?? 100;
-  if (!Number.isInteger(acknowledgementPolls) || acknowledgementPolls < 1) {
-    throw new Error('Acknowledgement poll count must be positive');
-  }
-  if (!Number.isInteger(acknowledgementPollIntervalMs) || acknowledgementPollIntervalMs < 1) {
+  const pollIntervalMs = options.acknowledgementPollIntervalMs ?? 100;
+  if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 1) {
     throw new Error('Acknowledgement poll interval must be positive');
   }
+  const clock: HandshakeClock = {
+    now,
+    sleep:
+      options.sleep ??
+      ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds))),
+    pollIntervalMs,
+  };
 
   const bundleIsPresent = (): boolean => {
     ensureBundlePathShape(options.appBundlePath);
-    return existsSync(options.appBundlePath) && lstatSync(options.appBundlePath).isDirectory();
+    return isDirectory(options.appBundlePath);
   };
 
   const appArtifacts = (context: ServiceAdapterContext): ServiceArtifact[] => {
@@ -483,7 +609,7 @@ export function createMacOSDesktopAdapter(
 
   const registerLoginItem = async (
     context: ServiceAdapterContext,
-  ): Promise<ServiceIntegrationStatus | undefined> => {
+  ): Promise<ServiceIntegrationStatus> => {
     const requestPath = controlPath(context, REQUEST_FILE);
     const acknowledgementPath = controlPath(context, ACKNOWLEDGEMENT_FILE);
     const statusPath = controlPath(context, STATUS_FILE);
@@ -494,7 +620,7 @@ export function createMacOSDesktopAdapter(
     const request: LoginRequest = {
       requestId: randomUUID(),
       requestedAt: requestedAt.toISOString(),
-      expiresAt: new Date(requestedAt.getTime() + 30_000).toISOString(),
+      expiresAt: new Date(requestedAt.getTime() + LOGIN_HANDSHAKE_WINDOW_MS).toISOString(),
     };
     let registrationChanged = false;
     try {
@@ -518,24 +644,21 @@ export function createMacOSDesktopAdapter(
           `Unable to launch the macOS login registration helper (${launch.exitCode})`,
         );
       }
-      let accepted: { requestId: string; status: LoginAcknowledgementStatus } | null = null;
-      for (let attempt = 0; attempt < acknowledgementPolls; attempt += 1) {
-        if (existsSync(acknowledgementPath)) {
-          const received = acknowledgement(acknowledgementPath, context.dataDirectory);
-          accepted = acceptLoginAcknowledgement(request, received, now().toISOString());
-          registrationChanged = received.registrationChanged;
-          break;
-        }
-        await sleep(acknowledgementPollIntervalMs);
+      let status: LoginAcknowledgementStatus;
+      if (await awaitControlFile(acknowledgementPath, Date.parse(request.expiresAt), clock)) {
+        const received = acknowledgement(acknowledgementPath, context.dataDirectory);
+        status = acceptLoginAcknowledgement(request, received, now().toISOString()).status;
+        registrationChanged = received.registrationChanged;
+      } else {
+        // A helper that never answers inside the window the request itself carries is a
+        // recoverable login-item state, exactly like a rejection: record it, keep the install, and
+        // let the menu app's notice offer the retry. Tearing down a working daemon over it would
+        // leave the user with nothing.
+        status = 'error';
       }
-      if (!accepted) throw new Error('Timed out waiting for macOS login item registration');
       writePrivateFileAtomic(
         statusPath,
-        `${JSON.stringify(
-          { schemaVersion: 1, status: accepted.status, updatedAt: now().toISOString() },
-          null,
-          2,
-        )}\n`,
+        `${JSON.stringify({ schemaVersion: 1, status, updatedAt: now().toISOString() }, null, 2)}\n`,
         0o600,
         context.dataDirectory,
       );
@@ -549,19 +672,16 @@ export function createMacOSDesktopAdapter(
       const open = await context.runCommand(openPath, ['-n', installedApp]);
       if (open.exitCode !== 0)
         throw new Error(`Unable to open the macOS menu app (${open.exitCode})`);
-      return { loginItem: accepted.status };
+      return { loginItem: status };
     } catch (error) {
       const rollbackErrors: unknown[] = [error];
       if (registrationChanged) {
         try {
-          await unregisterLoginItem(
+          await confirmUnregistration(
             context,
             openPath,
             applicationLocation(context, options.appBundlePath).path,
-            now,
-            acknowledgementPolls,
-            sleep,
-            acknowledgementPollIntervalMs,
+            clock,
           );
         } catch (unregisterError) {
           rollbackErrors.push(unregisterError);
@@ -580,6 +700,8 @@ export function createMacOSDesktopAdapter(
   };
   let pendingLoginRollbackState: { previousStatus: LoginAcknowledgementStatus | null } | null =
     null;
+  // What `deactivate` had to leave to the user; `afterUninstall` reports it once the files are gone.
+  let pendingManualInstructions: string[] = [];
 
   return {
     id: 'launchd-macos-app',
@@ -608,14 +730,21 @@ export function createMacOSDesktopAdapter(
       await options.daemonAdapter.activate(context, artifacts);
     },
     async afterInstall(context) {
-      // Nothing to copy when the app is already in place: its embedded runtime is the source.
       const location = applicationLocation(context, options.appBundlePath);
       // Record it before registering, so a later uninstall run from the installed CLI knows which
-      // bundle to ask, instead of guessing the managed path.
-      recordApplicationPath(context, location.path);
-      const runtime = location.managed
-        ? installEmbeddedRuntimeSource(options.appBundlePath, location.path)
-        : null;
+      // bundle to ask and whether it owns it, instead of guessing from the managed path. A failed
+      // install puts the previous record back.
+      const recordSnapshot = snapshot(
+        controlPath(context, APPLICATION_PATH_FILE),
+        context.dataDirectory,
+      );
+      recordApplicationLocation(context, location);
+      // Nothing to copy when the app is already in place — an adopted bundle, or the managed copy
+      // itself running setup again from the installed CLI: its embedded runtime is the source.
+      const runtime =
+        location.managed && normalize(options.appBundlePath) !== location.path
+          ? installEmbeddedRuntimeSource(options.appBundlePath, location.path)
+          : null;
       let registered = false;
       try {
         const integration = await registerLoginItem(context);
@@ -628,15 +757,7 @@ export function createMacOSDesktopAdapter(
         const errors: unknown[] = [error];
         if (registered) {
           try {
-            await unregisterLoginItem(
-              context,
-              openPath,
-              applicationLocation(context, options.appBundlePath).path,
-              now,
-              acknowledgementPolls,
-              sleep,
-              acknowledgementPollIntervalMs,
-            );
+            await confirmUnregistration(context, openPath, location.path, clock);
           } catch (unregisterError) {
             errors.push(unregisterError);
           }
@@ -646,6 +767,11 @@ export function createMacOSDesktopAdapter(
         } catch (rollbackError) {
           errors.push(rollbackError);
         }
+        try {
+          restoreSnapshots([recordSnapshot], context.dataDirectory);
+        } catch (restoreError) {
+          errors.push(restoreError);
+        }
         if (errors.length > 1) {
           throw new AggregateError(errors, 'macOS app runtime bootstrap rollback failed');
         }
@@ -653,17 +779,24 @@ export function createMacOSDesktopAdapter(
       }
     },
     async deactivate(context, artifacts) {
-      const installedApp = applicationLocation(context, options.appBundlePath).path;
-      const previousStatus = await unregisterLoginItem(
-        context,
-        openPath,
-        installedApp,
-        now,
-        acknowledgementPolls,
-        sleep,
-        acknowledgementPollIntervalMs,
-      );
-      if (pendingLoginRollbackState) pendingLoginRollbackState.previousStatus = previousStatus;
+      const location = applicationLocation(context, options.appBundlePath);
+      const manualInstructions: string[] = [];
+      pendingManualInstructions = manualInstructions;
+      if (isDirectory(location.path)) {
+        const previousStatus = await unregisterLoginItem(context, openPath, location.path, clock);
+        if (previousStatus === null) {
+          // The helper never confirmed. The login item may or may not be gone; the user can check
+          // System Settings, and the uninstall must not stall on it.
+          manualInstructions.push(LOGIN_ITEM_MANUAL_INSTRUCTION);
+        } else if (pendingLoginRollbackState) {
+          pendingLoginRollbackState.previousStatus = previousStatus;
+        }
+      } else {
+        // The user already trashed the app, so there is no helper left to unregister the login
+        // item. Nothing changed, so a rollback must not try to register it again either.
+        if (pendingLoginRollbackState) pendingLoginRollbackState.previousStatus = null;
+        manualInstructions.push(LOGIN_ITEM_MANUAL_INSTRUCTION);
+      }
       await options.daemonAdapter.deactivate(context, artifacts);
       // Quit the menu app this installation launched. The Swift side only terminates running
       // instances after a successful SMAppService unregistration, which never happens when the
@@ -672,7 +805,7 @@ export function createMacOSDesktopAdapter(
       const stopped = await context.runCommand(pkillPath, [
         '-TERM',
         '-f',
-        join(installedApp, APP_EXECUTABLE),
+        regexLiteral(join(location.path, APP_EXECUTABLE)),
       ]);
       // pkill: 0 = signalled, 1 = no matching process.
       if (stopped.exitCode !== 0 && stopped.exitCode !== 1) {
@@ -683,6 +816,11 @@ export function createMacOSDesktopAdapter(
       const daemonRollback = await options.daemonAdapter.prepareDeactivationRollback?.(
         context,
         artifacts,
+      );
+      // Uninstall deletes every control file, and re-registering the login item afterwards needs
+      // the record to know which bundle to ask. Bytes and modes come back exactly as they were.
+      const controlSnapshots = CONTROL_FILES.map((name) =>
+        snapshot(controlPath(context, name), context.dataDirectory),
       );
       const priorLoginItem = integrationStatus(
         controlPath(context, STATUS_FILE),
@@ -703,13 +841,18 @@ export function createMacOSDesktopAdapter(
         } catch (error) {
           errors.push(error);
         }
+        try {
+          restoreSnapshots(controlSnapshots, context.dataDirectory);
+        } catch (error) {
+          errors.push(error);
+        }
         if (
           loginRollbackState.previousStatus === 'enabled' ||
           loginRollbackState.previousStatus === 'requiresApproval'
         ) {
           try {
             const restored = await registerLoginItem(context);
-            if (restored?.loginItem !== loginRollbackState.previousStatus) {
+            if (restored.loginItem !== loginRollbackState.previousStatus) {
               throw new Error('macOS login item rollback did not restore its previous state');
             }
           } catch (error) {
@@ -725,22 +868,25 @@ export function createMacOSDesktopAdapter(
     },
     async afterRollback(context, artifacts) {
       await options.daemonAdapter.afterRollback?.(context, artifacts);
-      removeEmptyAppDirectories(
-        applicationLocation(context, options.appBundlePath).path,
-        artifacts,
-      );
+      const location = applicationLocation(context, options.appBundlePath);
+      if (location.managed) removeEmptyAppDirectories(location.path, artifacts);
     },
     async rollbackActivation(context, artifacts) {
       await options.daemonAdapter.deactivate(context, artifacts);
     },
-    async afterUninstall(context, artifacts) {
-      for (const name of [
-        REQUEST_FILE,
-        ACKNOWLEDGEMENT_FILE,
-        STATUS_FILE,
-        UNREGISTRATION_ACKNOWLEDGEMENT_FILE,
-        APPLICATION_PATH_FILE,
-      ]) {
+    async afterUninstall(context, artifacts): Promise<ServiceUninstallOutcome | undefined> {
+      const location = applicationLocation(context, options.appBundlePath);
+      const manualInstructions = pendingManualInstructions;
+      pendingManualInstructions = [];
+      // An adopted bundle is the user's app: its embedded runtime and its directories stay, exactly
+      // as they were before setup registered it.
+      if (location.managed) {
+        removeEmbeddedRuntimeSource(location.path);
+        removeEmptyAppDirectories(location.path, artifacts);
+      }
+      // Last on purpose: a failure above leaves the record that names the bundle for the retry,
+      // and the rollback prepared earlier restores whatever this loop already removed.
+      for (const name of CONTROL_FILES) {
         const path = controlPath(context, name);
         if (existsSync(path)) {
           assertNoSymlinkTraversal(path, 'Login item control file', context.dataDirectory);
@@ -748,11 +894,7 @@ export function createMacOSDesktopAdapter(
           rmSync(path);
         }
       }
-      removeEmbeddedRuntimeSource(applicationLocation(context, options.appBundlePath).path);
-      removeEmptyAppDirectories(
-        applicationLocation(context, options.appBundlePath).path,
-        artifacts,
-      );
+      return manualInstructions.length > 0 ? { manualInstructions } : undefined;
     },
     async integrationStatus(context) {
       return integrationStatus(controlPath(context, STATUS_FILE), context.dataDirectory);

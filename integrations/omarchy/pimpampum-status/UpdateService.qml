@@ -12,7 +12,7 @@ Item {
   property string operation: ""
   property string processError: ""
   // Only the read-only check is bounded. Killing a half-finished install is worse than waiting,
-  // because npm may already have replaced the package it is reconciling.
+  // because the release provider may already have replaced the runtime it is reconciling.
   readonly property int checkTimeoutMs: 90000
   property bool timedOut: false
   readonly property bool busy: process.running
@@ -65,8 +65,8 @@ Item {
   }
 
   // The CLI writes its typed envelope to stderr and leaves stdout empty on a failure, so a reader
-  // that only parsed stdout reported every npm refusal as a generic message. Same bounds as
-  // BackupService: the text comes from npm and is rendered on one line of the popout.
+  // that only parsed stdout reported every provider refusal as a generic message. Same bounds as
+  // BackupService: the text comes from the release provider and is rendered on one popout line.
   function actionableFailure(stream, fallback) {
     if (typeof stream !== "string" || stream.length === 0 || stream.length > 4096) return fallback
     try {
@@ -102,7 +102,10 @@ Item {
     }
     try {
       var envelope = JSON.parse(root.processOutput)
-      var data = envelope.data
+      // The CLI prints `{data}`; a bare payload must keep working so an installed plugin survives
+      // a CLI upgrade in either direction, like every other reader in this plugin.
+      var data = isObject(envelope) && isObject(envelope.data) ? envelope.data : envelope
+      if (!isObject(data)) throw new Error("invalid update response")
       root.currentVersion = data.installedVersion || data.currentVersion || ""
       root.latestVersion = data.latestVersion || ""
       root.state = root.operation === "install" ? "current" : (data.updateAvailable ? "available" : "current")

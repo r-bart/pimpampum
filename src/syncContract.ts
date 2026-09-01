@@ -17,9 +17,23 @@ const common = {
   updatedAt: z.string().datetime(),
 };
 const completionSummarySchema = z.string().trim().min(1).max(4_000).nullable();
+/**
+ * `cancelled_at` is absent from the JSON when the row is NULL instead of being
+ * an explicit `null`. Snapshots written before schema version 2 never carried
+ * the key, so omitting it keeps the canonical form of an unchanged entity
+ * identical across the upgrade and avoids spurious merge conflicts.
+ */
+const cancelledAtSchema = z.string().datetime().optional();
 const boundedEntityArray = <T extends z.ZodType>(schema: T) => z.array(schema).max(50_000);
 
 export const syncDeviceIdSchema = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u);
+/**
+ * Version 2 sorts the canonical form by UTF-16 code units. Version 1 sorted with
+ * the process locale, so its hash is accepted only when it matches the
+ * code-unit order as well.
+ */
+export const SYNC_SNAPSHOT_SCHEMA_VERSION = 2;
+const MAX_APPLIED_HEADS = 100;
 
 export const syncStateSchema = z.strictObject({
   workspaces: boundedEntityArray(
@@ -40,6 +54,7 @@ export const syncStateSchema = z.strictObject({
       completionSummary: completionSummarySchema,
       artifacts: z.array(artifactSchema).max(20),
       completedAt: z.string().datetime().nullable(),
+      cancelledAt: cancelledAtSchema,
     }),
   ),
   specs: boundedEntityArray(
@@ -53,6 +68,7 @@ export const syncStateSchema = z.strictObject({
       completionSummary: completionSummarySchema,
       artifacts: z.array(artifactSchema).max(20),
       completedAt: z.string().datetime().nullable(),
+      cancelledAt: cancelledAtSchema,
     }),
   ),
   contexts: boundedEntityArray(
@@ -60,7 +76,9 @@ export const syncStateSchema = z.strictObject({
       ...common,
       ownerType: z.enum(['workspace', 'project']),
       ownerId: z.string().min(1).max(200),
-      name: z.string().min(1).max(200),
+      // The same slug rule HTTP and MCP enforce; the name becomes a file name in
+      // portable exports, so the shared folder must not widen it.
+      name: slugSchema,
       body: markdownSchema,
     }),
   ),
@@ -75,6 +93,7 @@ export const syncStateSchema = z.strictObject({
       completionSummary: completionSummarySchema,
       artifacts: z.array(artifactSchema).max(20),
       completedAt: z.string().datetime().nullable(),
+      cancelledAt: cancelledAtSchema,
     }),
   ),
   activity: z
@@ -122,12 +141,23 @@ export const syncConflictSchema = z.strictObject({
 });
 
 export const syncSnapshotSchema = z.strictObject({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(SYNC_SNAPSHOT_SCHEMA_VERSION)]),
   snapshotId: z.string().uuid(),
   deviceId: syncDeviceIdSchema,
   sequence: z.number().int().positive(),
   createdAt: z.string().datetime(),
   parentSnapshots: z.array(z.string().uuid()).max(100),
+  /**
+   * The newest snapshot of every device the publisher had applied, keyed by
+   * device ID. Retention reads it to learn which of its own snapshots every
+   * other device has acknowledged. Version 1 snapshots do not carry it.
+   */
+  appliedHeads: z
+    .record(syncDeviceIdSchema, z.string().uuid())
+    .refine((heads) => Object.keys(heads).length <= MAX_APPLIED_HEADS, {
+      message: `appliedHeads lists more than ${MAX_APPLIED_HEADS} devices`,
+    })
+    .optional(),
   resolutions: z
     .array(
       z.strictObject({
@@ -153,6 +183,16 @@ export type SyncStatusState =
   | 'error'
   | 'conflict';
 
+/**
+ * A shared snapshot file that failed validation. `path` is relative to the
+ * shared synchronization directory so the user can find the file without the
+ * status leaking the absolute folder twice.
+ */
+export interface SyncBlockedSnapshot {
+  path: string;
+  reason: string;
+}
+
 export interface SyncStatus {
   enabled: boolean;
   paused: boolean;
@@ -165,6 +205,7 @@ export interface SyncStatus {
   pendingSnapshotCount: number;
   conflictCount: number;
   error: string | null;
+  blockedSnapshot: SyncBlockedSnapshot | null;
 }
 
 export interface SyncGateway {
@@ -182,7 +223,19 @@ export interface SyncGateway {
   resolveConflict(conflictId: string, choice: 'local' | 'remote'): Promise<SyncStatus>;
 }
 
+const snapshotVersionProbe = z.looseObject({ schemaVersion: z.number().int() });
+
 export function parseSyncSnapshot(value: unknown): SyncSnapshot {
+  const probe = snapshotVersionProbe.safeParse(value);
+  if (probe.success && probe.data.schemaVersion > SYNC_SNAPSHOT_SCHEMA_VERSION) {
+    throw new AppError(
+      'bad_request',
+      `Shared snapshot uses format ${probe.data.schemaVersion}; upgrade Pimpampum on this device`,
+      400,
+      false,
+      { schemaVersion: probe.data.schemaVersion },
+    );
+  }
   const parsed = syncSnapshotSchema.safeParse(value);
   if (!parsed.success) {
     throw new AppError('bad_request', 'Shared snapshot is invalid', 400, false, {

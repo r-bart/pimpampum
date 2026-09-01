@@ -5,6 +5,11 @@ umask 077
 PATH=/usr/bin:/bin
 export PATH
 
+helper_name=pimpampum-connections
+plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 70
+[ -f "$plugin_root/pimpampum-common.sh" ] && [ ! -L "$plugin_root/pimpampum-common.sh" ] || exit 70
+. "$plugin_root/pimpampum-common.sh"
+
 fail() {
   code=$1
   action=$2
@@ -12,6 +17,24 @@ fail() {
   printf '{"schemaVersion":1,"ok":false,"action":"%s","code":"%s"}\n' \
     "$action" "$error_code" >&2
   exit "$code"
+}
+
+# The shared HOME and runtime-install-receipt.json checks (which prove the receipt owns the control
+# launcher) report through this hook; QML branches on the stable code, not on prose.
+fail_typed() {
+  fail "$1" "$action" "$2"
+}
+
+# A failed CLI invocation forwards the typed envelope code and one bounded line of its message,
+# so a stopped daemon, a missing agent CLI and a real connector failure read differently.
+fail_command() {
+  cli_code_json=null
+  [ -z "$3" ] || cli_code_json="\"$3\""
+  cli_message_json=null
+  [ -z "$4" ] || cli_message_json="\"$4\""
+  printf '{"schemaVersion":1,"ok":false,"action":"%s","code":"%s","cliCode":%s,"message":%s}\n' \
+    "$action" "$2" "$cli_code_json" "$cli_message_json" >&2
+  exit "$1"
 }
 
 action=${1:-}
@@ -39,46 +62,8 @@ case $action in
   *) fail 64 unknown invalid_action ;;
 esac
 
-home_directory=${HOME:-}
-case $home_directory in
-  /*) ;;
-  *) fail 73 "$action" invalid_home ;;
-esac
-[ "$home_directory" != / ] || fail 73 "$action" invalid_home
-case $home_directory in
-  *'"'* | *\\*) fail 73 "$action" invalid_home ;;
-esac
-[ -d "$home_directory" ] && [ ! -L "$home_directory" ] || fail 73 "$action" invalid_home
-
-data_directory="$home_directory/.pimpampum"
-receipt="$data_directory/runtime-install-receipt.json"
-control_launcher="$home_directory/.local/share/pimpampum/bin/pimpampum-control"
-[ -d "$data_directory" ] && [ ! -L "$data_directory" ] ||
-  fail 73 "$action" unsafe_data_directory
-for directory in \
-  "$home_directory/.local" \
-  "$home_directory/.local/share" \
-  "$home_directory/.local/share/pimpampum" \
-  "$home_directory/.local/share/pimpampum/bin"; do
-  [ -d "$directory" ] && [ ! -L "$directory" ] || fail 69 "$action" unsafe_runtime_path
-done
-[ -f "$receipt" ] && [ ! -L "$receipt" ] || fail 69 "$action" runtime_not_installed
-[ -f "$control_launcher" ] && [ ! -L "$control_launcher" ] && [ -x "$control_launcher" ] ||
-  fail 69 "$action" control_unavailable
-/usr/bin/grep -Fq "\"controlLauncherPath\": \"$control_launcher\"" "$receipt" ||
-  fail 69 "$action" receipt_mismatch
-expected_launcher_sha=$(/usr/bin/awk -F'"' \
-  '/"controlLauncherSha256"[[:space:]]*:/ { print $4; exit }' "$receipt")
-printf '%s\n' "$expected_launcher_sha" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' ||
-  fail 69 "$action" receipt_mismatch
-if [ -x /usr/bin/sha256sum ]; then
-  actual_launcher_sha=$(/usr/bin/sha256sum "$control_launcher" | /usr/bin/awk '{print $1}')
-elif [ -x /usr/bin/shasum ]; then
-  actual_launcher_sha=$(/usr/bin/shasum -a 256 "$control_launcher" | /usr/bin/awk '{print $1}')
-else
-  fail 69 "$action" checksum_unavailable
-fi
-[ "$actual_launcher_sha" = "$expected_launcher_sha" ] || fail 69 "$action" launcher_mismatch
+validate_home 73
+verify_control_launcher 69
 
 lock_directory="$data_directory/.connections-helper.lock"
 lock_nonce="$$-$(/bin/date +%s)"
@@ -144,12 +129,12 @@ esac
 [ -x "$timeout_command" ] || fail 69 "$action" timeout_unavailable
 [ ! -L "$timeout_command" ] || fail 69 "$action" timeout_unavailable
 
+# No file-size limit here: the CLI rewrites the agent's own host configuration, which carries the
+# agent's per-project history and often exceeds 64 KiB; the former shell file-size cap killed that
+# rewrite with EFBIG. Only the helper's captured output is bounded, below.
 exit_code=0
-(
-  ulimit -f 128
-  "$timeout_command" --signal=TERM --kill-after=2 30 \
-    "$control_launcher" "$@" > "$stdout_file" 2> "$stderr_file"
-) || exit_code=$?
+"$timeout_command" --signal=TERM --kill-after=2 30 \
+  "$control_launcher" "$@" > "$stdout_file" 2> "$stderr_file" || exit_code=$?
 
 stdout_bytes=$(/usr/bin/wc -c < "$stdout_file" | /usr/bin/tr -d '[:space:]')
 stderr_bytes=$(/usr/bin/wc -c < "$stderr_file" | /usr/bin/tr -d '[:space:]')
@@ -157,10 +142,28 @@ stderr_bytes=$(/usr/bin/wc -c < "$stderr_file" | /usr/bin/tr -d '[:space:]')
   fail 70 "$action" output_limit
 [ "$exit_code" -eq 0 ] || {
   [ "$exit_code" -ne 124 ] && [ "$exit_code" -ne 137 ] || fail 70 "$action" timeout
-  if /usr/bin/grep -Eq '"code"[[:space:]]*:[[:space:]]*"conflict"' "$stderr_file"; then
-    fail 70 "$action" connector_conflict
-  fi
-  fail 70 "$action" command_failed
+  # The CLI writes `{"error":{"code":…,"message":…}}` to stderr. Keep the code only when it is a
+  # plain identifier, and keep printable ASCII of the message without quotes or backslashes so the
+  # value embeds in this helper's own one-line JSON without escaping.
+  cli_code=$(/usr/bin/awk '
+    match($0, /"code"[[:space:]]*:[[:space:]]*"[a-z_]+"/) {
+      value = substr($0, RSTART, RLENGTH)
+      sub(/^"code"[[:space:]]*:[[:space:]]*"/, "", value)
+      sub(/"$/, "", value)
+      print value
+      exit
+    }' "$stderr_file")
+  printf '%s\n' "$cli_code" | /usr/bin/grep -Eq '^[a-z_]{1,40}$' || cli_code=''
+  cli_message=$(/usr/bin/awk '
+    match($0, /"message"[[:space:]]*:[[:space:]]*"/) {
+      value = substr($0, RSTART + RLENGTH)
+      gsub(/\\"/, "\047", value)
+      sub(/".*$/, "", value)
+      print value
+      exit
+    }' "$stderr_file" | /usr/bin/tr -cd '\040-\041\043-\133\135-\176' | /usr/bin/cut -c1-200)
+  [ "$cli_code" != conflict ] || fail_command 70 connector_conflict "$cli_code" "$cli_message"
+  fail_command 70 command_failed "$cli_code" "$cli_message"
 }
 
 payload=$(/bin/cat "$stdout_file")

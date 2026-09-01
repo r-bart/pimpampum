@@ -6,7 +6,6 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const appRoot = join(repositoryRoot, 'platforms/macos/dist/Pimpampum.app');
 const packagePath = join(repositoryRoot, 'package.json');
 const repositoryManifestBackup = join(repositoryRoot, '.pimpampum-package.repository.json');
 
@@ -21,11 +20,8 @@ execFileSync(
   { cwd: repositoryRoot, stdio: 'inherit' },
 );
 
-execFileSync(
-  process.execPath,
-  [join(repositoryRoot, 'scripts/check-macos-artifact.mjs'), appRoot],
-  { cwd: repositoryRoot, stdio: 'inherit' },
-);
+// The macOS app is not part of the npm package: it ships as the GitHub Release zip, verified by
+// `check-macos-artifact.mjs` in the release job, and `pimpampum install` downloads it from there.
 
 if (existsSync(repositoryManifestBackup)) {
   throw new Error(

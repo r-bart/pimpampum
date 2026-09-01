@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -162,5 +162,29 @@ describe.sequential('compiled shared-folder synchronization end to end', () => {
     expect(overviewB.counts.projects).toBe(3);
     expect(await command(environmentA, ['sync', 'conflicts'])).toEqual([]);
     expect(await command(environmentB, ['sync', 'conflicts'])).toEqual([]);
+    expect(await command(environmentA, ['sync', 'status'])).toMatchObject({
+      state: 'healthy',
+      error: null,
+      blockedSnapshot: null,
+      conflictCount: 0,
+    });
+
+    // Every file the compiled daemon writes uses the locale-independent format.
+    const deviceDirectory = join(shared, 'Pimpampum', 'devices', 'macbook');
+    const snapshots = readdirSync(deviceDirectory).map(
+      (name) =>
+        JSON.parse(readFileSync(join(deviceDirectory, name), 'utf8')) as {
+          schemaVersion: number;
+          appliedHeads?: Record<string, string>;
+          baseState?: unknown;
+        },
+    );
+    expect(snapshots.length).toBeGreaterThan(0);
+    for (const snapshot of snapshots) {
+      expect(snapshot.schemaVersion).toBe(2);
+      expect(snapshot.appliedHeads).toBeDefined();
+      expect(snapshot).not.toHaveProperty('baseState');
+    }
+    expect(snapshots.at(-1)!.appliedHeads).toHaveProperty('linux');
   }, 60_000);
 });

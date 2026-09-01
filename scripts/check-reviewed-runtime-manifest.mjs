@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 
+// Verifies that the reviewed Omarchy runtime pins equal the exact archives CI built.
+//
+//   check-reviewed-runtime-manifest.mjs <runtime-bundles-root> [repository-root] [--output <path>]
+//
+// On a mismatch it prints the generated manifest, and `--output` writes it to a file the workflow
+// uploads, so a release pin is copied from CI instead of rebuilt on a laptop that yields other
+// digests.
+
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,6 +46,7 @@ function findBundle(root, version, target) {
 export function checkReviewedRuntimeManifest(
   runtimeBundlesRoot,
   repositoryRoot = defaultRepositoryRoot,
+  options = {},
 ) {
   const version = parseJson(join(repositoryRoot, 'package.json'), 'package manifest').version;
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version)) {
@@ -72,25 +81,51 @@ export function checkReviewedRuntimeManifest(
   }
 
   const generated = { version, targets: generatedTargets };
+  const generatedText = `${JSON.stringify(generated, null, 2)}\n`;
+  // Written before the comparison so a failing run still leaves the artifact to copy from.
+  if (options.outputPath) writeFileSync(options.outputPath, generatedText, { mode: 0o644 });
   const reviewedPath = join(
     repositoryRoot,
     'integrations/omarchy/pimpampum-status/runtime-manifest.json',
   );
   const reviewed = parseJson(reviewedPath, 'reviewed Omarchy runtime manifest');
   if (JSON.stringify(reviewed) !== JSON.stringify(generated)) {
+    process.stderr.write(
+      `Generated Omarchy runtime manifest (copy it to ${reviewedPath}):\n${generatedText}`,
+    );
     fail('checked-in Omarchy manifest does not match the exact runtime archives');
   }
   return generated;
 }
 
+function parseArguments(argv) {
+  const positional = [];
+  let outputPath;
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === '--output') {
+      outputPath = argv[index + 1];
+      if (!outputPath) fail('--output needs a path');
+      index += 1;
+    } else {
+      positional.push(argv[index]);
+    }
+  }
+  return { positional, outputPath };
+}
+
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : '';
 if (invokedPath === fileURLToPath(import.meta.url)) {
-  const runtimeBundlesRoot = process.argv[2];
-  if (!runtimeBundlesRoot)
-    fail('usage: check-reviewed-runtime-manifest.mjs <runtime-bundles-root>');
+  const { positional, outputPath } = parseArguments(process.argv.slice(2));
+  const runtimeBundlesRoot = positional[0];
+  if (!runtimeBundlesRoot) {
+    fail(
+      'usage: check-reviewed-runtime-manifest.mjs <runtime-bundles-root> [repository-root] [--output <path>]',
+    );
+  }
   const result = checkReviewedRuntimeManifest(
     runtimeBundlesRoot,
-    process.argv[3] ?? defaultRepositoryRoot,
+    positional[1] ?? defaultRepositoryRoot,
+    outputPath ? { outputPath: resolve(outputPath) } : {},
   );
   process.stdout.write(
     `Reviewed Omarchy manifest matches ${Object.keys(result.targets).length} exact runtime archives.\n`,

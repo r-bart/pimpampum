@@ -5,72 +5,29 @@ umask 077
 PATH=/usr/bin:/bin
 export PATH
 
-fail() {
-  printf '%s\n' "pimpampum-control-route: $*" >&2
-  exit 69
-}
+helper_name=pimpampum-control-route
+plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 70
+[ -f "$plugin_root/pimpampum-common.sh" ] && [ ! -L "$plugin_root/pimpampum-common.sh" ] || exit 70
+. "$plugin_root/pimpampum-common.sh"
 
 surface=${1:-}
-[ "$#" -ge 1 ] || fail 'missing bounded surface'
+[ "$#" -ge 1 ] || fail 69 'missing bounded surface'
 shift
 
-home_directory=${HOME:-}
-case $home_directory in
-  /*) ;;
-  *) fail 'HOME must be absolute' ;;
-esac
-[ "$home_directory" != / ] || fail 'HOME must not be the filesystem root'
-case $home_directory in *'"'* | *\\*) fail 'HOME contains unsafe receipt characters' ;; esac
-if printf '%s' "$home_directory" | /usr/bin/grep -q '[[:cntrl:]]'; then
-  fail 'HOME contains control characters'
-fi
-[ -d "$home_directory" ] && [ ! -L "$home_directory" ] || fail 'HOME is unsafe'
-
-data_directory="$home_directory/.pimpampum"
-receipt="$data_directory/runtime-install-receipt.json"
-control_launcher="$home_directory/.local/share/pimpampum/bin/pimpampum-control"
-[ -d "$data_directory" ] && [ ! -L "$data_directory" ] || fail 'runtime is not installed'
-[ -f "$receipt" ] && [ ! -L "$receipt" ] || fail 'runtime receipt is missing or unsafe'
-receipt_mode=$(/usr/bin/stat -c '%a' "$receipt" 2>/dev/null ||
-  /usr/bin/stat -f '%Lp' "$receipt" 2>/dev/null || true)
-[ "$receipt_mode" = 600 ] || fail 'runtime receipt permissions are unsafe'
-for private_directory in \
-  "$home_directory/.local" \
-  "$home_directory/.local/share" \
-  "$home_directory/.local/share/pimpampum" \
-  "$home_directory/.local/share/pimpampum/bin"
-do
-  [ -d "$private_directory" ] && [ ! -L "$private_directory" ] ||
-    fail 'control launcher directory is unsafe'
-done
-[ -f "$control_launcher" ] && [ ! -L "$control_launcher" ] && [ -x "$control_launcher" ] ||
-  fail 'receipt-owned control launcher is unavailable'
-/usr/bin/grep -Fq "\"controlLauncherPath\": \"$control_launcher\"" "$receipt" ||
-  fail 'runtime receipt does not own the control launcher'
-expected_sha=$(/usr/bin/awk -F'"' \
-  '/"controlLauncherSha256"[[:space:]]*:/ { print $4; exit }' "$receipt")
-printf '%s\n' "$expected_sha" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' ||
-  fail 'runtime receipt control launcher hash is invalid'
-if [ -x /usr/bin/sha256sum ]; then
-  actual_sha=$(/usr/bin/sha256sum "$control_launcher" | /usr/bin/awk '{print $1}')
-elif [ -x /usr/bin/shasum ]; then
-  actual_sha=$(/usr/bin/shasum -a 256 "$control_launcher" | /usr/bin/awk '{print $1}')
-else
-  fail 'sha256sum or shasum is required'
-fi
-[ "$actual_sha" = "$expected_sha" ] || fail 'control launcher differs from its runtime receipt'
+validate_home 69
+verify_control_launcher 69
 
 case $surface in
   overview)
-    [ "$#" -eq 0 ] || fail 'overview accepts no arguments'
+    [ "$#" -eq 0 ] || fail 69 'overview accepts no arguments'
     set -- overview
     ;;
   backup)
     action=${1:-}
     case $action in
-      status | retry | disable) [ "$#" -eq 1 ] || fail 'invalid backup arguments' ;;
-      configure) [ "$#" -eq 2 ] || fail 'backup configure requires one directory' ;;
-      *) fail 'invalid backup action' ;;
+      status | retry | disable) [ "$#" -eq 1 ] || fail 69 'invalid backup arguments' ;;
+      configure) [ "$#" -eq 2 ] || fail 69 'backup configure requires one directory' ;;
+      *) fail 69 'invalid backup action' ;;
     esac
     set -- backup "$@"
     ;;
@@ -78,29 +35,31 @@ case $surface in
     action=${1:-}
     case $action in
       status | now | pause | resume | conflicts | forget)
-        [ "$#" -eq 1 ] || fail 'invalid sync arguments'
+        [ "$#" -eq 1 ] || fail 69 'invalid sync arguments'
         set -- sync "$action" --json
         ;;
       configure)
-        [ "$#" -eq 2 ] || fail 'sync configure requires one directory'
-        device_id=$(/usr/bin/hostname | /usr/bin/tr '[:upper:]' '[:lower:]' |
+        [ "$#" -eq 2 ] || fail 69 'sync configure requires one directory'
+        # `uname -n` is part of coreutils on every Omarchy install; `hostname` is a separate
+        # package there. A device id that collapses to nothing is an error, not a shared `linux`.
+        device_id=$(/usr/bin/uname -n | /usr/bin/tr '[:upper:]' '[:lower:]' |
           /usr/bin/sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | /usr/bin/cut -c1-63)
-        [ -n "$device_id" ] || device_id=linux
+        [ -n "$device_id" ] || fail 69 'cannot derive a device id from the hostname'
         set -- sync configure "$2" --device "$device_id" --json
         ;;
-      *) fail 'invalid sync action' ;;
+      *) fail 69 'invalid sync action' ;;
     esac
     ;;
   update)
     action=${1:-check}
-    [ "$#" -le 1 ] || fail 'invalid update arguments'
+    [ "$#" -le 1 ] || fail 69 'invalid update arguments'
     case $action in
       check) set -- update:check ;;
       install) set -- update ;;
-      *) fail 'invalid update action' ;;
+      *) fail 69 'invalid update action' ;;
     esac
     ;;
-  *) fail 'unknown bounded surface' ;;
+  *) fail 69 'unknown bounded surface' ;;
 esac
 
 exec "$control_launcher" "$@"

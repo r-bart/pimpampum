@@ -1,27 +1,17 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
-// Digests freeze the generated desktop-status acceptance artifacts. Update one only alongside
-// its spec: the 2026-08-29 CLI envelope amendment in
-// thoughts/specs/2026-08-25_desktop-status-integrations.md moved desktop-status.acceptance.test.ts
-// and quattro-live-evidence.acceptance.test.ts.
+// Digests freeze the shared desktop-status overview fixtures. Update one only alongside its spec:
+// the 2026-08-29 CLI envelope amendment in thoughts/specs/2026-08-25_desktop-status-integrations.md
+// moved desktop-status.acceptance.test.ts and quattro-live-evidence.acceptance.test.ts.
+//
+// Amendment 2026-09-01 (thoughts/reviews/2026-09-01_deep-review.md, H-14): the hash pins stay on
+// the four test/fixtures/overview/*.json files only. Those fixtures are a real three-consumer
+// contract — scripts/validate-omarchy-plugin.mjs, the Swift tests through OverviewTestSupport.swift
+// and the TypeScript acceptance tests all read the same bytes. The acceptance test files are no
+// longer frozen: every one of the eight commits that touched this script re-pinned them, so the
+// freeze recorded snapshots instead of a specification. Their spec-id comments remain the contract.
 const frozen = new Map([
-  [
-    'test/desktop-status.acceptance.test.ts',
-    '79bca7ec61cd008763c3f574d1af35a7e4f48d946555814e6fa5cafd62305f5d',
-  ],
-  [
-    'test/desktop-status.safety.acceptance.test.ts',
-    'f7546615d8ffbb9f4911621f95ebb5e7433d52b71e291ef50a1dec7a88d08f91',
-  ],
-  [
-    'test/desktop-status.lifecycle.acceptance.test.ts',
-    '3fd3289e06b2651d9d0902a026900657c461db0ba780e6d566e21be5a785564d',
-  ],
-  [
-    'test/quattro-live-evidence.acceptance.test.ts',
-    '394382d4f5d75ad7744da1ca43ceb9981959200d537be5be119ffe7eaac134bf',
-  ],
   [
     'test/fixtures/overview/complete.json',
     'a622e45665a33646afb10eeeea78b3f8ec7248cad176163d1c7f47870520ec5f',

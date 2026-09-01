@@ -1,0 +1,33 @@
+name: Dependency audit
+
+# The strict audit runs on a calendar, not on a tag: a new advisory must not block a release whose
+# code did not change, but it must reach a person within a week.
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install --global npm@11
+      - run: npm ci
+      - name: Strict production audit
+        run: npm audit --omit=dev
+      - name: Full audit including development dependencies
+        run: npm audit

@@ -82,6 +82,7 @@ export async function startServer(config = loadConfig()): Promise<RunningServer>
       settingsPath: join(config.dataDirectory, 'sync.json'),
       snapshotter: () => composedStore.exportSyncState(),
       importer: (state) => composedStore.applySyncState(state),
+      mutationCounter: () => composedStore.mutationCount,
     });
     syncController = composedSyncController;
     composedStore.setSyncConflictGuard((entityType, entityId) =>

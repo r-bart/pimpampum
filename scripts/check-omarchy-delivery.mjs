@@ -8,11 +8,16 @@ import { fileURLToPath } from 'node:url';
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const defaultPluginRoot = join(repositoryRoot, 'integrations/omarchy/pimpampum-status');
 const supportedTargets = ['linux-arm64', 'linux-x64'];
-const executableHelpers = [
+// The one list of plugin files installed with mode 0o755. `pluginArtifacts` in
+// src/service/omarchy.ts mirrors it, and the Quattro live runner imports it to verify an installed
+// tree. `pimpampum-common.sh` is a sourced library, listed here so its bytes are hashed into the
+// delivery evidence alongside the helpers that source it.
+export const executableHelpers = [
   'install.sh',
   'uninstall.sh',
   'pimpampum-backup',
   'pimpampum-bootstrap',
+  'pimpampum-common.sh',
   'pimpampum-connections',
   'pimpampum-control-route',
   'pimpampum-folder-picker',

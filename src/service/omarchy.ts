@@ -136,11 +136,14 @@ function pluginArtifacts(sourceRoot: string, context: ServiceAdapterContext): Se
   const target = pluginTarget(context);
   return walkPluginSource(sourceRoot).map((sourcePath) => {
     const child = relative(sourceRoot, sourcePath);
+    // Mirrors `executableHelpers` in scripts/check-omarchy-delivery.mjs; the Quattro live runner
+    // compares an installed tree against that list, so the two must agree.
     const executable = [
       'install.sh',
       'uninstall.sh',
       'pimpampum-backup',
       'pimpampum-bootstrap',
+      'pimpampum-common.sh',
       'pimpampum-connections',
       'pimpampum-control-route',
       'pimpampum-folder-picker',

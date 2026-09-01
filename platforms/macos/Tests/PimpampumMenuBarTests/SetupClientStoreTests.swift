@@ -15,6 +15,8 @@ private actor FixtureSetupRunner: SetupCommandRunning {
   var resumeCalls = 0
   var retryCalls: [SetupAgentID] = []
   var journal: SetupJournal?
+  var journals: [SetupJournal?] = []
+  var statusCalls = 0
   var failure: Error?
   var applyResponse = success
   var retryResponse = success
@@ -66,7 +68,11 @@ private actor FixtureSetupRunner: SetupCommandRunning {
     return applyResponse
   }
 
-  func status() async throws -> SetupJournal? { journal }
+  func status() async throws -> SetupJournal? {
+    statusCalls += 1
+    guard !journals.isEmpty else { return journal }
+    return journals.count == 1 ? journals[0] : journals.removeFirst()
+  }
 
   func resume(
     onProgress _: @escaping @Sendable (SetupProgressEvent) async -> Void
@@ -275,6 +281,7 @@ struct SetupClientStoreTests {
     let bootstrap = EmbeddedSetupBootstrap(
       runtime: runtime,
       sourceApplicationURL: URL(fileURLWithPath: "/Downloads/Pimpampum.app"),
+      dataDirectory: URL(fileURLWithPath: "/Users/example/.pimpampum"),
       homeDirectory: URL(fileURLWithPath: "/Users/example")
     )
     let plan = try await SetupCommandRunner(
@@ -316,6 +323,7 @@ struct SetupClientStoreTests {
       bootstrap: EmbeddedSetupBootstrap(
         runtime: runtime,
         sourceApplicationURL: URL(fileURLWithPath: "/Downloads/Pimpampum.app"),
+        dataDirectory: URL(fileURLWithPath: "/Users/example/.pimpampum"),
         homeDirectory: URL(fileURLWithPath: "/Users/example")
       ),
       processRunner: process
@@ -366,7 +374,10 @@ struct SetupClientStoreTests {
     await store.prepare()
     #expect(store.agents.allSatisfy { !$0.detected })
     #expect(store.selectedAgents.isEmpty)
-    #expect(store.canReview)
+    // Without a plan there is nothing to confirm yet; with one, an empty selection is fine.
+    #expect(!store.canConfirm)
+    await store.review()
+    #expect(store.canConfirm)
 
     let runner = FixtureSetupRunner()
     let planned = SetupStore(runner: runner, detector: FixtureDetector(detected: []))
@@ -389,20 +400,23 @@ struct SetupClientStoreTests {
     await store.prepare()
     #expect(store.agents.first(where: { $0.id == .codex })?.selected == true)
     #expect(store.agents.first(where: { $0.id == .claudeCode })?.selected == false)
-    #expect(store.canReview)
     // Deselecting every agent must not block setup. The spec's success metrics require a setup with
     // no supported agents to complete, and this assertion used to demand the opposite.
     store.setSelected(false, for: .codex)
     #expect(store.selectedAgents.isEmpty)
-    #expect(store.canReview)
-    store.setSelected(true, for: .codex)
     await store.review()
+    #expect(store.canConfirm)
+    store.setSelected(true, for: .codex)
+    // Changing the selection discards the plan the user has not seen for it.
+    #expect(!store.canConfirm)
+    await store.review()
+    #expect(store.canConfirm)
     await store.apply()
     #expect(store.service.state == .connected)
     #expect(store.agentResults.first?.state == .newSessionRequired)
     #expect(store.agentResults.first?.configured == true)
     #expect(store.agentResults.first?.available == true)
-    #expect(await runner.plannedSelections == [[.codex]])
+    #expect(await runner.plannedSelections == [[], [.codex]])
   }
 
   @MainActor
@@ -477,41 +491,70 @@ struct SetupClientStoreTests {
   }
 
   @MainActor
-  @Test("resumes the durable operation after the store is recreated")
-  func resumesDurableJournal() async {
+  @Test("follows a running journal another process owns until it ends")
+  func followsRunningJournal() async {
+    // `setup resume` would wait on the lifecycle lock the applying process holds and time out. The
+    // store watches `setup status` instead and presents the outcome when the journal turns final.
     let runner = FixtureSetupRunner()
-    await runner.setJournal(Self.runningJournal)
-    let store = SetupStore(runner: runner, detector: FixtureDetector(detected: []))
-    await store.resume()
-    #expect(await runner.resumeCalls == 1)
-    #expect(store.completion?.status == .complete)
-  }
-
-  @MainActor
-  @Test("rehydrates a completed journal without rerunning its durable transaction")
-  func rehydratesCompletedJournal() async {
-    let runner = FixtureSetupRunner()
-    await runner.setJournal(
-      SetupJournal(
-        schemaVersion: 1,
-        operationId: "operation-1",
-        revision: "revision-1",
-        phase: "complete",
-        selectedConnectors: [.codex],
-        completedPhases: ["runtime.install", "service.verify", "connector:codex.verify"],
-        diagnostics: [],
-        service: SetupServiceResult(installed: true, running: true, verified: true),
-        connectors: FixtureSetupRunner.success.connectors,
-        loginItem: "enabled",
-        status: .complete,
-        updatedAt: "2026-08-31T10:00:00.000Z"
-      ))
-    let store = SetupStore(runner: runner, detector: FixtureDetector(detected: []))
+    await runner.setJournals([Self.runningJournal, Self.completedJournal])
+    let clock = ImmediateSetupClock()
+    let store = SetupStore(runner: runner, detector: FixtureDetector(detected: []), clock: clock)
     await store.resume()
     #expect(await runner.resumeCalls == 0)
+    #expect(await runner.statusCalls == 2)
+    #expect(await clock.sleeps == [SetupStore.runningJournalPollInterval])
     #expect(store.completion?.status == .complete)
     #expect(store.completion?.nextAction == .newSession)
     #expect(store.agentResults.first?.state == .newSessionRequired)
+    #expect(!store.activity.hasBegunMutation)
+  }
+
+  @MainActor
+  @Test("resumes the operation itself once its owner stops writing the journal")
+  func resumesAStalledJournal() async {
+    // A crashed owner leaves a `running` journal and a stale lock. After enough unchanged polls
+    // this process takes over; the CLI recovers the lock held by a dead pid.
+    let runner = FixtureSetupRunner()
+    await runner.setJournals([Self.runningJournal])
+    let clock = ImmediateSetupClock()
+    let store = SetupStore(runner: runner, detector: FixtureDetector(detected: []), clock: clock)
+    await store.resume()
+    #expect(await runner.resumeCalls == 1)
+    #expect(await runner.statusCalls == SetupStore.stalledJournalPollLimit + 1)
+    #expect(store.completion?.status == .complete)
+    #expect(store.pendingApplicationRelaunch)
+  }
+
+  @MainActor
+  @Test("a finished journal is history, not the current setup")
+  func doesNotRehydrateATerminalJournal() async {
+    // The CLI keeps the journal after setup ends. Showing it as the current outcome sent every
+    // reopen, and every reinstall after an uninstall, to a stale final step with no way back.
+    for status in [SetupJournalStatus.complete, .failed, .partial, .conflict] {
+      let runner = FixtureSetupRunner()
+      await runner.setJournal(
+        SetupJournal(
+          schemaVersion: 1,
+          operationId: "operation-1",
+          revision: "revision-1",
+          phase: "complete",
+          selectedConnectors: [.codex],
+          completedPhases: ["runtime.install", "service.verify", "connector:codex.verify"],
+          diagnostics: ["Older failure"],
+          service: SetupServiceResult(installed: true, running: true, verified: true),
+          connectors: FixtureSetupRunner.success.connectors,
+          loginItem: "enabled",
+          status: status,
+          updatedAt: "2026-08-31T10:00:00.000Z"
+        ))
+      let store = SetupStore(runner: runner, detector: FixtureDetector(detected: []))
+      await store.resume()
+      #expect(await runner.resumeCalls == 0)
+      #expect(store.completion == nil)
+      #expect(store.agentResults.isEmpty)
+      #expect(store.errorMessage == nil)
+      #expect(!store.activity.hasBegunMutation)
+    }
   }
 
   @Test("sanitizes credentials, private home paths and arbitrary multiline output")
@@ -589,7 +632,22 @@ struct SetupClientStoreTests {
     #expect(!store.activity.hasBegunMutation)
   }
 
-  private static let runningJournal = SetupJournal(
+  static let completedJournal = SetupJournal(
+    schemaVersion: 1,
+    operationId: "operation-1",
+    revision: "revision-1",
+    phase: "complete",
+    selectedConnectors: [.codex],
+    completedPhases: ["runtime.install", "service.verify", "connector:codex.verify"],
+    diagnostics: [],
+    service: SetupServiceResult(installed: true, running: true, verified: true),
+    connectors: FixtureSetupRunner.success.connectors,
+    loginItem: "enabled",
+    status: .complete,
+    updatedAt: "2026-08-31T10:00:05.000Z"
+  )
+
+  static let runningJournal = SetupJournal(
     schemaVersion: 1,
     operationId: "operation-1",
     revision: "revision-1",
@@ -605,8 +663,16 @@ struct SetupClientStoreTests {
   )
 }
 
+/// A clock whose sleeps return at once, so journal polling runs at test speed.
+actor ImmediateSetupClock: OverviewClock {
+  private(set) var sleeps: [TimeInterval] = []
+  func now() -> Date { Date(timeIntervalSince1970: 0) }
+  func sleep(for seconds: TimeInterval) async throws { sleeps.append(seconds) }
+}
+
 extension FixtureSetupRunner {
   fileprivate func setJournal(_ value: SetupJournal?) { journal = value }
+  fileprivate func setJournals(_ values: [SetupJournal?]) { journals = values }
   fileprivate func setApplyResponse(_ value: SetupResult) { applyResponse = value }
   fileprivate func setRetryResponse(_ value: SetupResult) { retryResponse = value }
   fileprivate func setPlannedConflicts(_ value: [SetupConflict]) { plannedConflicts = value }

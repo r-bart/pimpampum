@@ -1,9 +1,17 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 const lifecycle = join(
   process.cwd(),
@@ -13,6 +21,8 @@ const connections = join(
   process.cwd(),
   'integrations/omarchy/pimpampum-status/pimpampum-connections',
 );
+const version = '1.1.3';
+const target = 'linux-x64';
 const temporaryDirectories: string[] = [];
 
 function write(path: string, content: string, mode = 0o644): void {
@@ -20,13 +30,64 @@ function write(path: string, content: string, mode = 0o644): void {
   writeFileSync(path, content, { mode });
 }
 
-function fixture(label: string) {
+// Every fixture starts from the same home skeleton (runtime payload, launchers, private data), so
+// it is written once per file and copied; only the receipt, which embeds absolute paths, is written
+// per fixture.
+let cachedRoot: string;
+let cachedHome: string;
+let cachedTools: string;
+
+beforeAll(() => {
+  cachedRoot = mkdtempSync(join(tmpdir(), 'pimpampum-plugin-lifecycle-cache-'));
+  cachedHome = join(cachedRoot, 'home');
+  cachedTools = join(cachedRoot, 'tools');
+  const runtime = join(cachedHome, '.local/share/pimpampum/runtime', version, target);
+  write(join(runtime, 'bin/node'), '#!/bin/sh\nexit 0\n', 0o755);
+  write(join(runtime, 'dist/cli.js'), 'fixture cli\n');
+  write(join(runtime, 'dist/mcpStdio.js'), 'fixture mcp\n');
+  write(join(cachedHome, '.local/share/pimpampum/bin/pimpampum-mcp'), '#!/bin/sh\nexit 0\n', 0o755);
+  write(
+    join(cachedHome, '.local/share/pimpampum/bin/pimpampum-control'),
+    `#!/bin/sh
+printf '%s\n' "$*" >> "$PIMPAMPUM_TEST_LOG"
+case "$*" in
+  "disconnect codex --yes") printf '{"data":{"id":"codex","disconnected":%s}}\\n' "\${PIMPAMPUM_TEST_CODEX_DISCONNECTED:-true}"; exit 0 ;;
+  "connect codex --yes"|install) exit 0 ;;
+  "disconnect claude-code --yes") exit 10 ;;
+  uninstall) exit "\${PIMPAMPUM_TEST_UNINSTALL_EXIT:-0}" ;;
+  *) printf '{"data":{}}\\n' ;;
+esac
+`,
+    0o755,
+  );
+  write(join(cachedHome, '.pimpampum/pimpampum.sqlite'), 'database');
+  write(join(cachedHome, '.pimpampum/export.md'), '# export');
+  write(join(cachedHome, '.pimpampum/backups/pimpampum-latest.sqlite'), 'backup');
+  write(join(cachedHome, '.pimpampum/sync/snapshot.json'), '{}');
+  write(
+    join(cachedTools, 'uname'),
+    '#!/bin/sh\n[ "$1" = -s ] && printf "Linux\\n" || printf "x86_64\\n"\n',
+    0o755,
+  );
+  write(join(cachedTools, 'timeout'), '#!/bin/sh\nshift 3\nexec "$@"\n', 0o755);
+  write(
+    join(cachedTools, 'bootstrap'),
+    '#!/bin/sh\nprintf "bootstrap\\n" >> "$PIMPAMPUM_TEST_LOG"\n',
+    0o755,
+  );
+});
+
+afterAll(() => {
+  rmSync(cachedRoot, { recursive: true, force: true });
+});
+
+type OwnedVersion = { version: string; targetId: string; directory: string };
+
+function fixture(label: string, homeName = 'home') {
   const root = mkdtempSync(join(tmpdir(), `pimpampum-plugin-lifecycle-${label}-`));
   temporaryDirectories.push(root);
-  const home = join(root, 'home');
+  const home = join(root, homeName);
   const data = join(home, '.pimpampum');
-  const version = '1.1.3';
-  const target = 'linux-x64';
   const runtime = join(home, '.local/share/pimpampum/runtime', version, target);
   const launcher = join(home, '.local/share/pimpampum/bin/pimpampum-control');
   const mcpLauncher = join(home, '.local/share/pimpampum/bin/pimpampum-mcp');
@@ -36,7 +97,10 @@ function fixture(label: string) {
   const uname = join(root, 'uname');
   const timeout = join(root, 'timeout');
   const log = join(root, 'commands.log');
-  mkdirSync(data, { recursive: true });
+  cpSync(cachedHome, home, { recursive: true });
+  cpSync(join(cachedTools, 'uname'), uname);
+  cpSync(join(cachedTools, 'timeout'), timeout);
+  cpSync(join(cachedTools, 'bootstrap'), bootstrap);
   write(
     manifest,
     `${JSON.stringify(
@@ -54,28 +118,7 @@ function fixture(label: string) {
       2,
     )}\n`,
   );
-  write(uname, '#!/bin/sh\n[ "$1" = -s ] && printf "Linux\\n" || printf "x86_64\\n"\n', 0o755);
-  write(timeout, '#!/bin/sh\nshift 3\nexec "$@"\n', 0o755);
-  write(bootstrap, '#!/bin/sh\nprintf "bootstrap\\n" >> "$PIMPAMPUM_TEST_LOG"\n', 0o755);
   write(log, '');
-  write(join(runtime, 'bin/node'), '#!/bin/sh\nexit 0\n', 0o755);
-  write(join(runtime, 'dist/cli.js'), 'fixture cli\n');
-  write(join(runtime, 'dist/mcpStdio.js'), 'fixture mcp\n');
-  write(mcpLauncher, '#!/bin/sh\nexit 0\n', 0o755);
-  write(
-    launcher,
-    `#!/bin/sh
-printf '%s\n' "$*" >> "$PIMPAMPUM_TEST_LOG"
-case "$*" in
-  "disconnect codex --yes") printf '{"data":{"id":"codex","disconnected":%s}}\\n' "\${PIMPAMPUM_TEST_CODEX_DISCONNECTED:-true}"; exit 0 ;;
-  "connect codex --yes"|install) exit 0 ;;
-  "disconnect claude-code --yes") exit 10 ;;
-  uninstall) exit "\${PIMPAMPUM_TEST_UNINSTALL_EXIT:-0}" ;;
-  *) printf '{"data":{}}\\n' ;;
-esac
-`,
-    0o755,
-  );
   const launcherSha256 = createHash('sha256').update(readFileSync(launcher)).digest('hex');
   const mcpLauncherSha256 = createHash('sha256').update(readFileSync(mcpLauncher)).digest('hex');
   write(
@@ -99,10 +142,6 @@ esac
     )}\n`,
     0o600,
   );
-  write(join(data, 'pimpampum.sqlite'), 'database');
-  write(join(data, 'export.md'), '# export');
-  write(join(data, 'backups/pimpampum-latest.sqlite'), 'backup');
-  write(join(data, 'sync/snapshot.json'), '{}');
   return { root, home, data, runtime, launcher, receipt, manifest, bootstrap, uname, timeout, log };
 }
 
@@ -124,6 +163,24 @@ function run(
       ...overrides,
     },
   });
+}
+
+function expectRemoved(state: ReturnType<typeof fixture>, result: ReturnType<typeof run>): void {
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual({
+    schemaVersion: 1,
+    removed: true,
+    dataPreserved: true,
+    manualGuidance: true,
+  });
+  expect(result.stderr).toContain('not proven receipt-owned');
+  expect(() => readFileSync(state.receipt)).toThrow();
+  expect(() => readFileSync(state.launcher)).toThrow();
+  expect(() => readFileSync(join(state.runtime, 'bin/node'))).toThrow();
+  expect(readFileSync(join(state.data, 'pimpampum.sqlite'), 'utf8')).toBe('database');
+  expect(readFileSync(join(state.data, 'export.md'), 'utf8')).toBe('# export');
+  expect(readFileSync(join(state.data, 'backups/pimpampum-latest.sqlite'), 'utf8')).toBe('backup');
+  expect(readFileSync(join(state.data, 'sync/snapshot.json'), 'utf8')).toBe('{}');
 }
 
 afterEach(() => {
@@ -156,25 +213,53 @@ describe('Omarchy plugin runtime lifecycle', () => {
 
   it('removes the receipt-owned runtime and launchers while preserving all private data', () => {
     const state = fixture('remove');
-    const result = run(state, 'remove');
+    expectRemoved(state, run(state, 'remove'));
+    // L-28: the now-empty version directory goes with its payload.
+    expect(existsSync(dirname(state.runtime))).toBe(false);
+  });
 
-    expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({
-      schemaVersion: 1,
-      removed: true,
-      dataPreserved: true,
-      manualGuidance: true,
-    });
-    expect(result.stderr).toContain('not proven receipt-owned');
-    expect(() => readFileSync(state.receipt)).toThrow();
-    expect(() => readFileSync(state.launcher)).toThrow();
-    expect(() => readFileSync(join(state.runtime, 'bin/node'))).toThrow();
-    expect(readFileSync(join(state.data, 'pimpampum.sqlite'), 'utf8')).toBe('database');
-    expect(readFileSync(join(state.data, 'export.md'), 'utf8')).toBe('# export');
-    expect(readFileSync(join(state.data, 'backups/pimpampum-latest.sqlite'), 'utf8')).toBe(
-      'backup',
-    );
-    expect(readFileSync(join(state.data, 'sync/snapshot.json'), 'utf8')).toBe('{}');
+  it('removes earlier receipt-owned runtime versions and leaves unowned directories alone', () => {
+    const runtimeRoot = (home: string) => join(home, '.local/share/pimpampum/runtime');
+    const state = fixture('owned-versions');
+    // The receipt lists two earlier payloads, one under the private runtime root and one outside
+    // it, plus a traversal attempt; only the first may be removed.
+    const earlier = join(runtimeRoot(state.home), '1.1.2', target);
+    const foreign = join(state.root, 'outside');
+    const unowned = join(runtimeRoot(state.home), '9.9.9', target);
+    const receipt = JSON.parse(readFileSync(state.receipt, 'utf8')) as {
+      ownedVersions: OwnedVersion[];
+    };
+    receipt.ownedVersions = [
+      { version: '1.1.2', targetId: target, directory: earlier },
+      { version: '1.1.1', targetId: target, directory: foreign },
+      { version: '1.1.0', targetId: target, directory: join(runtimeRoot(state.home), '..', 'bin') },
+      { version, targetId: target, directory: state.runtime },
+    ];
+    writeFileSync(state.receipt, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+    write(join(earlier, 'bin/node'), 'old node');
+    write(join(foreign, 'keep.txt'), 'outside the runtime root');
+    write(join(unowned, 'bin/node'), 'not in the receipt');
+
+    expectRemoved(state, run(state, 'remove'));
+    expect(existsSync(join(runtimeRoot(state.home), '1.1.2'))).toBe(false);
+    expect(existsSync(dirname(state.runtime))).toBe(false);
+    expect(readFileSync(join(unowned, 'bin/node'), 'utf8')).toBe('not in the receipt');
+    expect(readFileSync(join(foreign, 'keep.txt'), 'utf8')).toBe('outside the runtime root');
+    expect(existsSync(join(state.home, '.local/share/pimpampum/bin'))).toBe(true);
+  });
+
+  it('reconciles and removes under a HOME with spaces and non-ASCII letters', () => {
+    const state = fixture('home-unicode', 'Home With Spaces ü ñ');
+    const reconciled = run(state, 'reconcile');
+    expect(reconciled.status, reconciled.stderr).toBe(0);
+    expect(JSON.parse(reconciled.stdout)).toMatchObject({ changed: true, reconciled: true });
+    expectRemoved(state, run(state, 'remove'));
+
+    const quoted = fixture('home-quoted', "Home 'quoted'");
+    const rejected = run(quoted, 'reconcile');
+    expect(rejected.status).toBe(73);
+    expect(rejected.stderr).toContain('HOME contains');
+    expect(readFileSync(quoted.log, 'utf8')).toBe('');
   });
 
   it('restores already disconnected owned routes when mandatory service removal fails', () => {

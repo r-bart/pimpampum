@@ -41,10 +41,21 @@ type FileSnapshot = { content: string; mode: 0o600 | 0o755 } | null;
 
 interface ActivationJournal {
   schemaVersion: 1;
+  /**
+   * `committed` is written right after the receipt and before the quarantine is discarded. The
+   * receipt alone cannot mark the commit point: a same-version repair rewrites it byte for byte.
+   * Journals from earlier releases carry no phase and fall back to comparing the receipt.
+   */
+  phase: 'prepared' | 'committed';
   targetId: string;
   candidateVersion: string;
   finalDirectory: string;
   createdFinal: boolean;
+  /**
+   * Quarantined copy of a receipt-owned destination whose bytes drifted from the manifest. The
+   * staged payload replaces it; rollback and interrupted-activation recovery rename it back.
+   */
+  replacedFinal: string | null;
   controlLauncher: FileSnapshot;
   mcpLauncher: FileSnapshot;
   receipt: FileSnapshot;
@@ -172,6 +183,15 @@ function validateRuntimeTree(root: string, manifest: RuntimeManifest): void {
   }
 }
 
+function runtimeTreeDrifted(root: string, manifest: RuntimeManifest): boolean {
+  try {
+    validateRuntimeTree(root, manifest);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 function copyRuntimeTree(source: string, destination: string, manifest: RuntimeManifest): void {
   privateDirectory(destination);
   for (const file of manifest.files) {
@@ -182,6 +202,34 @@ function copyRuntimeTree(source: string, destination: string, manifest: RuntimeM
     chmodSync(destinationPath, file.mode);
   }
   validateRuntimeTree(destination, manifest);
+}
+
+function fsyncPath(path: string): void {
+  const descriptor = openSync(path, constants.O_RDONLY);
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/**
+ * Makes every copied byte durable before the payload is renamed into place. The receipt that
+ * follows is fsynced, so without this step a crash could leave a durable receipt vouching for a
+ * truncated `bin/node` or native addon.
+ */
+function fsyncRuntimeTree(root: string, manifest: RuntimeManifest): void {
+  const directories = new Set<string>([root]);
+  for (const file of manifest.files) {
+    const path = join(root, ...file.path.split('/'));
+    fsyncPath(path);
+    let directory = dirname(path);
+    while (directory !== root && directory.startsWith(`${root}${sep}`)) {
+      directories.add(directory);
+      directory = dirname(directory);
+    }
+  }
+  for (const directory of directories) fsyncPath(directory);
 }
 
 function metadataFile(path: string, label: string): Buffer | null {
@@ -594,6 +642,76 @@ function restoreJournalSnapshot(path: string, value: unknown): void {
   restore(path, value as FileSnapshot);
 }
 
+function quarantinedReplacementPath(quarantineRoot: string): string {
+  return join(quarantineRoot, 'replaced');
+}
+
+function parseReplacedFinal(
+  value: unknown,
+  layout: ReturnType<typeof resolveRuntimeLayout>,
+): string | null {
+  // Journals written before repair existed carry no field; treat them as plain activations.
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') fail('runtime activation journal schema is invalid');
+  const quarantineRoot = dirname(value);
+  if (
+    value !== quarantinedReplacementPath(quarantineRoot) ||
+    dirname(quarantineRoot) !== layout.versionsDirectory ||
+    !REMOVAL_QUARANTINE_NAME.test(basename(quarantineRoot))
+  ) {
+    fail('runtime activation journal escapes the owned layout');
+  }
+  return value;
+}
+
+/**
+ * Undoes a drift repair: the payload that replaced the destination goes, the quarantined copy
+ * returns. When the quarantine rename never happened the destination still holds the original
+ * bytes and is left alone.
+ */
+function restoreReplacedFinal(
+  layout: ReturnType<typeof resolveRuntimeLayout>,
+  replacedFinal: string,
+): void {
+  if (pathEntryExists(replacedFinal)) {
+    if (pathEntryExists(layout.versionDirectory)) {
+      assertRegularDirectory(layout.versionDirectory, 'Replaced runtime directory');
+      rmSync(layout.versionDirectory, { recursive: true });
+    }
+    privateDirectory(dirname(layout.versionDirectory));
+    renameSync(replacedFinal, layout.versionDirectory);
+  }
+  rmSync(dirname(replacedFinal), { recursive: true, force: true });
+}
+
+/**
+ * Rewrites launchers that drifted after their receipt committed. The receipt pins both launcher
+ * hashes and the paths they are rendered from, so a regenerated launcher that matches the pinned
+ * hash is exactly the committed byte sequence. Anything else is a genuine tamper and fails.
+ */
+function repairOwnedLaunchers(receipt: RuntimeInstallReceipt): void {
+  const launchers = createRuntimeLaunchers({
+    nodePath: receipt.nodePath,
+    cliPath: receipt.cliPath,
+    mcpPath: receipt.mcpPath,
+  });
+  if (
+    hash(launchers.control) !== receipt.controlLauncherSha256 ||
+    hash(launchers.mcp) !== receipt.mcpLauncherSha256
+  ) {
+    verifyOwnedLaunchers(receipt);
+    return;
+  }
+  atomicWrite(receipt.controlLauncherPath, launchers.control, 0o755);
+  atomicWrite(receipt.mcpLauncherPath, launchers.mcp, 0o755);
+  verifyOwnedLaunchers(receipt);
+}
+
+/**
+ * Finishes or undoes an activation that a crash interrupted. Destructive by design, so it runs
+ * only from the lifecycle-locked entry points (`installRuntime`, `prepareOwnedRuntimeRemoval`),
+ * never from a read-only inspection a concurrent `status` may trigger.
+ */
 function recoverInterruptedActivation(
   input: Pick<InstallRuntimeInput, 'homeDirectory' | 'dataDirectory' | 'platform' | 'architecture'>,
 ): void {
@@ -606,11 +724,12 @@ function recoverInterruptedActivation(
   }
   if (typeof value !== 'object' || value === null || Array.isArray(value))
     fail('runtime activation journal is invalid');
-  const journal = value as unknown as ActivationJournal;
+  const journal = value as unknown as Partial<ActivationJournal>;
   if (
     journal.schemaVersion !== 1 ||
     typeof journal.candidateVersion !== 'string' ||
-    typeof journal.createdFinal !== 'boolean'
+    typeof journal.createdFinal !== 'boolean' ||
+    (journal.phase !== undefined && journal.phase !== 'prepared' && journal.phase !== 'committed')
   ) {
     fail('runtime activation journal schema is invalid');
   }
@@ -623,20 +742,39 @@ function recoverInterruptedActivation(
   if (journal.targetId !== layout.targetId || journal.finalDirectory !== layout.versionDirectory) {
     fail('runtime activation journal escapes the owned layout');
   }
+  const replacedFinal = parseReplacedFinal(journal.replacedFinal, layout);
   const receipt = readReceipt(input);
   const committed =
-    receipt?.currentVersion === journal.candidateVersion && receipt.targetId === journal.targetId;
+    journal.phase === undefined
+      ? receipt?.currentVersion === journal.candidateVersion &&
+        receipt.targetId === journal.targetId
+      : journal.phase === 'committed';
   if (committed) {
-    verifyOwnedLaunchers(receipt);
-  } else {
-    restoreJournalSnapshot(layout.controlLauncherPath, journal.controlLauncher);
-    restoreJournalSnapshot(layout.mcpLauncherPath, journal.mcpLauncher);
-    restoreJournalSnapshot(receiptPath(input.dataDirectory), journal.receipt);
-    if (journal.createdFinal && pathEntryExists(layout.versionDirectory)) {
-      assertRegularDirectory(layout.versionDirectory, 'Interrupted runtime directory');
-      rmSync(layout.versionDirectory, { recursive: true });
-      removeEmptyParents(dirname(layout.versionDirectory), layout.runtimeDirectory);
+    // The receipt is the commit point. Whatever happens to the launchers below, the journal must
+    // go: a journal that survives a launcher fault would fail every later recovery attempt and
+    // wedge install, status and uninstall alike.
+    try {
+      if (replacedFinal !== null) rmSync(dirname(replacedFinal), { recursive: true, force: true });
+      if (receipt === null) fail('runtime activation journal committed without a receipt');
+      try {
+        verifyOwnedLaunchers(receipt);
+      } catch {
+        repairOwnedLaunchers(receipt);
+      }
+    } finally {
+      rmSync(path, { force: true });
     }
+    return;
+  }
+  restoreJournalSnapshot(layout.controlLauncherPath, journal.controlLauncher);
+  restoreJournalSnapshot(layout.mcpLauncherPath, journal.mcpLauncher);
+  restoreJournalSnapshot(receiptPath(input.dataDirectory), journal.receipt);
+  if (replacedFinal !== null) {
+    restoreReplacedFinal(layout, replacedFinal);
+  } else if (journal.createdFinal && pathEntryExists(layout.versionDirectory)) {
+    assertRegularDirectory(layout.versionDirectory, 'Interrupted runtime directory');
+    rmSync(layout.versionDirectory, { recursive: true });
+    removeEmptyParents(dirname(layout.versionDirectory), layout.runtimeDirectory);
   }
   rmSync(path, { force: true });
 }
@@ -687,6 +825,45 @@ export async function installRuntime(input: InstallRuntimeInput): Promise<Runtim
   const previousReceipt = readReceipt(input);
   assertLauncherOwnership(layout, previousReceipt);
   cleanOwnedStaging(dirname(layout.versionDirectory));
+
+  // Identity first: a destination that already holds the manifest's exact bytes behind the
+  // receipt's exact launchers is a no-op, and deciding that must not cost a 175 MB copy and a
+  // smoke run. The on-disk tree is still hashed in full so drift is never mistaken for identity.
+  const finalExists = pathEntryExists(layout.versionDirectory);
+  const previouslyOwned = previousReceipt?.ownedVersions.some(
+    (owned) => owned.version === manifest.pimpampumVersion && owned.targetId === layout.targetId,
+  );
+  let finalDrifted = false;
+  if (finalExists) {
+    if (!previouslyOwned) fail('runtime destination exists without an ownership receipt');
+    assertRegularDirectory(layout.versionDirectory, 'Runtime destination');
+    finalDrifted = runtimeTreeDrifted(layout.versionDirectory, manifest);
+  }
+  const finalNodePath = join(layout.versionDirectory, ...manifest.entrypoints.node.split('/'));
+  const finalCliPath = join(layout.versionDirectory, ...manifest.entrypoints.cli.split('/'));
+  const finalMcpPath = join(layout.versionDirectory, ...manifest.entrypoints.mcp.split('/'));
+  const finalLaunchers = createRuntimeLaunchers({
+    nodePath: finalNodePath,
+    cliPath: finalCliPath,
+    mcpPath: finalMcpPath,
+  });
+  if (
+    finalExists &&
+    !finalDrifted &&
+    previousReceipt?.currentVersion === manifest.pimpampumVersion &&
+    hash(finalLaunchers.control) === previousReceipt.controlLauncherSha256 &&
+    hash(finalLaunchers.mcp) === previousReceipt.mcpLauncherSha256
+  ) {
+    return {
+      activated: false,
+      version: manifest.pimpampumVersion,
+      nodePath: finalNodePath,
+      cliPath: finalCliPath,
+      mcpLauncherPath: layout.mcpLauncherPath,
+      previousVersion: previousReceipt.currentVersion,
+    };
+  }
+
   privateDirectory(dirname(layout.versionDirectory));
   const stagingRoot = join(dirname(layout.versionDirectory), `.pimpampum-stage-${randomUUID()}`);
   const stagedPayload = join(stagingRoot, 'payload');
@@ -720,51 +897,37 @@ export async function installRuntime(input: InstallRuntimeInput): Promise<Runtim
       previousVersion: previousReceipt?.currentVersion ?? null,
     });
 
-    const finalExists = pathEntryExists(layout.versionDirectory);
-    const previouslyOwned = previousReceipt?.ownedVersions.some(
-      (owned) => owned.version === manifest.pimpampumVersion && owned.targetId === layout.targetId,
-    );
-    if (finalExists) {
-      if (!previouslyOwned) fail('runtime destination exists without an ownership receipt');
-      validateRuntimeTree(layout.versionDirectory, manifest);
-    }
-    const finalNodePath = join(layout.versionDirectory, ...manifest.entrypoints.node.split('/'));
-    const finalCliPath = join(layout.versionDirectory, ...manifest.entrypoints.cli.split('/'));
-    const finalMcpPath = join(layout.versionDirectory, ...manifest.entrypoints.mcp.split('/'));
-    const finalLaunchers = createRuntimeLaunchers({
-      nodePath: finalNodePath,
-      cliPath: finalCliPath,
-      mcpPath: finalMcpPath,
-    });
-    if (
-      finalExists &&
-      previousReceipt?.currentVersion === manifest.pimpampumVersion &&
-      hash(finalLaunchers.control) === previousReceipt.controlLauncherSha256 &&
-      hash(finalLaunchers.mcp) === previousReceipt.mcpLauncherSha256
-    ) {
-      return {
-        activated: false,
-        version: manifest.pimpampumVersion,
-        nodePath: finalNodePath,
-        cliPath: finalCliPath,
-        mcpLauncherPath: layout.mcpLauncherPath,
-        previousVersion: previousReceipt.currentVersion,
-      };
-    }
+    // A receipt-owned destination whose bytes drifted is repaired, not refused: it moves into a
+    // quarantine the journal records, the validated and smoked payload takes its place, and any
+    // failure before the receipt commits renames the quarantined copy back.
+    const replaceFinal = finalExists && finalDrifted;
+    const quarantineRoot = replaceFinal
+      ? join(layout.versionsDirectory, `.pimpampum-remove-${randomUUID()}`)
+      : null;
     privateDirectory(layout.launchersDirectory);
     const activationJournal: ActivationJournal = {
       schemaVersion: 1,
+      phase: 'prepared',
       targetId: layout.targetId,
       candidateVersion: manifest.pimpampumVersion,
       finalDirectory: layout.versionDirectory,
-      createdFinal: !finalExists,
+      createdFinal: !finalExists || replaceFinal,
+      replacedFinal: quarantineRoot === null ? null : quarantinedReplacementPath(quarantineRoot),
       controlLauncher: snapshot(layout.controlLauncherPath, 'Control launcher'),
       mcpLauncher: snapshot(layout.mcpLauncherPath, 'MCP launcher'),
       receipt: snapshot(receiptPath(input.dataDirectory), 'Runtime receipt'),
     };
     atomicWrite(journalPath(input.dataDirectory), `${JSON.stringify(activationJournal)}\n`, 0o600);
     try {
-      if (!finalExists) renameSync(stagedPayload, layout.versionDirectory);
+      if (quarantineRoot !== null && activationJournal.replacedFinal !== null) {
+        privateDirectory(quarantineRoot);
+        renameSync(layout.versionDirectory, activationJournal.replacedFinal);
+      }
+      if (activationJournal.createdFinal) {
+        fsyncRuntimeTree(stagedPayload, manifest);
+        renameSync(stagedPayload, layout.versionDirectory);
+        fsyncPath(dirname(layout.versionDirectory));
+      }
       atomicWrite(layout.controlLauncherPath, finalLaunchers.control, 0o755);
       atomicWrite(layout.mcpLauncherPath, finalLaunchers.mcp, 0o755);
       const receipt: RuntimeInstallReceipt = {
@@ -786,12 +949,20 @@ export async function installRuntime(input: InstallRuntimeInput): Promise<Runtim
         ),
       };
       atomicWrite(receiptPath(input.dataDirectory), `${JSON.stringify(receipt, null, 2)}\n`, 0o600);
+      atomicWrite(
+        journalPath(input.dataDirectory),
+        `${JSON.stringify({ ...activationJournal, phase: 'committed' })}\n`,
+        0o600,
+      );
+      if (quarantineRoot !== null) rmSync(quarantineRoot, { recursive: true, force: true });
       rmSync(journalPath(input.dataDirectory), { force: true });
     } catch (error) {
       restore(layout.controlLauncherPath, activationJournal.controlLauncher);
       restore(layout.mcpLauncherPath, activationJournal.mcpLauncher);
       restore(receiptPath(input.dataDirectory), activationJournal.receipt);
-      if (activationJournal.createdFinal && pathEntryExists(layout.versionDirectory)) {
+      if (activationJournal.replacedFinal !== null) {
+        restoreReplacedFinal(layout, activationJournal.replacedFinal);
+      } else if (activationJournal.createdFinal && pathEntryExists(layout.versionDirectory)) {
         assertRegularDirectory(layout.versionDirectory, 'Activated runtime directory');
         rmSync(layout.versionDirectory, { recursive: true });
       }
@@ -812,14 +983,28 @@ export async function installRuntime(input: InstallRuntimeInput): Promise<Runtim
   }
 }
 
+/**
+ * Read-only view of the active runtime. It runs on every CLI start, including the `status`
+ * polls of the desktop surfaces, so it must never recover a journal: a poll that lands between
+ * an installer's journal write and its receipt write would otherwise undo the installation
+ * under the installer's feet. Recovery belongs to the lifecycle-locked entry points.
+ */
 export function inspectInstalledRuntime(
   input: Omit<PruneOwnedRuntimeInput, 'keepVersions'>,
 ): InstalledRuntimeInspection | null {
-  recoverInterruptedRuntimeRemoval(input);
-  recoverInterruptedActivation(input);
   const receipt = readReceipt(input);
   if (receipt === null) return null;
-  verifyOwnedLaunchers(receipt);
+  try {
+    verifyOwnedLaunchers(receipt);
+  } catch (error) {
+    if (pathEntryExists(journalPath(input.dataDirectory))) {
+      throw new Error(
+        'Runtime installation failed: runtime activation is in progress or was interrupted; run `pimpampum install` to finish it',
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   const layout = resolveRuntimeLayout({
     homeDirectory: input.homeDirectory,
     platform: input.platform,
@@ -950,6 +1135,7 @@ export function prepareOwnedRuntimeRemoval(
   input: Omit<PruneOwnedRuntimeInput, 'keepVersions'>,
 ): PreparedRuntimeRemoval | null {
   recoverInterruptedRuntimeRemoval(input);
+  recoverInterruptedActivation(input);
   const receipt = readReceipt(input);
   if (receipt === null) return null;
   verifyOwnedLaunchers(receipt);

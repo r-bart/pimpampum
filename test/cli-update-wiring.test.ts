@@ -1,5 +1,5 @@
-import { generateKeyPairSync, sign } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -7,12 +7,21 @@ import {
   createBoundedReleaseManifestFetcher,
   createCliUpdateManager,
   createReleaseSignatureVerifier,
+  resolveReleasePublicKeyPem,
+  stagePackagedMacOSApplication,
+  versionedReleaseManifestUrl,
 } from '../src/cliMain.js';
 import { installReceiptPath, writeInstallReceipt } from '../src/service/receipt.js';
 import type { ServiceManager } from '../src/service/types.js';
-import type { PackagedReleaseProviderInput } from '../src/update.js';
+import {
+  releaseSignaturePayload,
+  RELEASE_PUBLIC_KEY_PEM,
+  type PackagedReleaseProviderInput,
+  type PackagedReleaseTarget,
+} from '../src/update.js';
 
 const roots: string[] = [];
+const ISSUED_AT = '2026-09-01T12:00:00.000Z';
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -42,14 +51,18 @@ function fixture() {
 function writeReceipt(
   dataDirectory: string,
   adapter: string,
-  updateProvider?: 'legacy-npm' | 'packaged-release',
+  options: {
+    updateProvider?: 'legacy-npm' | 'packaged-release';
+    platform?: 'darwin' | 'linux';
+    packagedRuntime?: { version: string; target: PackagedReleaseTarget; runtimeDirectory: string };
+  } = {},
 ): void {
   writeInstallReceipt(
     installReceiptPath(dataDirectory),
     {
       schemaVersion: 1,
       adapter,
-      platform: 'darwin',
+      platform: options.platform ?? 'darwin',
       version: '1.0.0',
       installationKey: 'a'.repeat(64),
       installedAt: '2026-08-31T10:00:00.000Z',
@@ -59,7 +72,10 @@ function writeReceipt(
       baseUrl: 'http://127.0.0.1:7337',
       logDirectory: join(dataDirectory, 'logs'),
       artifacts: [],
-      ...(updateProvider === undefined ? {} : { updateProvider }),
+      ...(options.updateProvider === undefined ? {} : { updateProvider: options.updateProvider }),
+      ...(options.packagedRuntime === undefined
+        ? {}
+        : { packagedRuntime: options.packagedRuntime }),
     },
     dataDirectory,
   );
@@ -76,7 +92,54 @@ function baseInput(value: ReturnType<typeof fixture>) {
     currentServiceManager: value.serviceManager,
     createCandidateServiceManager: vi.fn(() => value.serviceManager),
     npmPath: '/private/runtime/bin/npm',
+    environment: {} as NodeJS.ProcessEnv,
   };
+}
+
+function manifestFor(
+  target: PackagedReleaseTarget,
+  version: string,
+  privateKey?: KeyObject,
+  overrides: { url?: string; sha256?: string; size?: number } = {},
+): string {
+  const url =
+    overrides.url ??
+    `https://github.com/r-bart/pimpampum/releases/download/v${version}/pimpampum-${version}-${target}.zip`;
+  const sha256 = overrides.sha256 ?? 'b'.repeat(64);
+  const size = overrides.size ?? 10;
+  const payload = releaseSignaturePayload({
+    version,
+    issuedAt: ISSUED_AT,
+    target,
+    url,
+    sha256,
+    size,
+  });
+  const signature = privateKey
+    ? sign(null, Buffer.from(payload), privateKey).toString('base64')
+    : Buffer.alloc(64, 7).toString('base64');
+  return JSON.stringify({
+    schemaVersion: 1,
+    channel: 'stable',
+    version,
+    issuedAt: ISSUED_AT,
+    targets: { [target]: { url, sha256, signature, size } },
+  });
+}
+
+function response(body: string | null, status: number, headers: Record<string, string> = {}) {
+  return new Response(body, { status, headers });
+}
+
+function fetchSequence(responses: Response[]) {
+  const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+  const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    const next = responses.shift();
+    if (!next) throw new Error('unexpected fetch');
+    return next;
+  }) as unknown as typeof globalThis.fetch;
+  return { fetchImplementation, calls };
 }
 
 describe('CLI packaged update wiring', () => {
@@ -87,21 +150,7 @@ describe('CLI packaged update wiring', () => {
     const packagedRelease: PackagedReleaseProviderInput = {
       channelManifestUrl: 'https://updates.example.test/channel/stable.json',
       target: 'darwin-arm64',
-      fetchManifest: vi.fn(async () =>
-        JSON.stringify({
-          schemaVersion: 1,
-          channel: 'stable',
-          version: '1.0.0',
-          targets: {
-            'darwin-arm64': {
-              url: 'https://updates.example.test/v1.0.0/pimpampum-darwin-arm64.zip',
-              sha256: 'b'.repeat(64),
-              signature: 'c'.repeat(64),
-              size: 10,
-            },
-          },
-        }),
-      ),
+      fetchManifest: vi.fn(async () => manifestFor('darwin-arm64', '1.0.0')),
       verifySignature: vi.fn(() => true),
       stageCandidate: vi.fn(async () => {
         throw new Error('not reached');
@@ -139,25 +188,11 @@ describe('CLI packaged update wiring', () => {
 
   it('honors explicit packaged provenance independently of the adapter name', async () => {
     const value = fixture();
-    writeReceipt(value.dataDirectory, 'systemd', 'packaged-release');
+    writeReceipt(value.dataDirectory, 'systemd', { updateProvider: 'packaged-release' });
     const packagedRelease: PackagedReleaseProviderInput = {
       channelManifestUrl: 'https://updates.example.test/channel/stable.json',
       target: 'darwin-arm64',
-      fetchManifest: vi.fn(async () =>
-        JSON.stringify({
-          schemaVersion: 1,
-          channel: 'stable',
-          version: '1.0.0',
-          targets: {
-            'darwin-arm64': {
-              url: 'https://updates.example.test/v1.0.0/pimpampum-darwin-arm64.zip',
-              sha256: 'b'.repeat(64),
-              signature: 'c'.repeat(64),
-              size: 10,
-            },
-          },
-        }),
-      ),
+      fetchManifest: vi.fn(async () => manifestFor('darwin-arm64', '1.0.0')),
       verifySignature: vi.fn(() => true),
       stageCandidate: vi.fn(async () => {
         throw new Error('not reached');
@@ -171,70 +206,325 @@ describe('CLI packaged update wiring', () => {
     expect(input.runCommand).not.toHaveBeenCalled();
   });
 
-  it('fails closed when a native receipt has no trusted release key', async () => {
+  it('rejects a channel manifest signed by any key other than the embedded release key', async () => {
     const value = fixture();
     writeReceipt(value.dataDirectory, 'launchd-macos-app');
-    const fetchImplementation = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            schemaVersion: 1,
-            channel: 'stable',
-            version: '1.0.1',
-            targets: {
-              'darwin-arm64': {
-                url: 'https://updates.example.test/v1.0.1/pimpampum-darwin-arm64.zip',
-                sha256: 'd'.repeat(64),
-                signature: Buffer.alloc(64, 2).toString('base64'),
-                size: 10,
-              },
-            },
-          }),
-          { status: 200 },
-        ),
-    );
+    const stranger = generateKeyPairSync('ed25519');
+    const fetchImplementation = vi.fn(async () =>
+      response(manifestFor('darwin-arm64', '1.0.1', stranger.privateKey), 200),
+    ) as unknown as typeof globalThis.fetch;
     const input = baseInput(value);
     const manager = createCliUpdateManager({ ...input, fetchImplementation });
 
-    await expect(manager.check()).rejects.toThrow(/signature verification failed/iu);
+    await expect(manager.check()).rejects.toMatchObject({
+      code: 'unavailable',
+      message: expect.stringMatching(/signature is invalid/iu),
+    });
+    expect(fetchImplementation).toHaveBeenCalledWith(
+      'https://github.com/r-bart/pimpampum/releases/download/update-channel-stable/release-manifest.json',
+      expect.objectContaining({ redirect: 'manual' }),
+    );
     expect(input.runCommand).not.toHaveBeenCalled();
   });
 
-  it('bounds global fetch streaming and disables redirects', async () => {
-    const fetchImplementation = vi.fn(async () => new Response('12345', { status: 200 }));
+  it('ignores PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH unless the development flag is set', async () => {
+    const value = fixture();
+    writeReceipt(value.dataDirectory, 'launchd-macos-app');
+    const pair = generateKeyPairSync('ed25519');
+    const keyPath = join(value.dataDirectory, 'dev-key.pem');
+    writeFileSync(keyPath, pair.publicKey.export({ type: 'spki', format: 'pem' }), { mode: 0o600 });
+    const fetchImplementation = vi.fn(async () =>
+      response(manifestFor('darwin-arm64', '1.0.1', pair.privateKey), 200),
+    ) as unknown as typeof globalThis.fetch;
+    const input = baseInput(value);
+
+    const withoutFlag = createCliUpdateManager({
+      ...input,
+      fetchImplementation,
+      environment: { PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH: keyPath },
+    });
+    await expect(withoutFlag.check()).rejects.toThrow(/signature is invalid/iu);
+
+    const withFlag = createCliUpdateManager({
+      ...input,
+      fetchImplementation,
+      environment: { PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH: keyPath, PIMPAMPUM_DEV_RELEASE_KEY: '1' },
+    });
+    await expect(withFlag.check()).resolves.toEqual({
+      currentVersion: '1.0.0',
+      latestVersion: '1.0.1',
+      updateAvailable: true,
+    });
+  });
+
+  it('answers a Linux packaged runtime from the channel and refuses activation with the bootstrap remedy', async () => {
+    const value = fixture();
+    writeReceipt(value.dataDirectory, 'systemd', {
+      platform: 'linux',
+      packagedRuntime: {
+        version: '1.0.0',
+        target: 'linux-x64',
+        runtimeDirectory: join(value.homeDirectory, '.local', 'share', 'pimpampum', 'runtime'),
+      },
+    });
+    const pair = generateKeyPairSync('ed25519');
+    const keyPath = join(value.dataDirectory, 'dev-key.pem');
+    writeFileSync(keyPath, pair.publicKey.export({ type: 'spki', format: 'pem' }), { mode: 0o600 });
+    const fetchImplementation = vi.fn(async () =>
+      response(
+        manifestFor('linux-x64', '1.0.1', pair.privateKey, {
+          url: 'https://github.com/r-bart/pimpampum/releases/download/v1.0.1/pimpampum-runtime-1.0.1-linux-x64.tar.gz',
+        }),
+        200,
+      ),
+    ) as unknown as typeof globalThis.fetch;
+    const input = baseInput(value);
+    const manager = createCliUpdateManager({
+      ...input,
+      target: 'linux-x64',
+      npmPath: null,
+      fetchImplementation,
+      environment: { PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH: keyPath, PIMPAMPUM_DEV_RELEASE_KEY: '1' },
+    });
+
+    await expect(manager.check()).resolves.toMatchObject({
+      latestVersion: '1.0.1',
+      updateAvailable: true,
+    });
+    await expect(manager.update()).rejects.toMatchObject({
+      code: 'unavailable',
+      retryable: false,
+      message: expect.stringMatching(/pimpampum-bootstrap/u),
+      details: { remedy: 'pimpampum-bootstrap', version: '1.0.1' },
+    });
+    expect(input.runCommand).not.toHaveBeenCalled();
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('bounded release fetch redirect policy', () => {
+  const channel =
+    'https://github.com/r-bart/pimpampum/releases/download/update-channel-stable/release-manifest.json';
+  const request = { url: channel, maximumBytes: 64, timeoutMilliseconds: 1_000 };
+
+  it('follows one redirect from github.com to its asset host and keeps redirect handling manual', async () => {
+    const { fetchImplementation, calls } = fetchSequence([
+      response(null, 302, {
+        location:
+          'https://release-assets.githubusercontent.com/github-production-release-asset/1/2?sig=x',
+      }),
+      response('{"ok":true}', 200),
+    ]);
     const fetchManifest = createBoundedReleaseManifestFetcher(fetchImplementation);
 
-    await expect(
-      fetchManifest({
-        url: 'https://updates.example.test/stable.json',
-        maximumBytes: 4,
-        timeoutMilliseconds: 1_000,
-      }),
-    ).rejects.toThrow(/streaming size limit/iu);
-    expect(fetchImplementation).toHaveBeenCalledWith(
-      'https://updates.example.test/stable.json',
-      expect.objectContaining({ redirect: 'error', signal: expect.any(AbortSignal) }),
+    const bytes = await fetchManifest(request);
+    expect(Buffer.from(bytes).toString('utf8')).toBe('{"ok":true}');
+    expect(calls.map((call) => call.url)).toEqual([
+      channel,
+      'https://release-assets.githubusercontent.com/github-production-release-asset/1/2?sig=x',
+    ]);
+    for (const call of calls) {
+      expect(call.init).toMatchObject({ redirect: 'manual', signal: expect.any(AbortSignal) });
+    }
+  });
+
+  it('resolves a relative location against the current hop', async () => {
+    const { fetchImplementation, calls } = fetchSequence([
+      response(null, 301, { location: '/r-bart/pimpampum/releases/download/v1.0.0/x.json' }),
+      response('1', 200),
+    ]);
+    await createBoundedReleaseManifestFetcher(fetchImplementation)(request);
+    expect(calls[1]!.url).toBe(
+      'https://github.com/r-bart/pimpampum/releases/download/v1.0.0/x.json',
     );
   });
 
-  it('verifies Ed25519 signatures only from a private owned root', () => {
-    const value = fixture();
-    const releaseRoot = join(value.dataDirectory, 'release');
-    mkdirSync(releaseRoot, { mode: 0o700 });
-    const keyPath = join(releaseRoot, 'pimpampum-release-public-key.pem');
+  it.each([
+    [
+      'a host outside the allowlist',
+      'https://evil.example.test/release-manifest.json',
+      /not allowed/iu,
+    ],
+    ['a downgrade to HTTP', 'http://github.com/r-bart/pimpampum/releases/x', /left HTTPS/iu],
+    ['credentials in the target', 'https://user:pw@github.com/x', /credentials/iu],
+  ])('rejects a redirect to %s', async (_label, location, message) => {
+    const { fetchImplementation, calls } = fetchSequence([
+      response(null, 302, { location }),
+      response('never', 200),
+    ]);
+    await expect(
+      createBoundedReleaseManifestFetcher(fetchImplementation)(request),
+    ).rejects.toMatchObject({ code: 'unavailable', message: expect.stringMatching(message) });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('stops after three hops', async () => {
+    const { fetchImplementation, calls } = fetchSequence(
+      Array.from({ length: 5 }, (_value, index) =>
+        response(null, 307, { location: `https://github.com/hop/${String(index)}` }),
+      ),
+    );
+    await expect(createBoundedReleaseManifestFetcher(fetchImplementation)(request)).rejects.toThrow(
+      /exceeded 3 redirects/u,
+    );
+    expect(calls).toHaveLength(4);
+  });
+
+  it('rejects a redirect without a location and keeps the size cap after a hop', async () => {
+    const missing = fetchSequence([response(null, 302)]);
+    await expect(
+      createBoundedReleaseManifestFetcher(missing.fetchImplementation)(request),
+    ).rejects.toThrow(/no location/iu);
+
+    const oversized = fetchSequence([
+      response(null, 302, { location: 'https://objects.githubusercontent.com/asset' }),
+      response('x'.repeat(65), 200),
+    ]);
+    await expect(
+      createBoundedReleaseManifestFetcher(oversized.fetchImplementation)(request),
+    ).rejects.toThrow(/streaming size limit/iu);
+  });
+
+  it('accepts plain-HTTP loopback only when the development flag opened it', async () => {
+    const loopback = { ...request, url: 'http://127.0.0.1:8080/channel/release-manifest.json' };
+    const strict = fetchSequence([response('never', 200)]);
+    await expect(
+      createBoundedReleaseManifestFetcher(strict.fetchImplementation)(loopback),
+    ).rejects.toThrow(/left HTTPS/iu);
+    expect(strict.calls).toHaveLength(0);
+
+    const development = fetchSequence([
+      response(null, 302, { location: 'http://127.0.0.1:8080/assets/release-manifest.json' }),
+      response('{}', 200),
+    ]);
+    const fetchManifest = createBoundedReleaseManifestFetcher(development.fetchImplementation, {
+      allowInsecureLoopback: true,
+    });
+    await expect(fetchManifest(loopback)).resolves.toHaveLength(2);
+    const remote = fetchSequence([response(null, 302, { location: 'http://example.test/x' })]);
+    await expect(
+      createBoundedReleaseManifestFetcher(remote.fetchImplementation, {
+        allowInsecureLoopback: true,
+      })(loopback),
+    ).rejects.toThrow(/left HTTPS/iu);
+  });
+});
+
+describe('release key trust', () => {
+  it('verifies Ed25519 signatures against an embedded PEM and rejects other key types', () => {
     const pair = generateKeyPairSync('ed25519');
-    writeFileSync(keyPath, pair.publicKey.export({ type: 'spki', format: 'pem' }), { mode: 0o600 });
     const payload = 'signed packaged release';
     const signature = sign(null, Buffer.from(payload), pair.privateKey).toString('base64');
     const verifier = createReleaseSignatureVerifier({
-      publicKeyPath: keyPath,
-      allowedRoots: [value.dataDirectory],
+      publicKeyPem: pair.publicKey.export({ type: 'spki', format: 'pem' }) as string,
     });
 
     expect(verifier({ payload, signature, target: 'darwin-arm64' })).toBe(true);
+    expect(verifier({ payload: 'other', signature, target: 'darwin-arm64' })).toBe(false);
+    expect(() =>
+      verifier({ payload, signature: `${signature.slice(0, -2)}!!`, target: 'darwin-arm64' }),
+    ).toThrow(/not valid base64/iu);
+    expect(() =>
+      verifier({ payload, signature: Buffer.alloc(32).toString('base64'), target: 'darwin-arm64' }),
+    ).toThrow(/invalid size/iu);
+
+    const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    expect(() =>
+      createReleaseSignatureVerifier({
+        publicKeyPem: rsa.publicKey.export({ type: 'spki', format: 'pem' }) as string,
+      })({ payload, signature, target: 'darwin-arm64' }),
+    ).toThrow(/Ed25519/u);
+  });
+
+  it('ships an Ed25519 public key as the embedded trust root', () => {
+    const verifier = createReleaseSignatureVerifier({ publicKeyPem: RELEASE_PUBLIC_KEY_PEM });
+    expect(
+      verifier({
+        payload: 'x',
+        signature: Buffer.alloc(64).toString('base64'),
+        target: 'darwin-arm64',
+      }),
+    ).toBe(false);
+  });
+
+  it('resolves the development key only behind the flag and only from a private regular file', () => {
+    const value = fixture();
+    const pair = generateKeyPairSync('ed25519');
+    const pem = pair.publicKey.export({ type: 'spki', format: 'pem' }) as string;
+    const keyPath = join(value.dataDirectory, 'dev-key.pem');
+    writeFileSync(keyPath, pem, { mode: 0o600 });
+
+    expect(resolveReleasePublicKeyPem({ environment: {} })).toBe(RELEASE_PUBLIC_KEY_PEM);
+    expect(
+      resolveReleasePublicKeyPem({ environment: { PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH: keyPath } }),
+    ).toBe(RELEASE_PUBLIC_KEY_PEM);
+    expect(
+      resolveReleasePublicKeyPem({
+        environment: { PIMPAMPUM_DEV_RELEASE_KEY: '1', PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH: keyPath },
+      }),
+    ).toBe(pem);
+    expect(resolveReleasePublicKeyPem({ publicKeyPath: keyPath, environment: {} })).toBe(pem);
+
     chmodSync(keyPath, 0o666);
-    expect(() => verifier({ payload, signature, target: 'darwin-arm64' })).toThrow(
+    expect(() => resolveReleasePublicKeyPem({ publicKeyPath: keyPath, environment: {} })).toThrow(
       /world-writable/iu,
     );
+    const link = join(value.dataDirectory, 'linked.pem');
+    symlinkSync(keyPath, link);
+    expect(() => resolveReleasePublicKeyPem({ publicKeyPath: link, environment: {} })).toThrow(
+      /regular file/iu,
+    );
+    expect(() =>
+      resolveReleasePublicKeyPem({ publicKeyPath: 'relative.pem', environment: {} }),
+    ).toThrow(/absolute/iu);
+  });
+});
+
+describe('macOS install source from the release channel', () => {
+  it('fetches the manifest of its own version and refuses a channel that offers another', async () => {
+    const value = fixture();
+    const pair = generateKeyPairSync('ed25519');
+    const keyPath = join(value.dataDirectory, 'dev-key.pem');
+    writeFileSync(keyPath, pair.publicKey.export({ type: 'spki', format: 'pem' }), { mode: 0o600 });
+    const { fetchImplementation, calls } = fetchSequence([
+      response(manifestFor('darwin-arm64', '2.0.0', pair.privateKey), 200),
+    ]);
+    const runCommand = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+
+    await expect(
+      stagePackagedMacOSApplication({
+        homeDirectory: value.homeDirectory,
+        version: '1.2.0',
+        runCommand,
+        fetchImplementation,
+        publicKeyPath: keyPath,
+        environment: {},
+      }),
+    ).rejects.toMatchObject({
+      code: 'unavailable',
+      message: expect.stringMatching(/npm install --global pimpampum@2\.0\.0/u),
+      details: { channelVersion: '2.0.0', installedVersion: '1.2.0' },
+    });
+    expect(calls[0]!.url).toBe(versionedReleaseManifestUrl('1.2.0'));
+    expect(versionedReleaseManifestUrl('1.2.0')).toBe(
+      'https://github.com/r-bart/pimpampum/releases/download/v1.2.0/release-manifest.json',
+    );
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('keeps a fetch failure typed instead of an internal error', async () => {
+    const value = fixture();
+    const fetchImplementation = vi.fn(async () => {
+      throw new Error('offline');
+    }) as unknown as typeof globalThis.fetch;
+    await expect(
+      stagePackagedMacOSApplication({
+        homeDirectory: value.homeDirectory,
+        version: '1.2.0',
+        runCommand: vi.fn(),
+        fetchImplementation,
+        environment: {},
+      }),
+    ).rejects.toMatchObject({ code: 'unavailable', retryable: true });
   });
 });

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -722,5 +723,171 @@ describe('PimpampumStore v2', () => {
     });
     expect(mutations).toBe(2);
     expect(store.listActivity(p.id, 10).map((event) => event.eventType)).toContain('context.put');
+  });
+
+  it('counts committed mutations, including a first Claim, and never a rollback', () => {
+    const { spec: readySpec } = readyProject();
+    const before = store.mutationCount;
+    const created = task(readySpec.id);
+    expect(store.mutationCount).toBe(before + 1);
+    error(
+      () =>
+        store.updateTask({
+          taskId: created.id,
+          title: 'stale',
+          body: null,
+          expectedRevision: 99,
+          actor: null,
+        }),
+      'revision_conflict',
+    );
+    expect(store.mutationCount).toBe(before + 1);
+    store.startWork({
+      targetType: 'task',
+      targetId: created.id,
+      agentId: 'agent',
+      leaseSeconds: 60,
+    });
+    expect(store.mutationCount).toBe(before + 2);
+    store.startWork({
+      targetType: 'task',
+      targetId: created.id,
+      agentId: 'agent',
+      leaseSeconds: 60,
+    });
+    expect(store.mutationCount).toBe(before + 2);
+    // The callback counter was reset after the Workspace registration in beforeEach.
+    expect(store.mutationCount - mutations).toBe(1);
+  });
+
+  it('deletes a parent Task together with its Subtask from one synchronized snapshot', () => {
+    const { spec: readySpec } = readyProject();
+    const parent = task(readySpec.id);
+    const child = task(readySpec.id, parent.id);
+    const sibling = task(readySpec.id);
+    const state = store.exportSyncState();
+    state.tasks = state.tasks.filter((item) => item.id !== parent.id && item.id !== child.id);
+    store.applySyncState(state);
+    expect(store.listTasks(readySpec.id).map((item) => item.id)).toEqual([sibling.id]);
+    const cleared = store.exportSyncState();
+    cleared.tasks = [];
+    store.applySyncState(cleared);
+    expect(store.listTasks(readySpec.id)).toEqual([]);
+  });
+
+  it('imports and prunes 33,000 Tasks in one snapshot', () => {
+    const { spec: readySpec } = readyProject();
+    const state = store.exportSyncState();
+    const at = new Date().toISOString();
+    for (let index = 0; index < 33_000; index += 1) {
+      state.tasks.push({
+        id: randomUUID(),
+        specId: readySpec.id,
+        parentId: null,
+        title: `Task ${index}`,
+        body: null,
+        state: 'open',
+        revision: 1,
+        completionSummary: null,
+        artifacts: [],
+        completedAt: null,
+        createdAt: at,
+        updatedAt: at,
+      });
+    }
+    const started = performance.now();
+    store.applySyncState(state);
+    const count = () =>
+      (database.prepare('SELECT COUNT(*) count FROM tasks').get() as { count: number }).count;
+    expect(count()).toBe(33_000);
+    state.tasks = state.tasks.slice(1_000);
+    store.applySyncState(state);
+    expect(count()).toBe(32_000);
+    expect(performance.now() - started).toBeLessThan(20_000);
+  });
+
+  it('rejects a synchronized Context whose name is not a slug', () => {
+    const state = store.exportSyncState();
+    state.contexts.push({
+      id: randomUUID(),
+      ownerType: 'workspace',
+      ownerId: 'workspace',
+      name: 'Not/a-slug',
+      body: '',
+      revision: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    error(() => store.applySyncState(state), 'bad_request', /name that is not a slug/);
+  });
+
+  it('keeps a Workspace imported without a root visible but never resolves a path to it', () => {
+    const state = store.exportSyncState();
+    state.workspaces.push({
+      id: 'phantom',
+      name: 'Phantom',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    store.applySyncState(state);
+    expect(store.getWorkspace('phantom').rootPath).toBe('');
+    expect(store.resolveWorkspace(root).id).toBe('workspace');
+    error(() => store.resolveWorkspace(process.cwd()), 'not_found');
+    expect(store.exportSyncState().workspaces.map((item) => item.id)).toEqual([
+      'phantom',
+      'workspace',
+    ]);
+  });
+
+  it('synchronizes cancelledAt only when set and restores it on the other device', () => {
+    const first = readyProject();
+    const kept = task(first.spec.id);
+    const cancelled = task(first.spec.id);
+    store.cancelTask({
+      taskId: cancelled.id,
+      expectedRevision: cancelled.revision,
+      reason: 'obsolete',
+      actor: null,
+    });
+    const second = spec(first.project.id);
+    store.cancelSpec({
+      specId: second.id,
+      expectedRevision: second.revision,
+      reason: 'no',
+      actor: null,
+    });
+    const other = project();
+    store.cancelProject({
+      projectId: other.id,
+      expectedRevision: other.revision,
+      reason: 'choice',
+      actor: null,
+    });
+    const state = store.exportSyncState();
+    const exportedKept = state.tasks.find((item) => item.id === kept.id)!;
+    const exportedCancelled = state.tasks.find((item) => item.id === cancelled.id)!;
+    expect(exportedKept).not.toHaveProperty('cancelledAt');
+    expect(exportedCancelled.cancelledAt).toMatch(/^\d{4}-/);
+    expect(state.specs.find((item) => item.id === second.id)!.cancelledAt).toMatch(/^\d{4}-/);
+    expect(state.projects.find((item) => item.id === other.id)!.cancelledAt).toMatch(/^\d{4}-/);
+    expect(state.projects.find((item) => item.id === first.project.id)).not.toHaveProperty(
+      'cancelledAt',
+    );
+
+    const otherDatabase = openDatabase(':memory:');
+    const otherStore = new PimpampumStore(otherDatabase);
+    otherStore.applySyncState(state);
+    expect(otherStore.exportSyncState()).toEqual(state);
+    const column = (table: string, id: string) =>
+      (
+        otherDatabase.prepare(`SELECT cancelled_at FROM ${table} WHERE id=?`).get(id) as {
+          cancelled_at: string | null;
+        }
+      ).cancelled_at;
+    expect(column('tasks', cancelled.id)).toBe(exportedCancelled.cancelledAt);
+    expect(column('tasks', kept.id)).toBeNull();
+    expect(column('specs', second.id)).not.toBeNull();
+    expect(column('projects', other.id)).not.toBeNull();
+    otherStore.close();
   });
 });

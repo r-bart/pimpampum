@@ -18,10 +18,14 @@ protocol SetupCommandRunning: Sendable {
     onProgress: @escaping @Sendable (SetupProgressEvent) async -> Void
   ) async throws -> SetupResult
   @MainActor func relaunchInstalledApplicationIfNeeded() async throws -> Bool
+  /// Whether this process is the copy that stays after setup. Only that copy may register the
+  /// login item for its own bundle.
+  @MainActor func runsFromInstalledApplication() -> Bool
 }
 
 extension SetupCommandRunning {
   @MainActor func relaunchInstalledApplicationIfNeeded() async throws -> Bool { false }
+  @MainActor func runsFromInstalledApplication() -> Bool { true }
 }
 
 struct SetupCommandOutput: Equatable, Sendable {
@@ -52,13 +56,16 @@ protocol SetupStreamingProcessRunning: SetupProcessRunning {
 struct SetupCommandRunner: SetupCommandRunning {
   private let bootstrap: EmbeddedSetupBootstrap
   private let processRunner: any SetupProcessRunning
+  private let relaunchAdapters: ApplicationRelaunchAdapters
 
   init(
     bootstrap: EmbeddedSetupBootstrap,
-    processRunner: any SetupProcessRunning = LocalSetupProcessRunner()
+    processRunner: any SetupProcessRunning = LocalSetupProcessRunner(),
+    relaunchAdapters: ApplicationRelaunchAdapters = .live
   ) {
     self.bootstrap = bootstrap
     self.processRunner = processRunner
+    self.relaunchAdapters = relaunchAdapters
   }
 
   func plan(selectedConnectors: [SetupAgentID]) async throws -> SetupPlan {
@@ -130,7 +137,13 @@ struct SetupCommandRunner: SetupCommandRunning {
 
   @MainActor
   func relaunchInstalledApplicationIfNeeded() async throws -> Bool {
-    try await InstalledApplicationRelauncher().relaunchIfNeeded(bootstrap: bootstrap)
+    try await InstalledApplicationRelauncher(adapters: relaunchAdapters)
+      .relaunchIfNeeded(bootstrap: bootstrap)
+  }
+
+  @MainActor
+  func runsFromInstalledApplication() -> Bool {
+    !bootstrap.requiresInstalledApplicationRelaunch
   }
 
   private func run(
@@ -482,7 +495,7 @@ struct LocalSetupProcessRunner: SetupStreamingProcessRunning {
   }
 }
 
-private final class SetupProcessWatchdog: @unchecked Sendable {
+final class SetupProcessWatchdog: @unchecked Sendable {
   private let lock = NSLock()
   private var process: Process?
   private var cancellationRequested = false

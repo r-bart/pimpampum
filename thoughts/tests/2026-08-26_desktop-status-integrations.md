@@ -2,7 +2,7 @@
 
 **Date**: 2026-08-26  
 **Spec**: `thoughts/specs/2026-08-25_desktop-status-integrations.md`  
-**Status**: frozen before implementation
+**Status**: all passing — amended 2026-09-01 (see the amendment note at the end)
 
 ---
 
@@ -11,94 +11,123 @@
 - TypeScript: Vitest, `describe`/`it`, `expect`, boundary fakes, top-level `test/*.test.ts`.
 - HTTP: Supertest against the composed Express application.
 - Persistence: real temporary SQLite databases.
-- macOS: Swift XCTest added during implementation.
+- macOS: Swift Testing in `platforms/macos/Tests/PimpampumMenuBarTests/`.
 - Omarchy: cross-platform manifest/QML fixture validator plus official live Quattro validation.
 
-The four generated TypeScript acceptance files and four shared fixtures are immutable. Native Swift and QML tests added during implementation supplement them but may not weaken their assertions. The fourth acceptance file was frozen when the completion audit converted the previously human-authored Task 4.4 evidence into an executable schema-v2 contract.
+The four shared fixtures in `test/fixtures/overview/` are the frozen contract; the four generated
+TypeScript acceptance files carry the spec-id comments that bind each test to a requirement and are
+edited like any other test, together with the spec they encode. Native Swift and QML tests
+supplement them but may not weaken their assertions.
 
 ---
 
 ## Traceability Matrix
 
-| Spec item | Executable acceptance                  | File/test                                         | Initial status |
-| --------- | -------------------------------------- | ------------------------------------------------- | -------------- |
-| US-1/AC-1 | One explicit lifecycle command surface | CLI overview/lifecycle tests                      | Failing        |
-| US-1/AC-2 | Automatic user service definitions     | LaunchAgent/systemd render tests                  | Failing        |
-| US-1/AC-3 | Restart after abnormal failure         | Strict LaunchAgent/systemd renderer assertions    | Failing        |
-| US-1/AC-4 | Idempotent install                     | Frozen lifecycle manager reconciliation test      | Failing        |
-| US-1/AC-5 | Uninstall preserves data               | Frozen receipt-owned uninstall boundary           | Failing        |
-| US-2/AC-1 | Compact semantic status                | Overview empty/complete/active tests              | Failing        |
-| US-2/AC-2 | Active-claim counter                   | Active overview + native artifact tests           | Failing        |
-| US-2/AC-3 | Fresh within ten seconds               | Native polling tests to add                       | Planned        |
-| US-2/AC-4 | Offline distinct from idle             | Native stale/offline tests to add                 | Planned        |
-| US-3/AC-1 | Project counts                         | Active overview test                              | Failing        |
-| US-3/AC-2 | Current work details                   | Active overview test                              | Failing        |
-| US-3/AC-3 | Active/available/draft ordering        | Frozen precedence/recency/stable-id test          | Failing        |
-| US-3/AC-4 | Completed collapsed                    | Swift/QML artifact assertions                     | Failing        |
-| US-3/AC-5 | Scroll bounded lists                   | Native view tests/review to add                   | Planned        |
-| US-4/AC-1 | Finder reveal                          | Swift opener artifact assertion                   | Failing        |
-| US-4/AC-2 | Linux file reveal                      | QML opener assertion                              | Failing        |
-| US-4/AC-3 | Missing path error                     | Native opener tests to add                        | Planned        |
-| US-4/AC-4 | No shell-source execution              | Strict separate-argument and shell-negative tests | Failing        |
-| FR-1      | Authenticated bounded overview         | HTTP acceptance suite                             | Failing        |
-| FR-2      | Install/status/uninstall               | CLI + service render suite                        | Failing        |
-| FR-3      | SwiftUI MenuBarExtra                   | macOS artifact suite                              | Failing        |
-| FR-4      | Quattro bar-widget                     | Omarchy artifact suite                            | Failing        |
-| FR-5      | Read-only boundary                     | Swift/QML negative assertions                     | Failing        |
-| EC-1      | Offline                                | Native tests to add                               | Planned        |
-| EC-2      | Invalid token                          | HTTP/native tests to add                          | Planned        |
-| EC-3      | No workspaces                          | HTTP empty overview                               | Failing        |
-| EC-4      | Drafts only                            | Frozen full status-precedence test                | Failing        |
-| EC-5      | All complete                           | HTTP complete overview                            | Failing        |
-| EC-6      | Active plus available                  | Frozen store/listWork agreement test              | Failing        |
-| EC-7      | Claim expiry                           | Frozen expired-claim exclusion test               | Failing        |
-| EC-8      | Hundreds of projects                   | Frozen 501-project truncation test                | Failing        |
-| EC-9      | Duplicate titles                       | Frozen stable-id ordering test                    | Failing        |
-| EC-10     | Missing directory                      | Native opener tests to add                        | Planned        |
-| EC-11     | Schema mismatch                        | Swift/QML fixture tests to add                    | Planned        |
-| EC-12     | Repeated install                       | Frozen repeat-reconciliation test                 | Failing        |
-| EC-13     | Partial install failure                | Frozen receipt-write rollback test                | Failing        |
-| EC-14     | Unsafe Omarchy layout mutation         | Plugin installer tests to add                     | Planned        |
+Status is the observed result on 2026-09-01 (`npx vitest run`, `swift test`).
+
+| Spec item | Executable acceptance                  | Test file                                                                   | Status  |
+| --------- | -------------------------------------- | --------------------------------------------------------------------------- | ------- |
+| US-1/AC-1 | One explicit lifecycle command surface | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| US-1/AC-2 | Automatic user service definitions     | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| US-1/AC-3 | Restart after abnormal failure         | `test/desktop-status.safety.acceptance.test.ts`                             | Passing |
+| US-1/AC-4 | Idempotent install                     | `test/desktop-status.lifecycle.acceptance.test.ts`                          | Passing |
+| US-1/AC-5 | Uninstall preserves data               | `test/desktop-status.lifecycle.acceptance.test.ts`                          | Passing |
+| US-2/AC-1 | Compact semantic status                | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| US-2/AC-2 | Active-claim counter                   | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| US-2/AC-3 | Fresh within ten seconds               | `OverviewStoreTests.swift` (polling intervals)                              | Passing |
+| US-2/AC-4 | Offline distinct from idle             | `OverviewStoreTests.swift` (stale/offline, cold-start grace)                | Passing |
+| US-3/AC-1 | Project counts                         | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| US-3/AC-2 | Current work details                   | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| US-3/AC-3 | Active/available/draft ordering        | `test/desktop-status.safety.acceptance.test.ts`                             | Passing |
+| US-3/AC-4 | Completed collapsed                    | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| US-3/AC-5 | Scroll bounded lists                   | `StatusPopoverTests.swift` (scrollable lists inside approved bounds)        | Passing |
+| US-4/AC-1 | Finder reveal                          | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| US-4/AC-2 | Linux file reveal                      | `test/desktop-status.safety.acceptance.test.ts`                             | Passing |
+| US-4/AC-3 | Missing path error                     | `WorkspaceOpenerTests.swift` (missing or inaccessible directories)          | Passing |
+| US-4/AC-4 | No shell-source execution              | `test/desktop-status.safety.acceptance.test.ts`                             | Passing |
+| FR-1      | Authenticated bounded overview         | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| FR-2      | Install/status/uninstall               | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| FR-3      | SwiftUI MenuBarExtra                   | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| FR-4      | Quattro bar-widget                     | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| FR-5      | Read-only boundary                     | `test/desktop-status.safety.acceptance.test.ts`                             | Passing |
+| EC-1      | Offline                                | `OverviewStoreTests.swift`                                                  | Passing |
+| EC-2      | Invalid token                          | `OverviewClientTests.swift` (authentication vs server vs schema failures)   | Passing |
+| EC-3      | No workspaces                          | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| EC-4      | Drafts only                            | `test/desktop-status.safety.acceptance.test.ts`                             | Passing |
+| EC-5      | All complete                           | `test/desktop-status.acceptance.test.ts`                                    | Passing |
+| EC-6      | Active plus available                  | `test/desktop-status.safety.acceptance.test.ts`                             | Passing |
+| EC-7      | Claim expiry                           | `test/desktop-status.safety.acceptance.test.ts`                             | Passing |
+| EC-8      | Hundreds of projects                   | `test/desktop-status.safety.acceptance.test.ts`                             | Passing |
+| EC-9      | Duplicate titles                       | `test/desktop-status.safety.acceptance.test.ts`                             | Passing |
+| EC-10     | Missing directory                      | `WorkspaceOpenerTests.swift`                                                | Passing |
+| EC-11     | Schema mismatch                        | `OverviewClientTests.swift`; `test/omarchy-plugin.test.ts` (`invalid.json`) | Passing |
+| EC-12     | Repeated install                       | `test/desktop-status.lifecycle.acceptance.test.ts`                          | Passing |
+| EC-13     | Partial install failure                | `test/desktop-status.lifecycle.acceptance.test.ts`                          | Passing |
+| EC-14     | Unsafe Omarchy layout mutation         | `test/service-omarchy.test.ts` (layout snapshot and restore safety)         | Passing |
+
+Swift files live in `platforms/macos/Tests/PimpampumMenuBarTests/`.
 
 ---
 
 ## Generated Test Files
 
-| File                                               | Executable tests | Todos | Layer                    |
-| -------------------------------------------------- | ---------------: | ----: | ------------------------ |
-| `test/desktop-status.acceptance.test.ts`           |               14 |     0 | Cross-layer acceptance   |
-| `test/desktop-status.safety.acceptance.test.ts`    |               12 |     0 | Domain/platform safety   |
-| `test/desktop-status.lifecycle.acceptance.test.ts` |                5 |     0 | Service lifecycle safety |
-| `test/quattro-live-evidence.acceptance.test.ts`    |               10 |     0 | Live evidence integrity  |
+| File                                               | Tests | Todos | Layer                    | Status  |
+| -------------------------------------------------- | ----: | ----: | ------------------------ | ------- |
+| `test/desktop-status.acceptance.test.ts`           |    14 |     0 | Cross-layer acceptance   | Passing |
+| `test/desktop-status.safety.acceptance.test.ts`    |    12 |     0 | Domain/platform safety   | Passing |
+| `test/desktop-status.lifecycle.acceptance.test.ts` |     5 |     0 | Service lifecycle safety | Passing |
+| `test/quattro-live-evidence.acceptance.test.ts`    |    11 |     0 | Live evidence integrity  | Passing |
+
+The Quattro file gained one case (FR-4: opt-in live runner exposed through the release command)
+after the manifest was written; the manifest said 10.
 
 ---
 
 ## Coverage Summary
 
 - Spec items enumerated: 37.
-- Spec items with immediate generated executable coverage: 28 plus the ten Task 4.4 evidence-integrity cases.
-- Spec items assigned to native/platform suites in the approved plan: 9.
-- Acceptance file compiles before implementation and fails only because required behavior/artifacts do not exist.
+- Spec items covered by the generated TypeScript acceptance files: 28, plus the eleven Task 4.4
+  evidence-integrity cases.
+- Spec items covered by native suites: 9, all implemented and passing (211 Swift tests in 30
+  suites on 2026-09-01; `test/omarchy-plugin.test.ts` and `test/service-omarchy.test.ts` 36/36).
 - Traceability coverage: 100%.
 
 ---
 
-## Immutability
+## Frozen Contract
 
-These files must not be edited during plan execution. The recorded SHA-256 values are checked after every phase:
+Only the four shared fixtures are hash-pinned. They have three consumers that must read the same
+bytes: `scripts/validate-omarchy-plugin.mjs`, the Swift tests through `OverviewTestSupport.swift`,
+and the TypeScript acceptance tests. `npm run check:desktop-contract` verifies them in
+`quality.yml` and `release.yml`.
 
-| Frozen artifact                                    | SHA-256                                                            |
-| -------------------------------------------------- | ------------------------------------------------------------------ |
-| `test/desktop-status.acceptance.test.ts`           | `8a9ee548f504bd9c9f7857716efd7a6b734a8fe08b5e081bd8a30577457a0f14` |
-| `test/desktop-status.safety.acceptance.test.ts`    | `1e1f711b2e38a07f731a880affb15d537eb7047598eaa9a7bee9f550a57644c7` |
-| `test/desktop-status.lifecycle.acceptance.test.ts` | `3fd3289e06b2651d9d0902a026900657c461db0ba780e6d566e21be5a785564d` |
-| `test/quattro-live-evidence.acceptance.test.ts`    | `a96d8aa9b12a3d69cca2dce6135f8f7bee08900603bad5f60f421c7952dfb125` |
-| `test/fixtures/overview/complete.json`             | `559fd9930739dc13858312d7e63f2b0b8bd408337ef738db582a2aee3a03c188` |
-| `test/fixtures/overview/empty.json`                | `0fe194508bc2249166acb088330491a0c9984308fb204e783883afbd1ef9e9e7` |
-| `test/fixtures/overview/invalid.json`              | `87641df18c8f1bf5547ced2b9e78a03a9b11ba36165d8a759bb89fb4f3e0e438` |
-| `test/fixtures/overview/mixed.json`                | `67600a36f2a12be056a4109d677d7a9c042988cc814a9bc28f048b6a21b413eb` |
+| Frozen artifact                        | SHA-256                                                            |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `test/fixtures/overview/complete.json` | `a622e45665a33646afb10eeeea78b3f8ec7248cad176163d1c7f47870520ec5f` |
+| `test/fixtures/overview/empty.json`    | `bbf834d7bd82369eb53ccebc3f90c0237342ebd2ab1f579a2047d25e343366eb` |
+| `test/fixtures/overview/invalid.json`  | `1dfd2aa7a4db5cffcdd9f07a8df477f6b7c35345eff4b8d94beef25850b6e00f` |
+| `test/fixtures/overview/mixed.json`    | `27fb33e9d3113c073d8e08aaa17b96d789d873d555630dfbcf6cfa99d3571453` |
 
-If a frozen contract is incorrect, update the approved specification and regenerate it before continuing.
+If a fixture must change, amend the spec first, then refresh the digest in
+`scripts/check-desktop-status-contract.mjs` and this table in the same commit.
+
+---
+
+## Amendment 2026-09-01
+
+Source: `thoughts/reviews/2026-09-01_deep-review.md`, finding H-14, and Task 0.1 of
+`thoughts/plans/2026-09-01_deep-review-remediation.md`.
+
+- The four acceptance test files are no longer frozen. Every one of the eight commits that touched
+  `scripts/check-desktop-status-contract.mjs` re-pinned them, and seven of the eight hashes this
+  manifest recorded no longer matched the script. The freeze recorded snapshots, not a
+  specification.
+- The hash pins stay on the four overview fixtures only, for the three-consumer reason above.
+- The `@immutable` headers on the acceptance files will be removed in a later phase of the
+  remediation plan. Their `@generated-from` spec references and per-test spec-id titles remain the
+  contract: a test changes only together with the spec item it names.
+- The "Initial status" column was replaced by the observed status; "Planned" native rows now name
+  the Swift and Omarchy tests that implement them.
 
 ---
 
@@ -111,9 +140,3 @@ If a frozen contract is incorrect, update the approved specification and regener
 - Omarchy fixture/static validator tests.
 - Live macOS service/app smoke.
 - Live Omarchy Quattro plugin smoke.
-
----
-
-## Next Step
-
-Execute `thoughts/plans/2026-08-25_desktop-status-integrations.md` without modifying any frozen artifact.

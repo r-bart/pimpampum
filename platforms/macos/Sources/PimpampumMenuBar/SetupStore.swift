@@ -51,16 +51,19 @@ struct LocalSetupAgentDetector: SetupAgentDetecting {
 
 @MainActor
 final class SetupStore: ObservableObject {
+  /// How often the journal of a setup another process owns is re-read.
+  static let runningJournalPollInterval: TimeInterval = 2
+  /// Consecutive polls with an unchanged `updatedAt` after which the owner is presumed gone and
+  /// this process resumes the operation itself. The CLI stamps the journal only at phase
+  /// boundaries, and one phase (the runtime install, the login-item handshake) can run long, so a
+  /// live owner gets two minutes per phase. The CLI recovers a lock whose holder died.
+  static let stalledJournalPollLimit = 60
+
   @Published private(set) var activity: SetupActivity = .idle
   @Published private(set) var agents: [SetupAgentSelection] = []
   @Published private(set) var plan: SetupPlan?
   @Published private(set) var progress: [SetupProgressEvent] = []
-  @Published private(set) var service = SetupServicePresentation(
-    state: .notInstalled,
-    installed: false,
-    running: false,
-    verified: false
-  )
+  @Published private(set) var service = SetupStore.uninstalledService
   @Published private(set) var agentResults: [SetupAgentPresentation] = []
   @Published private(set) var completion: SetupResult?
   @Published private(set) var errorMessage: String?
@@ -69,32 +72,44 @@ final class SetupStore: ObservableObject {
 
   var busy: Bool { activity.isBusy }
   var selectedAgents: [SetupAgentID] { agents.filter(\.selected).map(\.id) }
-  /// Connecting an agent is optional. The spec's success metrics require setup with no supported
-  /// agents to complete, and the coordinator already handles an empty selection. Demanding one
-  /// here left the service uninstallable on any Mac where nothing was detected.
-  var canReview: Bool { !busy }
-  var canCancel: Bool { activity.isBusy && !activity.hasBegunMutation }
+  /// The confirmation applies the plan on screen, so there must be one and nothing may have failed.
+  /// Connecting an agent is optional: the spec's success metrics require setup with no supported
+  /// agents to complete, so an empty selection does not block the button.
+  var canConfirm: Bool { !busy && plan != nil && errorMessage == nil }
   var needsLoginItemApproval: Bool { completion?.nextAction == .recoverLoginItem }
+  /// Registering the login item names the running bundle. Only the installed copy may do it.
+  var canRegisterLoginItemFromThisProcess: Bool { runner.runsFromInstalledApplication() }
+
+  private static let uninstalledService = SetupServicePresentation(
+    state: .notInstalled,
+    installed: false,
+    running: false,
+    verified: false
+  )
 
   private let runner: any SetupCommandRunning
   private let detector: any SetupAgentDetecting
+  private let clock: any OverviewClock
   private var actionTask: Task<Void, Never>?
+  private var launchWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
   private var started = false
   private var conflictDecisions: [SetupAgentID: SetupConflictDecision] = [:]
 
   init(
     runner: any SetupCommandRunning,
-    detector: any SetupAgentDetecting = LocalSetupAgentDetector()
+    detector: any SetupAgentDetecting = LocalSetupAgentDetector(),
+    clock: any OverviewClock = SystemOverviewClock()
   ) {
     self.runner = runner
     self.detector = detector
+    self.clock = clock
   }
 
-  static func bundled() -> SetupStore {
+  static func bundled(
+    bootstrap: () throws -> EmbeddedSetupBootstrap = EmbeddedSetupBootstrap.bundledFromApplication
+  ) -> SetupStore {
     do {
-      return SetupStore(
-        runner: SetupCommandRunner(bootstrap: try EmbeddedSetupBootstrap.bundled())
-      )
+      return SetupStore(runner: SetupCommandRunner(bootstrap: try bootstrap()))
     } catch {
       return SetupStore(runner: UnavailableSetupCommandRunner())
     }
@@ -102,17 +117,49 @@ final class SetupStore: ObservableObject {
 
   deinit { actionTask?.cancel() }
 
-  /// Called when the popover/store is created. The durable CLI journal, rather than view state,
-  /// decides whether the same confirmed operation must resume after the app is reopened.
+  /// Called when the session begins. The durable CLI journal, rather than view state, decides
+  /// whether a confirmed operation is still in progress.
   func start() {
     guard !started else { return }
     started = true
     actionTask = Task { [weak self] in
       guard let self else { return }
-      defer { actionTask = nil }
+      defer {
+        actionTask = nil
+        resumeLaunchWaiters()
+      }
       await prepare()
       await resume()
     }
+  }
+
+  /// Suspends until the launch task has finished, or until the caller is cancelled. Awaiting the
+  /// task's value directly would ignore cancellation and keep a view's task alive forever when the
+  /// launch is stuck.
+  private func awaitLaunchTask() async {
+    guard actionTask != nil else { return }
+    let id = UUID()
+    await withTaskCancellationHandler {
+      await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        if Task.isCancelled {
+          continuation.resume()
+        } else {
+          launchWaiters[id] = continuation
+        }
+      }
+    } onCancel: {
+      Task { @MainActor [weak self] in self?.resumeLaunchWaiter(id) }
+    }
+  }
+
+  private func resumeLaunchWaiter(_ id: UUID) {
+    launchWaiters.removeValue(forKey: id)?.resume()
+  }
+
+  private func resumeLaunchWaiters() {
+    let waiters = launchWaiters
+    launchWaiters = [:]
+    for waiter in waiters.values { waiter.resume() }
   }
 
   func prepare() async {
@@ -149,25 +196,21 @@ final class SetupStore: ObservableObject {
     plan = nil
   }
 
-  func beginReview() {
-    guard actionTask == nil else { return }
-    actionTask = Task { [weak self] in
-      guard let self else { return }
-      defer { actionTask = nil }
-      await review()
-    }
-  }
-
   func review() async {
-    guard activity == .idle else { return }
+    // Planning runs from the agents step as soon as it appears, which can be before the launch task
+    // has finished detecting agents and reading the journal. Returning early left no plan and no
+    // error under an enabled button, so wait for that task instead.
+    await awaitLaunchTask()
+    guard !Task.isCancelled, activity == .idle else { return }
     activity = .planning
     errorMessage = nil
     progress = []
     completion = nil
     defer { activity = .idle }
     do {
-      plan = try await runner.plan(selectedConnectors: selectedAgents)
-      unresolvedConflicts = plan?.conflicts ?? []
+      let reviewed = try await runner.plan(selectedConnectors: selectedAgents)
+      plan = reviewed
+      unresolvedConflicts = reviewed.conflicts
       conflictDecisions = [:]
     } catch is CancellationError {
       errorMessage = SetupClientError.cancelled.message
@@ -226,21 +269,16 @@ final class SetupStore: ObservableObject {
     )
   }
 
-  func cancelConflict() {
+  /// Forgets the plan and any outcome so the onboarding can start again. A mutation in flight is
+  /// never abandoned: the child finishes its receipt-backed transaction first.
+  func reset() {
     guard !activity.hasBegunMutation else { return }
     plan = nil
     completion = nil
-    progress = []
     unresolvedConflicts = []
     conflictDecisions = [:]
     errorMessage = nil
-    service = SetupServicePresentation(
-      state: .notInstalled,
-      installed: false,
-      running: false,
-      verified: false
-    )
-    agentResults = []
+    clearProgress()
   }
 
   func retry(_ id: SetupAgentID) async {
@@ -273,15 +311,21 @@ final class SetupStore: ObservableObject {
     errorMessage = nil
     defer { activity = .idle }
     do {
-      guard let journal = try await runner.status() else { return }
+      // Only a running journal is a setup in progress. A finished or failed one is history: shown
+      // as the current outcome it stranded every reinstall on a stale final step.
+      guard let journal = try await runner.status(), journal.status == .running else { return }
       receive(journal)
-      guard journal.status == .running else { return }
       activity = .resuming
+      guard try await followRunningJournal(journal) != nil else { return }
+      // The owner stopped writing the journal. The CLI recovers its stale lock, so the operation
+      // can finish from here.
       let result = try await runner.resume { [weak self] event in
         await self?.receive(event)
       }
       receive(result)
       pendingApplicationRelaunch = result.service.installed
+    } catch is CancellationError {
+      return
     } catch let error as SetupClientError {
       errorMessage = Self.sanitize(error.message)
     } catch {
@@ -289,11 +333,35 @@ final class SetupStore: ObservableObject {
     }
   }
 
-  /// Planning/detection can be abandoned. Once setup apply or durable resume begins, cancellation
-  /// is intentionally ignored so the child can finish its receipt-backed transaction and exit.
-  func cancelBeforeMutation() {
-    guard canCancel else { return }
-    actionTask?.cancel()
+  /// Another process, usually the copy that started setup, is applying and holds the lifecycle
+  /// lock. `setup resume` would wait for that lock and time out, so the journal is watched instead.
+  /// Returns nil once it reached a final state or disappeared, and the last journal when its owner
+  /// stopped updating it.
+  private func followRunningJournal(_ initial: SetupJournal) async throws -> SetupJournal? {
+    var latest = initial
+    var unchangedPolls = 0
+    while unchangedPolls < Self.stalledJournalPollLimit {
+      try await clock.sleep(for: Self.runningJournalPollInterval)
+      guard let current = try await runner.status() else {
+        clearProgress()
+        return nil
+      }
+      receive(current)
+      guard current.status == .running else { return nil }
+      if current.updatedAt == latest.updatedAt {
+        unchangedPolls += 1
+      } else {
+        unchangedPolls = 0
+        latest = current
+      }
+    }
+    return latest
+  }
+
+  private func clearProgress() {
+    progress = []
+    service = Self.uninstalledService
+    agentResults = []
   }
 
   private func markSelectedAgentsConnecting() {
@@ -348,12 +416,13 @@ final class SetupStore: ObservableObject {
   }
 
   private func receive(_ journal: SetupJournal) {
-    service = Self.servicePresentation(journal.service)
     let completed = Dictionary(
       journal.connectors.map { ($0.id, $0) },
       uniquingKeysWith: { existing, _ in existing }
     )
-    agentResults = journal.selectedConnectors.map { id in
+    // Every agent the user selected keeps a row, including one the journal has no result for yet;
+    // a result alone would drop it.
+    let rows = journal.selectedConnectors.map { id in
       if let connector = completed[id] { return Self.agentPresentation(connector) }
       return SetupAgentPresentation(
         id: id,
@@ -364,11 +433,14 @@ final class SetupStore: ObservableObject {
         error: nil
       )
     }
-    guard let result = Self.terminalResult(journal) else { return }
-    receive(result)
-    if journal.status == .failed, let diagnostic = journal.diagnostics.last {
-      errorMessage = Self.sanitize(diagnostic)
+    if let result = Self.terminalResult(journal) {
+      receive(result)
+      if journal.status == .failed, let diagnostic = journal.diagnostics.last {
+        errorMessage = Self.sanitize(diagnostic)
+      }
     }
+    service = Self.servicePresentation(journal.service)
+    agentResults = rows
   }
 
   private static func terminalResult(_ journal: SetupJournal) -> SetupResult? {
@@ -470,7 +542,7 @@ final class SetupStore: ObservableObject {
   }
 }
 
-private struct UnavailableSetupCommandRunner: SetupCommandRunning {
+struct UnavailableSetupCommandRunner: SetupCommandRunning {
   func plan(selectedConnectors _: [SetupAgentID]) async throws -> SetupPlan {
     throw SetupClientError.unavailable
   }

@@ -29,6 +29,7 @@ final class OverviewStore: ObservableObject {
   @Published private(set) var overview: Overview?
   @Published private(set) var connectionState: OverviewConnectionState = .loading
   @Published private(set) var isPopoverOpen = false
+  @Published private(set) var isPollingPaused = false
   @Published private(set) var currentDate: Date
 
   private let reader: any OverviewReading
@@ -84,6 +85,7 @@ final class OverviewStore: ObservableObject {
   func start() {
     guard !pollingStarted else { return }
     pollingStarted = true
+    guard !isPollingPaused else { return }
     replacePollingTask(refreshImmediately: true)
   }
 
@@ -96,8 +98,23 @@ final class OverviewStore: ObservableObject {
   func setPopoverOpen(_ isOpen: Bool) {
     guard isPopoverOpen != isOpen else { return }
     isPopoverOpen = isOpen
-    guard pollingStarted else { return }
+    guard pollingStarted, !isPollingPaused else { return }
     replacePollingTask(refreshImmediately: isOpen)
+  }
+
+  /// While the guided setup installs the daemon, a poll answers with a half-installed service and
+  /// that answer used to replace the onboarding mid-apply. Polling stops for the mutation and
+  /// refreshes at once when it ends.
+  func setPollingPaused(_ paused: Bool) {
+    guard isPollingPaused != paused else { return }
+    isPollingPaused = paused
+    guard pollingStarted else { return }
+    if paused {
+      pollingTask?.cancel()
+      pollingTask = nil
+    } else {
+      replacePollingTask(refreshImmediately: true)
+    }
   }
 
   func refresh() async {

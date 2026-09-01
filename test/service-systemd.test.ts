@@ -80,7 +80,17 @@ describe('systemd user service', () => {
 
     expect(unit).toContain('Pim \\"pam\\" %% $$ \\\\ Runtime\\tü/bin/node');
     expect(unit).toContain("cli's %% \\\\ path.js");
-    expect(unit).toContain('PIMPAMPUM_DATA_DIR=/home/dev/Data %% $$ \\\\ ñ');
+    // Environment= resolves specifiers but never expands variables, so `$` stays single there.
+    expect(unit).toContain('Environment="PIMPAMPUM_DATA_DIR=/home/dev/Data %% $ \\\\ ñ"');
+    expect(unit).not.toContain('PIMPAMPUM_DATA_DIR=/home/dev/Data %% $$');
+  });
+
+  it('keeps a literal dollar in the data directory intact for the daemon environment', () => {
+    const unit = renderSystemdUnit(unitInput({ dataDirectory: '/home/dev/$HOME data/${X}' }));
+
+    expect(unit).toContain('Environment="PIMPAMPUM_DATA_DIR=/home/dev/$HOME data/${X}"');
+    expect(unit.match(/^Environment=.*\$\$/mu)).toBeNull();
+    expect(unit).toMatch(/^ExecStart=.*bin\/node" ".*cli\.js" serve$/mu);
   });
 
   it('rejects unsafe paths, non-loopback hosts and invalid ports', () => {
@@ -146,6 +156,66 @@ describe('systemd user service', () => {
         ],
       ],
       ['/custom/systemctl', ['--user', 'enable', '--now', SYSTEMD_UNIT_NAME]],
+    ]);
+    // An inactive unit starts fresh from the new ExecStart; nothing to restart.
+    expect(runCommand.mock.calls.some(([, arguments_]) => arguments_[1] === 'restart')).toBe(false);
+  });
+
+  it('restarts an already running unit after enable --now so the new ExecStart serves', async () => {
+    const runCommand = vi.fn<RunCommand>(async (_executable, arguments_) =>
+      arguments_[1] === 'show' ? serviceState('loaded', 'enabled', 'active') : success(),
+    );
+    const adapter = createSystemdAdapter({ systemctlPath: '/custom/systemctl' });
+
+    await adapter.activate(context(runCommand), []);
+
+    expect(runCommand.mock.calls.map(([, arguments_]) => arguments_)).toEqual([
+      ['--user', 'daemon-reload'],
+      [
+        '--user',
+        'show',
+        SYSTEMD_UNIT_NAME,
+        '--property=LoadState',
+        '--property=UnitFileState',
+        '--property=ActiveState',
+        '--no-pager',
+      ],
+      ['--user', 'enable', '--now', SYSTEMD_UNIT_NAME],
+      ['--user', 'restart', SYSTEMD_UNIT_NAME],
+    ]);
+  });
+
+  it('compensates a failed restart and restores the prior running state on rollback', async () => {
+    const runCommand = vi.fn<RunCommand>(async (_executable, arguments_) => {
+      if (arguments_[1] === 'show') return serviceState('loaded', 'enabled', 'active');
+      if (arguments_[1] === 'restart') return { exitCode: 1, stdout: '', stderr: 'restart failed' };
+      return success();
+    });
+    const adapter = createSystemdAdapter();
+    const serviceContext = context(runCommand);
+
+    await expect(adapter.activate(serviceContext, [])).rejects.toThrow(
+      'systemctl restart failed with exit code 1; stderr="restart failed"',
+    );
+    await adapter.afterRollback?.(serviceContext, []);
+
+    expect(runCommand.mock.calls.map(([, arguments_]) => arguments_)).toEqual([
+      ['--user', 'daemon-reload'],
+      [
+        '--user',
+        'show',
+        SYSTEMD_UNIT_NAME,
+        '--property=LoadState',
+        '--property=UnitFileState',
+        '--property=ActiveState',
+        '--no-pager',
+      ],
+      ['--user', 'enable', '--now', SYSTEMD_UNIT_NAME],
+      ['--user', 'restart', SYSTEMD_UNIT_NAME],
+      ['--user', 'disable', '--now', SYSTEMD_UNIT_NAME],
+      ['--user', 'reset-failed', SYSTEMD_UNIT_NAME],
+      ['--user', 'daemon-reload'],
+      ['--user', 'enable', '--now', SYSTEMD_UNIT_NAME],
     ]);
   });
 
@@ -469,6 +539,7 @@ describe('systemd user service', () => {
           '--no-pager',
         ],
         ['--user', 'enable', '--now', SYSTEMD_UNIT_NAME],
+        ['--user', 'restart', SYSTEMD_UNIT_NAME],
         [
           '--user',
           'show',

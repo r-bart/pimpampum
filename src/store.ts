@@ -13,6 +13,7 @@ import {
   isTerminalTaskState,
 } from './domainRules.js';
 import { AppError } from './errors.js';
+import { slugSchema } from './schemas.js';
 import type { SyncEntityKind, SyncState } from './syncContract.js';
 import { activityFingerprint, normalizedSyncState } from './syncState.js';
 import {
@@ -217,6 +218,7 @@ function ownerColumn(type: ContextOwnerType): 'workspace_id' | 'project_id' {
 }
 
 export class PimpampumStore {
+  private mutations = 0;
   constructor(
     private readonly database: Database.Database,
     private readonly onMutation: () => void = () => undefined,
@@ -225,6 +227,10 @@ export class PimpampumStore {
   ) {}
   setSyncConflictGuard(guard: (entityType: SyncEntityKind, entityId: string) => boolean): void {
     this.syncConflictGuard = guard;
+  }
+  /** Number of committed writes since this store opened; cheap to poll. */
+  get mutationCount(): number {
+    return this.mutations;
   }
   close(): void {
     this.database.close();
@@ -302,6 +308,9 @@ export class PimpampumStore {
     }
     const match = this.listWorkspaces()
       .filter((w) => {
+        // A Workspace imported through sync has no local root yet. Node treats
+        // relative('', path) as relative(cwd, path), so it must never take part.
+        if (w.rootPath === '') return false;
         const child = relative(w.rootPath, resolved);
         return child === '' || (!child.startsWith('..') && !isAbsolute(child));
       })
@@ -1039,7 +1048,7 @@ export class PimpampumStore {
         return true;
       })
       .immediate();
-    if (changed) this.onMutation();
+    if (changed) this.recordMutation();
     return this.workBundle(input.targetType, input.targetId);
   }
   renewWork(input: {
@@ -1403,13 +1412,16 @@ export class PimpampumStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
+    // `cancelled_at` travels only when set; see `cancelledAtSchema` in the contract.
+    const cancelledAt = (row: { cancelled_at: string | null }): { cancelledAt?: string } =>
+      row.cancelled_at === null ? {} : { cancelledAt: row.cancelled_at };
     const projects = (
       this.database.prepare('SELECT * FROM projects ORDER BY id').all() as ProjectRow[]
-    ).map((row) => this.mapProject(row));
+    ).map((row) => ({ ...this.mapProject(row), ...cancelledAt(row) }));
     const specs = (this.database.prepare('SELECT * FROM specs ORDER BY id').all() as SpecRow[]).map(
       (row) => {
         const { claim: _claim, ...spec } = this.mapSpec(row);
-        return spec;
+        return { ...spec, ...cancelledAt(row) };
       },
     );
     const contexts = (
@@ -1418,10 +1430,21 @@ export class PimpampumStore {
     const tasks = (this.database.prepare('SELECT * FROM tasks ORDER BY id').all() as TaskRow[]).map(
       (row) => {
         const { claim: _claim, ...task } = this.mapTask(row);
-        return task;
+        return { ...task, ...cancelledAt(row) };
       },
     );
-    const activity = (
+    return normalizedSyncState({
+      workspaces,
+      projects,
+      specs,
+      contexts,
+      tasks,
+      activity: this.exportSyncActivity(),
+    });
+  }
+
+  private exportSyncActivity(): SyncState['activity'] {
+    return (
       this.database.prepare('SELECT * FROM activity_events ORDER BY id').all() as ActivityRow[]
     ).map((row) => {
       const eventWithoutFingerprint = {
@@ -1440,7 +1463,6 @@ export class PimpampumStore {
         ...eventWithoutFingerprint,
       };
     });
-    return normalizedSyncState({ workspaces, projects, specs, contexts, tasks, activity });
   }
 
   applySyncState(state: SyncState): void {
@@ -1481,9 +1503,9 @@ export class PimpampumStore {
       for (const project of state.projects) {
         this.database
           .prepare(
-            `INSERT INTO projects (id,workspace_id,slug,title,state,revision,completion_summary,artifacts_json,completed_at,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?)
-             ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,slug=excluded.slug,title=excluded.title,state=excluded.state,revision=excluded.revision,completion_summary=excluded.completion_summary,artifacts_json=excluded.artifacts_json,completed_at=excluded.completed_at,updated_at=excluded.updated_at`,
+            `INSERT INTO projects (id,workspace_id,slug,title,state,revision,completion_summary,artifacts_json,completed_at,cancelled_at,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,slug=excluded.slug,title=excluded.title,state=excluded.state,revision=excluded.revision,completion_summary=excluded.completion_summary,artifacts_json=excluded.artifacts_json,completed_at=excluded.completed_at,cancelled_at=excluded.cancelled_at,updated_at=excluded.updated_at`,
           )
           .run(
             project.id,
@@ -1495,6 +1517,7 @@ export class PimpampumStore {
             project.completionSummary,
             JSON.stringify(project.artifacts),
             project.completedAt,
+            project.cancelledAt ?? null,
             project.createdAt,
             project.updatedAt,
           );
@@ -1502,9 +1525,9 @@ export class PimpampumStore {
       for (const spec of state.specs) {
         this.database
           .prepare(
-            `INSERT INTO specs (id,project_id,slug,title,body,state,revision,completion_summary,artifacts_json,completed_at,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-             ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id,slug=excluded.slug,title=excluded.title,body=excluded.body,state=excluded.state,revision=excluded.revision,completion_summary=excluded.completion_summary,artifacts_json=excluded.artifacts_json,completed_at=excluded.completed_at,updated_at=excluded.updated_at`,
+            `INSERT INTO specs (id,project_id,slug,title,body,state,revision,completion_summary,artifacts_json,completed_at,cancelled_at,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id,slug=excluded.slug,title=excluded.title,body=excluded.body,state=excluded.state,revision=excluded.revision,completion_summary=excluded.completion_summary,artifacts_json=excluded.artifacts_json,completed_at=excluded.completed_at,cancelled_at=excluded.cancelled_at,updated_at=excluded.updated_at`,
           )
           .run(
             spec.id,
@@ -1517,6 +1540,7 @@ export class PimpampumStore {
             spec.completionSummary,
             JSON.stringify(spec.artifacts),
             spec.completedAt,
+            spec.cancelledAt ?? null,
             spec.createdAt,
             spec.updatedAt,
           );
@@ -1539,14 +1563,19 @@ export class PimpampumStore {
             context.updatedAt,
           );
       }
+      const upsertTask = this.database.prepare(
+        `INSERT INTO tasks (id,spec_id,parent_id,title,body,state,revision,completion_summary,artifacts_json,completed_at,cancelled_at,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET spec_id=excluded.spec_id,parent_id=excluded.parent_id,title=excluded.title,body=excluded.body,state=excluded.state,revision=excluded.revision,completion_summary=excluded.completion_summary,artifacts_json=excluded.artifacts_json,completed_at=excluded.completed_at,cancelled_at=excluded.cancelled_at,updated_at=excluded.updated_at`,
+      );
       for (const task of state.tasks.filter((candidate) => candidate.parentId === null)) {
-        this.upsertSyncTask(task);
+        this.upsertSyncTask(upsertTask, task);
       }
       for (const task of state.tasks.filter((candidate) => candidate.parentId !== null)) {
-        this.upsertSyncTask(task);
+        this.upsertSyncTask(upsertTask, task);
       }
       const existingFingerprints = new Set(
-        this.exportSyncState().activity.map((event) => event.fingerprint),
+        this.exportSyncActivity().map((event) => event.fingerprint),
       );
       for (const event of state.activity) {
         if (existingFingerprints.has(event.fingerprint)) continue;
@@ -1569,17 +1598,34 @@ export class PimpampumStore {
     });
   }
 
+  /**
+   * Deletes every row of `table` whose id is not in `ids`. The ids go through a
+   * temporary table because SQLite caps bound variables at 32,766 and a synced
+   * collection may hold 50,000 entities. Subtasks go before their parents since
+   * `tasks.parent_id` is `ON DELETE RESTRICT`, which SQLite checks per row.
+   */
   private deleteMissingSyncRows(
     table: 'tasks' | 'context_documents' | 'specs' | 'projects' | 'workspaces',
     ids: string[],
   ): void {
+    const childrenFirst = table === 'tasks' ? ['parent_id IS NOT NULL AND ', ''] : [''];
     if (ids.length === 0) {
-      this.database.prepare(`DELETE FROM ${table}`).run();
+      for (const scope of childrenFirst) {
+        this.database.prepare(`DELETE FROM ${table} WHERE ${scope}1`).run();
+      }
       return;
     }
-    this.database
-      .prepare(`DELETE FROM ${table} WHERE id NOT IN (${ids.map(() => '?').join(',')})`)
-      .run(...ids);
+    this.database.exec(
+      'CREATE TEMP TABLE IF NOT EXISTS sync_keep (id TEXT PRIMARY KEY) WITHOUT ROWID; DELETE FROM temp.sync_keep',
+    );
+    const keep = this.database.prepare('INSERT OR IGNORE INTO temp.sync_keep (id) VALUES (?)');
+    for (const id of ids) keep.run(id);
+    for (const scope of childrenFirst) {
+      this.database
+        .prepare(`DELETE FROM ${table} WHERE ${scope}id NOT IN (SELECT id FROM temp.sync_keep)`)
+        .run();
+    }
+    this.database.exec('DELETE FROM temp.sync_keep');
   }
 
   private validateSyncState(state: SyncState): void {
@@ -1600,6 +1646,13 @@ export class PimpampumStore {
     const specIds = unique(state.specs, (item) => item.id, 'Spec ID');
     const taskIds = unique(state.tasks, (item) => item.id, 'Task ID');
     unique(state.contexts, (item) => item.id, 'Context ID');
+    for (const context of state.contexts) {
+      // The name becomes a file name in portable exports; the store is the last
+      // guard when a caller bypasses the contract schema.
+      if (!slugSchema.safeParse(context.name).success) {
+        fail(`Context ${context.id} has a name that is not a slug`);
+      }
+    }
     unique(state.projects, (item) => `${item.workspaceId}:${item.slug}`, 'Project slug');
     unique(state.specs, (item) => `${item.projectId}:${item.slug}`, 'Spec slug');
     unique(
@@ -1705,27 +1758,22 @@ export class PimpampumStore {
     }
   }
 
-  private upsertSyncTask(task: SyncState['tasks'][number]): void {
-    this.database
-      .prepare(
-        `INSERT INTO tasks (id,spec_id,parent_id,title,body,state,revision,completion_summary,artifacts_json,completed_at,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(id) DO UPDATE SET spec_id=excluded.spec_id,parent_id=excluded.parent_id,title=excluded.title,body=excluded.body,state=excluded.state,revision=excluded.revision,completion_summary=excluded.completion_summary,artifacts_json=excluded.artifacts_json,completed_at=excluded.completed_at,updated_at=excluded.updated_at`,
-      )
-      .run(
-        task.id,
-        task.specId,
-        task.parentId,
-        task.title,
-        task.body,
-        task.state,
-        task.revision,
-        task.completionSummary,
-        JSON.stringify(task.artifacts),
-        task.completedAt,
-        task.createdAt,
-        task.updatedAt,
-      );
+  private upsertSyncTask(statement: Database.Statement, task: SyncState['tasks'][number]): void {
+    statement.run(
+      task.id,
+      task.specId,
+      task.parentId,
+      task.title,
+      task.body,
+      task.state,
+      task.revision,
+      task.completionSummary,
+      JSON.stringify(task.artifacts),
+      task.completedAt,
+      task.cancelledAt ?? null,
+      task.createdAt,
+      task.updatedAt,
+    );
   }
 
   private projectFilter(
@@ -1906,8 +1954,12 @@ export class PimpampumStore {
   }
   private runImmediate<T>(operation: () => T): T {
     const result = this.database.transaction(operation).immediate();
-    this.onMutation();
+    this.recordMutation();
     return result;
+  }
+  private recordMutation(): void {
+    this.mutations += 1;
+    this.onMutation();
   }
   private syncWritable(entityType: SyncEntityKind, entityId: string): void {
     if (this.syncConflictGuard(entityType, entityId)) {

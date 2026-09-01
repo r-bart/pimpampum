@@ -62,7 +62,6 @@ it('restores the previous embedded runtime when activation cannot complete', asy
     daemonAdapter: createLaunchdAdapter({ guiDomain: 'gui/501' }),
     now: () => new Date('2026-08-26T20:00:00.000Z'),
     sleep: async () => undefined,
-    acknowledgementPolls: 1,
   });
 
   // Rename 1 moves the destination to the backup; rename 2 activates the staged copy.

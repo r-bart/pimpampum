@@ -497,6 +497,7 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
       const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
       let rollbackDeactivation: (() => Promise<void>) | undefined;
       let deactivationAttempted = false;
+      let manualInstructions: string[] = [];
       let finished = false;
       let committed = false;
 
@@ -537,7 +538,8 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
         deactivationAttempted = true;
         await adapter.deactivate(context, artifacts);
         for (const artifact of artifacts) rmSync(artifact.path, { force: true });
-        await adapter.afterUninstall?.(context, artifacts);
+        const outcome = await adapter.afterUninstall?.(context, artifacts);
+        manualInstructions = outcome ? (outcome.manualInstructions ?? []) : [];
       } catch (error) {
         await rollbackPrepared(error);
       }
@@ -548,7 +550,11 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
           if (committed) throw new Error('Prepared service removal is already committed');
           rmSync(receiptPath, { force: true });
           committed = true;
-          return { uninstalled: true, dataPreserved: true };
+          return {
+            uninstalled: true,
+            dataPreserved: true,
+            ...(manualInstructions.length > 0 ? { manualInstructions } : {}),
+          };
         },
         rollback: () => rollbackPrepared(),
         async finalize() {

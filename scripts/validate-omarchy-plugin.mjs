@@ -3,11 +3,11 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { executableHelpers } from './check-omarchy-delivery.mjs';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const pluginRoot = realpathSync(
-  resolve(process.argv[2] ?? join(repositoryRoot, 'integrations/omarchy/pimpampum-status')),
-);
+const repositoryPluginRoot = join(repositoryRoot, 'integrations/omarchy/pimpampum-status');
+const pluginRoot = realpathSync(resolve(process.argv[2] ?? repositoryPluginRoot));
 const sharedFixtureRoot = join(repositoryRoot, 'test/fixtures/overview');
 const pluginFixtureRoot = join(pluginRoot, 'fixtures');
 
@@ -138,29 +138,20 @@ function validEnvelope(value) {
 
 const files = walk(pluginRoot);
 const relativeFiles = new Set(files.map((path) => relative(pluginRoot, path)));
+// Every QML component of the reviewed plugin and every executable helper of the delivery checker
+// must ship; a hand-kept list silently skipped four QML files and the shared shell library.
+const qmlNames = readdirSync(repositoryPluginRoot)
+  .filter((name) => name.endsWith('.qml'))
+  .sort();
+invariant(qmlNames.length >= 13, 'reviewed plugin lost QML components');
 for (const expected of [
   '.pimpampum-plugin-owner.json',
-  'BackupService.qml',
-  'BarWidget.qml',
-  'OverviewService.qml',
-  'PimpampumActionArea.qml',
-  'PimpampumMark.qml',
-  'PimpampumSettingsButton.qml',
-  'ServiceControl.qml',
-  'StatusPopout.qml',
-  'SyncService.qml',
-  'UpdateService.qml',
-  'assets/pimpampum-compact.svg',
   'README.md',
-  'install.sh',
+  'assets/pimpampum-compact.svg',
   'manifest.json',
-  'pimpampum-backup',
-  'pimpampum-control-route',
-  'pimpampum-overview',
-  'pimpampum-service',
-  'pimpampum-sync',
-  'pimpampum-update',
-  'uninstall.sh',
+  'runtime-manifest.json',
+  ...executableHelpers,
+  ...qmlNames,
 ]) {
   invariant(relativeFiles.has(expected), `missing plugin file: ${expected}`);
 }
@@ -214,20 +205,16 @@ for (const entryPoint of Object.values(manifest.entryPoints)) {
   );
 }
 
-const qml = [
-  'BackupService.qml',
-  'BarWidget.qml',
-  'OverviewService.qml',
-  'PimpampumActionArea.qml',
-  'PimpampumMark.qml',
-  'PimpampumSettingsButton.qml',
-  'ServiceControl.qml',
-  'StatusPopout.qml',
-  'SyncService.qml',
-]
+// Every `.qml` file of the candidate takes part in the safety sweeps below; a fixed list once left
+// four components outside the bar-member, shell-interpolation, credential and read-only checks.
+const qml = readdirSync(pluginRoot)
+  .filter((name) => name.endsWith('.qml'))
+  .sort()
   .map((name) => read(join(pluginRoot, name)))
   .join('\n');
 const barWidget = read(join(pluginRoot, 'BarWidget.qml'));
+const updateService = read(join(pluginRoot, 'UpdateService.qml'));
+const agentConnectionService = read(join(pluginRoot, 'AgentConnectionService.qml'));
 const pimpampumActionArea = read(join(pluginRoot, 'PimpampumActionArea.qml'));
 const pimpampumMark = read(join(pluginRoot, 'PimpampumMark.qml'));
 const settingsButton = read(join(pluginRoot, 'PimpampumSettingsButton.qml'));
@@ -546,12 +533,67 @@ invariant(
   !/(?:bearer|token|eval\b|\bsh\s+-c|\bbash\s+-c)/iu.test(`${backupHelper}\n${controlRoute}`),
   'backup helper contains credentials or shell evaluation',
 );
+const common = read(join(pluginRoot, 'pimpampum-common.sh'));
 invariant(
-  controlRoute.includes('runtime-install-receipt.json') &&
-    controlRoute.includes('controlLauncherSha256') &&
+  common.includes('runtime-install-receipt.json') &&
+    common.includes('controlLauncherSha256') &&
+    common.includes('verify_control_launcher()') &&
+    common.includes('validate_home()') &&
+    controlRoute.includes('verify_control_launcher 69') &&
     controlRoute.includes('exec "$control_launcher" "$@"') &&
-    !/(?:command\s+-v|\/\.local\/bin\/pimpampum|\bnpm\b|\bnpx\b)/u.test(controlRoute),
+    !/(?:command\s+-v|\/\.local\/bin\/pimpampum|\bnpm\b|\bnpx\b)/u.test(
+      `${controlRoute}\n${common}`,
+    ),
   'surface helpers must use only the receipt-owned hash-verified control launcher',
+);
+invariant(
+  !/(?:bearer|token|eval\b|\bsh\s+-c|\bbash\s+-c|\bhostname\b)/iu.test(common) &&
+    common.includes('*"\'"* | *\'"\'* | *\\\\*)') &&
+    common.includes('*[[:cntrl:]]*)'),
+  'the shared helper library must reject quotes, backslashes and control characters in HOME',
+);
+for (const sourcingHelper of [
+  'pimpampum-bootstrap',
+  'pimpampum-connections',
+  'pimpampum-control-route',
+  'pimpampum-plugin-lifecycle',
+]) {
+  const source = read(join(pluginRoot, sourcingHelper));
+  invariant(
+    source.includes('. "$plugin_root/pimpampum-common.sh"') && source.includes('validate_home '),
+    `${sourcingHelper} must source the shared library by absolute path and validate HOME through it`,
+  );
+}
+const connectionsHelper = read(join(pluginRoot, 'pimpampum-connections'));
+invariant(
+  !/\bulimit\b/u.test(connectionsHelper) &&
+    connectionsHelper.includes('-le 65536') &&
+    connectionsHelper.includes('"cliCode":%s,"message":%s') &&
+    connectionsHelper.includes("'^[a-z_]{1,40}$'") &&
+    connectionsHelper.includes('/usr/bin/cut -c1-200'),
+  'the connections helper must not cap file sizes and must forward the bounded CLI error code and message',
+);
+invariant(
+  agentConnectionService.includes('/^[a-z_]{1,40}$/.test(value)') &&
+    agentConnectionService.includes('value.length > 200') &&
+    agentConnectionService.includes('if (cliCode === "unavailable")') &&
+    agentConnectionService.includes('/not installed/i.test(message)') &&
+    agentConnectionService.includes('envelope.code === "command_failed"'),
+  'the connection service must render the forwarded CLI code like the other actionable errors',
+);
+invariant(
+  updateService.includes(
+    'isObject(envelope) && isObject(envelope.data) ? envelope.data : envelope',
+  ),
+  'the update reader must accept both the bare payload and the {data} envelope',
+);
+invariant(
+  serviceControl.includes('Qt.callLater(function() { root.accept(exitCode) })'),
+  'service control must read collected stdout on a deferred turn like the sibling services',
+);
+invariant(
+  !/\bnpm\b/u.test(statusPopout),
+  'popout copy must not name npm; Omarchy uses the packaged provider',
 );
 
 for (const scriptName of ['install.sh', 'uninstall.sh']) {

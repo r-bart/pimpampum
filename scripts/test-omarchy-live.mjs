@@ -20,6 +20,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import { executableHelpers } from './check-omarchy-delivery.mjs';
 
 const PLUGIN_ID = 'dev.pimpampum.status';
 const SCREENSHOT_NAMES = [
@@ -697,7 +698,7 @@ export default function createLiveRunner(dependencies) {
         if (productionCandidate) {
           if (typeof dependencies.verifyInstalledCandidate !== 'function') {
             throw new Error(
-              'Production install requires exact receipt-owned transform verification',
+              'Production install requires exact receipt-owned artifact verification',
             );
           }
           await dependencies.verifyInstalledCandidate({
@@ -1239,14 +1240,9 @@ export function createRealDependencies(repositoryRoot, homeDirectory, options = 
         throw error;
       }
     },
-    async verifyInstalledCandidate({
-      stagedCandidatePath,
-      expectedCandidateHash,
-      receiptPath,
-      cliPath,
-    }) {
+    async verifyInstalledCandidate({ stagedCandidatePath, expectedCandidateHash, receiptPath }) {
       if (canonicalCandidateHash(stagedCandidatePath) !== expectedCandidateHash) {
-        throw new Error('Immutable candidate changed before installed-transform verification');
+        throw new Error('Immutable candidate changed before installed-artifact verification');
       }
       const absoluteReceipt = requireAbsolute(receiptPath, 'Install receipt path');
       if (absoluteReceipt !== receipt)
@@ -1287,87 +1283,9 @@ export function createRealDependencies(repositoryRoot, homeDirectory, options = 
           })}`,
         );
       }
-      const quote = (value) => `'${value.replaceAll("'", `'"'"'`)}'`;
-      const overviewHelper = `#!/bin/bash
-set -euo pipefail
-
-export PIMPAMPUM_DATA_DIR=${quote(dataDirectory)}
-export PIMPAMPUM_HOST=${quote(environment.PIMPAMPUM_HOST ?? '127.0.0.1')}
-export PIMPAMPUM_PORT=${quote(environment.PIMPAMPUM_PORT ?? '7337')}
-exec ${quote(process.execPath)} ${quote(cliPath)} overview
-`;
-      const backupHelper = `#!/bin/bash
-set -euo pipefail
-
-case \${1:-} in
-  status|retry|disable)
-    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-backup: invalid arguments' >&2; exit 64; }
-    ;;
-  configure)
-    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-backup: configure requires one directory' >&2; exit 64; }
-    ;;
-  *)
-    printf '%s\\n' 'pimpampum-backup: expected status, configure, retry, or disable' >&2
-    exit 64
-    ;;
-esac
-
-export PIMPAMPUM_DATA_DIR=${quote(dataDirectory)}
-export PIMPAMPUM_HOST=${quote(environment.PIMPAMPUM_HOST ?? '127.0.0.1')}
-export PIMPAMPUM_PORT=${quote(environment.PIMPAMPUM_PORT ?? '7337')}
-exec ${quote(process.execPath)} ${quote(cliPath)} backup "$@"
-`;
-      const syncHelper = `#!/bin/bash
-set -euo pipefail
-
-case \${1:-} in
-  status|now|pause|resume|conflicts|forget)
-    [[ $# -eq 1 ]] || { printf '%s\\n' 'pimpampum-sync: invalid arguments' >&2; exit 64; }
-    ;;
-  configure)
-    [[ $# -eq 2 ]] || { printf '%s\\n' 'pimpampum-sync: configure requires one directory' >&2; exit 64; }
-    ;;
-  *)
-    printf '%s\\n' 'pimpampum-sync: expected status, configure, now, pause, resume, conflicts, or forget' >&2
-    exit 64
-    ;;
-esac
-
-export PIMPAMPUM_DATA_DIR=${quote(dataDirectory)}
-export PIMPAMPUM_HOST=${quote(environment.PIMPAMPUM_HOST ?? '127.0.0.1')}
-export PIMPAMPUM_PORT=${quote(environment.PIMPAMPUM_PORT ?? '7337')}
-
-if [[ $1 == configure ]]; then
-  device_id=$(hostname | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-63)
-  [[ -n $device_id ]] || device_id=linux
-  exec ${quote(process.execPath)} ${quote(cliPath)} sync configure "$2" --device "$device_id" --json
-fi
-
-exec ${quote(process.execPath)} ${quote(cliPath)} sync "$1" --json
-`;
-      const serviceHelper = `#!/bin/bash
-set -euo pipefail
-
-case \${1:-} in
-  status)
-    [[ $# -eq 1 ]] || exit 64
-    ;;
-  start|stop|restart)
-    [[ $# -eq 1 ]] || exit 64
-    /usr/bin/systemctl --user "$1" pimpampum.service >/dev/null
-    ;;
-  *)
-    printf '%s\\n' 'pimpampum-service: expected status, start, stop, or restart' >&2
-    exit 64
-    ;;
-esac
-
-if /usr/bin/systemctl --user is-active --quiet pimpampum.service; then
-  printf '%s\\n' '{"running":true}'
-else
-  printf '%s\\n' '{"running":false}'
-fi
-`;
+      // The installer copies every plugin byte verbatim (pluginArtifacts in src/service/omarchy.ts)
+      // and marks exactly the delivery checker's helper list executable. Anything else on disk
+      // is drift, whether the installer rewrote a helper or a later process touched the tree.
       const expected = [];
       const visit = (directory) => {
         for (const name of readdirSync(directory).sort()) {
@@ -1380,27 +1298,8 @@ fi
             expected.push({
               child,
               path: join(plugin, child),
-              contents:
-                child === 'pimpampum-overview'
-                  ? Buffer.from(overviewHelper)
-                  : child === 'pimpampum-backup'
-                    ? Buffer.from(backupHelper)
-                    : child === 'pimpampum-sync'
-                      ? Buffer.from(syncHelper)
-                      : child === 'pimpampum-service'
-                        ? Buffer.from(serviceHelper)
-                        : readFileSync(source),
-              mode: [
-                'install.sh',
-                'uninstall.sh',
-                'pimpampum-backup',
-                'pimpampum-folder-picker',
-                'pimpampum-overview',
-                'pimpampum-service',
-                'pimpampum-sync',
-              ].includes(child)
-                ? 0o755
-                : 0o644,
+              contents: readFileSync(source),
+              mode: executableHelpers.includes(child) ? 0o755 : 0o644,
             });
           } else throw new Error('Immutable candidate contains a non-regular file');
         }
@@ -1440,7 +1339,7 @@ fi
         actualPaths.length !== expected.length ||
         !actualPaths.every((path) => expected.some((artifact) => artifact.path === path))
       ) {
-        throw new Error('Installed plugin tree differs from the immutable candidate transform');
+        throw new Error('Installed plugin tree differs from the immutable candidate');
       }
       for (const artifact of expected) {
         const installed = lstatSync(artifact.path);
@@ -1455,7 +1354,9 @@ fi
           owned?.sha256 !== digest ||
           owned?.mode !== artifact.mode
         ) {
-          throw new Error(`Installed receipt-owned plugin transform differs at ${artifact.child}`);
+          throw new Error(
+            `Installed receipt-owned plugin differs from the staged candidate at ${artifact.child}`,
+          );
         }
       }
     },

@@ -1,12 +1,21 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const pluginRoot = join(process.cwd(), 'integrations/omarchy/pimpampum-status');
 const helper = join(pluginRoot, 'pimpampum-connections');
+const common = join(pluginRoot, 'pimpampum-common.sh');
 const service = join(pluginRoot, 'AgentConnectionService.qml');
 const temporaryDirectories: string[] = [];
 
@@ -21,21 +30,32 @@ function write(path: string, content: string, mode = 0o644): void {
   writeFileSync(path, content, { mode });
 }
 
-function fixture(label: string) {
+// The fake launcher mimics what the CLI does on Omarchy: on a connect it rewrites the agent's host
+// configuration in HOME (Claude Code keeps per-project history there, far above 64 KiB), and on a
+// failure it writes the pretty-printed typed envelope to stderr with an empty stdout.
+function fixture(label: string, homeName = 'home') {
   const root = temporaryDirectory(label);
-  const home = join(root, 'home');
+  const home = join(root, homeName);
   const data = join(home, '.pimpampum');
   const launcher = join(home, '.local/share/pimpampum/bin/pimpampum-control');
   const receipt = join(data, 'runtime-install-receipt.json');
   const timeout = join(root, 'timeout');
   const response = join(root, 'response.json');
+  const failure = join(root, 'failure.json');
   const log = join(root, 'arguments.log');
+  const hostConfiguration = join(home, 'host-configuration.json');
   mkdirSync(data, { recursive: true });
   write(
     launcher,
     `#!/bin/sh
 printf '%s\n' "$*" >> "$PIMPAMPUM_FAKE_LOG"
-[ "\${PIMPAMPUM_FAKE_EXIT:-0}" -eq 0 ] || exit "$PIMPAMPUM_FAKE_EXIT"
+if [ -n "\${PIMPAMPUM_FAKE_HOST_CONFIGURATION_BYTES:-}" ]; then
+  /usr/bin/head -c "$PIMPAMPUM_FAKE_HOST_CONFIGURATION_BYTES" /dev/zero > "$HOME/host-configuration.json" || exit 99
+fi
+if [ "\${PIMPAMPUM_FAKE_EXIT:-0}" -ne 0 ]; then
+  [ -z "\${PIMPAMPUM_FAKE_FAILURE:-}" ] || /bin/cat "$PIMPAMPUM_FAKE_FAILURE" >&2
+  exit "$PIMPAMPUM_FAKE_EXIT"
+fi
 /bin/cat "$PIMPAMPUM_FAKE_RESPONSE"
 `,
     0o755,
@@ -67,7 +87,22 @@ printf '%s\n' "$*" >> "$PIMPAMPUM_FAKE_LOG"
       },
     })}\n`,
   );
-  return { root, home, data, launcher, receipt, timeout, response, log };
+  return {
+    root,
+    home,
+    data,
+    launcher,
+    receipt,
+    timeout,
+    response,
+    failure,
+    log,
+    hostConfiguration,
+  };
+}
+
+function cliFailure(error: Record<string, unknown>): string {
+  return `${JSON.stringify({ error }, null, 2)}\n`;
 }
 
 function run(
@@ -85,6 +120,10 @@ function run(
       ...overrides,
     },
   });
+}
+
+function failureEnvelope(stderr: string): Record<string, unknown> {
+  return JSON.parse(stderr) as Record<string, unknown>;
 }
 
 afterEach(() => {
@@ -127,6 +166,45 @@ describe('bounded Omarchy connection helper', () => {
     ]);
   });
 
+  it('lets the CLI rewrite a 200 KiB host configuration during connect', () => {
+    // H-03: `ulimit -f 128` gave the CLI a 64 KiB file-size limit under /bin/sh, so rewriting
+    // ~/.claude.json (234 KiB on the reviewed machine) died with EFBIG and the popout said
+    // "Needs repair" for a command that worked from a terminal.
+    const state = fixture('large-host-configuration');
+    const result = run(state, ['connect', 'claude-code'], {
+      PIMPAMPUM_FAKE_HOST_CONFIGURATION_BYTES: String(200 * 1024),
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, action: 'connect' });
+    expect(statSync(state.hostConfiguration).size).toBe(200 * 1024);
+    expect(readFileSync(helper, 'utf8')).not.toMatch(/\bulimit\b/u);
+  });
+
+  it('accepts a HOME with spaces and non-ASCII letters and rejects quotes and control characters', () => {
+    const accepted = fixture('home-unicode', 'Home With Spaces ü ñ');
+    const result = run(accepted, ['list']);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, action: 'list' });
+
+    for (const [label, homeName] of [
+      ['single-quote', "Home 'quoted'"],
+      ['double-quote', 'Home "quoted"'],
+      ['backslash', 'Home\\slash'],
+      ['newline', 'Home\nbroken'],
+    ] as const) {
+      const rejected = fixture(`home-${label}`, homeName);
+      const outcome = run(rejected, ['list']);
+      expect(outcome.status, label).toBe(73);
+      expect(failureEnvelope(outcome.stderr)).toEqual({
+        schemaVersion: 1,
+        ok: false,
+        action: 'list',
+        code: 'invalid_home',
+      });
+      expect(readFileSync(rejected.log, 'utf8')).toBe('');
+    }
+  });
+
   it('rejects unknown actions, ids, extra arguments and receipt mismatch before dispatch', () => {
     const state = fixture('reject');
     for (const arguments_ of [
@@ -145,6 +223,14 @@ describe('bounded Omarchy connection helper', () => {
     expect(mismatch.status).toBe(69);
     expect(mismatch.stderr).toContain('receipt_mismatch');
     expect(readFileSync(state.log, 'utf8')).toBe('');
+
+    // The shared prologue also refuses a receipt other users could read.
+    const exposed = fixture('exposed-receipt');
+    chmodSync(exposed.receipt, 0o644);
+    const exposedResult = run(exposed, ['list']);
+    expect(exposedResult.status).toBe(69);
+    expect(failureEnvelope(exposedResult.stderr)).toMatchObject({ code: 'receipt_mismatch' });
+    expect(readFileSync(exposed.log, 'utf8')).toBe('');
   });
 
   it('serializes operations and bounds process output and failures', () => {
@@ -168,14 +254,109 @@ describe('bounded Omarchy connection helper', () => {
     writeFileSync(state.response, '{}\n');
     const failed = run(state, ['repair', 'codex'], { PIMPAMPUM_FAKE_EXIT: '42' });
     expect(failed.status).toBe(70);
-    expect(failed.stderr).toContain('command_failed');
+    expect(failureEnvelope(failed.stderr)).toEqual({
+      schemaVersion: 1,
+      ok: false,
+      action: 'repair',
+      code: 'command_failed',
+      cliCode: null,
+      message: null,
+    });
+  });
+
+  it('forwards the typed CLI error code and one bounded message line', () => {
+    // M-O4: `unavailable`, a missing agent binary and a real connector failure all collapsed
+    // into `command_failed`. The helper now forwards the envelope code and its message.
+    const state = fixture('forward');
+    const cases: Array<{
+      error: Record<string, unknown>;
+      code: string;
+      cliCode: string | null;
+      message: string | null;
+    }> = [
+      {
+        error: {
+          code: 'unavailable',
+          message: 'Pimpampum daemon is not reachable at http://127.0.0.1:7337',
+          retryable: true,
+          suggestion: 'Run pimpampum status.',
+        },
+        code: 'command_failed',
+        cliCode: 'unavailable',
+        message: 'Pimpampum daemon is not reachable at http://127.0.0.1:7337',
+      },
+      {
+        error: { code: 'conflict', message: 'The existing connector entry requires a decision' },
+        code: 'connector_conflict',
+        cliCode: 'conflict',
+        message: 'The existing connector entry requires a decision',
+      },
+      {
+        // Quotes, backslashes and control characters cannot enter the helper's one-line JSON,
+        // so a control character arrives as its JSON escape without the backslash; non-ASCII is
+        // dropped rather than risk a split UTF-8 sequence at the 200-byte cut.
+        error: {
+          code: 'internal_error',
+          message: `Claude Code is not installed: "claude" \\ missing\tat /home/ü/.local\u0007bin ${'z'.repeat(300)}`,
+        },
+        code: 'command_failed',
+        cliCode: 'internal_error',
+        message:
+          `Claude Code is not installed: 'claude'  missingtat /home//.localu0007bin ${'z'.repeat(300)}`.slice(
+            0,
+            200,
+          ),
+      },
+      {
+        // A code outside ^[a-z_]{1,40}$ is dropped instead of forwarded.
+        error: { code: 'Bad-Code', message: 'x'.repeat(10) },
+        code: 'command_failed',
+        cliCode: null,
+        message: 'xxxxxxxxxx',
+      },
+    ];
+    for (const testCase of cases) {
+      writeFileSync(state.failure, cliFailure(testCase.error));
+      const result = run(state, ['connect', 'codex'], {
+        PIMPAMPUM_FAKE_EXIT: '1',
+        PIMPAMPUM_FAKE_FAILURE: state.failure,
+      });
+      expect(result.status, JSON.stringify(testCase.error)).toBe(70);
+      expect(result.stdout).toBe('');
+      expect(failureEnvelope(result.stderr)).toEqual({
+        schemaVersion: 1,
+        ok: false,
+        action: 'connect',
+        code: testCase.code,
+        cliCode: testCase.cliCode,
+        message: testCase.message,
+      });
+    }
+
+    // Node warnings ahead of the envelope do not confuse the extraction.
+    writeFileSync(
+      state.failure,
+      `(node:1) ExperimentalWarning: something\n${cliFailure({ code: 'unauthorized', message: 'Bearer token rejected' })}`,
+    );
+    const noisy = run(state, ['test', 'codex'], {
+      PIMPAMPUM_FAKE_EXIT: '1',
+      PIMPAMPUM_FAKE_FAILURE: state.failure,
+    });
+    expect(failureEnvelope(noisy.stderr)).toMatchObject({
+      cliCode: 'unauthorized',
+      message: 'Bearer token rejected',
+    });
   });
 
   it('keeps QML typed, serialized and outside host configuration and daemon ownership', () => {
     const qml = readFileSync(service, 'utf8');
     const shell = readFileSync(helper, 'utf8');
+    const shared = readFileSync(common, 'utf8');
 
     expect(statSync(helper).mode & 0o111).not.toBe(0);
+    expect(shell).toContain('. "$plugin_root/pimpampum-common.sh"');
+    expect(shell).toContain('validate_home 73');
+    expect(shell).toContain('verify_control_launcher 69');
     for (const action of ['list', 'plan', 'connect', 'test', 'repair', 'disconnect', 'resume']) {
       expect(shell).toContain(action);
     }
@@ -188,6 +369,7 @@ describe('bounded Omarchy connection helper', () => {
       'Needs repair',
       'Configuration conflict',
       'Unsupported version',
+      'Unavailable',
     ]) {
       expect(qml).toContain(state);
     }
@@ -196,7 +378,16 @@ describe('bounded Omarchy connection helper', () => {
     expect(qml).toContain('envelope.schemaVersion !== 1');
     expect(qml).toContain('case "ownedCurrent"');
     expect(qml).toContain('Array.isArray(data.connectors)');
-    expect(`${shell}\n${qml}`).not.toMatch(
+    // The forwarded code is rendered like the other services' actionable errors: bounded, filtered
+    // and mapped to a distinct sentence for a stopped daemon and a missing agent CLI.
+    expect(qml).toContain('function actionableProcessError(envelope, fallback)');
+    expect(qml).toContain('/^[a-z_]{1,40}$/.test(value)');
+    expect(qml).toContain('value.length > 200');
+    expect(qml).toContain('if (cliCode === "unavailable")');
+    expect(qml).toContain('failedState = "Unavailable"');
+    expect(qml).toContain('/not installed/i.test(message)');
+    expect(qml).toContain('else if (envelope.code === "command_failed")');
+    expect(`${shell}\n${shared}\n${qml}`).not.toMatch(
       /eval\s|sh\s+-c|bash\s+-c|bearer|token|mcpServers|\.claude\.json|config\.toml|systemctl/iu,
     );
     expect(shell).toContain('/bin/kill -0 "$owner_pid"');

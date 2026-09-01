@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -12,10 +13,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dirname, join, relative } from 'node:path';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { isolatedGitEnvironment, runGitQuiet } from './helpers/git.js';
 import { createPlatformServiceManager } from '../src/service/manager.js';
 import {
   createOmarchyAdapter,
@@ -32,6 +34,57 @@ import type {
 
 const roots: string[] = [];
 const repositoryPlugin = join(process.cwd(), 'integrations', 'omarchy', 'pimpampum-status');
+const omarchyFixtureRoot = join(process.cwd(), 'test', 'fixtures', 'omarchy');
+// One pristine copy of the plugin tree per file; every fixture copies from it instead of walking
+// the repository checkout again.
+let cachedPluginRoot: string;
+let cachedPlugin: string;
+
+beforeAll(() => {
+  cachedPluginRoot = mkdtempSync(join(tmpdir(), 'pimpampum-omarchy-plugin-cache-'));
+  cachedPlugin = join(cachedPluginRoot, 'pimpampum-status');
+  cpSync(repositoryPlugin, cachedPlugin, { recursive: true });
+});
+
+afterAll(() => {
+  rmSync(cachedPluginRoot, { recursive: true, force: true });
+});
+
+// Recorded stdout of the `omarchy` and `omarchy-shell` commands (test/fixtures/omarchy/README.md
+// lists the capture commands). A command without a fixture fails here instead of being answered
+// with a shape the test author invented.
+function omarchyFixture(name: string): string {
+  const path = join(omarchyFixtureRoot, name);
+  if (!existsSync(path)) {
+    throw new Error(
+      `Missing Omarchy fixture ${relative(process.cwd(), path)}; capture it as test/fixtures/omarchy/README.md describes`,
+    );
+  }
+  return readFileSync(path, 'utf8');
+}
+
+function omarchyFixtureName(arguments_: readonly string[]): string {
+  const key = arguments_.join(' ');
+  if (key === 'version' || key === '--version') return 'version.txt';
+  if (key === 'shell ping') return 'shell-ping.txt';
+  if (key === 'shell rescanPlugins') return 'shell-rescanPlugins.txt';
+  if (key === 'shell listShellConfig') return 'shell-listShellConfig.json';
+  if (arguments_[0] === 'shell' && arguments_[1] === 'setPluginEnabled') {
+    return 'shell-setPluginEnabled.txt';
+  }
+  if (arguments_[0] === 'shell' && arguments_[1] === 'enablePlugin')
+    return 'shell-enablePlugin.txt';
+  if (arguments_[0] === 'shell' && arguments_[1] === 'setBarWidget')
+    return 'shell-setBarWidget.txt';
+  if (key === 'plugin list --json') return 'plugin-list.json';
+  if (key === 'plugin enable --help') return 'plugin-enable-help.txt';
+  if (key === 'plugin remove --help') return 'plugin-remove-help.txt';
+  if (arguments_[0] === 'plugin' && arguments_[1] === 'validate') return 'plugin-validate.txt';
+  if (key === `plugin enable ${OMARCHY_PLUGIN_ID}`) return 'plugin-enable.txt';
+  if (key === `plugin disable ${OMARCHY_PLUGIN_ID}`) return 'plugin-disable.txt';
+  if (key === `plugin remove ${OMARCHY_PLUGIN_ID} --yes`) return 'plugin-remove.txt';
+  throw new Error(`Unexpected command: omarchy ${key}`);
+}
 
 interface Fixture {
   root: string;
@@ -72,7 +125,7 @@ function fixture(label: string): Fixture {
   const source = join(root, 'package', 'pimpampum-status');
   mkdirSync(home, { recursive: true });
   mkdirSync(data, { recursive: true });
-  cpSync(repositoryPlugin, source, { recursive: true });
+  cpSync(cachedPlugin, source, { recursive: true });
   writeFileSync(join(data, 'token'), 'preserve-me');
   return {
     root,
@@ -124,9 +177,31 @@ function fakeQuattro(root: Fixture): FakeQuattro {
     }
     return null;
   };
+  // The recorded list keeps its key set and order; only the simulated flags change.
+  const pluginList = (): string => {
+    if (!state.installed) return omarchyFixture('plugin-list-empty.json');
+    const recorded = JSON.parse(omarchyFixture('plugin-list.json')) as Array<
+      Record<string, unknown>
+    >;
+    return JSON.stringify(
+      recorded.map((entry) =>
+        entry.id === OMARCHY_PLUGIN_ID
+          ? { ...entry, enabled: state.enabled, active: state.enabled }
+          : entry,
+      ),
+    );
+  };
+  const shellConfig = (): string => {
+    const recorded = JSON.parse(omarchyFixture('shell-listShellConfig.json')) as {
+      bar: Record<string, unknown>;
+    };
+    return JSON.stringify({ ...recorded, bar: { ...recorded.bar, layout: state.layout } });
+  };
   const runCommand = vi.fn<RunCommand>(async (executable, arguments_) => {
     commands.push([executable, [...arguments_]]);
     const key = arguments_.join(' ');
+    // Throws for a command without a recorded fixture, before any branch below answers it.
+    omarchyFixture(omarchyFixtureName(arguments_));
     if (key === `plugin remove ${OMARCHY_PLUGIN_ID} --yes`) {
       const backup = join(
         dirname(root.target),
@@ -136,40 +211,42 @@ function fakeQuattro(root: Fixture): FakeQuattro {
       backups.push(backup);
       state.installed = false;
       removeWidget();
-      const stdout = `Removed ${OMARCHY_PLUGIN_ID}. Backup at: ${backup}\n`;
+      const stdout = omarchyFixture('plugin-remove.txt').replace('{BACKUP_PATH}', backup);
       return state.fail === key
         ? { exitCode: 72, stdout, stderr: 'simulated rescan failure' }
         : ok(stdout);
     }
     if (state.fail === key) return { exitCode: 72, stdout: '', stderr: 'simulated failure' };
-    if (key === 'version' || key === '--version') return ok('Omarchy 4.0.0 Quattro\n');
-    if (key === 'shell ping') return ok('ok\n');
+    if (key === 'version' || key === '--version') return ok(omarchyFixture('version.txt'));
+    if (key === 'shell ping') return ok(omarchyFixture('shell-ping.txt'));
     if (key === 'shell rescanPlugins') {
       if (state.ignoredRescans > 0) {
         state.ignoredRescans -= 1;
-        return ok();
+        return ok(omarchyFixture('shell-rescanPlugins.txt'));
       }
       state.installed = existsSync(root.target) && state.enableReadinessResponses.length === 0;
       if (!state.installed) state.enabled = false;
-      return ok();
+      return ok(omarchyFixture('shell-rescanPlugins.txt'));
     }
     if (key === 'shell listShellConfig') {
       if (state.invalidShellConfig !== null) return ok(state.invalidShellConfig);
-      return ok(JSON.stringify({ version: 1, bar: { layout: state.layout } }));
+      return ok(shellConfig());
     }
     if (arguments_[0] === 'shell' && arguments_[1] === 'setPluginEnabled') {
       if (arguments_[2] !== OMARCHY_PLUGIN_ID || arguments_[3] !== 'false') {
-        return ok('unknown');
+        return ok(omarchyFixture('shell-unknown.txt'));
       }
       removeWidget();
-      return ok('ok');
+      return ok(omarchyFixture('shell-setPluginEnabled.txt'));
     }
     if (arguments_[0] === 'shell' && arguments_[1] === 'enablePlugin') {
       const readinessResponse = state.enableReadinessResponses.shift();
       if (readinessResponse !== undefined) {
         return ok(readinessResponse);
       }
-      if (arguments_[2] !== OMARCHY_PLUGIN_ID || !state.installed) return ok('unknown');
+      if (arguments_[2] !== OMARCHY_PLUGIN_ID || !state.installed) {
+        return ok(omarchyFixture('shell-unknown.txt'));
+      }
       removeWidget();
       const placement = JSON.parse(arguments_[3] ?? '{}') as { section?: unknown; index?: unknown };
       const section = ['left', 'center', 'right'].includes(String(placement.section))
@@ -179,32 +256,27 @@ function fakeQuattro(root: Fixture): FakeQuattro {
       const index = Math.max(0, Math.min(requested, state.layout[section].length));
       state.layout[section].splice(index, 0, { id: OMARCHY_PLUGIN_ID });
       state.enabled = true;
-      return ok('ok');
+      return ok(omarchyFixture('shell-enablePlugin.txt'));
     }
     if (arguments_[0] === 'shell' && arguments_[1] === 'setBarWidget') {
       const selector = JSON.parse(arguments_[5] ?? '{}') as { section?: unknown; index?: unknown };
       const section = selector.section as 'left' | 'center' | 'right';
       const index = selector.index as number;
       const entry = state.layout[section]?.[index];
-      if (!entry || entry.id !== arguments_[2]) return ok('unknown');
-      if (state.ignoreWidgetSettings) return ok('ok');
+      if (!entry || entry.id !== arguments_[2]) return ok(omarchyFixture('shell-unknown.txt'));
+      if (state.ignoreWidgetSettings) return ok(omarchyFixture('shell-setBarWidget.txt'));
       entry[arguments_[3]!] = JSON.parse(arguments_[4]!) as unknown;
-      return ok('ok');
+      return ok(omarchyFixture('shell-setBarWidget.txt'));
     }
     if (key === 'plugin list --json') {
       if (state.invalidList !== null) return ok(state.invalidList);
-      return ok(
-        JSON.stringify(
-          state.installed
-            ? [{ id: OMARCHY_PLUGIN_ID, enabled: state.enabled, active: state.enabled }]
-            : [],
-        ),
-      );
+      return ok(pluginList());
     }
-    if (key === 'plugin enable --help' || key === 'plugin remove --help') return ok('help');
+    if (key === 'plugin enable --help') return ok(omarchyFixture('plugin-enable-help.txt'));
+    if (key === 'plugin remove --help') return ok(omarchyFixture('plugin-remove-help.txt'));
     if (arguments_[0] === 'plugin' && arguments_[1] === 'validate') {
       if (!existsSync(arguments_[2]!)) return { exitCode: 2, stdout: '', stderr: 'missing' };
-      return ok('valid');
+      return ok(omarchyFixture('plugin-validate.txt'));
     }
     if (key === `plugin enable ${OMARCHY_PLUGIN_ID}`) {
       state.installed = existsSync(root.target);
@@ -212,11 +284,13 @@ function fakeQuattro(root: Fixture): FakeQuattro {
       if (state.enabled && !widgetLocation()) {
         state.layout.right.push({ id: OMARCHY_PLUGIN_ID });
       }
-      return state.installed ? ok() : { exitCode: 3, stdout: '', stderr: 'unknown' };
+      return state.installed
+        ? ok(omarchyFixture('plugin-enable.txt'))
+        : { exitCode: 3, stdout: '', stderr: 'unknown' };
     }
     if (key === `plugin disable ${OMARCHY_PLUGIN_ID}`) {
       removeWidget();
-      return ok();
+      return ok(omarchyFixture('plugin-disable.txt'));
     }
     throw new Error(`Unexpected command: ${executable} ${key}`);
   });
@@ -670,8 +744,10 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
     });
     expect(readFileSync(helper)).toEqual(readFileSync(join(root.source, 'pimpampum-overview')));
     const route = readFileSync(join(root.target, 'pimpampum-control-route'), 'utf8');
-    expect(route).not.toContain(process.execPath);
-    expect(route).toContain('controlLauncherSha256');
+    const common = readFileSync(join(root.target, 'pimpampum-common.sh'), 'utf8');
+    expect(`${route}\n${common}`).not.toContain(process.execPath);
+    expect(route).toContain('verify_control_launcher 69');
+    expect(common).toContain('controlLauncherSha256');
     expect(route).toContain('exec "$control_launcher" "$@"');
 
     const backupHelper = join(root.target, 'pimpampum-backup');
@@ -697,22 +773,27 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
 
     writeFileSync(controlLauncher, `${readFileSync(controlLauncher, 'utf8')}# tampered\n`);
     chmodSync(controlLauncher, 0o755);
-    expect(() =>
-      execFileSync(helper, [], {
-        env: { ...process.env, HOME: root.home, HELPER_OUTPUT: outputPath },
-      }),
-    ).toThrow();
-  });
+    // Both streams are captured: the refusal must reach this assertion, not the vitest output.
+    const refused = spawnSync(helper, [], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      env: { ...process.env, HOME: root.home, HELPER_OUTPUT: outputPath },
+    });
+    expect(refused.status).toBe(69);
+    expect(refused.stdout).toBe('');
+    expect(refused.stderr.trim()).toBe(
+      'pimpampum-control-route: control launcher differs from its runtime receipt',
+    );
+  }, 20_000);
 
   it('keeps an official Git checkout clean across install, fast-forward, reconcile, and removal', async () => {
     const root = fixture('git-checkout-reconcile');
-    execFileSync('git', ['init', '--initial-branch=main'], { cwd: root.source });
-    execFileSync('git', ['config', 'user.name', 'Pimpampum Test'], { cwd: root.source });
-    execFileSync('git', ['config', 'user.email', 'test@pimpampum.local'], { cwd: root.source });
-    execFileSync('git', ['add', '.'], { cwd: root.source });
-    execFileSync('git', ['commit', '-m', 'initial plugin'], { cwd: root.source });
+    const git = isolatedGitEnvironment(root.root);
+    runGitQuiet(['init', '--quiet', '--initial-branch=main'], root.source, git);
+    runGitQuiet(['add', '.'], root.source, git);
+    runGitQuiet(['commit', '--quiet', '-m', 'initial plugin'], root.source, git);
     mkdirSync(dirname(root.target), { recursive: true });
-    execFileSync('git', ['clone', root.source, root.target]);
+    runGitQuiet(['clone', '--quiet', root.source, root.target], root.root, git);
 
     const quattro = fakeQuattro(root);
     quattro.state.installed = true;
@@ -721,22 +802,18 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
     const composite = adapter(root, daemon(root, []));
     const input = managerInput(root, quattro.runCommand, composite);
     await createPlatformServiceManager(input).install();
-    expect(
-      execFileSync('git', ['status', '--porcelain=v1'], { cwd: root.target, encoding: 'utf8' }),
-    ).toBe('');
+    expect(runGitQuiet(['status', '--porcelain=v1'], root.target, git)).toBe('');
 
     writeFileSync(
       join(root.source, 'README.md'),
       `${readFileSync(join(root.source, 'README.md'), 'utf8')}\nFast-forward fixture.\n`,
     );
-    execFileSync('git', ['add', 'README.md'], { cwd: root.source });
-    execFileSync('git', ['commit', '-m', 'plugin fast-forward'], { cwd: root.source });
-    execFileSync('git', ['pull', '--ff-only'], { cwd: root.target });
+    runGitQuiet(['add', 'README.md'], root.source, git);
+    runGitQuiet(['commit', '--quiet', '-m', 'plugin fast-forward'], root.source, git);
+    runGitQuiet(['pull', '--quiet', '--ff-only'], root.target, git);
 
     await createPlatformServiceManager(input).install();
-    expect(
-      execFileSync('git', ['status', '--porcelain=v1'], { cwd: root.target, encoding: 'utf8' }),
-    ).toBe('');
+    expect(runGitQuiet(['status', '--porcelain=v1'], root.target, git)).toBe('');
     await expect(createPlatformServiceManager(input).uninstall()).resolves.toEqual({
       uninstalled: true,
       dataPreserved: true,
@@ -1393,6 +1470,26 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
     await composite.afterUninstall!(ctx, artifacts);
     expect(existsSync(root.target)).toBe(true);
     rmSync(join(root.target, 'keep-directory-nonempty'));
+  });
+
+  it('replays a recorded Omarchy fixture for every command the adapter issues', async () => {
+    // M-O7: the fake used to answer every command with shapes written for the test. Each answer
+    // now comes from test/fixtures/omarchy, whose README names the capture command per file.
+    const root = fixture('fixture-coverage');
+    const quattro = fakeQuattro(root);
+    const composite = adapter(root, daemon(root, []));
+    const manager = createPlatformServiceManager(managerInput(root, quattro.runCommand, composite));
+    await manager.install();
+    await manager.status();
+    await manager.uninstall();
+    const names = new Set(quattro.commands.map(([, arguments_]) => omarchyFixtureName(arguments_)));
+    expect(names.size).toBeGreaterThanOrEqual(8);
+    for (const name of names) expect(existsSync(join(omarchyFixtureRoot, name)), name).toBe(true);
+    const readme = readFileSync(join(omarchyFixtureRoot, 'README.md'), 'utf8');
+    for (const name of readdirSync(omarchyFixtureRoot)) {
+      if (name !== 'README.md') expect(readme, name).toContain(`\`${name}\``);
+    }
+    expect(() => omarchyFixture('missing-command.txt')).toThrow(/Missing Omarchy fixture/u);
   });
 
   it('rejects unsafe options, source symlinks and special source files', () => {

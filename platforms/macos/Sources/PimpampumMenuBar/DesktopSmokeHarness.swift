@@ -201,6 +201,7 @@ enum DesktopSmokeHarness {
   ) {
     let root = NativeSettingsStatusPopover(
       store: store,
+      setupSession: SetupSession.bundled(overviewStore: store),
       workspaceOpener: opener,
       settingsWindowOpener: settingsWindowController,
       quitApplication: actionRecorder.recordQuit

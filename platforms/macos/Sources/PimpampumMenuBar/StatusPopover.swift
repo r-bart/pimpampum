@@ -43,6 +43,7 @@ struct StatusIndicator: View {
 @MainActor
 struct StatusPopover: View {
   @ObservedObject var store: OverviewStore
+  @ObservedObject var setupSession: SetupSession
   let workspaceOpener: any WorkspaceOpening
   let loginItemState: LoginItemRegistrationState
   let openLoginSettings: () -> Void
@@ -60,6 +61,7 @@ struct StatusPopover: View {
 
   init(
     store: OverviewStore,
+    setupSession: SetupSession? = nil,
     workspaceOpener: any WorkspaceOpening = WorkspaceOpener(),
     loginItemState: LoginItemRegistrationState = MainAppLoginItemService().state,
     openLoginSettings: @escaping () -> Void = {
@@ -70,6 +72,7 @@ struct StatusPopover: View {
     quitApplication: @escaping () -> Void = { NSApplication.shared.terminate(nil) }
   ) {
     self.store = store
+    self.setupSession = setupSession ?? SetupSession.bundled(overviewStore: store)
     self.workspaceOpener = workspaceOpener
     self.loginItemState = loginItemState
     self.openLoginSettings = openLoginSettings
@@ -85,23 +88,20 @@ struct StatusPopover: View {
 
       Divider()
 
-      if isHelpPresented {
+      switch content {
+      case .help:
         // Rendered inside the popover, never in a sheet. A sheet is a real window and the menu-bar
         // popover closes the moment it loses key focus, taking the popover down with it.
         ScrollView {
           HelpDialog { isHelpPresented = false }
             .padding(20)
         }
-      } else if isSetupRequired {
-        SetupOnboardingView(
-          assistant: setupAssistant,
-          onCheckAgain: {
-            setupAssistant.prepareApp()
-            Task { await store.refresh() }
-          }
-        )
-        .padding(20)
-      } else {
+      case .guidedSetup:
+        // The session, not this branch, owns the setup store and the current step, so a poll or
+        // the help button re-entering here finds the setup where it was.
+        SetupOnboardingView(session: setupSession)
+          .padding(20)
+      case .overview:
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 16) {
             connectionNotice
@@ -136,7 +136,7 @@ struct StatusPopover: View {
         Button(PimpampumBrand.quitTitle, action: quitApplication)
           .buttonStyle(.plain)
         Spacer()
-        if isSetupRequired {
+        if !Self.showsSettingsButton(content: content) {
           Text(PimpampumBrand.versionText())
             .foregroundStyle(.secondary)
         } else {
@@ -188,9 +188,12 @@ struct StatusPopover: View {
     Self.shouldShowOverview(connectionState: store.connectionState, overview: store.overview)
   }
 
-  private var isSetupRequired: Bool {
-    if case .setupRequired = store.connectionState { return true }
-    return false
+  private var content: StatusPopoverContent {
+    Self.content(
+      isHelpPresented: isHelpPresented,
+      setupSessionActive: setupSession.isActive,
+      connectionState: store.connectionState
+    )
   }
 
   private var visibleActiveCount: Int {
@@ -218,17 +221,19 @@ struct StatusPopover: View {
 
       Spacer(minLength: 8)
 
-      Button {
-        isHelpPresented = true
-      } label: {
-        Image(systemName: "questionmark.circle")
+      if Self.showsHelpButton(setupSessionActive: setupSession.isActive) {
+        Button {
+          isHelpPresented = true
+        } label: {
+          Image(systemName: "questionmark.circle")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .frame(width: 24, height: 24)
+        .contentShape(Rectangle())
+        .accessibilityLabel(HelpDialogCopy.buttonTitle)
+        .help(HelpDialogCopy.buttonTitle)
       }
-      .buttonStyle(.borderless)
-      .controlSize(.small)
-      .frame(width: 24, height: 24)
-      .contentShape(Rectangle())
-      .accessibilityLabel(HelpDialogCopy.buttonTitle)
-      .help(HelpDialogCopy.buttonTitle)
     }
   }
 

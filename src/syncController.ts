@@ -16,15 +16,17 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { z } from 'zod';
 import { AppError } from './errors.js';
 import { assertNoSymlinkTraversal } from './service/receipt.js';
 import {
+  SYNC_SNAPSHOT_SCHEMA_VERSION,
   parseSyncSnapshot,
   syncConflictSchema,
   syncDeviceIdSchema,
   syncStateSchema,
+  type SyncBlockedSnapshot,
   type SyncConflict,
   type SyncGateway,
   type SyncSnapshot,
@@ -34,6 +36,7 @@ import {
 } from './syncContract.js';
 import {
   canonicalJson,
+  compareCodeUnits,
   mergeSyncStates,
   normalizedSyncState,
   preserveConflictedEntities,
@@ -60,7 +63,8 @@ const settingsSchema = z.strictObject({
   sequence: z.number().int().nonnegative(),
   appliedSnapshotIds: z.array(z.string().uuid()),
   headSnapshotIds: z.array(z.string().uuid()),
-  baseState: z.unknown().nullable(),
+  // Written by releases before 1.2.13 and never read; accepted for one release.
+  baseState: z.unknown().nullable().optional(),
   conflicts: z.array(z.unknown()),
   pendingResolutions: z
     .array(
@@ -76,6 +80,8 @@ const settingsSchema = z.strictObject({
     .nullable()
     .optional(),
   deviceSequences: z.record(z.string(), z.number().int().nonnegative()).optional(),
+  deviceHeads: z.record(z.string(), z.string().uuid()).optional(),
+  inheritedSequence: z.number().int().nonnegative().optional(),
 });
 
 interface Settings {
@@ -86,17 +92,37 @@ interface Settings {
   sequence: number;
   appliedSnapshotIds: string[];
   headSnapshotIds: string[];
-  baseState: SyncState | null;
   conflicts: SyncConflict[];
   pendingResolutions: Array<Pick<SyncConflict, 'entityType' | 'entityId'>>;
   lastPublishedHash: string | null;
+  /** Newest applied sequence per device; own publishes are not recorded here. */
   deviceSequences: Record<string, number>;
+  /** Newest applied snapshot ID per device, including this device's publishes. */
+  deviceHeads: Record<string, string>;
+  /**
+   * The highest sequence already present in this device's directory when it
+   * was configured. Files up to it are history to import; a later file this
+   * device did not write means another computer shares the device ID.
+   */
+  inheritedSequence: number;
+}
+
+interface SnapshotEntry {
+  path: string;
+  deviceId: string;
+  sequence: number;
+  snapshotId: string;
 }
 
 interface SyncControllerOptions {
   settingsPath: string;
   snapshotter: () => SyncState;
   importer: (state: SyncState) => void;
+  /**
+   * Cheap counter the store bumps on every committed write. When it has not
+   * moved since the last publish the poll skips the export and hash entirely.
+   */
+  mutationCounter?: () => number;
   clock?: () => Date;
   pollMilliseconds?: number;
 }
@@ -121,6 +147,8 @@ export class SyncController implements SyncGateway {
   private lastExportAt: string | null = null;
   private pendingSnapshotCount = 0;
   private error: string | null = null;
+  private blockedSnapshot: SyncBlockedSnapshot | null = null;
+  private publishedMutationCount: number | null = null;
   private dirtyGeneration = 0;
   private completedGeneration = 0;
   private running: Promise<void> | null = null;
@@ -151,6 +179,7 @@ export class SyncController implements SyncGateway {
       pendingSnapshotCount: this.pendingSnapshotCount,
       conflictCount: this.settings.conflicts.length,
       error: this.error,
+      blockedSnapshot: this.blockedSnapshot ? { ...this.blockedSnapshot } : null,
     };
   }
 
@@ -210,7 +239,9 @@ export class SyncController implements SyncGateway {
       deviceId,
       paused: false,
       sequence: existingSequence,
+      inheritedSequence: existingSequence,
     };
+    this.blockedSnapshot = null;
     this.writeSettings();
     this.restartPolling();
     await this.reconcile();
@@ -261,6 +292,7 @@ export class SyncController implements SyncGateway {
     this.writeSettings();
     this.state = 'disabled';
     this.error = null;
+    this.blockedSnapshot = null;
     this.pendingSnapshotCount = 0;
     return this.getStatus();
   }
@@ -310,7 +342,6 @@ export class SyncController implements SyncGateway {
       entityType: conflict.entityType,
       entityId: conflict.entityId,
     });
-    this.settings.baseState = validated;
     this.settings.lastPublishedHash = null;
     this.writeSettings();
     this.markDirty();
@@ -345,14 +376,19 @@ export class SyncController implements SyncGateway {
       this.lastAttemptAt = this.clock().toISOString();
       try {
         const complete = await this.importPending();
-        if (!complete) {
+        if (complete) await this.publish();
+        const blocked = this.blockedSnapshot;
+        if (blocked) {
+          // Local state is published when nothing else waits, but the folder
+          // needs a human: the status names the file so they can act on it.
+          this.state = 'error';
+          this.error = `Blocked snapshot ${blocked.path}: ${blocked.reason}`;
+        } else if (!complete) {
           this.state = 'pending';
-          this.completedGeneration = generation;
-          continue;
+        } else {
+          this.state = 'healthy';
+          this.error = null;
         }
-        await this.publish();
-        this.state = 'healthy';
-        this.error = null;
       } catch (error) {
         this.state = this.sharedDirectoryAvailable() ? 'error' : 'unavailable';
         this.error = safeError(error);
@@ -361,12 +397,8 @@ export class SyncController implements SyncGateway {
     }
   }
 
-  private async importPending(): Promise<boolean> {
-    const directory = this.requiredDirectory();
-    this.state = 'importing';
-    const applied = new Set(this.settings.appliedSnapshotIds);
-    const paths: Array<{ path: string; deviceId: string; sequence: number; snapshotId: string }> =
-      [];
+  private listSnapshotFiles(directory: string): SnapshotEntry[] {
+    const entries: SnapshotEntry[] = [];
     const devicesDirectory = join(directory, 'devices');
     this.assertSafeDirectory(directory, directory);
     this.assertSafeDirectory(devicesDirectory, directory);
@@ -386,7 +418,7 @@ export class SyncController implements SyncGateway {
         }
         const match = SNAPSHOT_FILE_PATTERN.exec(file.name);
         if (file.isFile() && match) {
-          paths.push({
+          entries.push({
             path: join(deviceDirectory, file.name),
             deviceId: device.name,
             sequence: Number(match[1]),
@@ -395,55 +427,111 @@ export class SyncController implements SyncGateway {
         }
       }
     }
-    if (new Set(paths.map((entry) => entry.snapshotId)).size !== paths.length) {
+    if (new Set(entries.map((entry) => entry.snapshotId)).size !== entries.length) {
       throw new AppError('bad_request', 'Shared snapshot ID is duplicated', 400);
     }
-    const pathBySnapshotId = new Map(paths.map((entry) => [entry.snapshotId, entry]));
-    const snapshots = paths
-      .filter(
-        ({ deviceId, sequence, snapshotId }) =>
-          !applied.has(snapshotId) && sequence > (this.settings.deviceSequences[deviceId] ?? 0),
-      )
-      .map((entry) => this.readSnapshot(entry.path, entry));
-    const sequenceOwners = new Set<string>();
-    for (const snapshot of snapshots) {
-      const key = `${snapshot.deviceId}:${snapshot.sequence}`;
-      if (sequenceOwners.has(key)) {
-        throw new AppError('bad_request', 'Shared device sequence is duplicated', 400);
-      }
-      sequenceOwners.add(key);
+    return entries;
+  }
+
+  /**
+   * Imports every applicable snapshot and returns whether nothing is left
+   * waiting on the provider. Files that fail validation are recorded in
+   * `blockedSnapshot` and skipped together with their descendants, so one bad
+   * file never stops the other devices from converging.
+   */
+  private async importPending(): Promise<boolean> {
+    const directory = this.requiredDirectory();
+    const deviceId = this.settings.deviceId as string;
+    this.state = 'importing';
+    const applied = new Set(this.settings.appliedSnapshotIds);
+    const entries = this.listSnapshotFiles(directory);
+    const entryBySnapshotId = new Map(entries.map((entry) => [entry.snapshotId, entry]));
+    const twin = entries.find(
+      (entry) =>
+        entry.deviceId === deviceId &&
+        !applied.has(entry.snapshotId) &&
+        entry.sequence > this.settings.inheritedSequence,
+    );
+    if (twin) {
+      // A file in this device's own directory that this device did not write
+      // and that was not there at configuration time: another computer shares
+      // the device ID. Retention would later delete files that are not ours.
+      throw new AppError(
+        'conflict',
+        `Another computer publishes snapshots as device "${deviceId}"; run sync forget on each computer and configure a distinct device ID`,
+        409,
+        false,
+        { path: relative(directory, twin.path) },
+      );
     }
-    this.pendingSnapshotCount = snapshots.length;
-    const pending = new Map(snapshots.map((snapshot) => [snapshot.snapshotId, snapshot]));
-    const loaded = new Map(snapshots.map((snapshot) => [snapshot.snapshotId, snapshot]));
-    const loadSnapshot = (snapshotId: string): SyncSnapshot | undefined => {
-      const known = loaded.get(snapshotId);
+    // A sequence equal to the newest applied one is a sibling written by a
+    // recovered device, not a delayed file, so it is admitted; older ones stay
+    // ignored because merging them would look like a rollback.
+    const candidates = entries.filter(
+      (entry) =>
+        !applied.has(entry.snapshotId) &&
+        entry.sequence >= (this.settings.deviceSequences[entry.deviceId] ?? 0),
+    );
+    this.pendingSnapshotCount = candidates.length;
+    const blocked: SyncBlockedSnapshot[] = [];
+    const blockedIds = new Set<string>();
+    const loaded = new Map<string, SyncSnapshot>();
+    const load = (entry: SnapshotEntry): SyncSnapshot | undefined => {
+      const known = loaded.get(entry.snapshotId);
       if (known) return known;
-      const entry = pathBySnapshotId.get(snapshotId);
-      if (!entry) return undefined;
-      const snapshot = this.readSnapshot(entry.path, entry);
-      loaded.set(snapshotId, snapshot);
-      return snapshot;
+      try {
+        const snapshot = this.readSnapshot(entry.path, entry);
+        loaded.set(entry.snapshotId, snapshot);
+        return snapshot;
+      } catch (error) {
+        blocked.push({ path: relative(directory, entry.path), reason: safeError(error) });
+        blockedIds.add(entry.snapshotId);
+        return undefined;
+      }
     };
+    const pending = new Map<string, SyncSnapshot>();
+    for (const entry of candidates) {
+      const snapshot = load(entry);
+      if (snapshot) pending.set(snapshot.snapshotId, snapshot);
+    }
+    let waiting = 0;
     while (pending.size > 0) {
       const ready = [...pending.values()]
         .filter((snapshot) => snapshot.parentSnapshots.every((parent) => applied.has(parent)))
         .sort(
           (left, right) =>
-            left.deviceId.localeCompare(right.deviceId) || left.sequence - right.sequence,
+            compareCodeUnits(left.deviceId, right.deviceId) ||
+            left.sequence - right.sequence ||
+            compareCodeUnits(left.snapshotId, right.snapshotId),
         )[0];
-      if (!ready) return false;
+      if (!ready) break;
       const snapshot = ready;
+      const parents: SyncSnapshot[] = [];
+      let missingParent = false;
+      for (const parentId of snapshot.parentSnapshots) {
+        const entry = entryBySnapshotId.get(parentId);
+        const parent = entry ? load(entry) : undefined;
+        if (!parent) {
+          if (entry) blockedIds.add(snapshot.snapshotId);
+          else waiting += 1;
+          missingParent = true;
+          break;
+        }
+        parents.push(parent);
+      }
+      if (missingParent) {
+        pending.delete(snapshot.snapshotId);
+        continue;
+      }
       const settingsBeforeImport = structuredClone(this.settings);
       try {
         const local = normalizedSyncState(this.options.snapshotter());
-        const parents = snapshot.parentSnapshots.map(loadSnapshot);
-        if (parents.some((parent) => parent === undefined)) return false;
-        const parentStates = (parents as SyncSnapshot[]).map((parent) => parent.state);
-        const base = parentStates.reduce(
-          (combined, parent) => mergeSyncStates(EMPTY_STATE, combined, parent).state,
-          EMPTY_STATE,
-        );
+        const base = parents
+          .map((parent) => parent.state)
+          .reduce(
+            (combined, parent) => mergeSyncStates(EMPTY_STATE, combined, parent).state,
+            EMPTY_STATE,
+          );
         const merged = mergeSyncStates(base, local, snapshot.state);
         const resolutions = snapshot.resolutions ?? [];
         const resolutionKeys = new Set(
@@ -470,11 +558,11 @@ export class SyncController implements SyncGateway {
           ),
         ]);
         this.options.importer(protectedState);
-        this.settings.baseState = protectedState;
         this.settings.appliedSnapshotIds.push(snapshot.snapshotId);
         applied.add(snapshot.snapshotId);
         pending.delete(snapshot.snapshotId);
         this.settings.deviceSequences[snapshot.deviceId] = snapshot.sequence;
+        this.settings.deviceHeads[snapshot.deviceId] = snapshot.snapshotId;
         this.settings.headSnapshotIds = this.nextHeads(snapshot);
         this.lastImportAt = at;
         this.pendingSnapshotCount -= 1;
@@ -484,23 +572,68 @@ export class SyncController implements SyncGateway {
         throw error;
       }
     }
-    return true;
+    // Descendants of a blocked file wait on a person, not on the provider.
+    let spread = true;
+    while (spread) {
+      spread = false;
+      for (const snapshot of pending.values()) {
+        if (snapshot.parentSnapshots.some((parent) => blockedIds.has(parent))) {
+          blockedIds.add(snapshot.snapshotId);
+          pending.delete(snapshot.snapshotId);
+          spread = true;
+        }
+      }
+    }
+    waiting += pending.size;
+    this.blockedSnapshot =
+      blocked.sort((left, right) => compareCodeUnits(left.path, right.path))[0] ?? null;
+    if (waiting === 0 && blocked.length === 0) this.compactAppliedSnapshotIds(entries);
+    return waiting === 0;
+  }
+
+  /**
+   * Keeps only the applied IDs that still matter: files present in the folder
+   * and the current heads. Runs only after a complete import, when no pending
+   * snapshot can still name a vanished parent.
+   */
+  private compactAppliedSnapshotIds(entries: SnapshotEntry[]): void {
+    const keep = new Set([
+      ...entries.map((entry) => entry.snapshotId),
+      ...this.settings.headSnapshotIds,
+    ]);
+    const compacted = this.settings.appliedSnapshotIds.filter((id) => keep.has(id));
+    if (compacted.length === this.settings.appliedSnapshotIds.length) return;
+    this.settings.appliedSnapshotIds = compacted;
+    this.writeSettings();
   }
 
   private async publish(): Promise<void> {
     const directory = this.requiredDirectory();
     const deviceId = this.settings.deviceId as string;
+    const mutationCount = this.options.mutationCounter?.() ?? null;
+    if (
+      mutationCount !== null &&
+      mutationCount === this.publishedMutationCount &&
+      this.settings.lastPublishedHash !== null
+    ) {
+      // Nothing was committed since the last publish; the poll only imports.
+      return;
+    }
     const state = normalizedSyncState(this.options.snapshotter());
     const stateHash = syncHash(state);
-    if (stateHash === this.settings.lastPublishedHash) return;
+    if (stateHash === this.settings.lastPublishedHash) {
+      this.publishedMutationCount = mutationCount;
+      return;
+    }
     const sequence = this.settings.sequence + 1;
     const snapshot: SyncSnapshot = {
-      schemaVersion: 1,
+      schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
       snapshotId: randomUUID(),
       deviceId,
       sequence,
       createdAt: this.clock().toISOString(),
       parentSnapshots: [...this.settings.headSnapshotIds],
+      appliedHeads: { ...this.settings.deviceHeads },
       ...(this.settings.pendingResolutions.length > 0
         ? { resolutions: [...this.settings.pendingResolutions] }
         : {}),
@@ -533,49 +666,70 @@ export class SyncController implements SyncGateway {
     this.settings.sequence = sequence;
     this.settings.appliedSnapshotIds.push(snapshot.snapshotId);
     this.settings.headSnapshotIds = [snapshot.snapshotId];
-    this.settings.baseState ??= state;
+    this.settings.deviceHeads[deviceId] = snapshot.snapshotId;
     this.settings.lastPublishedHash = stateHash;
     this.settings.pendingResolutions = [];
     this.lastExportAt = snapshot.createdAt;
     this.writeSettings();
+    this.publishedMutationCount = mutationCount;
   }
 
   private readSnapshot(
     path: string,
-    expected: { deviceId: string; sequence: number; snapshotId: string },
+    expected: SnapshotEntry | Omit<SnapshotEntry, 'path'>,
   ): SyncSnapshot {
     const directory = this.requiredDirectory();
-    assertNoSymlinkTraversal(path, 'Shared snapshot file', directory);
-    let descriptor: number | null = null;
-    let content: string;
     try {
-      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-      const stats = fstatSync(descriptor);
-      if (!stats.isFile() || stats.size > MAX_SNAPSHOT_BYTES) {
-        throw new AppError('bad_request', 'Shared snapshot is not a bounded regular file', 400);
+      assertNoSymlinkTraversal(path, 'Shared snapshot file', directory);
+      let descriptor: number | null = null;
+      let content: string;
+      try {
+        descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const stats = fstatSync(descriptor);
+        if (!stats.isFile() || stats.size > MAX_SNAPSHOT_BYTES) {
+          throw new AppError('bad_request', 'Shared snapshot is not a bounded regular file', 400);
+        }
+        const bytes = Buffer.allocUnsafe(stats.size + 1);
+        const bytesRead = readSync(descriptor, bytes, 0, bytes.length, 0);
+        /* v8 ignore next -- this branch requires an OS-level concurrent file mutation. */
+        if (bytesRead !== stats.size) {
+          throw new AppError('bad_request', 'Shared snapshot changed while it was being read', 400);
+        }
+        content = bytes.subarray(0, bytesRead).toString('utf8');
+      } finally {
+        if (descriptor !== null) closeSync(descriptor);
       }
-      const bytes = Buffer.allocUnsafe(stats.size + 1);
-      const bytesRead = readSync(descriptor, bytes, 0, bytes.length, 0);
-      /* v8 ignore next -- this branch requires an OS-level concurrent file mutation. */
-      if (bytesRead !== stats.size) {
-        throw new AppError('bad_request', 'Shared snapshot changed while it was being read', 400);
+      const snapshot = parseSyncSnapshot(JSON.parse(content) as unknown);
+      if (
+        snapshot.deviceId !== expected.deviceId ||
+        snapshot.sequence !== expected.sequence ||
+        snapshot.snapshotId !== expected.snapshotId
+      ) {
+        throw new AppError('bad_request', 'Shared snapshot does not match its filename tuple', 400);
       }
-      content = bytes.subarray(0, bytesRead).toString('utf8');
-    } finally {
-      if (descriptor !== null) closeSync(descriptor);
+      if (snapshot.stateHash !== syncHash(snapshot.state)) {
+        throw new AppError(
+          'bad_request',
+          snapshot.schemaVersion === SYNC_SNAPSHOT_SCHEMA_VERSION
+            ? 'Shared snapshot hash does not match its state'
+            : `Shared snapshot hash was computed with a locale-dependent order by an older Pimpampum; upgrade Pimpampum on device "${snapshot.deviceId}" so it republishes`,
+          400,
+        );
+      }
+      return snapshot;
+    } catch (error) {
+      const cause =
+        error instanceof AppError
+          ? error
+          : new AppError('bad_request', `Shared snapshot is unreadable: ${safeError(error)}`, 400);
+      throw new AppError(cause.code, cause.message, cause.status, cause.retryable, {
+        ...cause.details,
+        path: relative(directory, path),
+        deviceId: expected.deviceId,
+        sequence: expected.sequence,
+        snapshotId: expected.snapshotId,
+      });
     }
-    const snapshot = parseSyncSnapshot(JSON.parse(content) as unknown);
-    if (
-      snapshot.deviceId !== expected.deviceId ||
-      snapshot.sequence !== expected.sequence ||
-      snapshot.snapshotId !== expected.snapshotId
-    ) {
-      throw new AppError('bad_request', 'Shared snapshot does not match its filename tuple', 400);
-    }
-    if (snapshot.stateHash !== syncHash(snapshot.state)) {
-      throw new AppError('bad_request', 'Shared snapshot hash does not match its state', 400);
-    }
-    return snapshot;
   }
 
   private nextHeads(snapshot: SyncSnapshot): string[] {
@@ -585,7 +739,7 @@ export class SyncController implements SyncGateway {
       snapshot.snapshotId,
     ]
       .filter((head, index, values) => values.indexOf(head) === index)
-      .sort();
+      .sort(compareCodeUnits);
   }
 
   private applyResolutions(
@@ -619,15 +773,19 @@ export class SyncController implements SyncGateway {
         JSON.parse(readFileSync(this.options.settingsPath, 'utf8')),
       );
       return {
-        ...parsed,
-        baseState:
-          parsed.baseState === null
-            ? null
-            : normalizedSyncState(syncStateSchema.parse(parsed.baseState)),
+        schemaVersion: parsed.schemaVersion,
+        directory: parsed.directory,
+        deviceId: parsed.deviceId,
+        paused: parsed.paused,
+        sequence: parsed.sequence,
+        appliedSnapshotIds: parsed.appliedSnapshotIds,
+        headSnapshotIds: parsed.headSnapshotIds,
         conflicts: parsed.conflicts.map((conflict) => syncConflictSchema.parse(conflict)),
         pendingResolutions: parsed.pendingResolutions ?? [],
         lastPublishedHash: parsed.lastPublishedHash ?? null,
         deviceSequences: parsed.deviceSequences ?? {},
+        deviceHeads: parsed.deviceHeads ?? {},
+        inheritedSequence: parsed.inheritedSequence ?? 0,
       };
     } catch {
       throw new AppError('internal_error', 'Pimpampum sync settings are invalid', 500);
@@ -643,11 +801,12 @@ export class SyncController implements SyncGateway {
       sequence: 0,
       appliedSnapshotIds: [],
       headSnapshotIds: [],
-      baseState: null,
       conflicts: [],
       pendingResolutions: [],
       lastPublishedHash: null,
       deviceSequences: {},
+      deviceHeads: {},
+      inheritedSequence: 0,
     };
   }
 

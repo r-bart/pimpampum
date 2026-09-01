@@ -497,3 +497,11 @@ No external mockups were provided. The integrations should use the existing Pimp
 - [Apple Service Management and SMAppService](https://developer.apple.com/documentation/servicemanagement/smappservice)
 - [Omarchy Quattro shell and plugin model](https://github.com/basecamp/omarchy/blob/quattro/docs/omarchy-shell.md)
 - [Omarchy Quattro top bar model](https://github.com/basecamp/omarchy/blob/quattro/manual/05-the-top-bar.md)
+
+## Amendment 2026-09-01: packaging of the macOS app
+
+The deep review of 2026-09-01 (finding H-12) found that `pimpampum@1.2.11` on npm weighed
+157 MB because `platforms/macos/dist` shipped with its embedded runtime. FR-3 is amended: the
+signed macOS app is distributed only as a GitHub Release asset and through the packaged
+update channel. The npm package ships the daemon, the CLI, the docs and the Omarchy plugin.
+`test/desktop-status.acceptance.test.ts` asserts the new `files` list.

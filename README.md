@@ -101,8 +101,18 @@ separate decision and applies only to the reviewed entry. A partial failure leav
 connected and offers **Try again** for the one that failed.
 
 Updates are available under **Settings… → Updates** on macOS and **Settings → Updates** on
-Omarchy. **Check for updates** is read-only; **Install update** verifies and reconciles the packaged
-runtime, service, and managed connections while preserving local data. See
+Omarchy. Both read one signed manifest, `release-manifest.json`, from the rolling GitHub release
+`update-channel-stable`. Every published version signs that manifest with an Ed25519 key whose
+public half is embedded in the CLI, so no file on disk can replace the trust root; each target
+entry carries the exact versioned asset URL, its SHA-256, its size, and the manifest's `issuedAt`.
+**Check for updates** is read-only on every platform. On macOS, **Install update** downloads the
+signed app, verifies hash, size, archive, and inventory, then reconciles the packaged runtime,
+service, and managed connections while preserving local data. On Linux, **Install update** answers
+with a typed `unavailable` error: the Omarchy plugin owns the pinned runtime, so update the
+Pimpampum Status plugin and run `pimpampum-bootstrap` from the plugin directory (decision of
+2026-09-01; the Linux activation is not implemented in the CLI). A macOS `pimpampum install` from
+an npm installation fetches the app of its own version through the same signed manifest; the npm
+package no longer contains the app. See
 [Advanced lifecycle commands](#advanced-lifecycle-commands) for non-graphical repair, update, and
 removal.
 
@@ -652,12 +662,15 @@ stale `-wal` or `-shm` companions, restart, and verify `/health` plus a represen
 
 ## Configuration
 
-| Variable             | Default                 | Purpose                |
-| -------------------- | ----------------------- | ---------------------- |
-| `PIMPAMPUM_DATA_DIR` | `~/.pimpampum`          | Private data directory |
-| `PIMPAMPUM_HOST`     | `127.0.0.1`             | Loopback host          |
-| `PIMPAMPUM_PORT`     | `7337`                  | Daemon port            |
-| `PIMPAMPUM_TOKEN`    | Generated automatically | Local bearer token     |
+| Variable                            | Default                                                       | Purpose                                                                                                                   |
+| ----------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `PIMPAMPUM_DATA_DIR`                | `~/.pimpampum`                                                | Private data directory                                                                                                    |
+| `PIMPAMPUM_HOST`                    | `127.0.0.1`                                                   | Loopback host                                                                                                             |
+| `PIMPAMPUM_PORT`                    | `7337`                                                        | Daemon port                                                                                                               |
+| `PIMPAMPUM_TOKEN`                   | Generated automatically                                       | Local bearer token                                                                                                        |
+| `PIMPAMPUM_RELEASE_MANIFEST_URL`    | The `update-channel-stable` release's `release-manifest.json` | HTTPS URL of the signed update manifest; integrity still comes from the embedded key                                      |
+| `PIMPAMPUM_DEV_RELEASE_KEY`         | unset                                                         | Set to `1` to enable the two development seams below; never set it on an installation you rely on                         |
+| `PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH` | unset                                                         | With the flag above: an Ed25519 public key PEM that replaces the embedded key; plain-HTTP loopback URLs are also accepted |
 
 The host must be loopback. A manually configured token must contain at least 32 printable ASCII
 characters without spaces. One instance lock prevents two daemons from owning the same data

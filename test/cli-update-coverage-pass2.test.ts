@@ -107,6 +107,7 @@ function packagedProvider(
       JSON.stringify({
         schemaVersion: 1,
         channel: 'stable',
+        issuedAt: '2026-09-01T12:00:00.000Z',
         version: '2.0.0',
         targets: {
           'darwin-arm64': {

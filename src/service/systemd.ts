@@ -35,14 +35,29 @@ function validatePort(port: number): void {
   }
 }
 
-function quoteUnitItem(value: string): string {
-  const escaped = value
+/**
+ * Escapes one double-quoted unit-file string. Backslash, quote and tab follow the unit file
+ * lexer; `%` is doubled because systemd resolves specifiers (`%h`, `%i`) in every setting.
+ */
+function escapeUnitString(value: string): string {
+  return value
     .replaceAll('\\', '\\\\')
     .replaceAll('"', '\\"')
     .replaceAll('%', '%%')
-    .replaceAll('$', () => '$$')
     .replaceAll('\t', '\\t');
-  return `"${escaped}"`;
+}
+
+/** `ExecStart=` expands `$VARIABLE` and `${VARIABLE}`, so a literal dollar must be doubled. */
+function quoteExecStartArgument(value: string): string {
+  return `"${escapeUnitString(value).replaceAll('$', () => '$$')}"`;
+}
+
+/**
+ * `Environment=` takes each assignment literally: specifiers still resolve, but systemd performs
+ * no variable expansion there, so doubling `$` would leave `$$` in the daemon's environment.
+ */
+function quoteEnvironmentAssignment(name: string, value: string): string {
+  return `"${name}=${escapeUnitString(value)}"`;
 }
 
 export function renderSystemdUnit(input: SystemdUnitInput): string {
@@ -60,10 +75,10 @@ StartLimitBurst=5
 
 [Service]
 Type=exec
-Environment=${quoteUnitItem(`PIMPAMPUM_DATA_DIR=${input.dataDirectory}`)}
-Environment=${quoteUnitItem(`PIMPAMPUM_HOST=${input.host}`)}
-Environment=${quoteUnitItem(`PIMPAMPUM_PORT=${input.port}`)}
-ExecStart=${quoteUnitItem(input.nodePath)} ${quoteUnitItem(input.cliPath)} serve
+Environment=${quoteEnvironmentAssignment('PIMPAMPUM_DATA_DIR', input.dataDirectory)}
+Environment=${quoteEnvironmentAssignment('PIMPAMPUM_HOST', input.host)}
+Environment=${quoteEnvironmentAssignment('PIMPAMPUM_PORT', String(input.port))}
+ExecStart=${quoteExecStartArgument(input.nodePath)} ${quoteExecStartArgument(input.cliPath)} serve
 Restart=on-failure
 RestartSec=5s
 StandardOutput=journal
@@ -258,6 +273,12 @@ export function createSystemdAdapter(options: SystemdAdapterOptions = {}): Platf
           '--now',
           SYSTEMD_UNIT_NAME,
         ]);
+        // `enable --now` leaves an already-active unit running its old ExecStart. Restart it so
+        // an update serves the new version before health verification asks for it, the way the
+        // launchd adapter's `kickstart -k` does.
+        if (previousState.running) {
+          await runSystemctl(context, systemctlPath, 'restart', ['restart', SYSTEMD_UNIT_NAME]);
+        }
       } catch (error) {
         rollbackState = previousState;
         await compensateFailedActivation(context, systemctlPath, error);

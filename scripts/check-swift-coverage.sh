@@ -23,12 +23,20 @@ fi
 # in thoughts/notes/2026-08-26_swift-coverage.md.
 #
 # 2026-09-01: this gate reported 100% while every first-run defect of that session sat in files it
-# never measured. SetupModels.swift is now inside it. SetupStore.swift (56%) and
-# SetupCommandRunner.swift (64%) remain outside and are the next candidates; see
-# thoughts/notes/2026-09-01_first-run-decoder-and-launcher.md.
+# never measured. The whole guided-setup lifecycle is inside it now: models, store, session, command
+# runner, bootstrap, launch coordination, location record and every screen decision. The SwiftUI
+# bodies and the live NSWorkspace/NSApplication adapters stay out; see
+# thoughts/notes/2026-08-26_swift-coverage.md for each exclusion.
 covered_sources=(
     "$package_root/Sources/PimpampumMenuBar/Models.swift"
     "$package_root/Sources/PimpampumMenuBar/SetupModels.swift"
+    "$package_root/Sources/PimpampumMenuBar/SetupStore.swift"
+    "$package_root/Sources/PimpampumMenuBar/SetupSession.swift"
+    "$package_root/Sources/PimpampumMenuBar/SetupOnboardingPresentation.swift"
+    "$package_root/Sources/PimpampumMenuBar/SetupCommandRunner.swift"
+    "$package_root/Sources/PimpampumMenuBar/EmbeddedSetupBootstrap.swift"
+    "$package_root/Sources/PimpampumMenuBar/ApplicationLocationRecord.swift"
+    "$package_root/Sources/PimpampumMenuBar/ApplicationLaunchCoordinator.swift"
     "$package_root/Sources/PimpampumMenuBar/OverviewClient.swift"
     "$package_root/Sources/PimpampumMenuBar/AuthenticatedDaemonConfiguration.swift"
     "$package_root/Sources/PimpampumMenuBar/OverviewStore.swift"

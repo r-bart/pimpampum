@@ -72,7 +72,15 @@ export interface PlatformServiceAdapter {
   ): Promise<ServiceIntegrationStatus | undefined>;
   afterRollback?(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
   rollbackActivation?(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
-  afterUninstall?(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
+  /**
+   * Final cleanup once the owned files are gone. An adapter that had to leave part of the teardown
+   * to the user — a login item whose helper app is already gone — reports it through the outcome,
+   * and the manager forwards it as `UninstallResult.manualInstructions`.
+   */
+  afterUninstall?(
+    context: ServiceAdapterContext,
+    artifacts: ServiceArtifact[],
+  ): Promise<void | ServiceUninstallOutcome>;
   integrationStatus?(
     context: ServiceAdapterContext,
     artifacts: ServiceArtifactRef[],
@@ -82,6 +90,11 @@ export interface PlatformServiceAdapter {
 export interface ServiceIntegrationStatus {
   loginItem?: 'enabled' | 'requiresApproval' | 'error';
   omarchyPlugin?: 'enabled' | 'disabled' | 'missing';
+}
+
+/** What the uninstall could not finish on the user's behalf. */
+export interface ServiceUninstallOutcome {
+  manualInstructions?: string[];
 }
 
 export interface InstallResult {

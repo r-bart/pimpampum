@@ -307,7 +307,46 @@ struct StatusPopoverTests {
     assistant.prepareApp()
     #expect(events == ["register"])
     #expect(SetupOnboardingCopy.title == "Your agents share one project memory")
-    _ = SetupOnboardingView(assistant: assistant, onCheckAgain: {})
+    let session = SetupSession(store: SetupStore(runner: UnavailableSetupCommandRunner()))
+    _ = SetupOnboardingView(session: session).body
+    _ = StatusPopover(store: OverviewStore(reader: StaticOverviewReader(overview: makeOverview(status: .empty))), setupSession: session, setupAssistant: assistant)
+  }
+
+  @Test
+  func keepsTheGuidedSetupWhileItsSessionIsActiveWhateverTheDaemonReports() {
+    // The overview poll used to switch the body to "Loading overview" as soon as the daemon
+    // answered, mid-apply, destroying the setup store and its step.
+    for state in [
+      OverviewConnectionState.online, .loading, .offline("down"), .invalidToken("denied"),
+      .incompatible("schema"), .setupRequired("missing"),
+    ] {
+      #expect(
+        StatusPopover.content(
+          isHelpPresented: false, setupSessionActive: true, connectionState: state)
+          == .guidedSetup)
+    }
+    #expect(
+      StatusPopover.content(
+        isHelpPresented: false, setupSessionActive: false, connectionState: .setupRequired("m"))
+        == .guidedSetup)
+    #expect(
+      StatusPopover.content(
+        isHelpPresented: false, setupSessionActive: false, connectionState: .online) == .overview)
+    #expect(
+      StatusPopover.content(
+        isHelpPresented: true, setupSessionActive: true, connectionState: .online) == .help)
+    #expect(StatusPopover.isSetupRequired(.setupRequired("m")))
+    #expect(!StatusPopover.isSetupRequired(.loading))
+  }
+
+  @Test
+  func hidesHelpDuringASetupSessionAndSettingsDuringTheGuidedSetup() {
+    // The header help button swapped the body and discarded the setup in progress.
+    #expect(StatusPopover.showsHelpButton(setupSessionActive: false))
+    #expect(!StatusPopover.showsHelpButton(setupSessionActive: true))
+    #expect(StatusPopover.showsSettingsButton(content: .overview))
+    #expect(StatusPopover.showsSettingsButton(content: .help))
+    #expect(!StatusPopover.showsSettingsButton(content: .guidedSetup))
   }
 
   @Test

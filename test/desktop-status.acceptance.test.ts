@@ -470,9 +470,10 @@ describe('Automatic service and desktop status integrations', () => {
       expect(packageJson.scripts['build:macos']).toBeTruthy();
       expect(packageJson.scripts['test:macos']).toBeTruthy();
       expect(packageJson.scripts['validate:omarchy']).toBeTruthy();
-      expect(packageJson.files).toEqual(
-        expect.arrayContaining(['platforms/macos/dist', 'integrations/omarchy']),
-      );
+      // Amendment 2026-09-01 (review H-12): the macOS app ships only as a GitHub Release asset,
+      // never inside the npm package; the Omarchy plugin still does.
+      expect(packageJson.files).toEqual(expect.arrayContaining(['integrations/omarchy']));
+      expect(packageJson.files).not.toContain('platforms/macos/dist');
     });
 
     it('FR-2: documents automatic install, status, uninstall and data preservation', () => {

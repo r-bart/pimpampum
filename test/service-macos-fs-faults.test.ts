@@ -69,7 +69,6 @@ describe('macOS embedded runtime filesystem faults', () => {
       appBundlePath: sourceApp,
       daemonAdapter,
       sleep: async () => undefined,
-      acknowledgementPolls: 1,
     });
     await expect(adapter.afterInstall!(context, [])).rejects.toThrow('final runtime rename failed');
     expect(readFileSync(join(installedRuntime, 'runtime.txt'), 'utf8')).toBe('old runtime');
