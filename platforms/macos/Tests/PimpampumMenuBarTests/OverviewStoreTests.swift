@@ -242,6 +242,78 @@ struct OverviewStoreTests {
   }
 
   @Test
+  func aColdStartRetriesQuicklyBeforeReportingOffline() async {
+    // Right after setup the app is relaunched and the daemon may still be starting. Declaring
+    // "offline" on the first failed poll showed a red error seconds after a successful install.
+    let reader = SequenceOverviewReader([.otherFailure, .success(testOverview())])
+    let clock = RecordingOverviewClock(date: Date())
+    let store = OverviewStore(reader: reader, clock: clock)
+
+    await store.refresh()
+    // Still loading, not offline: the daemon has not had its chance yet.
+    #expect(store.connectionState == .loading)
+    #expect(store.overview == nil)
+
+    await store.refresh()
+    #expect(store.connectionState == .online)
+    #expect(store.overview != nil)
+  }
+
+  @Test
+  func aColdStartStopsForgivingAfterItsRetryLimit() async {
+    let outcomes = Array(
+      repeating: SequenceOverviewReader.Outcome.otherFailure,
+      count: OverviewStore.startupRetryLimit + 1
+    )
+    let store = OverviewStore(
+      reader: SequenceOverviewReader(outcomes),
+      clock: RecordingOverviewClock(date: Date())
+    )
+
+    for _ in 0..<OverviewStore.startupRetryLimit {
+      await store.refresh()
+      #expect(store.connectionState == .loading)
+    }
+    // The daemon has had every chance now, so the failure is real and must be shown.
+    await store.refresh()
+    guard case .offline = store.connectionState else {
+      Issue.record("Expected offline after the retry limit")
+      return
+    }
+  }
+
+  @Test
+  func aLostConnectionAfterLoadingIsReportedImmediately() async {
+    // The grace period is only for a cold start. Once an overview has been shown, losing the
+    // daemon is real news and must not be hidden behind a spinner.
+    let reader = SequenceOverviewReader([.success(testOverview()), .otherFailure])
+    let store = OverviewStore(reader: reader, clock: RecordingOverviewClock(date: Date()))
+
+    await store.refresh()
+    #expect(store.connectionState == .online)
+
+    await store.refresh()
+    guard case .offline = store.connectionState else {
+      Issue.record("Expected offline once an overview had already loaded")
+      return
+    }
+  }
+
+  @Test
+  func aColdStartPollsOnTheShortIntervalUntilItLoads() async {
+    let reader = SequenceOverviewReader([.otherFailure, .suspend])
+    let clock = RecordingOverviewClock(date: Date())
+    let store = OverviewStore(reader: reader, clock: clock)
+
+    store.start()
+    #expect(
+      await eventually {
+        await clock.sleeps.first == OverviewStore.startupRetryInterval
+      })
+    store.stop()
+  }
+
+  @Test
   func pollingRefreshesAgainAfterANormalInterval() async {
     let reader = SequenceOverviewReader([
       .success(testOverview()), .success(testOverview(status: .empty)),

@@ -19,6 +19,12 @@ enum OverviewConnectionState: Equatable, Sendable {
 final class OverviewStore: ObservableObject {
   static let closedPollInterval: TimeInterval = 10
   static let openPollInterval: TimeInterval = 5
+  /// Right after setup the app is relaunched from its installed copy and the daemon may still be
+  /// coming up. Reporting "offline" on the first failed poll shows a red error for the five to ten
+  /// seconds until the next one, immediately after a successful install. Retry quickly instead, and
+  /// only declare the failure once the daemon has really had its chance.
+  static let startupRetryInterval: TimeInterval = 1
+  static let startupRetryLimit = 5
 
   @Published private(set) var overview: Overview?
   @Published private(set) var connectionState: OverviewConnectionState = .loading
@@ -28,6 +34,7 @@ final class OverviewStore: ObservableObject {
   private let reader: any OverviewReading
   private let clock: any OverviewClock
   private var pollingTask: Task<Void, Never>?
+  private var startupTransportFailures = 0
   private var pollingStarted = false
 
   init(reader: any OverviewReading, clock: any OverviewClock = SystemOverviewClock()) {
@@ -100,6 +107,7 @@ final class OverviewStore: ObservableObject {
       currentDate = await clock.now()
       overview = nextOverview
       connectionState = .online
+      startupTransportFailures = 0
     } catch is CancellationError {
       return
     } catch let error as OverviewClientError {
@@ -113,13 +121,30 @@ final class OverviewStore: ObservableObject {
       case .incompatibleOverviewSchema, .incompatibleReceiptSchema:
         connectionState = .incompatible(error.localizedDescription)
       default:
-        connectionState = .offline(error.localizedDescription)
+        reportTransportFailure(error.localizedDescription)
       }
     } catch {
       guard !Task.isCancelled else { return }
       currentDate = await clock.now()
-      connectionState = .offline(error.localizedDescription)
+      reportTransportFailure(error.localizedDescription)
     }
+  }
+
+  /// A receipt or token problem is a real answer and is reported at once. Only an unreachable
+  /// daemon gets the benefit of the doubt, and only until it has been given `startupRetryLimit`
+  /// chances to come up.
+  private func reportTransportFailure(_ message: String) {
+    guard overview == nil, startupTransportFailures < Self.startupRetryLimit else {
+      connectionState = .offline(message)
+      return
+    }
+    startupTransportFailures += 1
+    connectionState = .loading
+  }
+
+  private var isWaitingForFirstOverview: Bool {
+    overview == nil && connectionState == .loading
+      && startupTransportFailures < Self.startupRetryLimit
   }
 
   private func replacePollingTask(refreshImmediately: Bool) {
@@ -128,7 +153,10 @@ final class OverviewStore: ObservableObject {
       guard let self else { return }
       if refreshImmediately { await refresh() }
       while !Task.isCancelled {
-        let interval = isPopoverOpen ? Self.openPollInterval : Self.closedPollInterval
+        let interval =
+          isWaitingForFirstOverview
+          ? Self.startupRetryInterval
+          : isPopoverOpen ? Self.openPollInterval : Self.closedPollInterval
         do {
           try await clock.sleep(for: interval)
         } catch {

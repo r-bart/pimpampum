@@ -1,8 +1,29 @@
 import AppKit
 import SwiftUI
 
+/// What a launching instance needs to know about the copies already running, so the decision can be
+/// tested without an NSRunningApplication.
+protocol RunningInstance {
+  var processIdentifier: pid_t { get }
+  var launchDate: Date? { get }
+}
+
+extension NSRunningApplication: RunningInstance {}
+
 @MainActor
 final class PimpampumApplicationDelegate: NSObject, NSApplicationDelegate {
+  /// True when an older copy of this bundle is already running. Ties and unknown launch dates keep
+  /// the newcomer alive rather than risk leaving the menu bar with no app at all.
+  static func shouldStandDown(current: any RunningInstance, peers: [any RunningInstance]) -> Bool {
+    guard let launchedAt = current.launchDate else { return false }
+    return peers.contains { peer in
+      guard peer.processIdentifier != current.processIdentifier,
+        let peerLaunchedAt = peer.launchDate
+      else { return false }
+      return peerLaunchedAt < launchedAt
+    }
+  }
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     let dataDirectory = ApplicationConfiguration.dataDirectory()
     Task { @MainActor in
@@ -19,6 +40,19 @@ final class PimpampumApplicationDelegate: NSObject, NSApplicationDelegate {
           dataDirectory: dataDirectory
         )
       if smokeHandled || loginHandled {
+        NSApplication.shared.terminate(nil)
+        return
+      }
+      // Registering the login item makes macOS start the app, and once setup adopts a copy the user
+      // already placed in an Applications folder that is the very bundle already running. A
+      // menu-bar app has no reason to run twice, so the newcomer stands down and the user keeps the
+      // window they were using.
+      if Self.shouldStandDown(
+        current: NSRunningApplication.current,
+        peers: NSRunningApplication.runningApplications(
+          withBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
+        )
+      ) {
         NSApplication.shared.terminate(nil)
       }
     }
