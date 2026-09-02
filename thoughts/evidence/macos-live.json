@@ -1,11 +1,11 @@
 {
   "schemaVersion": 3,
   "status": "passed",
-  "testedAt": "2026-09-02T17:48:27.818Z",
-  "durationMilliseconds": 105488,
+  "testedAt": "2026-09-02T18:14:07.235Z",
+  "durationMilliseconds": 118913,
   "platform": "macOS",
   "architecture": "arm64",
-  "gitCommit": "b9f02096fc974b1d863aa62c038f84cc44c1cd68",
+  "gitCommit": "c453f4d5452610c61c6b3449d1d62ec4749e2ab6",
   "sourceInputSha256": "4cb1223550e96381604ae0bb2ac4ca744bbf4bb878fdc73142ac2c8613d673d3",
   "releaseSequence": ["sign-nested-runtime", "sign-outer-app", "notarize", "staple", "approve"],
   "loginItem": "denied",
@@ -17,8 +17,8 @@
     "claudeCode": "1.0.0 (Claude Code)"
   },
   "artifactHashes": {
-    "artifactMetadataSha256": "c13a9df42a66481f26e725fb6d19aa5bc666f4c9909dd98d12899772de80f1a7",
-    "appBundleSha256": "db0c75a08e9b448005685600784627ad5583808a3319a1249307a016ef4fd5b4",
+    "artifactMetadataSha256": "dad30a4beb227f63cc87f94e03e7981e8e19d8c75f9acad6390e3560e3ab7660",
+    "appBundleSha256": "944b3d3c89dde1c0b6684a78fbad063ba6222d08ab6d849ae1d49f4612886722",
     "appBinarySha256": "5ec41ee8ac34ddac429f7090b99633df3f12156cf311bb776ef461b78be6b571",
     "compactMarkSha256": "5d9f558de031b9a3c4ed1052e093fb235f9a077d077c9a027286975d4a84f463",
     "runtimeManifestSha256": "bcffacc89ff1b267301856f0cc772977ca24045f41d0c4f64add44c98ca85d89",
