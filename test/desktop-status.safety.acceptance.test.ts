@@ -4,7 +4,7 @@
  * Supplemental safety contract generated before implementation after the strict Phase 0 review.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -654,16 +654,29 @@ describe('Frozen desktop-status safety contract', () => {
   });
 
   it('passes Linux workspace paths as a separate xdg-open argument', () => {
-    const qml = readFileSync(
-      join(process.cwd(), 'integrations/omarchy/pimpampum-status/StatusPopout.qml'),
-      'utf8',
-    );
-    expect(qml).toMatch(/(?:command|arguments)\s*:\s*\[\s*["']xdg-open["']\s*,/);
-    expect(qml).not.toMatch(/shellQuote|sh\s+-c|bash\s+-c|xdg-open\s+\$\{|xdg-open.*\+/);
-    expect(qml).toMatch(/onClicked\s*:\s*openWorkspace\([^)]*rootPath[^)]*\)/);
-    expect(qml).toMatch(
+    // StatusPopout.qml was split in wave 4 (Task 9.6): PopoutController.qml owns the launcher call
+    // and PortfolioPage.qml wires the row to it. The property is unchanged — a workspace path is
+    // always a separate argument of the command list, never interpolated into a shell string.
+    const pluginDirectory = join(process.cwd(), 'integrations/omarchy/pimpampum-status');
+    const readQml = (name: string): string => readFileSync(join(pluginDirectory, name), 'utf8');
+    // Two surfaces launch the opener: the popout opens a workspace, the folder services open a
+    // managed folder. Both build the command as a list, so both are pinned.
+    expect(readQml('PopoutController.qml')).toMatch(
       /function\s+openWorkspace\([^)]*\)\s*\{[^}]*arguments\s*=\s*\[\s*["']xdg-open["']\s*,/s,
     );
+    expect(readQml('ManagedFolderService.qml')).toMatch(
+      /arguments\s*=\s*\[\s*["']xdg-open["']\s*,/,
+    );
+    expect(readQml('PortfolioPage.qml')).toMatch(
+      /onActivated\s*:\s*controller\.openWorkspace\([^)]*rootPath[^)]*\)/,
+    );
+    // The negative half holds for every QML file the plugin ships, not only the one that opens a
+    // workspace: no surface may reach a shell or build the command by concatenation.
+    for (const name of readdirSync(pluginDirectory).filter((entry) => entry.endsWith('.qml'))) {
+      expect(readQml(name), name).not.toMatch(
+        /shellQuote|sh\s+-c|bash\s+-c|xdg-open\s+\$\{|xdg-open.*\+/,
+      );
+    }
   });
 
   it('exposes only overview reads and validated reveal actions to native status views', () => {

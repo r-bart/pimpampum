@@ -73,26 +73,21 @@ struct BackupDirectoryOpener: BackupDirectoryOpening {
     openDirectory: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }
   ) {
     self.init(
-      validateDirectory: { path in
-        var isDirectory = ObjCBool(false)
-        return fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
-          && isDirectory.boolValue
-          && fileManager.isReadableFile(atPath: path)
-      },
+      validateDirectory: DirectoryOpener.isReadableDirectory(fileManager),
       openDirectory: openDirectory
     )
   }
 
   func openDirectory(at path: String) throws {
-    guard !path.isEmpty, !path.contains("\0"), NSString(string: path).isAbsolutePath else {
-      throw BackupDirectoryOpenError.invalidPath
-    }
-    let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
-    guard validateDirectory(url.path) else {
-      throw BackupDirectoryOpenError.unavailable(path: url.path)
-    }
-    guard openDirectory(url) else {
-      throw BackupDirectoryOpenError.openFailed(path: url.path)
+    switch DirectoryOpener.open(
+      at: path,
+      validateDirectory: validateDirectory,
+      openDirectory: openDirectory
+    ) {
+    case .opened: return
+    case .invalidPath: throw BackupDirectoryOpenError.invalidPath
+    case .unavailable(let path): throw BackupDirectoryOpenError.unavailable(path: path)
+    case .openFailed(let path): throw BackupDirectoryOpenError.openFailed(path: path)
     }
   }
 }

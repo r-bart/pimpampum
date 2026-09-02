@@ -2,6 +2,7 @@ import { Client, SUPPORTED_PROTOCOL_VERSIONS } from '@modelcontextprotocol/clien
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { isAbsolute } from 'node:path';
 import type { Stream } from 'node:stream';
+import { redactDiagnostic } from '../diagnostics.js';
 import { sanitizedHostEnvironment } from './process.js';
 
 const MAX_DIAGNOSTIC_BYTES = 8_192;
@@ -75,18 +76,6 @@ function boundedSerialized(value: unknown): string {
     if (error instanceof Error && /bounded message limit/iu.test(error.message)) throw error;
     throw new Error('MCP verifier output could not be inspected safely', { cause: error });
   }
-}
-
-function redactDiagnostic(value: string): string {
-  return value
-    .replace(/(?:authorization\s*:?\s*)?bearer\s+\S+/giu, '[credential redacted]')
-    .replace(/\b(?:api[_-]?key|access[_-]?token|secret)\s*[:=]\s*\S+/giu, '[credential redacted]')
-    .replace(/\/Users\/[^/\s]+/gu, '~')
-    .replace(/\/home\/[^/\s]+/gu, '~')
-    .replace(/[\r\n\t]+/gu, ' ')
-    .replace(/\s{2,}/gu, ' ')
-    .trim()
-    .slice(0, 320);
 }
 
 function diagnosticValues(...sources: unknown[]): string[] {

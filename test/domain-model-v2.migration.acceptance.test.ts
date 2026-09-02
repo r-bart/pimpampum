@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../src/db.js';
+import { LATEST_SCHEMA_VERSION } from '../src/migrations.js';
 import { createV1Database } from './helpers/v1Schema.js';
 
 const temporaryDirectories: string[] = [];
@@ -207,7 +208,7 @@ describe('Domain Model v2 database migration', () => {
     createPopulatedV1(path);
 
     const database = openDatabase(path);
-    expect(database.pragma('user_version', { simple: true })).toBe(2);
+    expect(database.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect(database.pragma('foreign_key_check')).toEqual([]);
 
     const projects = database
@@ -303,7 +304,7 @@ describe('Domain Model v2 database migration', () => {
     database.close();
 
     const reopened = openDatabase(path);
-    expect(reopened.pragma('user_version', { simple: true })).toBe(2);
+    expect(reopened.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect(reopened.prepare('SELECT COUNT(*) FROM specs').pluck().get()).toBe(3);
     reopened.close();
   });
@@ -403,8 +404,10 @@ describe('Domain Model v2 database migration', () => {
     // Spec: EC-6
     const path = temporaryDatabasePath('future.sqlite');
     const database = new Database(path);
-    database.pragma('user_version = 3');
+    database.pragma(`user_version = ${LATEST_SCHEMA_VERSION + 1}`);
     database.close();
-    expect(() => openDatabase(path)).toThrow(/newer than supported version 2/iu);
+    expect(() => openDatabase(path)).toThrow(
+      new RegExp(`newer than supported version ${LATEST_SCHEMA_VERSION}`, 'iu'),
+    );
   });
 });

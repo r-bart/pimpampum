@@ -2,8 +2,29 @@ import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { AppError } from './errors.js';
 
-export const LATEST_SCHEMA_VERSION = 2;
+export const LATEST_SCHEMA_VERSION = 3;
 
+/**
+ * Schema v2 stored this prefix plus the Workspace id as the root of a Workspace imported through
+ * synchronization without a local root. Schema v3 stores NULL instead; the overview still shows
+ * the placeholder because the native surfaces reject an empty root.
+ */
+export const UNRESOLVED_WORKSPACE_ROOT_PREFIX = '/__pimpampum_unresolved__/';
+
+/** `workspaces` as schema v3 creates it: `root_path` stays NULL until the user attaches a local root. */
+function workspacesV3Table(name: string): string {
+  return `
+CREATE TABLE IF NOT EXISTS ${name} (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  root_path TEXT UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`;
+}
+
+/** Schema v2 verbatim; `migrateV1ToV2` still replays it and v3 rebuilds only `workspaces`. */
 const SCHEMA_V2 = `
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
@@ -247,42 +268,8 @@ function validateMigratedData(
   }
 }
 
-function migrateV1ToV2(database: Database.Database): void {
-  assertV1Ownership(database);
-
-  const expected = {
-    projects: scalarCount(database, 'SELECT COUNT(*) AS count FROM projects'),
-    contextDocuments: scalarCount(database, 'SELECT COUNT(*) AS count FROM context_documents'),
-    tasks: scalarCount(database, 'SELECT COUNT(*) AS count FROM tasks'),
-    claims: scalarCount(database, 'SELECT COUNT(*) AS count FROM claims'),
-    activityEvents: scalarCount(database, 'SELECT COUNT(*) AS count FROM activity_events'),
-  };
-
-  database.exec(`
-    ALTER TABLE projects RENAME TO projects_v1;
-    ALTER TABLE context_documents RENAME TO context_documents_v1;
-    ALTER TABLE tasks RENAME TO tasks_v1;
-    ALTER TABLE claims RENAME TO claims_v1;
-    ALTER TABLE activity_events RENAME TO activity_events_v1;
-  `);
-
-  database.exec(SCHEMA_V2);
-  database.exec(`
-    CREATE TEMP TABLE migration_spec_map (
-      project_id TEXT PRIMARY KEY,
-      spec_id TEXT NOT NULL UNIQUE
-    );
-  `);
-  const insertMapping = database.prepare(
-    'INSERT INTO migration_spec_map (project_id, spec_id) VALUES (?, ?)',
-  );
-  for (const project of database
-    .prepare<[], ProjectIdRow>('SELECT id FROM projects_v1 ORDER BY id')
-    .all()) {
-    insertMapping.run(project.id, migratedSpecId(project.id));
-  }
-
-  database.exec(`
+/** Copies every v1 row into the v2 tables; each Project's PRD becomes its primary Spec. */
+const V1_TO_V2_COPY_SQL = `
     INSERT INTO projects (
       id, workspace_id, slug, title, state, revision, completion_summary,
       artifacts_json, completed_at, cancelled_at, created_at, updated_at
@@ -406,7 +393,44 @@ function migrateV1ToV2(database: Database.Database): void {
     LEFT JOIN tasks_v1 old_task
       ON event.target_type = 'task' AND old_task.id = event.target_id
     LEFT JOIN migration_spec_map task_map ON task_map.project_id = old_task.project_id;
+  `;
+
+function migrateV1ToV2(database: Database.Database): void {
+  assertV1Ownership(database);
+
+  const expected = {
+    projects: scalarCount(database, 'SELECT COUNT(*) AS count FROM projects'),
+    contextDocuments: scalarCount(database, 'SELECT COUNT(*) AS count FROM context_documents'),
+    tasks: scalarCount(database, 'SELECT COUNT(*) AS count FROM tasks'),
+    claims: scalarCount(database, 'SELECT COUNT(*) AS count FROM claims'),
+    activityEvents: scalarCount(database, 'SELECT COUNT(*) AS count FROM activity_events'),
+  };
+
+  database.exec(`
+    ALTER TABLE projects RENAME TO projects_v1;
+    ALTER TABLE context_documents RENAME TO context_documents_v1;
+    ALTER TABLE tasks RENAME TO tasks_v1;
+    ALTER TABLE claims RENAME TO claims_v1;
+    ALTER TABLE activity_events RENAME TO activity_events_v1;
   `);
+
+  database.exec(SCHEMA_V2);
+  database.exec(`
+    CREATE TEMP TABLE migration_spec_map (
+      project_id TEXT PRIMARY KEY,
+      spec_id TEXT NOT NULL UNIQUE
+    );
+  `);
+  const insertMapping = database.prepare(
+    'INSERT INTO migration_spec_map (project_id, spec_id) VALUES (?, ?)',
+  );
+  for (const project of database
+    .prepare<[], ProjectIdRow>('SELECT id FROM projects_v1 ORDER BY id')
+    .all()) {
+    insertMapping.run(project.id, migratedSpecId(project.id));
+  }
+
+  database.exec(V1_TO_V2_COPY_SQL);
 
   validateMigratedData(database, expected);
 
@@ -421,7 +445,32 @@ function migrateV1ToV2(database: Database.Database): void {
   // SQLite keeps index names attached to renamed tables. Re-run the idempotent schema after the
   // legacy tables are gone so every v2 index is recreated under its canonical name.
   database.exec(SCHEMA_V2);
-  database.pragma(`user_version = ${LATEST_SCHEMA_VERSION}`);
+  database.pragma('user_version = 2');
+}
+
+/**
+ * Rebuilds `workspaces` with a nullable `root_path` (SQLite cannot drop NOT NULL in place) and
+ * turns every v2 sentinel root into NULL. Runs with foreign keys off: `projects` and
+ * `context_documents` reference `workspaces`, and DROP TABLE would otherwise cascade or refuse.
+ * The child tables keep their `REFERENCES workspaces(id)` text, so the renamed table satisfies
+ * them; `foreign_key_check` proves it before the version moves.
+ */
+function migrateV2ToV3(database: Database.Database): void {
+  database.exec(workspacesV3Table('workspaces_v3'));
+  database
+    .prepare(
+      `INSERT INTO workspaces_v3 (id, name, root_path, created_at, updated_at)
+       SELECT id, name, CASE WHEN substr(root_path, 1, ?) = ? THEN NULL ELSE root_path END,
+              created_at, updated_at
+       FROM workspaces`,
+    )
+    .run(UNRESOLVED_WORKSPACE_ROOT_PREFIX.length, UNRESOLVED_WORKSPACE_ROOT_PREFIX);
+  database.exec('DROP TABLE workspaces; ALTER TABLE workspaces_v3 RENAME TO workspaces;');
+  const foreignKeyFailures = database.pragma('foreign_key_check') as unknown[];
+  if (foreignKeyFailures.length > 0) {
+    throw new Error('Workspace root migration validation failed');
+  }
+  database.pragma('user_version = 3');
 }
 
 export function migrateDatabase(database: Database.Database): void {
@@ -437,22 +486,31 @@ export function migrateDatabase(database: Database.Database): void {
 
   if (version === 0) {
     database.transaction(() => {
+      database.exec(workspacesV3Table('workspaces'));
       database.exec(SCHEMA_V2);
       database.pragma(`user_version = ${LATEST_SCHEMA_VERSION}`);
     })();
     return;
   }
 
-  if (version !== 1) {
+  if (version !== 1 && version !== 2) {
     throw new AppError('internal_error', `Unsupported database schema version ${version}`, 500);
   }
 
+  // Forward only, one transaction: a v1 database passes through v2 and lands on v3 or stays v1.
   database.pragma('foreign_keys = OFF');
   try {
-    database.transaction(() => migrateV1ToV2(database))();
+    database.transaction(() => {
+      if (version === 1) migrateV1ToV2(database);
+      migrateV2ToV3(database);
+    })();
   } catch (error) {
     const message = error instanceof Error ? error.message : 'unknown error';
-    throw new AppError('internal_error', `Domain Model v2 migration failed: ${message}`, 500);
+    throw new AppError(
+      'internal_error',
+      `Database migration from schema version ${version} failed: ${message}`,
+      500,
+    );
   } finally {
     database.pragma('foreign_keys = ON');
   }

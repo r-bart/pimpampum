@@ -74,7 +74,21 @@ function validate(pluginRoot: string) {
   return spawnSync(process.execPath, [validator, pluginRoot], { encoding: 'utf8' });
 }
 
-function rewrite(pluginRoot: string, name: string, edit: (source: string) => string): void {
+/** The QML file of the candidate that holds `fragment`; the contract does not pin which one. */
+function qmlFileContaining(pluginRoot: string, fragment: string): string {
+  const name = readdirSync(pluginRoot)
+    .filter((entry) => entry.endsWith('.qml'))
+    .find((entry) => readFileSync(join(pluginRoot, entry), 'utf8').includes(fragment));
+  if (!name) throw new Error(`no QML file contains ${fragment}`);
+  return name;
+}
+
+function rewrite(
+  pluginRoot: string,
+  target: string | ((pluginRoot: string) => string),
+  edit: (source: string) => string,
+): void {
+  const name = typeof target === 'function' ? target(pluginRoot) : target;
   const path = join(pluginRoot, name);
   const before = readFileSync(path, 'utf8');
   const after = edit(before);
@@ -119,7 +133,9 @@ describe('Omarchy Quattro plugin', () => {
     ],
     [
       'popout copy that sends the user to npm',
-      'StatusPopout.qml',
+      // The Updates card moved to the settings page during the QML split; the sweep covers the
+      // whole popout surface, so the mutation follows the copy instead of pinning a file name.
+      (plugin: string) => qmlFileContaining(plugin, 'Check for a newer Pimpampum release'),
       (source: string) =>
         source.replace(
           '"Check for a newer Pimpampum release. Nothing changes until you install it."',
@@ -129,13 +145,24 @@ describe('Omarchy Quattro plugin', () => {
     ],
     [
       'a helper launched through a shell with an interpolated path',
-      'BackupService.qml',
+      // The directory opener moved between services during the QML split; the sweep covers every
+      // QML file, so the mutation follows the fragment instead of pinning a file name.
+      (plugin: string) => qmlFileContaining(plugin, 'var arguments = ["xdg-open", directory]'),
       (source: string) =>
         source.replace(
           'var arguments = ["xdg-open", directory]',
           'var arguments = ["sh", "-c", "xdg-open " + directory]',
         ),
       'must not interpolate paths into shell commands',
+    ],
+    [
+      'settings copy that leaks into the portfolio page',
+      // The validator addresses surfaces, not files: the settings controls belong to the settings
+      // page, and the portfolio must not grow a second copy of one.
+      (plugin: string) => qmlFileContaining(plugin, 'text: "Active work ("'),
+      (source: string) =>
+        source.replace('text: "Active work ("', 'title: "Backup"\n    text: "Active work ("'),
+      'leave the dedicated settings controls out',
     ],
     [
       'a service control that reads stdout before the collector publishes it',
@@ -154,6 +181,25 @@ describe('Omarchy Quattro plugin', () => {
     const result = validate(plugin);
     expect(result.status, result.stdout).not.toBe(0);
     expect(result.stderr).toContain(verdict);
+  });
+
+  // The surface rule is not "the copy exists somewhere in the popout": the empty state belongs to
+  // the portfolio page, so moving its explanation to the help page of the same popout must fail.
+  it('rejects empty-state copy moved to another page of the same popout', () => {
+    const plugin = candidate('surface-move');
+    const explanation = '"Projects appear here as your agents create them."';
+    const portfolioFile = qmlFileContaining(plugin, explanation);
+    const helpAnchor = '"Inspect both candidates before resolving a conflict:"';
+    const helpFile = qmlFileContaining(plugin, helpAnchor);
+    rewrite(plugin, portfolioFile, (source) =>
+      source.replace(explanation, '"Projects appear here."'),
+    );
+    rewrite(plugin, helpFile, (source) => source.replace(helpAnchor, explanation));
+
+    const result = validate(plugin);
+    expect(result.status, result.stdout).not.toBe(0);
+    expect(result.stderr).toContain('empty states must teach');
+    expect(result.stderr).toContain('the PortfolioPage surface');
   });
 
   it('delegates install and uninstall to the single Pimpampum lifecycle', () => {

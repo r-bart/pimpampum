@@ -387,7 +387,13 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe('Omarchy Quattro composite service adapter', () => {
+// Every test below drives a real install or uninstall lifecycle: 35 plugin artifacts written
+// atomically and fsynced, plus a `git clone` in the checkout cases. Measured on an idle machine the
+// heaviest cases run 2.4-4.0 s, which leaves no headroom under the default 5 s once vitest runs the
+// suite's files in parallel; the test that times out then moves from run to run. The budget is the
+// one the subprocess case in this file already carried, not a mask over a regression: the file's
+// wall time fell from 53 s to 46 s across this wave.
+describe('Omarchy Quattro composite service adapter', { timeout: 20_000 }, () => {
   it('recognizes only explicit Quattro or Omarchy 4 version output', () => {
     expect(isCompatibleOmarchyVersion('Omarchy Quattro test')).toBe(true);
     expect(isCompatibleOmarchyVersion('Omarchy 4.0.0.r1333')).toBe(true);
@@ -784,7 +790,7 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
     expect(refused.stderr.trim()).toBe(
       'pimpampum-control-route: control launcher differs from its runtime receipt',
     );
-  }, 20_000);
+  });
 
   it('keeps an official Git checkout clean across install, fast-forward, reconcile, and removal', async () => {
     const root = fixture('git-checkout-reconcile');
@@ -858,8 +864,9 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
     }
   });
 
-  it('rejects missing, non-directory, unsafe, and absent official backup reports safely', async () => {
-    for (const variant of ['missing', 'file', 'unsafe', 'absent'] as const) {
+  it.each(['missing', 'file', 'unsafe', 'absent'] as const)(
+    'rejects a %s official backup report safely',
+    async (variant) => {
       const root = fixture(`invalid-official-backup-${variant}`);
       const quattro = fakeQuattro(root);
       const composite = adapter(root, daemon(root, []));
@@ -898,88 +905,92 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
       expect(existsSync(join(root.target, 'manifest.json'))).toBe(true);
       expect(existsSync(preexisting)).toBe(true);
       if (variant === 'unsafe') expect(existsSync(quattro.backups.at(-1)!)).toBe(false);
-    }
-  });
+    },
+  );
 
-  it('rejects malformed, duplicate and unbounded shell layout snapshots before removal', async () => {
-    const cases = [
-      { label: 'invalid-json', output: 'not json', error: /invalid JSON/u },
-      { label: 'primitive-config', output: '[]', error: /incompatible/u },
-      { label: 'primitive-bar', output: JSON.stringify({ bar: [] }), error: /incompatible/u },
-      { label: 'missing-layout', output: JSON.stringify({ bar: {} }), error: /incompatible/u },
-      {
-        label: 'primitive-widget-entry',
-        output: JSON.stringify({
-          bar: {
-            layout: { left: [OMARCHY_PLUGIN_ID], center: ['other-widget'], right: [] },
+  // One case per `it`: every case is a full install and uninstall cycle, and ten of them in one
+  // test exceeded the per-test budget on a loaded machine.
+  const shellLayoutCases = [
+    { label: 'invalid-json', output: 'not json', error: /invalid JSON/u },
+    { label: 'primitive-config', output: '[]', error: /incompatible/u },
+    { label: 'primitive-bar', output: JSON.stringify({ bar: [] }), error: /incompatible/u },
+    { label: 'missing-layout', output: JSON.stringify({ bar: {} }), error: /incompatible/u },
+    {
+      label: 'primitive-widget-entry',
+      output: JSON.stringify({
+        bar: {
+          layout: { left: [OMARCHY_PLUGIN_ID], center: ['other-widget'], right: [] },
+        },
+      }),
+      error: /must be an object/u,
+    },
+    {
+      label: 'duplicate',
+      output: JSON.stringify({
+        bar: {
+          layout: {
+            left: [{ id: OMARCHY_PLUGIN_ID }],
+            center: [],
+            right: [{ id: OMARCHY_PLUGIN_ID }],
           },
-        }),
-        error: /must be an object/u,
-      },
-      {
-        label: 'duplicate',
-        output: JSON.stringify({
-          bar: {
-            layout: {
-              left: [{ id: OMARCHY_PLUGIN_ID }],
-              center: [],
-              right: [{ id: OMARCHY_PLUGIN_ID }],
-            },
+        },
+      }),
+      error: /multiple unsupported/u,
+    },
+    {
+      label: 'too-many-entries',
+      output: JSON.stringify({
+        bar: {
+          layout: {
+            left: Array.from({ length: 1025 }, () => ({ id: 'other' })),
+            center: [],
+            right: [],
           },
-        }),
-        error: /multiple unsupported/u,
-      },
-      {
-        label: 'too-many-entries',
-        output: JSON.stringify({
-          bar: {
-            layout: {
-              left: Array.from({ length: 1025 }, () => ({ id: 'other' })),
-              center: [],
-              right: [],
-            },
+        },
+      }),
+      error: /incompatible/u,
+    },
+    {
+      label: 'too-many-settings',
+      output: JSON.stringify({
+        bar: {
+          layout: {
+            left: [
+              Object.fromEntries([
+                ['id', OMARCHY_PLUGIN_ID],
+                ...Array.from({ length: 64 }, (_, index) => [`setting${index}`, index]),
+              ]),
+            ],
+            center: [],
+            right: [],
           },
-        }),
-        error: /incompatible/u,
-      },
-      {
-        label: 'too-many-settings',
-        output: JSON.stringify({
-          bar: {
-            layout: {
-              left: [
-                Object.fromEntries([
-                  ['id', OMARCHY_PLUGIN_ID],
-                  ...Array.from({ length: 64 }, (_, index) => [`setting${index}`, index]),
-                ]),
-              ],
-              center: [],
-              right: [],
-            },
+        },
+      }),
+      error: /entry exceeded/u,
+    },
+    {
+      label: 'large-widget-entry',
+      output: JSON.stringify({
+        bar: {
+          layout: {
+            left: [{ id: OMARCHY_PLUGIN_ID, payload: 'x'.repeat(65 * 1024) }],
+            center: [],
+            right: [],
           },
-        }),
-        error: /entry exceeded/u,
-      },
-      {
-        label: 'large-widget-entry',
-        output: JSON.stringify({
-          bar: {
-            layout: {
-              left: [{ id: OMARCHY_PLUGIN_ID, payload: 'x'.repeat(65 * 1024) }],
-              center: [],
-              right: [],
-            },
-          },
-        }),
-        error: /entry exceeded/u,
-      },
-      {
-        label: 'oversized',
-        output: ' '.repeat(1024 * 1024 + 1),
-        error: /size limit/u,
-      },
-    ];
-    for (const testCase of cases) {
+        },
+      }),
+      error: /entry exceeded/u,
+    },
+    {
+      label: 'oversized',
+      output: ' '.repeat(1024 * 1024 + 1),
+      error: /size limit/u,
+    },
+  ];
+
+  it.each(shellLayoutCases)(
+    'rejects a $label shell layout snapshot before removal',
+    async (testCase) => {
       const root = fixture(`shell-layout-${testCase.label}`);
       const quattro = fakeQuattro(root);
       const manager = createPlatformServiceManager(
@@ -991,8 +1002,8 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
       await expect(manager.uninstall()).rejects.toThrow(testCase.error);
       expect(quattro.backups).toEqual([]);
       expect(existsSync(root.target)).toBe(true);
-    }
-  });
+    },
+  );
 
   it('covers daemon activation rollback fallbacks and activation failure cleanup', async () => {
     for (const variant of ['rollback-hook', 'running-fallback', 'activation-failure'] as const) {

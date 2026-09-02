@@ -8,7 +8,10 @@ import {
   rmSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
-import { assertNoSymlinkTraversal } from './receipt.js';
+import { z } from 'zod';
+import { allOrAggregate, runCompensation } from '../aggregateRollback.js';
+import { assertNoSymlinkTraversal } from '../fsGuards.js';
+import { asError, isRecord } from '../objects.js';
 import type {
   CommandResult,
   PlatformServiceAdapter,
@@ -59,10 +62,6 @@ const RETRYABLE_WIDGET_ENABLE_RESULTS = new Set(['unknown', 'not ready']);
 function requireAbsolute(value: string, label: string): string {
   if (!isAbsolute(value) || value.includes('\0')) throw new Error(`${label} must be absolute`);
   return resolve(value);
-}
-
-function asError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
 }
 
 function commandError(label: string, result: CommandResult): Error {
@@ -210,9 +209,16 @@ function removeEmptyPluginDirectories(context: ServiceAdapterContext): void {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+const pluginRecordSchema = z.record(z.string(), z.unknown());
+/** `omarchy plugin list --json` answers a bare array today; a `{ plugins }` envelope stays accepted. */
+const pluginListSchema = z.union([
+  z.array(pluginRecordSchema),
+  z
+    .object({ plugins: z.array(pluginRecordSchema) })
+    .loose()
+    .transform((value) => value.plugins),
+]);
+const enabledPluginSchema = z.object({ enabled: z.boolean() }).loose();
 
 function parsePluginList(stdout: string): PluginState {
   let parsed: unknown;
@@ -221,20 +227,15 @@ function parsePluginList(stdout: string): PluginState {
   } catch (error) {
     throw new Error('omarchy plugin list returned invalid JSON', { cause: error });
   }
-  const entries = Array.isArray(parsed)
-    ? parsed
-    : isRecord(parsed) && Array.isArray(parsed.plugins)
-      ? parsed.plugins
-      : null;
-  if (!entries || !entries.every(isRecord)) {
+  const entries = pluginListSchema.safeParse(parsed);
+  if (!entries.success) {
     throw new Error('omarchy plugin list returned an incompatible JSON shape');
   }
-  const match = entries.find((entry) => entry.id === OMARCHY_PLUGIN_ID);
+  const match = entries.data.find((entry) => entry.id === OMARCHY_PLUGIN_ID);
   if (!match) return { installed: false, enabled: false };
-  if (typeof match.enabled !== 'boolean') {
-    throw new Error('omarchy plugin list omitted the enabled state');
-  }
-  return { installed: true, enabled: match.enabled };
+  const enabled = enabledPluginSchema.safeParse(match);
+  if (!enabled.success) throw new Error('omarchy plugin list omitted the enabled state');
+  return { installed: true, enabled: enabled.data.enabled };
 }
 
 function pluginIntegration(state: PluginState): ServiceIntegrationStatus {
@@ -380,6 +381,19 @@ async function rescan(context: ServiceAdapterContext, omarchyShellPath: string):
   );
 }
 
+const barSectionSchema = z.array(z.unknown()).max(MAX_BAR_ENTRIES_PER_SECTION);
+const shellConfigSchema = z
+  .object({
+    bar: z
+      .object({
+        layout: z
+          .object({ left: barSectionSchema, center: barSectionSchema, right: barSectionSchema })
+          .loose(),
+      })
+      .loose(),
+  })
+  .loose();
+
 function parseBarWidgetLayout(stdout: string): BarWidgetLayout | null {
   if (Buffer.byteLength(stdout, 'utf8') > MAX_SHELL_CONFIG_BYTES) {
     throw new Error('omarchy-shell listShellConfig exceeded the supported size limit');
@@ -390,18 +404,13 @@ function parseBarWidgetLayout(stdout: string): BarWidgetLayout | null {
   } catch (error) {
     throw new Error('omarchy-shell listShellConfig returned invalid JSON', { cause: error });
   }
-  const bar = isRecord(config) ? config.bar : null;
-  const layout = isRecord(bar) ? bar.layout : null;
-  if (!isRecord(layout)) {
+  const parsed = shellConfigSchema.safeParse(config);
+  if (!parsed.success) {
     throw new Error('omarchy-shell listShellConfig returned an incompatible bar layout');
   }
   const matches: BarWidgetLayout[] = [];
   for (const section of ['left', 'center', 'right'] as const) {
-    const entries = layout[section];
-    if (!Array.isArray(entries) || entries.length > MAX_BAR_ENTRIES_PER_SECTION) {
-      throw new Error('omarchy-shell listShellConfig returned an incompatible bar layout');
-    }
-    for (const [index, entry] of entries.entries()) {
+    for (const [index, entry] of parsed.data.bar.layout[section].entries()) {
       const id = isRecord(entry) ? entry.id : entry;
       if (id !== OMARCHY_PLUGIN_ID) continue;
       if (!isRecord(entry)) {
@@ -534,19 +543,6 @@ async function restorePluginState(
   }
 }
 
-async function allOrAggregate(actions: Array<() => Promise<void>>, message: string): Promise<void> {
-  const errors: Error[] = [];
-  for (const action of actions) {
-    try {
-      await action();
-    } catch (error) {
-      errors.push(asError(error));
-    }
-  }
-  if (errors.length === 1) throw errors[0]!;
-  if (errors.length > 1) throw new AggregateError(errors, message);
-}
-
 async function prepareDaemonActivationRollback(
   adapter: PlatformServiceAdapter,
   context: ServiceAdapterContext,
@@ -650,22 +646,15 @@ export function createOmarchyAdapter(options: OmarchyAdapterOptions): PlatformSe
           prior.enableChanged = true;
         }
       } catch (error) {
-        const activationError = asError(error);
-        const actions: Array<() => Promise<void>> = [];
-        if (prior.enableChanged) {
-          actions.push(() => setPluginEnabled(context, omarchyPath, false));
-        }
-        actions.push(() => rescan(context, omarchyShellPath));
-        actions.push(() => options.daemonAdapter.deactivate(context, artifacts));
-        try {
-          await allOrAggregate(actions, 'Omarchy activation compensation failed');
-        } catch (compensationError) {
-          throw new AggregateError(
-            [activationError, asError(compensationError)],
-            'Omarchy activation and compensation failed',
-          );
-        }
-        throw activationError;
+        await runCompensation(
+          asError(error),
+          [
+            ...(prior.enableChanged ? [() => setPluginEnabled(context, omarchyPath, false)] : []),
+            () => rescan(context, omarchyShellPath),
+            () => options.daemonAdapter.deactivate(context, artifacts),
+          ],
+          'Omarchy activation and compensation failed',
+        );
       }
     },
     async rollbackActivation(context, artifacts) {

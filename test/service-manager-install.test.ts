@@ -692,6 +692,37 @@ describe('platform-neutral service manager: install, reconcile and status', () =
     expect(postActivationVerifier).toHaveBeenCalledTimes(2);
   });
 
+  it('verifies an already running reconciled service without repairing its registration', async () => {
+    const root = testRoot('post-activation-running');
+    const order: string[] = [];
+    let running = false;
+    const adapter = testAdapter(root, {
+      activate: async () => {
+        order.push('activate');
+        running = true;
+      },
+      isRunning: async () => running,
+    });
+    const postActivationVerifier = vi.fn(async (verification: { reconciled: boolean }) => {
+      order.push(`verify:${verification.reconciled}`);
+    });
+    const manager = createPlatformServiceManager(
+      managerInput(root, async () => success(), {
+        platform: 'linux',
+        postActivationVerifier,
+        adapters: { linux: adapter },
+      }),
+    );
+
+    await expect(manager.install()).resolves.toMatchObject({ installed: true, reconciled: false });
+    expect(order).toEqual(['activate', 'verify:false']);
+
+    order.length = 0;
+    await expect(manager.install()).resolves.toMatchObject({ installed: true, reconciled: true });
+    expect(order).toEqual(['verify:true']);
+    expect(postActivationVerifier).toHaveBeenCalledTimes(2);
+  });
+
   it('promotes a legacy service receipt to the selected packaged adapter', async () => {
     const root = testRoot('legacy-packaged-adapter-migration');
     const servicePath = join(root.homeDirectory, '.config', 'pimpampum', 'service');

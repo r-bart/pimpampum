@@ -1,20 +1,8 @@
 import Foundation
 
-enum BackupHealthState: String, Codable, CaseIterable, Sendable {
-  case disabled
-  case pending
-  case healthy
-  case error
-
-  var label: String {
-    switch self {
-    case .disabled: "Automatic backup is off"
-    case .pending: "Backing up…"
-    case .healthy: "Up to date"
-    case .error: "Backup needs attention"
-    }
-  }
-
+// The cases and `label` of `BackupHealthState` are generated into `StateVocabulary.swift` from
+// the one table the Omarchy plugin shares; the panel's symbol choice stays here.
+extension BackupHealthState {
   var symbolName: String {
     switch self {
     case .disabled: "externaldrive"

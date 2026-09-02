@@ -18,6 +18,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AutomaticBackupStatus } from '../src/backupContract.js';
+import { LATEST_SCHEMA_VERSION } from '../src/migrations.js';
 import { PIMPAMPUM_VERSION } from '../src/version.js';
 import type {
   ContextDocument,
@@ -410,7 +411,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
       await delay(50);
     }
     const snapshot = new Database(snapshotPath, { readonly: true, fileMustExist: true });
-    expect(snapshot.pragma('user_version', { simple: true })).toBe(2);
+    expect(snapshot.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect(snapshot.prepare('SELECT id FROM projects WHERE id=?').get(persisted.id)).toEqual({
       id: persisted.id,
     });

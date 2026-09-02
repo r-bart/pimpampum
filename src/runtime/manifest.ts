@@ -1,5 +1,6 @@
 import { posix } from 'node:path';
 
+import { isRecord } from '../objects.js';
 import type {
   ParseRuntimeManifestOptions,
   RuntimeArchitecture,
@@ -24,10 +25,8 @@ function fail(message: string): never {
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    fail(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
+  if (!isRecord(value)) fail(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(

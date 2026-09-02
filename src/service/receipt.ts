@@ -1,21 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto';
-import {
-  chmodSync,
-  closeSync,
-  constants,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { AppError } from '../errors.js';
+import { writePrivateFileAtomic } from '../fsAtomic.js';
+import { assertNoSymlinkTraversal } from '../fsGuards.js';
 import type {
   InstallReceipt,
   InstallReceiptFileSnapshot,
@@ -45,26 +34,6 @@ export class InstallReceiptError extends AppError {
     );
     this.name = 'InstallReceiptError';
     if (cause !== undefined) this.cause = cause;
-  }
-}
-
-export function assertNoSymlinkTraversal(path: string, label: string, trustedRoot = path): void {
-  if (!isAbsolute(path) || path.includes('\0') || !isAbsolute(trustedRoot)) {
-    throw new Error(`${label} must be an absolute path`);
-  }
-  const normalizedPath = normalize(path);
-  const normalizedRoot = normalize(trustedRoot);
-  const child = relative(normalizedRoot, normalizedPath);
-  if (child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)) {
-    throw new Error(`${label} must remain inside its trusted root`);
-  }
-  let current = normalizedRoot;
-  const segments = child.split(sep).filter(Boolean);
-  for (const segment of ['', ...segments]) {
-    if (segment) current = join(current, segment);
-    if (!existsSync(current)) return;
-    const metadata = lstatSync(current);
-    if (metadata.isSymbolicLink()) throw new Error(`${label} must not traverse symbolic links`);
   }
 }
 
@@ -163,57 +132,18 @@ export function readInstallReceipt(
   }
 }
 
-function fsyncDirectory(directory: string): void {
-  const descriptor = openSync(directory, constants.O_RDONLY);
-  try {
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
 /**
- * Durable private write: an exclusive unique temporary file receives the bytes and an fsync, the
- * rename publishes it, and the directory fsync makes the rename itself survive a power loss. A
- * receipt that vouches for a service must not evaporate with the page cache.
+ * Durable private write through the shared primitive: the receipt that vouches for a service is
+ * fsynced before and after the rename so it does not evaporate with the page cache. The data
+ * directory is created private when it is missing, as the receipt is often its first file.
  */
-export function writePrivateFileAtomic(
-  path: string,
-  content: string | Buffer,
-  mode: number,
-  trustedRoot = dirname(path),
-): void {
-  const directory = dirname(path);
-  assertNoSymlinkTraversal(directory, 'Private file parent path', trustedRoot);
-  mkdirSync(directory, { recursive: true });
-  assertNoSymlinkTraversal(directory, 'Private file parent path', trustedRoot);
-  if (existsSync(path)) {
-    const metadata = lstatSync(path);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) {
-      throw new Error(`Private file target is not a regular file: ${path}`);
-    }
-  }
-  const temporaryPath = `${path}.${randomUUID()}.tmp`;
-  let descriptor: number | null = null;
-  try {
-    descriptor = openSync(
-      temporaryPath,
-      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
-      mode,
-    );
-    writeFileSync(descriptor, content);
-    fsyncSync(descriptor);
-    closeSync(descriptor);
-    descriptor = null;
-    chmodSync(temporaryPath, mode);
-    assertNoSymlinkTraversal(directory, 'Private file parent path', trustedRoot);
-    renameSync(temporaryPath, path);
-    chmodSync(path, mode);
-    fsyncDirectory(directory);
-  } finally {
-    if (descriptor !== null) closeSync(descriptor);
-    rmSync(temporaryPath, { force: true });
-  }
+function writeReceiptBytes(path: string, contents: string | Buffer, trustedRoot: string): void {
+  writePrivateFileAtomic(path, contents, {
+    mode: 0o600,
+    directoryMode: 0o700,
+    trustedRoot,
+    label: 'Installation receipt',
+  });
 }
 
 export function writeInstallReceipt(
@@ -221,7 +151,7 @@ export function writeInstallReceipt(
   receipt: InstallReceipt,
   trustedRoot = dirname(path),
 ): void {
-  writePrivateFileAtomic(path, `${JSON.stringify(receipt, null, 2)}\n`, 0o600, trustedRoot);
+  writeReceiptBytes(path, `${JSON.stringify(receipt, null, 2)}\n`, trustedRoot);
 }
 
 export function snapshotInstallReceipt(
@@ -260,5 +190,5 @@ export function restoreInstallReceiptSnapshot(
   if (JSON.stringify(restored) !== JSON.stringify(snapshot.receipt)) {
     throw new Error('Installation receipt byte snapshot does not match its metadata');
   }
-  writePrivateFileAtomic(path, snapshot.contents, 0o600, trustedRoot);
+  writeReceiptBytes(path, snapshot.contents, trustedRoot);
 }

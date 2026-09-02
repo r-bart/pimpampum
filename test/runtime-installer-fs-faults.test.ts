@@ -104,7 +104,8 @@ function ioError(message: string): NodeJS.ErrnoException {
 }
 
 /**
- * `atomicWrite` opens `<directory>/.<uuid>.tmp` exclusively and writes through the descriptor, so
+ * `writeOwnedFile` opens `<directory>/.<name>.<pid>.<uuid>.tmp` exclusively and writes through the
+ * descriptor, so
  * a fault cannot be bound to the final path directly. This records the temporary path of every
  * descriptor `openSync` returns and lets a test name the write it fails by its directory and
  * content (M-T5): the control launcher, the receipt, the removal journal.
@@ -231,6 +232,10 @@ describe('runtime installer filesystem fault injection', () => {
     );
     expect(descriptor).not.toBeNull();
     expect(vi.mocked(closeSync)).toHaveBeenCalledWith(descriptor);
+    // The staging root lives beside the destination, one level below the versions root. Before
+    // the marker write moved inside the cleanup boundary, a failed marker left an empty stage
+    // that the next install refused as not receipt-owned.
+    expect(existsSync(dirname(layout.versionDirectory))).toBe(false);
     expect(
       readdirSync(layout.versionsDirectory).filter((name) => name.startsWith('.pimpampum-stage-')),
     ).toEqual([]);

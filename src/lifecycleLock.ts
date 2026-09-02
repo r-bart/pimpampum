@@ -16,6 +16,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { AppError } from './errors.js';
+import { isRecord } from './objects.js';
 
 /**
  * One lifecycle lock for every mutation of the data directory: the setup coordinator, the
@@ -34,10 +35,6 @@ export const PRIVATE_DIRECTORY_MODE = 0o700;
 export const PRIVATE_FILE_MODE = 0o600;
 
 const heldLockPaths = new AsyncLocalStorage<ReadonlySet<string>>();
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 export function assertPrivateDirectory(dataDirectory: string): void {
   mkdirSync(dataDirectory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });

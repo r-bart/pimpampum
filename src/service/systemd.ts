@@ -1,4 +1,6 @@
 import { isAbsolute, join } from 'node:path';
+import { runCompensation } from '../aggregateRollback.js';
+import { asError } from '../objects.js';
 import type { CommandResult, PlatformServiceAdapter, ServiceAdapterContext } from './types.js';
 
 export const SYSTEMD_UNIT_NAME = 'pimpampum.service';
@@ -148,10 +150,6 @@ function contextInput(context: ServiceAdapterContext): SystemdUnitInput {
   };
 }
 
-function asError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
-}
-
 interface PreviousSystemdState {
   enabled: boolean;
   running: boolean;
@@ -197,24 +195,19 @@ async function compensateFailedActivation(
   systemctlPath: string,
   activationError: unknown,
 ): Promise<never> {
-  const errors = [asError(activationError)];
-  for (const [operation, arguments_] of [
-    ['disable --now', ['disable', '--now', SYSTEMD_UNIT_NAME]],
-    ['reset-failed', ['reset-failed', SYSTEMD_UNIT_NAME]],
-  ] as const) {
-    try {
+  const original = asError(activationError);
+  return runCompensation(
+    original,
+    (
+      [
+        ['disable --now', ['disable', '--now', SYSTEMD_UNIT_NAME]],
+        ['reset-failed', ['reset-failed', SYSTEMD_UNIT_NAME]],
+      ] as const
+    ).map(([operation, arguments_]) => async () => {
       await runSystemctlAllowAbsent(context, systemctlPath, operation, [...arguments_]);
-    } catch (error) {
-      errors.push(asError(error));
-    }
-  }
-  if (errors.length > 1) {
-    throw new AggregateError(
-      errors,
-      `systemd activation compensation failed after: ${errors[0]!.message}`,
-    );
-  }
-  throw errors[0]!;
+    }),
+    `systemd activation compensation failed after: ${original.message}`,
+  );
 }
 
 async function restoreSystemdState(

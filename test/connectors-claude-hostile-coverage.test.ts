@@ -348,6 +348,19 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
     await expect(failed.connector.inspect()).resolves.toMatchObject({ state: 'equivalentUnowned' });
   });
 
+  // `~/.claude.json` is hand-edited often enough that an entry without an `args` key is a real
+  // shape, not a hostile one: the key is optional and its absence means the server takes no
+  // arguments. The reader has to treat it as an empty argument list, not as a conflict.
+  it('reads a stdio entry whose optional args key is absent as one with no arguments', async () => {
+    const harness = createHarness({
+      configValue: { mcpServers: { pimpampum: { type: 'stdio', command: launcher } } },
+    });
+    await expect(harness.connector.inspect()).resolves.toMatchObject({
+      state: 'equivalentUnowned',
+      entry: expected,
+    });
+  });
+
   it('maps malformed config target shapes and wrong receipts to unavailable or opaque conflict', async () => {
     const malformedValues: unknown[] = [
       [],

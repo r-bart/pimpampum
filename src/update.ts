@@ -3,7 +3,9 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { AppError } from './errors.js';
 import { findExecutable } from './service/platform.js';
-import { assertNoSymlinkTraversal, writePrivateFileAtomic } from './service/receipt.js';
+import { writePrivateFileAtomic } from './fsAtomic.js';
+import { assertNoSymlinkTraversal } from './fsGuards.js';
+import { isRecord } from './objects.js';
 import type { RunCommand } from './service/types.js';
 
 export interface UpdateStatus {
@@ -194,8 +196,12 @@ export function createReleaseTrustStore(dataDirectory: string): ReleaseTrustStor
       writePrivateFileAtomic(
         path,
         `${JSON.stringify({ schemaVersion: 1, lastAcceptedIssuedAt: issuedAt }, null, 2)}\n`,
-        0o600,
-        dataDirectory,
+        {
+          mode: 0o600,
+          directoryMode: 0o700,
+          trustedRoot: dataDirectory,
+          label: 'Update trust state',
+        },
       );
     },
   };
@@ -400,14 +406,6 @@ export function createLegacyNpmUpdateManager(input: UpdateManagerInput): UpdateM
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function exactKeys(value: Record<string, unknown>, expected: string[]): boolean {
-  return Object.keys(value).sort().join(',') === [...expected].sort().join(',');
-}
-
 // The macOS app ships as `Pimpampum-<version>-macos-arm64.zip`; the runtime target it carries is
 // `darwin-arm64`. Both tokens name the same target in an asset path.
 const TARGET_PATH_TOKENS: Record<PackagedReleaseTarget, readonly string[]> = {
@@ -482,6 +480,30 @@ export function releaseSignaturePayload(input: {
   ].join('\n');
 }
 
+const packagedReleaseTargetSchema = z
+  .string()
+  .refine((target) => PACKAGED_RELEASE_TARGETS.includes(target as PackagedReleaseTarget));
+const releaseManifestSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    channel: z.literal('stable'),
+    version: z.string().refine(validVersion),
+    issuedAt: z.string().refine(validIssuedAt),
+    targets: z
+      .record(packagedReleaseTargetSchema, z.unknown())
+      .refine((targets) => Object.keys(targets).length > 0),
+  })
+  .strict();
+const releaseAssetSchema = z
+  .object({
+    url: z.unknown(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+    signature: z.string().regex(/^[A-Za-z0-9+/_=-]{32,1024}$/u),
+    size: z.number().int().min(1).max(MAX_PACKAGED_RELEASE_BYTES),
+  })
+  .strict()
+  .refine((asset) => Object.hasOwn(asset, 'url'));
+
 function parsePackagedReleaseManifest(
   raw: string | Uint8Array,
   target: PackagedReleaseTarget,
@@ -502,60 +524,37 @@ function parsePackagedReleaseManifest(
   } catch {
     throw new AppError('unavailable', 'Packaged release manifest is not valid JSON', 503);
   }
-  const supportedTargets = new Set<PackagedReleaseTarget>(PACKAGED_RELEASE_TARGETS);
-  if (
-    !isRecord(parsed) ||
-    !exactKeys(parsed, ['schemaVersion', 'channel', 'version', 'issuedAt', 'targets']) ||
-    parsed.schemaVersion !== 1 ||
-    parsed.channel !== 'stable' ||
-    !validVersion(parsed.version) ||
-    !validIssuedAt(parsed.issuedAt) ||
-    !isRecord(parsed.targets) ||
-    Object.keys(parsed.targets).length === 0 ||
-    Object.keys(parsed.targets).length > supportedTargets.size ||
-    Object.keys(parsed.targets).some(
-      (candidateTarget) => !supportedTargets.has(candidateTarget as PackagedReleaseTarget),
-    ) ||
-    !Object.hasOwn(parsed.targets, target)
-  ) {
+  const manifest = releaseManifestSchema.safeParse(parsed);
+  if (!manifest.success || !Object.hasOwn(manifest.data.targets, target)) {
     throw new AppError('unavailable', 'Packaged release manifest schema is incompatible', 503);
   }
-  const candidate = parsed.targets[target];
-  if (
-    !isRecord(candidate) ||
-    !exactKeys(candidate, ['url', 'sha256', 'signature', 'size']) ||
-    typeof candidate.sha256 !== 'string' ||
-    !/^[a-f0-9]{64}$/u.test(candidate.sha256) ||
-    typeof candidate.signature !== 'string' ||
-    !/^[A-Za-z0-9+/_=-]{32,1024}$/u.test(candidate.signature) ||
-    !Number.isSafeInteger(candidate.size) ||
-    (candidate.size as number) <= 0 ||
-    (candidate.size as number) > MAX_PACKAGED_RELEASE_BYTES
-  ) {
+  const candidate = releaseAssetSchema.safeParse(manifest.data.targets[target]);
+  if (!candidate.success) {
     throw new AppError(
       'unavailable',
       'Packaged release manifest target hash, signature, or size is invalid',
       503,
     );
   }
+  const { version, issuedAt } = manifest.data;
   const asset: PackagedReleaseAsset = {
-    url: releaseUrl(candidate.url, parsed.version, target, allowInsecureLoopback),
-    sha256: candidate.sha256,
-    signature: candidate.signature,
-    size: candidate.size as number,
+    url: releaseUrl(candidate.data.url, version, target, allowInsecureLoopback),
+    sha256: candidate.data.sha256,
+    signature: candidate.data.signature,
+    size: candidate.data.size,
   };
   return {
     manifest: {
       schemaVersion: 1,
       channel: 'stable',
-      version: parsed.version,
-      issuedAt: parsed.issuedAt,
+      version,
+      issuedAt,
       targets: { [target]: asset } as PackagedReleaseManifest['targets'],
     },
     asset,
     signaturePayload: releaseSignaturePayload({
-      version: parsed.version,
-      issuedAt: parsed.issuedAt,
+      version,
+      issuedAt,
       target,
       url: asset.url,
       sha256: asset.sha256,

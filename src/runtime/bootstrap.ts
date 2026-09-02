@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 
+import { isRecord } from '../objects.js';
 import {
   inspectInstalledRuntime,
   installRuntimeTransaction,
@@ -21,10 +22,6 @@ const MAXIMUM_RUNTIME_BYTES = 175 * 1024 * 1024;
 const APPLICATION_PATH_FILE = 'application-path.json';
 const MAXIMUM_APPLICATION_RECORD_BYTES = 16 * 1024;
 const MANAGED_APPLICATION_NAME = 'Pimpampum.app';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /**
  * The bundle path the macOS desktop adapter recorded in `application-path.json` when setup ran.

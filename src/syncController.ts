@@ -12,14 +12,12 @@ import {
   readSync,
   readdirSync,
   realpathSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
 } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
 import { z } from 'zod';
 import { AppError } from './errors.js';
-import { assertNoSymlinkTraversal } from './service/receipt.js';
+import { writePrivateFileAtomic } from './fsAtomic.js';
+import { assertNoSymlinkTraversal } from './fsGuards.js';
 import {
   SYNC_SNAPSHOT_SCHEMA_VERSION,
   parseSyncSnapshot,
@@ -650,19 +648,11 @@ export class SyncController implements SyncGateway {
       deviceDirectory,
       `${String(sequence).padStart(12, '0')}-${snapshot.snapshotId}.json`,
     );
-    const partialPath = join(deviceDirectory, `.${snapshot.snapshotId}.partial`);
-    try {
-      writeFileSync(partialPath, `${canonicalJson(snapshot)}\n`, {
-        encoding: 'utf8',
-        mode: 0o600,
-        flag: 'wx',
-      });
-      assertNoSymlinkTraversal(partialPath, 'Shared snapshot staging file', directory);
-      assertNoSymlinkTraversal(finalPath, 'Shared snapshot file', directory);
-      renameSync(partialPath, finalPath);
-    } finally {
-      rmSync(partialPath, { force: true });
-    }
+    writePrivateFileAtomic(finalPath, `${canonicalJson(snapshot)}\n`, {
+      mode: 0o600,
+      trustedRoot: directory,
+      label: 'Shared snapshot file',
+    });
     this.settings.sequence = sequence;
     this.settings.appliedSnapshotIds.push(snapshot.snapshotId);
     this.settings.headSnapshotIds = [snapshot.snapshotId];
@@ -811,21 +801,15 @@ export class SyncController implements SyncGateway {
   }
 
   private writeSettings(): void {
-    mkdirSync(dirname(this.options.settingsPath), { recursive: true, mode: 0o700 });
-    const partial = join(
-      dirname(this.options.settingsPath),
-      `.sync-settings-${randomUUID()}.partial`,
-    );
-    try {
-      writeFileSync(partial, `${JSON.stringify(this.settings, null, 2)}\n`, {
-        encoding: 'utf8',
+    writePrivateFileAtomic(
+      this.options.settingsPath,
+      `${JSON.stringify(this.settings, null, 2)}\n`,
+      {
         mode: 0o600,
-        flag: 'wx',
-      });
-      renameSync(partial, this.options.settingsPath);
-    } finally {
-      rmSync(partial, { force: true });
-    }
+        directoryMode: 0o700,
+        label: 'Synchronization settings',
+      },
+    );
   }
 
   private sharedDirectoryAvailable(): boolean {

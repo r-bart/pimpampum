@@ -159,6 +159,30 @@ struct OverviewClientTests {
     }
   }
 
+  /// The overview poll is the one caller that must see the transport's own error: `OverviewStore`
+  /// separates a cancelled refresh from a daemon that stopped answering, and a wrapped error would
+  /// erase that difference. A cancellation stays a cancellation for the same reason.
+  @Test
+  func rethrowsTheTransportsOwnFailureInsteadOfATypedClientError() async throws {
+    let failing = configuredClient(
+      receipt: receipt(),
+      tokenData: Data("\(token)\n".utf8),
+      transport: StubOverviewTransport(recorder: RequestRecorder()) { _ in
+        throw TestFailure.expected
+      }
+    )
+    await #expect(throws: TestFailure.expected) { try await failing.fetchOverview() }
+
+    let cancelled = configuredClient(
+      receipt: receipt(),
+      tokenData: Data("\(token)\n".utf8),
+      transport: StubOverviewTransport(recorder: RequestRecorder()) { _ in
+        throw CancellationError()
+      }
+    )
+    await #expect(throws: CancellationError.self) { try await cancelled.fetchOverview() }
+  }
+
   @Test
   func exposesActionableDescriptionsForEveryClientFailure() {
     let errors: [OverviewClientError] = [

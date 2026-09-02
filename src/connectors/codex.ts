@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
   createHostConnectorCore,
   planHostConnection,
@@ -90,25 +91,21 @@ export function planCodexConnection(input: {
   });
 }
 
-function resultShape(value: unknown): HostCommandResult {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    !('exitCode' in value) ||
-    typeof value.exitCode !== 'number' ||
-    !('stdout' in value) ||
-    typeof value.stdout !== 'string' ||
-    !('stderr' in value) ||
-    typeof value.stderr !== 'string'
-  ) {
-    throw new Error('Codex returned an invalid bounded command result');
-  }
-  return { exitCode: value.exitCode, stdout: value.stdout, stderr: value.stderr };
-}
+const commandResultSchema = z
+  .object({ exitCode: z.number(), stdout: z.string(), stderr: z.string() })
+  .loose();
+const stdioTransportSchema = z.object({ type: z.literal('stdio'), command: z.string() }).loose();
+const stdioArgumentsSchema = z.array(z.string());
+/** Codex may carry an environment block only when it is absent or empty; anything else is private. */
+const publicEnvironmentSchema = z.union([z.undefined(), z.null(), z.object({}).strict()]);
+const mcpListSchema = z.array(z.unknown());
+const namedEntrySchema = z.object({ name: z.literal(SERVER_NAME) }).loose();
 
-function parseStringArray(value: unknown): string[] | null {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) return null;
-  return [...value] as string[];
+function resultShape(value: unknown): HostCommandResult {
+  const result = commandResultSchema.safeParse(value);
+  if (!result.success) throw new Error('Codex returned an invalid bounded command result');
+  const { exitCode, stdout, stderr } = result.data;
+  return { exitCode, stdout, stderr };
 }
 
 function unrestorable(command: string): HostEntry {
@@ -117,27 +114,14 @@ function unrestorable(command: string): HostEntry {
 
 export function parseCodexMcpEntry(value: unknown): HostEntry | null {
   if (typeof value !== 'object' || value === null) return null;
-  const candidate = value as Record<string, unknown>;
-  const transport = candidate.transport;
-  if (typeof transport !== 'object' || transport === null) {
-    return unrestorable('[unsupported Codex transport]');
-  }
-  const record = transport as Record<string, unknown>;
-  if (record.type !== 'stdio' || typeof record.command !== 'string') {
-    return unrestorable('[unsupported Codex transport]');
-  }
-  const arguments_ = parseStringArray(record.args);
-  if (arguments_ === null) return unrestorable('[invalid Codex stdio entry]');
-  if (
-    record.env !== undefined &&
-    record.env !== null &&
-    (typeof record.env !== 'object' ||
-      Array.isArray(record.env) ||
-      Object.keys(record.env).length > 0)
-  ) {
+  const transport = stdioTransportSchema.safeParse((value as Record<string, unknown>).transport);
+  if (!transport.success) return unrestorable('[unsupported Codex transport]');
+  const arguments_ = stdioArgumentsSchema.safeParse(transport.data.args);
+  if (!arguments_.success) return unrestorable('[invalid Codex stdio entry]');
+  if (!publicEnvironmentSchema.safeParse(transport.data.env).success) {
     return unrestorable('[Codex stdio entry with private environment]');
   }
-  return { command: record.command, arguments: arguments_, scope: CODEX_SCOPE };
+  return { command: transport.data.command, arguments: arguments_.data, scope: CODEX_SCOPE };
 }
 
 function parseTargetFromList(stdout: string): HostEntry | null {
@@ -147,11 +131,9 @@ function parseTargetFromList(stdout: string): HostEntry | null {
   } catch (error) {
     throw new Error('Codex returned invalid JSON while inspecting MCP entries', { cause: error });
   }
-  if (!Array.isArray(parsed)) throw new Error('Codex returned an invalid MCP list');
-  const target = parsed.find(
-    (entry) =>
-      typeof entry === 'object' && entry !== null && 'name' in entry && entry.name === SERVER_NAME,
-  );
+  const list = mcpListSchema.safeParse(parsed);
+  if (!list.success) throw new Error('Codex returned an invalid MCP list');
+  const target = list.data.find((entry) => namedEntrySchema.safeParse(entry).success);
   return target === undefined ? null : parseCodexMcpEntry(target);
 }
 
@@ -162,12 +144,7 @@ function parseTargetFromGet(stdout: string): HostEntry | null {
   } catch (error) {
     throw new Error('Codex returned invalid JSON for the Pimpampum MCP entry', { cause: error });
   }
-  if (
-    typeof parsed !== 'object' ||
-    parsed === null ||
-    !('name' in parsed) ||
-    parsed.name !== SERVER_NAME
-  ) {
+  if (!namedEntrySchema.safeParse(parsed).success) {
     throw new Error('Codex returned the wrong MCP entry');
   }
   return parseCodexMcpEntry(parsed);

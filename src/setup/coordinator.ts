@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
+import { collectFailures, runCompensation } from '../aggregateRollback.js';
+import { redactDiagnostic, redactErrorMessage } from '../diagnostics.js';
 import { AppError } from '../errors.js';
 import {
   createInstallationMigrationStateStore,
@@ -215,22 +217,9 @@ function selectedConnectorIds(values: readonly SetupConnectorId[]): SetupConnect
   return result;
 }
 
-function redactDiagnostic(error: unknown): string {
-  const raw = error instanceof Error ? error.message : 'The operation failed';
-  return raw
-    .replace(/(?:authorization\s*:?\s*)?bearer\s+\S+/giu, '[credential redacted]')
-    .replace(/\b(?:api[_-]?key|access[_-]?token|secret)\s*[:=]\s*\S+/giu, '[credential redacted]')
-    .replace(/\/Users\/[^/\s]+/gu, '~')
-    .replace(/\/home\/[^/\s]+/gu, '~')
-    .replace(/[\r\n\t]+/gu, ' ')
-    .replace(/\s{2,}/gu, ' ')
-    .trim()
-    .slice(0, 320);
-}
-
 function safeComparison(value: string | undefined): string {
   if (value === undefined) return 'An existing entry differs from the proposed Pimpampum entry.';
-  return redactDiagnostic(new Error(value));
+  return redactDiagnostic(value);
 }
 
 function planRevision(plan: Omit<SetupPlan, 'revision'>): string {
@@ -374,7 +363,7 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
   }
 
   async function failPhase(state: SetupJournal, phase: string, error: unknown): Promise<string> {
-    const diagnostic = redactDiagnostic(error);
+    const diagnostic = redactErrorMessage(error);
     state.phase = phase;
     if (diagnostic && !state.diagnostics.includes(diagnostic)) state.diagnostics.push(diagnostic);
     state.updatedAt = dependencies.now();
@@ -450,24 +439,19 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
       }
     } catch (error) {
       await failPhase(state, state.phase, error);
-      const rollbackErrors: unknown[] = [];
       let serviceRolledBack = false;
-      try {
-        await dependencies.service.rollback();
-        serviceRolledBack = true;
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-      try {
-        await dependencies.runtime.rollback();
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
+      const rollbackErrors = await collectFailures([
+        async () => {
+          await dependencies.service.rollback();
+          serviceRolledBack = true;
+        },
+        () => dependencies.runtime.rollback(),
+      ]);
       state.completedPhases = state.completedPhases.filter(
         (phase) => !(BASE_SETUP_PHASES as readonly string[]).includes(phase),
       );
       for (const rollbackError of rollbackErrors) {
-        const diagnostic = redactDiagnostic(rollbackError);
+        const diagnostic = redactErrorMessage(rollbackError);
         if (diagnostic && !state.diagnostics.includes(diagnostic)) {
           state.diagnostics.push(diagnostic);
         }
@@ -482,7 +466,7 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
       state.updatedAt = dependencies.now();
       stateStore.write(state);
       if (rollbackErrors.length > 0) {
-        const message = redactDiagnostic(error) || 'Setup failed';
+        const message = redactErrorMessage(error) || 'Setup failed';
         throw new AggregateError(
           [error, ...rollbackErrors],
           `${message}; setup rollback was incomplete`,
@@ -902,26 +886,18 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
     journal: InstallationMigrationJournal,
     originalError?: unknown,
   ): Promise<void> {
-    const errors: unknown[] = originalError === undefined ? [] : [originalError];
-    const attempt = async (operation: () => Promise<void>): Promise<void> => {
-      try {
-        await operation();
-      } catch (error) {
-        errors.push(error);
-      }
-    };
-    await attempt(() => dependencies.service.stop());
-    await attempt(() => dependencies.runtime.restore(journal.previous.runtimeVersion));
-    await attempt(() => dependencies.service.restore(journal.previous));
-    await attempt(() => dependencies.connectors.restoreOwned(journal.connectorEntries));
-    if (journal.phase === 'committing' || journal.phase === 'committed') {
-      await attempt(() => restoreReceiptExactly(journal));
-    }
-    try {
-      migrationStateStore.remove();
-    } catch (error) {
-      errors.push(error);
-    }
+    const receiptCommitted = journal.phase === 'committing' || journal.phase === 'committed';
+    const failures = await collectFailures([
+      () => dependencies.service.stop(),
+      () => dependencies.runtime.restore(journal.previous.runtimeVersion),
+      () => dependencies.service.restore(journal.previous),
+      () => dependencies.connectors.restoreOwned(journal.connectorEntries),
+      async () => {
+        if (receiptCommitted) await restoreReceiptExactly(journal);
+      },
+      () => migrationStateStore.remove(),
+    ]);
+    const errors: unknown[] = originalError === undefined ? failures : [originalError, ...failures];
     if (errors.length === 0) return;
     if (errors.length === 1 && originalError !== undefined) throw originalError;
     const message =
@@ -1080,32 +1056,29 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
         runtimeKind: 'packaged',
       });
     } catch (error) {
-      const rollbackErrors: unknown[] = [error];
-      const attempt = async (operation: () => Promise<void>): Promise<void> => {
-        try {
-          await operation();
-        } catch (rollbackError) {
-          rollbackErrors.push(rollbackError);
-        }
-      };
-      if (runtimeActivationAttempted) {
-        await attempt(() => dependencies.runtime.restore(previous.runtimeVersion));
-      }
-      if (serviceStopAttempted) {
-        await attempt(() => dependencies.service.restore(previous));
-      }
-      if (serviceStopAttempted) {
-        await attempt(() => dependencies.connectors.restoreOwned(connectorEntriesBefore));
-      }
-      if (commitAttempted) await attempt(() => dependencies.receipt.commit(previous));
-      if (rollbackErrors.length > 1) {
-        const message = error instanceof Error ? error.message : 'Installation update failed';
-        throw new AggregateError(
-          rollbackErrors,
-          `${message}; installation update rollback was incomplete`,
-        );
-      }
-      throw error;
+      const message = error instanceof Error ? error.message : 'Installation update failed';
+      return runCompensation(
+        error,
+        [
+          async () => {
+            if (runtimeActivationAttempted) {
+              await dependencies.runtime.restore(previous.runtimeVersion);
+            }
+          },
+          async () => {
+            if (serviceStopAttempted) await dependencies.service.restore(previous);
+          },
+          async () => {
+            if (serviceStopAttempted) {
+              await dependencies.connectors.restoreOwned(connectorEntriesBefore);
+            }
+          },
+          async () => {
+            if (commitAttempted) await dependencies.receipt.commit(previous);
+          },
+        ],
+        `${message}; installation update rollback was incomplete`,
+      );
     }
   }
 
@@ -1162,44 +1135,40 @@ export function createInstallationLifecycle(dependencies: InstallationLifecycleD
             manualInstructions: mergeManualInstructions(...outcomes, connectorInstructions),
           };
         } catch (error) {
-          const rollbackErrors: unknown[] = [error];
-          const attempt = async (operation: () => Promise<void> | void): Promise<void> => {
-            try {
-              await operation();
-            } catch (rollbackError) {
-              rollbackErrors.push(rollbackError);
-            }
-          };
-          if (journalRemovalAttempted && previousJournal !== null) {
-            await attempt(() => setupStateStore.write(previousJournal));
-          }
-          if (runtimeRemovalAttempted) {
-            await attempt(() => dependencies.runtime.restore(previous.runtimeVersion));
-          }
-          await attempt(() => dependencies.service.restore(previous));
-          if (connectorsAttempted) {
-            await attempt(() => dependencies.connectors.restoreOwned(removalPlan.ownedEntries));
-          }
-          if (receiptRemovalAttempted) {
-            if (captured.previousReceiptBase64 !== undefined && dependencies.receipt.restore) {
-              await attempt(() =>
-                dependencies.receipt.restore!({
-                  snapshot: previous,
-                  contents: Buffer.from(captured.previousReceiptBase64!, 'base64'),
-                }),
-              );
-            } else {
-              await attempt(() => dependencies.receipt.commit(previous));
-            }
-          }
-          if (rollbackErrors.length > 1) {
-            const message = error instanceof Error ? error.message : 'Installation removal failed';
-            throw new AggregateError(
-              rollbackErrors,
-              `${message}; installation removal rollback was incomplete`,
-            );
-          }
-          throw error;
+          const message = error instanceof Error ? error.message : 'Installation removal failed';
+          return runCompensation(
+            error,
+            [
+              () => {
+                if (journalRemovalAttempted && previousJournal !== null) {
+                  setupStateStore.write(previousJournal);
+                }
+              },
+              async () => {
+                if (runtimeRemovalAttempted) {
+                  await dependencies.runtime.restore(previous.runtimeVersion);
+                }
+              },
+              () => dependencies.service.restore(previous),
+              async () => {
+                if (connectorsAttempted) {
+                  await dependencies.connectors.restoreOwned(removalPlan.ownedEntries);
+                }
+              },
+              async () => {
+                if (!receiptRemovalAttempted) return;
+                if (captured.previousReceiptBase64 !== undefined && dependencies.receipt.restore) {
+                  await dependencies.receipt.restore({
+                    snapshot: previous,
+                    contents: Buffer.from(captured.previousReceiptBase64, 'base64'),
+                  });
+                } else {
+                  await dependencies.receipt.commit(previous);
+                }
+              },
+            ],
+            `${message}; installation removal rollback was incomplete`,
+          );
         }
       });
     },

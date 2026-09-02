@@ -98,3 +98,11 @@ export interface RuntimeInstallReceipt {
   mcpLauncherSha256: string;
   ownedVersions: RuntimeOwnedVersion[];
 }
+
+/** The four inputs every installer entry point needs to locate the private runtime. */
+export interface RuntimeHostInput {
+  homeDirectory: string;
+  dataDirectory: string;
+  platform: RuntimePlatform;
+  architecture: RuntimeArchitecture;
+}

@@ -6,7 +6,7 @@
  * (thoughts/reviews/2026-09-01_deep-review.md, H-13). The DoD manifests list this file as
  * "source contract", never as acceptance coverage.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -102,17 +102,59 @@ describe('Omarchy plugin sources', () => {
     expect(plugin('UpdateService.qml')).not.toMatch(/repeat:\s*true/u);
   });
 
-  it.each([
+  /**
+   * Every reader of a CLI payload, with the unwrap idiom it actually uses. The names differ by
+   * file (`envelope`, `parsed`, `value`), so this list is the contract, not a grep for one word.
+   * `ServiceControl.qml` is deliberately absent: `pimpampum-service` emits its own
+   * `{"running":…}` and that reader rejects any other shape, envelope included.
+   */
+  const cliPayloadReaders: ReadonlyArray<readonly [string, RegExp]> = [
     [
       'OverviewService.qml',
       /else if \(isObject\(envelope\.data\)\) \{[\s\S]{0,200}?data = envelope\.data/u,
     ],
-    ['StatusPopout.qml', /isObject\(envelope\.data\)\s*\?\s*envelope\.data\s*:\s*envelope/u],
+    // The popout's reader moved into PopoutController.qml when StatusPopout.qml was split
+    // (wave 4, Task 9.6); the property is the reader's, not the file's.
+    ['PopoutController.qml', /isObject\(envelope\.data\)\s*\?\s*envelope\.data\s*:\s*envelope/u],
     ['UpdateService.qml', /isObject\(envelope\.data\)\s*\?\s*envelope\.data\s*:\s*envelope/u],
-  ])('%s reads both the bare payload and the {data} envelope', (name, unwrap) => {
-    // An installed plugin must survive a CLI upgrade in either direction. The validator pins the
-    // same unwrap for UpdateService; this keeps the other two readers honest.
-    expect(plugin(name)).toMatch(unwrap);
+    ['AgentConnectionService.qml', /if \(isObject\(value\.data\)\) return value\.data/u],
+    [
+      'ManagedFolderService.qml',
+      /parsed\.data && typeof parsed\.data === "object"\) parsed = parsed\.data/u,
+    ],
+  ];
+
+  it.each(cliPayloadReaders)(
+    '%s reads both the bare payload and the {data} envelope',
+    (name, unwrap) => {
+      // An installed plugin must survive a CLI upgrade in either direction. The validator pins the
+      // same unwrap for UpdateService; this keeps the other readers honest.
+      expect(plugin(name)).toMatch(unwrap);
+    },
+  );
+
+  it('parses helper output in the listed readers only', () => {
+    // A new reader that forgets the {data} tolerance would otherwise ship unnoticed, because each
+    // idiom names its own variable. Both sides are pinned: every QML file that parses helper
+    // output either unwraps a payload (and is listed above) or is the one reader whose helper
+    // emits its own shape. A `data` alias for child items is not a payload read, so the discriminator
+    // is `JSON.parse`, never the word alone.
+    const parsers = readdirSync(pluginRoot)
+      .filter((entry) => entry.endsWith('.qml'))
+      .map((entry) => [entry, readFileSync(join(pluginRoot, entry), 'utf8')] as const)
+      .filter(([, text]) => text.includes('JSON.parse'));
+    const unwrapping = parsers
+      .filter(([, text]) => /\.data\b/u.test(text))
+      .map(([name]) => name)
+      .sort();
+    const bare = parsers
+      .filter(([, text]) => !/\.data\b/u.test(text))
+      .map(([name]) => name)
+      .sort();
+    expect(unwrapping).toEqual(cliPayloadReaders.map(([name]) => name).sort());
+    // `pimpampum-service` emits `{"running":…}` itself and this reader rejects every other shape,
+    // envelope included, so unwrapping there would be wrong.
+    expect(bare).toEqual(['ServiceControl.qml']);
   });
 });
 
@@ -133,7 +175,15 @@ describe('macOS menu-bar sources', () => {
 describe('CLI bootstrap and stdio bridge', () => {
   it('never escalate, never phone home and never open the database themselves', () => {
     // Spec: SEC-1, SEC-11, SEC-12 (source contract)
-    const entrypoints = `${source('src/cliMain.ts')}\n${source('src/mcpStdio.ts')}`;
+    // The CLI composition modules carry the code that used to live in cliMain.ts (wave 4, Task 9.2).
+    const compositionRoot = join(repositoryRoot, 'src/cliComposition');
+    const composition = readdirSync(compositionRoot)
+      .filter((name) => name.endsWith('.ts'))
+      .sort()
+      .map((name) => source(`src/cliComposition/${name}`));
+    const entrypoints = [source('src/cliMain.ts'), ...composition, source('src/mcpStdio.ts')].join(
+      '\n',
+    );
     expect(entrypoints).not.toMatch(/\bsudo\b|setuid|telemetry|analytics/iu);
     expect(entrypoints).not.toMatch(/SELECT\s+\*\s+FROM|better-sqlite3/iu);
   });

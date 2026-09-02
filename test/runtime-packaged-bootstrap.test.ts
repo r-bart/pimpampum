@@ -15,7 +15,11 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { resolvePackagedRuntimeBootstrap } from '../src/runtime/bootstrap.js';
+import {
+  installedApplicationPath,
+  readRecordedApplicationPath,
+  resolvePackagedRuntimeBootstrap,
+} from '../src/runtime/bootstrap.js';
 import { inspectInstalledRuntime } from '../src/runtime/installer.js';
 import { createPlatformServiceManager } from '../src/service/manager.js';
 import { installReceiptPath, readInstallReceipt } from '../src/service/receipt.js';
@@ -483,5 +487,80 @@ describe('packaged runtime production bootstrap', () => {
         architecture: 'arm64',
       }),
     ).not.toBeNull();
+  });
+});
+
+describe('readRecordedApplicationPath', () => {
+  function recordDirectory(): string {
+    const directory = mkdtempSync(join(tmpdir(), 'pimpampum-application-record-'));
+    roots.push(directory);
+    return directory;
+  }
+
+  function writeRecord(directory: string, content: string | Buffer): void {
+    writeFileSync(join(directory, 'application-path.json'), content, { mode: 0o600 });
+  }
+
+  it('returns the normalized recorded path for schema 1 and schema 2 records', () => {
+    const one = recordDirectory();
+    writeRecord(one, JSON.stringify({ schemaVersion: 1, path: '/Applications//Pimpampum.app' }));
+    expect(readRecordedApplicationPath(one)).toBe('/Applications/Pimpampum.app');
+
+    const two = recordDirectory();
+    writeRecord(
+      two,
+      JSON.stringify({
+        schemaVersion: 2,
+        path: '/Users/me/Downloads/Pimpampum.app',
+        managed: false,
+      }),
+    );
+    expect(readRecordedApplicationPath(two)).toBe('/Users/me/Downloads/Pimpampum.app');
+    expect(installedApplicationPath({ homeDirectory: '/Users/me', dataDirectory: two })).toBe(
+      '/Users/me/Downloads/Pimpampum.app',
+    );
+  });
+
+  it('falls back to the managed bundle path when the record is missing or unreadable', () => {
+    const missing = recordDirectory();
+    expect(readRecordedApplicationPath(missing)).toBeNull();
+    expect(installedApplicationPath({ homeDirectory: '/Users/me', dataDirectory: missing })).toBe(
+      '/Users/me/Applications/Pimpampum.app',
+    );
+
+    const directory = recordDirectory();
+    mkdirSync(join(directory, 'application-path.json'));
+    expect(readRecordedApplicationPath(directory)).toBeNull();
+
+    const linked = recordDirectory();
+    symlinkSync('/dev/null', join(linked, 'application-path.json'));
+    expect(readRecordedApplicationPath(linked)).toBeNull();
+
+    const oversized = recordDirectory();
+    writeRecord(oversized, Buffer.alloc(16 * 1024 + 1, 0x20));
+    expect(readRecordedApplicationPath(oversized)).toBeNull();
+
+    const invalid = recordDirectory();
+    writeRecord(invalid, '{');
+    expect(readRecordedApplicationPath(invalid)).toBeNull();
+  });
+
+  it.each([
+    ['array envelope', '[]'],
+    ['unknown schema', JSON.stringify({ schemaVersion: 3, path: '/Applications/Pimpampum.app' })],
+    [
+      'schema 2 without managed flag',
+      JSON.stringify({ schemaVersion: 2, path: '/Applications/Pimpampum.app' }),
+    ],
+    ['non-string path', JSON.stringify({ schemaVersion: 1, path: 7 })],
+    ['relative path', JSON.stringify({ schemaVersion: 1, path: 'Applications/Pimpampum.app' })],
+    [
+      'NUL in path',
+      JSON.stringify({ schemaVersion: 1, path: '/Applications/Pim\u0000pampum.app' }),
+    ],
+  ])('rejects a malformed record: %s', (_label, content) => {
+    const directory = recordDirectory();
+    writeRecord(directory, content);
+    expect(readRecordedApplicationPath(directory)).toBeNull();
   });
 });

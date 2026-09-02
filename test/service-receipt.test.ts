@@ -1,43 +1,27 @@
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   InstallReceiptError,
-  assertNoSymlinkTraversal,
   installReceiptPath,
   installationKey,
   readInstallReceipt,
   receiptArtifacts,
   sha256,
   writeInstallReceipt,
-  writePrivateFileAtomic,
 } from '../src/service/receipt.js';
 import type { InstallReceipt, ServiceArtifact } from '../src/service/types.js';
 import { serviceTestRoot as testRoot } from './helpers/serviceManager.js';
 
 describe('installation receipts', () => {
-  it('validates trusted path roots and rejects non-file atomic targets', () => {
+  it('rejects a receipt path that is a directory, on read and on write', () => {
     const root = testRoot('receipt-path-safety');
-    expect(() => assertNoSymlinkTraversal('relative', 'Test path')).toThrow(/absolute path/);
-    expect(() => assertNoSymlinkTraversal('/absolute', 'Test path', 'relative')).toThrow(
-      /absolute path/,
-    );
-    expect(() => assertNoSymlinkTraversal('/absolute\0unsafe', 'Test path')).toThrow(
-      /absolute path/,
-    );
-    expect(() =>
-      assertNoSymlinkTraversal(root.root, 'Test path', join(root.root, 'nested')),
-    ).toThrow(/trusted root/);
-    expect(() =>
-      assertNoSymlinkTraversal(join(root.root, 'sibling'), 'Test path', root.homeDirectory),
-    ).toThrow(/trusted root/);
-
     const receiptDirectory = installReceiptPath(root.dataDirectory);
     mkdirSync(receiptDirectory);
     expect(() => readInstallReceipt(receiptDirectory, root.dataDirectory)).toThrow(/regular file/);
-    expect(() =>
-      writePrivateFileAtomic(receiptDirectory, 'bytes', 0o600, root.dataDirectory),
-    ).toThrow(/regular file/);
+    expect(() => writeInstallReceipt(receiptDirectory, {} as never, root.dataDirectory)).toThrow(
+      /Installation receipt must be a regular file/,
+    );
   });
 
   it('hashes deterministic plans and round-trips a private atomic receipt', () => {
@@ -82,11 +66,6 @@ describe('installation receipts', () => {
     writeInstallReceipt(path, receipt);
     expect(readInstallReceipt(path)).toEqual(receipt);
     expect(statSync(path).mode & 0o777).toBe(0o600);
-
-    const bufferPath = join(root.homeDirectory, 'buffer-file');
-    writePrivateFileAtomic(bufferPath, Buffer.from('buffer-content'), 0o620);
-    expect(readFileSync(bufferPath, 'utf8')).toBe('buffer-content');
-    expect(statSync(bufferPath).mode & 0o777).toBe(0o620);
   });
 
   it('rejects invalid JSON, invalid schemas, and special files with a typed repair message', () => {

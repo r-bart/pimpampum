@@ -20,18 +20,10 @@ Item {
   property string conflictConnectorId: ""
   property string disconnectConnectorId: ""
 
-  // Keep the visual and accessibility vocabulary identical across native surfaces.
-  readonly property var stateLabels: [
-    "Not installed",
-    "Not connected",
-    "Connecting",
-    "Connected",
-    "New session required",
-    "Needs repair",
-    "Configuration conflict",
-    "Unsupported version",
-    "Unavailable"
-  ]
+  // The connection states arrive from AgentConnectionService, which names them from the generated
+  // StateVocabulary. Comparing against a literal here would stop matching the moment a label is
+  // reworded, and silently: setState falls back to "Needs repair" for a value it does not know.
+  readonly property var labels: service.labels
 
   readonly property bool hasPartialFailure: failedConnectors.length > 0
   readonly property string progressLabel: service.busy
@@ -50,8 +42,8 @@ Item {
 
   function detected(connectorId) {
     var state = stateFor(connectorId)
-    return state !== "Not installed" && state !== "Unsupported version"
-      && state !== "Unavailable"
+    return state !== labels.notInstalled && state !== labels.unsupportedVersion
+      && state !== labels.unavailable
   }
 
   function selectDetectedAgents() {
@@ -92,7 +84,7 @@ Item {
       return
     }
     var connectorId = pendingConnectors[pendingIndex]
-    if (stateFor(connectorId) === "Configuration conflict") {
+    if (stateFor(connectorId) === labels.configurationConflict) {
       conflictConnectorId = connectorId
       stage = "conflict"
       return
@@ -110,9 +102,9 @@ Item {
 
   function runAgentAction(connectorId) {
     var state = stateFor(connectorId)
-    if (state === "Connected" || state === "New session required") service.test(connectorId)
-    else if (state === "Needs repair") service.repair(connectorId)
-    else if (state === "Configuration conflict") {
+    if (state === labels.connected || state === labels.newSessionRequired) service.test(connectorId)
+    else if (state === labels.needsRepair) service.repair(connectorId)
+    else if (state === labels.configurationConflict) {
       conflictConnectorId = connectorId
       stage = "conflict"
     } else service.connect(connectorId)
@@ -156,7 +148,7 @@ Item {
         return
       }
       if (root.stage !== "progress") return
-      if (!succeeded && root.stateFor(connectorId) === "Configuration conflict") {
+      if (!succeeded && root.stateFor(connectorId) === root.labels.configurationConflict) {
         root.conflictConnectorId = connectorId
         root.stage = "conflict"
         return
@@ -261,8 +253,9 @@ Item {
                 }
                 Text {
                   text: root.stateFor(modelData)
-                  color: root.stateFor(modelData) === "Configuration conflict"
-                    || root.stateFor(modelData) === "Needs repair" ? root.urgent : root.foreground
+                  color: root.stateFor(modelData) === root.labels.configurationConflict
+                    || root.stateFor(modelData) === root.labels.needsRepair
+                    ? root.urgent : root.foreground
                   opacity: 0.72; font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
@@ -276,10 +269,10 @@ Item {
                   label: root.stage === "selection"
                     ? ((modelData === "codex" ? root.codexSelected : root.claudeCodeSelected)
                       ? "Selected" : "Select")
-                    : root.stateFor(modelData) === "Connected"
-                      || root.stateFor(modelData) === "New session required" ? "Test"
-                    : root.stateFor(modelData) === "Needs repair" ? "Repair"
-                    : root.stateFor(modelData) === "Configuration conflict" ? "Review"
+                    : root.stateFor(modelData) === root.labels.connected
+                      || root.stateFor(modelData) === root.labels.newSessionRequired ? "Test"
+                    : root.stateFor(modelData) === root.labels.needsRepair ? "Repair"
+                    : root.stateFor(modelData) === root.labels.configurationConflict ? "Review"
                     : "Connect"
                   foreground: root.foreground; background: root.background
                   accent: root.accent; urgent: root.urgent; fontFamily: root.fontFamily
@@ -291,9 +284,9 @@ Item {
                 }
                 PimpampumSettingsButton {
                   visible: root.stage === "settings"
-                    && (root.stateFor(modelData) === "Connected"
-                      || root.stateFor(modelData) === "New session required"
-                      || root.stateFor(modelData) === "Needs repair")
+                    && (root.stateFor(modelData) === root.labels.connected
+                      || root.stateFor(modelData) === root.labels.newSessionRequired
+                      || root.stateFor(modelData) === root.labels.needsRepair)
                   width: visible ? implicitWidth : 0; height: implicitHeight; compact: true
                   label: "Disconnect"; destructive: true
                   foreground: root.foreground; background: root.background
@@ -385,7 +378,7 @@ Item {
           text: root.stage === "progress" ? root.progressLabel
             : root.stage === "partial" ? "Some agents could not be connected. Connected agents remain available."
             : root.stage === "complete" ? "Agents are connected. Start a new agent session when requested."
-            : "Configuration conflict"
+            : root.labels.configurationConflict
           color: root.stage === "partial" || root.stage === "conflict" ? root.urgent : root.foreground
           font.family: root.fontFamily; font.pixelSize: Style.font.caption
         }

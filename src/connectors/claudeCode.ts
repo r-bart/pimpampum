@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { z } from 'zod';
 import {
   createHostConnectorCore,
   planHostConnection,
@@ -21,6 +22,7 @@ import type {
   HostConnector,
   HostEntry,
 } from './types.js';
+import { isRecord } from '../objects.js';
 import { verifyMcpRoute } from './verifier.js';
 
 const connectorId = 'claude-code' as const;
@@ -127,45 +129,39 @@ export function planClaudeCodeConnection(input: ClaudeCodePlanInput): Connection
   });
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isSafeArgument(value: unknown): value is string {
-  return typeof value === 'string' && value.length <= 16_384 && !value.includes('\0');
-}
+const safeArgument = (minimum: number): z.ZodString =>
+  z
+    .string()
+    .min(minimum)
+    .max(16_384)
+    .refine((value) => !value.includes('\0'));
+/** A stdio entry Pimpampum can restore byte for byte; anything else is an opaque conflict. */
+const stdioTargetSchema = z
+  .object({
+    type: z.literal('stdio').optional(),
+    command: safeArgument(1),
+    args: z.array(safeArgument(0)).max(256).optional(),
+    env: z.object({}).strict().optional(),
+  })
+  .loose();
 
 function parseTargetEntry(value: unknown, scope: HostEntry['scope']): HostEntry | null {
   if (value === undefined) return null;
-  if (!isPlainRecord(value)) return { ...opaqueConflictEntry, scope };
-  if (value.type !== undefined && value.type !== 'stdio') {
-    return { ...opaqueConflictEntry, scope };
-  }
-  if (!isSafeArgument(value.command) || value.command.length === 0) {
-    return { ...opaqueConflictEntry, scope };
-  }
-  const args = value.args === undefined ? [] : value.args;
-  if (!Array.isArray(args) || args.length > 256 || !args.every(isSafeArgument)) {
-    return { ...opaqueConflictEntry, scope };
-  }
-  if (value.env !== undefined) {
-    if (!isPlainRecord(value.env) || Object.keys(value.env).length > 0) {
-      return { ...opaqueConflictEntry, scope };
-    }
-  }
-  return { command: value.command, arguments: [...args], scope };
+  const parsed = stdioTargetSchema.safeParse(value);
+  if (!parsed.success) return { ...opaqueConflictEntry, scope };
+  return { command: parsed.data.command, arguments: [...(parsed.data.args ?? [])], scope };
 }
 
 function targetFromConfig(value: unknown, scope: HostEntry['scope']): HostEntry | null {
-  if (!isPlainRecord(value)) return { ...opaqueConflictEntry, scope };
+  if (!isRecord(value)) return { ...opaqueConflictEntry, scope };
   const servers = value.mcpServers;
   if (servers === undefined) return null;
-  if (!isPlainRecord(servers)) return { ...opaqueConflictEntry, scope };
+  if (!isRecord(servers)) return { ...opaqueConflictEntry, scope };
   return parseTargetEntry(servers[serverName], scope);
 }
 
 function isMissingFile(error: unknown): boolean {
-  return isPlainRecord(error) && error.code === 'ENOENT';
+  return isRecord(error) && error.code === 'ENOENT';
 }
 
 /** Reads one bounded configuration file and only the Pimpampum target inside it. */

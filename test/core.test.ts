@@ -16,6 +16,7 @@ import { backupDatabase, exportPortable } from '../src/backup.js';
 import { PimpampumHttpClient, createHttpClient } from '../src/client.js';
 import { loadConfig } from '../src/config.js';
 import { openDatabase } from '../src/db.js';
+import { LATEST_SCHEMA_VERSION } from '../src/migrations.js';
 import { AppError, asAppError } from '../src/errors.js';
 import { openApiDocument } from '../src/openapi.js';
 
@@ -104,7 +105,7 @@ describe('configuration and infrastructure', () => {
   it('opens, migrates and reopens file and memory databases', () => {
     const databasePath = join(temporaryDirectory(), 'nested', 'project.sqlite');
     const first = openDatabase(databasePath);
-    expect(first.pragma('user_version', { simple: true })).toBe(2);
+    expect(first.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     first.close();
     const second = openDatabase(databasePath);
     expect(second.pragma('journal_mode', { simple: true })).toBe('wal');
@@ -115,7 +116,7 @@ describe('configuration and infrastructure', () => {
 
     const futurePath = join(temporaryDirectory(), 'future.sqlite');
     const future = new Database(futurePath);
-    future.pragma('user_version = 3');
+    future.pragma(`user_version = ${LATEST_SCHEMA_VERSION + 1}`);
     future.close();
     expect(() => openDatabase(futurePath)).toThrow(/newer than supported/);
   });

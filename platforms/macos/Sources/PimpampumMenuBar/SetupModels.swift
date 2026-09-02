@@ -23,31 +23,9 @@ struct SetupAgentSelection: Identifiable, Equatable, Sendable {
   var selectedByDefault: Bool { detected && supported }
 }
 
-enum SetupComponentState: String, Codable, Equatable, Sendable {
-  case notInstalled
-  case notConnected
-  case connecting
-  case connected
-  case newSessionRequired
-  case needsRepair
-  case configurationConflict
-  case unsupportedVersion
-  case unavailable
-
-  var label: String {
-    switch self {
-    case .notInstalled: "Not installed"
-    case .notConnected: "Not connected"
-    case .connecting: "Connecting"
-    case .connected: "Connected"
-    case .newSessionRequired: "New session required"
-    case .needsRepair: "Needs repair"
-    case .configurationConflict: "Configuration conflict"
-    case .unsupportedVersion: "Unsupported version"
-    case .unavailable: "Unavailable"
-    }
-  }
-
+// The cases and `label` of `SetupComponentState` are generated into `StateVocabulary.swift`
+// from the one table the Omarchy plugin shares; only the setup screen's own decisions live here.
+extension SetupComponentState {
   var accessibilityLabel: String { label }
 
   /// Whether this state needs the user's attention. The background service is machinery: the setup

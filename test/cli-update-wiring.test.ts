@@ -3,14 +3,14 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createCliUpdateManager } from '../src/cliComposition/packagedUpdateProvider.js';
+import { stagePackagedMacOSApplication } from '../src/cliComposition/releaseCandidate.js';
 import {
   createBoundedReleaseManifestFetcher,
-  createCliUpdateManager,
   createReleaseSignatureVerifier,
   resolveReleasePublicKeyPem,
-  stagePackagedMacOSApplication,
   versionedReleaseManifestUrl,
-} from '../src/cliMain.js';
+} from '../src/cliComposition/releaseChannel.js';
 import { installReceiptPath, writeInstallReceipt } from '../src/service/receipt.js';
 import type { ServiceManager } from '../src/service/types.js';
 import {
@@ -385,6 +385,45 @@ describe('bounded release fetch redirect policy', () => {
     ).rejects.toThrow(/streaming size limit/iu);
   });
 
+  it('rejects a non-OK response and a declared length that is unusable or too large', async () => {
+    const notFound = fetchSequence([response(null, 404)]);
+    await expect(
+      createBoundedReleaseManifestFetcher(notFound.fetchImplementation)(request),
+    ).rejects.toThrow(/returned HTTP 404/u);
+
+    const unparsable = fetchSequence([response('{}', 200, { 'content-length': 'many' })]);
+    await expect(
+      createBoundedReleaseManifestFetcher(unparsable.fetchImplementation)(request),
+    ).rejects.toThrow(/declared size limit/u);
+
+    const oversized = fetchSequence([response('{}', 200, { 'content-length': '65' })]);
+    await expect(
+      createBoundedReleaseManifestFetcher(oversized.fetchImplementation)(request),
+    ).rejects.toThrow(/declared size limit/u);
+  });
+
+  it('keeps a redirect to an unparsable location typed and carries its cause', async () => {
+    const { fetchImplementation } = fetchSequence([response(null, 302, { location: 'http://[' })]);
+    await expect(
+      createBoundedReleaseManifestFetcher(fetchImplementation)(request),
+    ).rejects.toMatchObject({
+      code: 'unavailable',
+      message: expect.stringMatching(/location is invalid/u),
+      details: { cause: expect.anything() },
+    });
+  });
+
+  it('aborts a fetch that outlives its timeout', async () => {
+    const aborted = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (init?.signal?.aborted !== true) throw new Error('the timeout never fired');
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    }) as unknown as typeof globalThis.fetch;
+    await expect(
+      createBoundedReleaseManifestFetcher(aborted)({ ...request, timeoutMilliseconds: 1 }),
+    ).rejects.toThrow(/aborted/u);
+  });
+
   it('accepts plain-HTTP loopback only when the development flag opened it', async () => {
     const loopback = { ...request, url: 'http://127.0.0.1:8080/channel/release-manifest.json' };
     const strict = fetchSequence([response('never', 200)]);
@@ -477,6 +516,34 @@ describe('release key trust', () => {
     expect(() =>
       resolveReleasePublicKeyPem({ publicKeyPath: 'relative.pem', environment: {} }),
     ).toThrow(/absolute/iu);
+  });
+
+  it('refuses a development key owned by another user or sized outside its bounds', () => {
+    const value = fixture();
+    const pem = generateKeyPairSync('ed25519').publicKey.export({
+      type: 'spki',
+      format: 'pem',
+    }) as string;
+    const keyPath = join(value.dataDirectory, 'dev-key.pem');
+    writeFileSync(keyPath, pem, { mode: 0o600 });
+    const owner = process.getuid?.() ?? 0;
+
+    expect(
+      resolveReleasePublicKeyPem({ publicKeyPath: keyPath, environment: {}, currentUid: owner }),
+    ).toBe(pem);
+    expect(() =>
+      resolveReleasePublicKeyPem({
+        publicKeyPath: keyPath,
+        environment: {},
+        currentUid: owner + 1,
+      }),
+    ).toThrow(/not owned by the current user or root/iu);
+
+    const empty = join(value.dataDirectory, 'empty.pem');
+    writeFileSync(empty, '', { mode: 0o600 });
+    expect(() => resolveReleasePublicKeyPem({ publicKeyPath: empty, environment: {} })).toThrow(
+      /invalid size/iu,
+    );
   });
 });
 

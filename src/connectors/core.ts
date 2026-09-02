@@ -1,5 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { AppError } from '../errors.js';
+import { runCompensation } from '../aggregateRollback.js';
 import { classifyConnectorOwnership, fingerprintCommand } from './receipt.js';
 import type {
   CommandInvocation,
@@ -561,21 +562,11 @@ export function createHostConnectorCore(options: HostConnectorCoreOptions): Host
       await receipts.remove();
       return { connectorId: host.id, state: 'notConnected', changed: true, verification: null };
     } catch (error) {
-      const errors: unknown[] = [error];
-      try {
-        await restore(before);
-      } catch (restoreError) {
-        errors.push(restoreError);
-      }
-      try {
-        await receipts.write(previousReceipt);
-      } catch (receiptError) {
-        errors.push(receiptError);
-      }
-      if (errors.length > 1) {
-        throw new AggregateError(errors, `${host.displayName} disconnect and rollback failed`);
-      }
-      throw error;
+      return runCompensation(
+        error,
+        [() => restore(before), () => receipts.write(previousReceipt)],
+        `${host.displayName} disconnect and rollback failed`,
+      );
     }
   };
 

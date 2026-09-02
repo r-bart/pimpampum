@@ -28,15 +28,6 @@ struct OverviewDaemon: Codable, Equatable, Sendable {
   let uptimeSeconds: Int
 }
 
-enum OverviewStatus: String, Codable, CaseIterable, Sendable {
-  case active
-  case available
-  case complete
-  case draft
-  case paused
-  case empty
-}
-
 enum OverviewProjectStatus: String, Codable, CaseIterable, Sendable {
   case active
   case available

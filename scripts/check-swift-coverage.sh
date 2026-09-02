@@ -39,6 +39,8 @@ covered_sources=(
     "$package_root/Sources/PimpampumMenuBar/WorkspaceRegistration.swift"
     "$package_root/Sources/PimpampumMenuBar/ApplicationLaunchCoordinator.swift"
     "$package_root/Sources/PimpampumMenuBar/OverviewClient.swift"
+    "$package_root/Sources/PimpampumMenuBar/DaemonClient.swift"
+    "$package_root/Sources/PimpampumMenuBar/DirectoryOpener.swift"
     "$package_root/Sources/PimpampumMenuBar/AuthenticatedDaemonConfiguration.swift"
     "$package_root/Sources/PimpampumMenuBar/OverviewStore.swift"
     "$package_root/Sources/PimpampumMenuBar/ApplicationConfiguration.swift"
@@ -54,6 +56,7 @@ covered_sources=(
     "$package_root/Sources/PimpampumMenuBar/SyncSettingsModels.swift"
     "$package_root/Sources/PimpampumMenuBar/SyncSettingsClient.swift"
     "$package_root/Sources/PimpampumMenuBar/SyncSettingsStore.swift"
+    "$package_root/Sources/PimpampumMenuBar/StateVocabulary.swift"
 )
 
 report="$(

@@ -267,6 +267,58 @@ function findZipEnd(bytes: Uint8Array): number {
   fail('ZIP end-of-central-directory record is missing or malformed');
 }
 
+type ExtraFieldValidator = (data: Uint8Array, label: string) => void;
+
+function validateExtendedTimestamp(data: Uint8Array, label: string): void {
+  if (data.length < 1 || (data[0]! & ~0x07) !== 0) {
+    fail(`${label} contains a malformed extended timestamp field`);
+  }
+  let expectedBytes = 1;
+  for (const flag of [1, 2, 4]) {
+    if ((data[0]! & flag) !== 0) {
+      expectedBytes += 4;
+    }
+  }
+  if (data.length !== expectedBytes) {
+    fail(`${label} contains a malformed extended timestamp field`);
+  }
+}
+
+function validateUnixOwner(data: Uint8Array, label: string): void {
+  if (data.length < 3 || data[0] !== 1) {
+    fail(`${label} contains a malformed Unix owner field`);
+  }
+  const userBytes = data[1]!;
+  const groupLengthOffset = 2 + userBytes;
+  if (
+    userBytes === 0 ||
+    userBytes > 8 ||
+    groupLengthOffset >= data.length ||
+    data[groupLengthOffset] === 0 ||
+    data[groupLengthOffset]! > 8 ||
+    groupLengthOffset + 1 + data[groupLengthOffset]! !== data.length
+  ) {
+    fail(`${label} contains a malformed Unix owner field`);
+  }
+}
+
+function validateLegacyUnix(data: Uint8Array, label: string): void {
+  if (data.length !== 8 && data.length !== 12) {
+    fail(`${label} contains a malformed legacy Unix metadata field`);
+  }
+}
+
+/** The extra fields a release archive may carry, by header id; anything else is refused. */
+const ZIP_EXTRA_FIELD_VALIDATORS: ReadonlyMap<number, ExtraFieldValidator> = new Map<
+  number,
+  ExtraFieldValidator
+>([
+  [0x0001, () => fail('ZIP64 extra fields are unsupported')],
+  [0x5455, validateExtendedTimestamp],
+  [0x7875, validateUnixOwner],
+  [0x5855, validateLegacyUnix],
+]);
+
 function validateZipExtra(bytes: Uint8Array, offset: number, length: number, label: string): void {
   const end = checkedAdd(offset, length, label);
   requireRange(bytes, offset, length, label);
@@ -281,47 +333,13 @@ function validateZipExtra(bytes: Uint8Array, offset: number, length: number, lab
     if (dataBytes > end - cursor) {
       fail(`${label} contains a truncated extra field`);
     }
-    const data = bytes.subarray(cursor, cursor + dataBytes);
-    if (identifier === 0x0001) {
-      fail('ZIP64 extra fields are unsupported');
-    } else if (identifier === 0x5455) {
-      if (data.length < 1 || (data[0]! & ~0x07) !== 0) {
-        fail(`${label} contains a malformed extended timestamp field`);
-      }
-      let expectedBytes = 1;
-      for (const flag of [1, 2, 4]) {
-        if ((data[0]! & flag) !== 0) {
-          expectedBytes += 4;
-        }
-      }
-      if (data.length !== expectedBytes) {
-        fail(`${label} contains a malformed extended timestamp field`);
-      }
-    } else if (identifier === 0x7875) {
-      if (data.length < 3 || data[0] !== 1) {
-        fail(`${label} contains a malformed Unix owner field`);
-      }
-      const userBytes = data[1]!;
-      const groupLengthOffset = 2 + userBytes;
-      if (
-        userBytes === 0 ||
-        userBytes > 8 ||
-        groupLengthOffset >= data.length ||
-        data[groupLengthOffset] === 0 ||
-        data[groupLengthOffset]! > 8 ||
-        groupLengthOffset + 1 + data[groupLengthOffset]! !== data.length
-      ) {
-        fail(`${label} contains a malformed Unix owner field`);
-      }
-    } else if (identifier === 0x5855) {
-      if (data.length !== 8 && data.length !== 12) {
-        fail(`${label} contains a malformed legacy Unix metadata field`);
-      }
-    } else {
+    const validate = ZIP_EXTRA_FIELD_VALIDATORS.get(identifier);
+    if (validate === undefined) {
       fail(
         `${label} contains unsupported extra field 0x${identifier.toString(16).padStart(4, '0')}`,
       );
     }
+    validate(bytes.subarray(cursor, cursor + dataBytes), label);
     cursor += dataBytes;
   }
 }
@@ -461,7 +479,15 @@ function parseZipCentralEntry(
   };
 }
 
-function validateZip(bytes: Uint8Array, limits: RuntimeArchiveLimits): ValidatedRuntimeArchive {
+interface ZipEndRecord {
+  endOffset: number;
+  entryCount: number;
+  centralOffset: number;
+  centralBytes: number;
+}
+
+/** Locates and validates the end-of-central-directory record; ZIP64 and multi-disk are refused. */
+function readEndRecord(bytes: Uint8Array, limits: RuntimeArchiveLimits): ZipEndRecord {
   if (bytes.length < 22) {
     fail('ZIP archive is truncated');
   }
@@ -498,126 +524,185 @@ function validateZip(bytes: Uint8Array, limits: RuntimeArchiveLimits): Validated
   ) {
     fail('ZIP64 archives are unsupported');
   }
+  return { endOffset, entryCount, centralOffset, centralBytes };
+}
 
-  const centralEntries: ZipCentralEntry[] = [];
+/** Parses every central entry in order, enforcing per-file and declared-total limits as it goes. */
+function readCentralDirectory(
+  bytes: Uint8Array,
+  end: ZipEndRecord,
+  limits: RuntimeArchiveLimits,
+): ZipCentralEntry[] {
+  const entries: ZipCentralEntry[] = [];
   let declaredTotalBytes = 0;
-  let centralCursor = centralOffset;
-  for (let index = 0; index < entryCount; index += 1) {
-    const parsed = parseZipCentralEntry(bytes, centralCursor);
-    if (parsed.entry.type === 'file') {
-      if (parsed.entry.uncompressedBytes > limits.maximumFileBytes) {
+  let cursor = end.centralOffset;
+  for (let index = 0; index < end.entryCount; index += 1) {
+    const { entry, nextOffset } = parseZipCentralEntry(bytes, cursor);
+    if (entry.type === 'file') {
+      if (entry.uncompressedBytes > limits.maximumFileBytes) {
         fail(
-          `entry ${JSON.stringify(parsed.entry.rawPath)} exceeds the ${limits.maximumFileBytes} byte file limit`,
+          `entry ${JSON.stringify(entry.rawPath)} exceeds the ${limits.maximumFileBytes} byte file limit`,
         );
       }
       declaredTotalBytes = checkedAdd(
         declaredTotalBytes,
-        parsed.entry.uncompressedBytes,
+        entry.uncompressedBytes,
         'declared ZIP size',
       );
       if (declaredTotalBytes > limits.maximumTotalBytes) {
         fail(`uncompressed content exceeds the ${limits.maximumTotalBytes} byte total limit`);
       }
-    } else if (parsed.entry.uncompressedBytes !== 0) {
-      fail(`directory ${JSON.stringify(parsed.entry.rawPath)} contains data`);
+    } else if (entry.uncompressedBytes !== 0) {
+      fail(`directory ${JSON.stringify(entry.rawPath)} contains data`);
     }
-    centralEntries.push(parsed.entry);
-    centralCursor = parsed.nextOffset;
+    entries.push(entry);
+    cursor = nextOffset;
   }
-  if (centralCursor !== endOffset) {
+  if (cursor !== end.endOffset) {
     fail('ZIP central directory has trailing, missing, or uncounted entries');
   }
+  return entries;
+}
 
+interface ZipLocalHeader {
+  versionNeeded: number;
+  flags: number;
+  method: number;
+  crc: number;
+  compressedBytes: number;
+  uncompressedBytes: number;
+  nameBytes: number;
+  extraBytes: number;
+}
+
+function readLocalHeader(bytes: Uint8Array, offset: number): ZipLocalHeader {
+  requireRange(bytes, offset, 30, 'ZIP local entry');
+  if (readUint32(bytes, offset, 'ZIP local entry') !== ZIP_LOCAL_HEADER) {
+    fail('ZIP local entry has an invalid signature');
+  }
+  return {
+    versionNeeded: readUint16(bytes, offset + 4, 'ZIP local entry'),
+    flags: readUint16(bytes, offset + 6, 'ZIP local entry'),
+    method: readUint16(bytes, offset + 8, 'ZIP local entry'),
+    crc: readUint32(bytes, offset + 14, 'ZIP local entry'),
+    compressedBytes: readUint32(bytes, offset + 18, 'ZIP local entry'),
+    uncompressedBytes: readUint32(bytes, offset + 22, 'ZIP local entry'),
+    nameBytes: readUint16(bytes, offset + 26, 'ZIP local entry'),
+    extraBytes: readUint16(bytes, offset + 28, 'ZIP local entry'),
+  };
+}
+
+/** The local header must restate the central record; sizes may be deferred to a descriptor. */
+function assertLocalMatchesCentral(local: ZipLocalHeader, entry: ZipCentralEntry): void {
+  const usesDataDescriptor = (entry.flags & 0x0008) !== 0;
+  const sizesMatch = usesDataDescriptor
+    ? local.crc === 0 && local.compressedBytes === 0 && local.uncompressedBytes === 0
+    : local.crc === entry.crc &&
+      local.compressedBytes === entry.compressedBytes &&
+      local.uncompressedBytes === entry.uncompressedBytes;
+  if (
+    local.versionNeeded !== entry.versionNeeded ||
+    local.flags !== entry.flags ||
+    local.method !== entry.method ||
+    !sizesMatch ||
+    local.nameBytes !== entry.rawNameLength
+  ) {
+    fail(`ZIP local and central metadata disagree for ${JSON.stringify(entry.rawPath)}`);
+  }
+}
+
+/** Inflates (or takes stored) entry data and checks its size and CRC against the central record. */
+function verifyEntryData(
+  bytes: Uint8Array,
+  entry: ZipCentralEntry,
+  dataOffset: number,
+  limits: RuntimeArchiveLimits,
+): void {
+  requireRange(bytes, dataOffset, entry.compressedBytes, 'ZIP entry data');
+  const compressed = bytes.subarray(dataOffset, dataOffset + entry.compressedBytes);
+  let content: Uint8Array;
+  if (entry.method === 0) {
+    content = compressed;
+  } else {
+    const maximumOutput = Math.min(limits.maximumFileBytes, entry.uncompressedBytes) + 1;
+    try {
+      content = inflateRawSync(compressed, { maxOutputLength: maximumOutput });
+    } catch {
+      fail(`ZIP entry ${JSON.stringify(entry.rawPath)} has invalid or oversized compressed data`);
+    }
+  }
+  if (content.length !== entry.uncompressedBytes) {
+    fail(`ZIP entry ${JSON.stringify(entry.rawPath)} has a false uncompressed size`);
+  }
+  if (crc32(content) !== entry.crc) {
+    fail(`ZIP entry ${JSON.stringify(entry.rawPath)} has a CRC mismatch`);
+  }
+}
+
+/**
+ * Validates one local entry against its central record: header, name bytes, extra fields, data,
+ * size and CRC. Returns the offset right after the entry data.
+ */
+function validateLocalEntry(
+  bytes: Uint8Array,
+  entry: ZipCentralEntry,
+  limits: RuntimeArchiveLimits,
+): number {
+  const local = readLocalHeader(bytes, entry.localOffset);
+  assertLocalMatchesCentral(local, entry);
+  const nameOffset = entry.localOffset + 30;
+  requireRange(bytes, nameOffset, local.nameBytes + local.extraBytes, 'ZIP local entry metadata');
+  if (!bytesEqual(bytes, nameOffset, bytes, entry.rawNameOffset, entry.rawNameLength)) {
+    fail(`ZIP local and central names disagree for ${JSON.stringify(entry.rawPath)}`);
+  }
+  validateZipExtra(bytes, nameOffset + local.nameBytes, local.extraBytes, 'ZIP local entry');
+  const dataOffset = nameOffset + local.nameBytes + local.extraBytes;
+  verifyEntryData(bytes, entry, dataOffset, limits);
+  return dataOffset + entry.compressedBytes;
+}
+
+/** A signed data descriptor must restate CRC and sizes; returns the offset after it. */
+function validateDataDescriptor(
+  bytes: Uint8Array,
+  dataEnd: number,
+  entry: ZipCentralEntry,
+): number {
+  if ((entry.flags & 0x0008) === 0) {
+    return dataEnd;
+  }
+  requireRange(bytes, dataEnd, 16, 'ZIP data descriptor');
+  if (readUint32(bytes, dataEnd, 'ZIP data descriptor') !== ZIP_DATA_DESCRIPTOR) {
+    fail('ZIP data descriptor is unsigned or has an invalid signature');
+  }
+  if (
+    readUint32(bytes, dataEnd + 4, 'ZIP data descriptor') !== entry.crc ||
+    readUint32(bytes, dataEnd + 8, 'ZIP data descriptor') !== entry.compressedBytes ||
+    readUint32(bytes, dataEnd + 12, 'ZIP data descriptor') !== entry.uncompressedBytes
+  ) {
+    fail(`ZIP data descriptor disagrees for ${JSON.stringify(entry.rawPath)}`);
+  }
+  return dataEnd + 16;
+}
+
+function validateZip(bytes: Uint8Array, limits: RuntimeArchiveLimits): ValidatedRuntimeArchive {
+  const end = readEndRecord(bytes, limits);
+  const centralEntries = readCentralDirectory(bytes, end, limits);
   const inventory = new EntryInventory(limits);
   let expectedLocalOffset = 0;
   for (const entry of centralEntries.sort((left, right) => left.localOffset - right.localOffset)) {
     if (entry.localOffset !== expectedLocalOffset) {
       fail('ZIP local entries overlap or contain unaccounted bytes');
     }
-    requireRange(bytes, entry.localOffset, 30, 'ZIP local entry');
-    if (readUint32(bytes, entry.localOffset, 'ZIP local entry') !== ZIP_LOCAL_HEADER) {
-      fail('ZIP local entry has an invalid signature');
-    }
-    const localFlags = readUint16(bytes, entry.localOffset + 6, 'ZIP local entry');
-    const localVersionNeeded = readUint16(bytes, entry.localOffset + 4, 'ZIP local entry');
-    const localMethod = readUint16(bytes, entry.localOffset + 8, 'ZIP local entry');
-    const localCrc = readUint32(bytes, entry.localOffset + 14, 'ZIP local entry');
-    const localCompressedBytes = readUint32(bytes, entry.localOffset + 18, 'ZIP local entry');
-    const localUncompressedBytes = readUint32(bytes, entry.localOffset + 22, 'ZIP local entry');
-    const localNameBytes = readUint16(bytes, entry.localOffset + 26, 'ZIP local entry');
-    const localExtraBytes = readUint16(bytes, entry.localOffset + 28, 'ZIP local entry');
-    const usesDataDescriptor = (entry.flags & 0x0008) !== 0;
-    const localSizesMatch = usesDataDescriptor
-      ? localCrc === 0 && localCompressedBytes === 0 && localUncompressedBytes === 0
-      : localCrc === entry.crc &&
-        localCompressedBytes === entry.compressedBytes &&
-        localUncompressedBytes === entry.uncompressedBytes;
-    if (
-      localVersionNeeded !== entry.versionNeeded ||
-      localFlags !== entry.flags ||
-      localMethod !== entry.method ||
-      !localSizesMatch ||
-      localNameBytes !== entry.rawNameLength
-    ) {
-      fail(`ZIP local and central metadata disagree for ${JSON.stringify(entry.rawPath)}`);
-    }
-    const localNameOffset = entry.localOffset + 30;
-    requireRange(
-      bytes,
-      localNameOffset,
-      localNameBytes + localExtraBytes,
-      'ZIP local entry metadata',
-    );
-    if (!bytesEqual(bytes, localNameOffset, bytes, entry.rawNameOffset, entry.rawNameLength)) {
-      fail(`ZIP local and central names disagree for ${JSON.stringify(entry.rawPath)}`);
-    }
-    validateZipExtra(bytes, localNameOffset + localNameBytes, localExtraBytes, 'ZIP local entry');
-    const dataOffset = localNameOffset + localNameBytes + localExtraBytes;
-    requireRange(bytes, dataOffset, entry.compressedBytes, 'ZIP entry data');
-    const compressed = bytes.subarray(dataOffset, dataOffset + entry.compressedBytes);
-    let content: Uint8Array;
-    if (entry.method === 0) {
-      content = compressed;
-    } else {
-      const maximumOutput = Math.min(limits.maximumFileBytes, entry.uncompressedBytes) + 1;
-      try {
-        content = inflateRawSync(compressed, { maxOutputLength: maximumOutput });
-      } catch {
-        fail(`ZIP entry ${JSON.stringify(entry.rawPath)} has invalid or oversized compressed data`);
-      }
-    }
-    if (content.length !== entry.uncompressedBytes) {
-      fail(`ZIP entry ${JSON.stringify(entry.rawPath)} has a false uncompressed size`);
-    }
-    if (crc32(content) !== entry.crc) {
-      fail(`ZIP entry ${JSON.stringify(entry.rawPath)} has a CRC mismatch`);
-    }
-    const path = normalizeEntryPath(entry.rawPath, entry.type === 'directory');
+    const dataEnd = validateLocalEntry(bytes, entry, limits);
     inventory.add({
-      path,
+      path: normalizeEntryPath(entry.rawPath, entry.type === 'directory'),
       type: entry.type,
       uncompressedBytes: entry.uncompressedBytes,
       mode: entry.mode,
     });
-    const dataEnd = dataOffset + entry.compressedBytes;
-    if (usesDataDescriptor) {
-      requireRange(bytes, dataEnd, 16, 'ZIP data descriptor');
-      if (readUint32(bytes, dataEnd, 'ZIP data descriptor') !== ZIP_DATA_DESCRIPTOR) {
-        fail('ZIP data descriptor is unsigned or has an invalid signature');
-      }
-      if (
-        readUint32(bytes, dataEnd + 4, 'ZIP data descriptor') !== entry.crc ||
-        readUint32(bytes, dataEnd + 8, 'ZIP data descriptor') !== entry.compressedBytes ||
-        readUint32(bytes, dataEnd + 12, 'ZIP data descriptor') !== entry.uncompressedBytes
-      ) {
-        fail(`ZIP data descriptor disagrees for ${JSON.stringify(entry.rawPath)}`);
-      }
-      expectedLocalOffset = dataEnd + 16;
-    } else {
-      expectedLocalOffset = dataEnd;
-    }
+    expectedLocalOffset = validateDataDescriptor(bytes, dataEnd, entry);
   }
-  if (expectedLocalOffset !== centralOffset) {
+  if (expectedLocalOffset !== end.centralOffset) {
     fail('ZIP local data does not end at the central directory');
   }
   return inventory.result('zip');
@@ -683,6 +768,70 @@ function gunzipBounded(bytes: Uint8Array, limits: RuntimeArchiveLimits): Uint8Ar
   }
 }
 
+interface TarHeader {
+  rawPath: string;
+  type: RuntimeArchiveEntry['type'];
+  mode: number;
+  size: number;
+}
+
+function tarEntryType(typeFlag: number, rawPath: string): RuntimeArchiveEntry['type'] {
+  if (typeFlag === 0 || typeFlag === 0x30) {
+    return 'file';
+  }
+  if (typeFlag === 0x35) {
+    return 'directory';
+  }
+  fail(
+    `tar entry ${JSON.stringify(rawPath)} has unsupported link, device, or special type ${JSON.stringify(String.fromCharCode(typeFlag))}`,
+  );
+}
+
+/** Parses one strict-ustar header block: checksum, magic, name, link, mode, size and type. */
+function parseTarHeader(header: Uint8Array): TarHeader {
+  const storedChecksum = tarOctal(header, 148, 8, 'tar checksum');
+  if (storedChecksum !== tarHeaderChecksum(header)) {
+    fail('tar header checksum is invalid');
+  }
+  const magic = tarText(header, 257, 6, 'tar magic');
+  if (magic !== 'ustar') {
+    fail('tar entry is not strict ustar');
+  }
+  const name = tarText(header, 0, 100, 'tar name');
+  const prefix = tarText(header, 345, 155, 'tar prefix');
+  const rawPath = prefix.length === 0 ? name : `${prefix}/${name}`;
+  const linkName = tarText(header, 157, 100, 'tar link name');
+  if (linkName.length !== 0) {
+    fail(`tar entry ${JSON.stringify(rawPath)} has link metadata`);
+  }
+  const mode = tarOctal(header, 100, 8, 'tar mode');
+  if ((mode & ~0o777) !== 0) {
+    fail(`tar entry ${JSON.stringify(rawPath)} has special permission bits`);
+  }
+  const size = tarOctal(header, 124, 12, 'tar size');
+  return { rawPath, type: tarEntryType(header[156]!, rawPath), mode, size };
+}
+
+/** Two zero blocks end the stream; everything after them must be zero as well. */
+function assertTarEndMarker(tar: Uint8Array, offset: number): void {
+  if (offset + TAR_BLOCK_BYTES >= tar.length || !isZeroBlock(tar, offset + TAR_BLOCK_BYTES)) {
+    fail('tar stream does not end with two zero blocks');
+  }
+  for (let index = offset; index < tar.length; index += 1) {
+    if (tar[index] !== 0) {
+      fail('tar stream contains data after its end marker');
+    }
+  }
+}
+
+function assertZeroPadding(tar: Uint8Array, from: number, to: number, rawPath: string): void {
+  for (let index = from; index < to; index += 1) {
+    if (tar[index] !== 0) {
+      fail(`tar padding for ${JSON.stringify(rawPath)} is non-zero`);
+    }
+  }
+}
+
 function validateTarGzip(bytes: Uint8Array, limits: RuntimeArchiveLimits): ValidatedRuntimeArchive {
   if (bytes.length < 18 || bytes[0] !== 0x1f || bytes[1] !== 0x8b || bytes[2] !== 8) {
     fail('gzip header is missing, truncated, or unsupported');
@@ -703,60 +852,23 @@ function validateTarGzip(bytes: Uint8Array, limits: RuntimeArchiveLimits): Valid
   let foundEnd = false;
   while (offset < tar.length) {
     if (isZeroBlock(tar, offset)) {
-      if (offset + TAR_BLOCK_BYTES >= tar.length || !isZeroBlock(tar, offset + TAR_BLOCK_BYTES)) {
-        fail('tar stream does not end with two zero blocks');
-      }
-      for (let index = offset; index < tar.length; index += 1) {
-        if (tar[index] !== 0) {
-          fail('tar stream contains data after its end marker');
-        }
-      }
+      assertTarEndMarker(tar, offset);
       foundEnd = true;
       break;
     }
-    const header = tar.subarray(offset, offset + TAR_BLOCK_BYTES);
-    requireRange(tar, offset, TAR_BLOCK_BYTES, 'tar header');
-    const storedChecksum = tarOctal(header, 148, 8, 'tar checksum');
-    if (storedChecksum !== tarHeaderChecksum(header)) {
-      fail('tar header checksum is invalid');
-    }
-    const magic = tarText(header, 257, 6, 'tar magic');
-    if (magic !== 'ustar') {
-      fail('tar entry is not strict ustar');
-    }
-    const name = tarText(header, 0, 100, 'tar name');
-    const prefix = tarText(header, 345, 155, 'tar prefix');
-    const rawPath = prefix.length === 0 ? name : `${prefix}/${name}`;
-    const linkName = tarText(header, 157, 100, 'tar link name');
-    if (linkName.length !== 0) {
-      fail(`tar entry ${JSON.stringify(rawPath)} has link metadata`);
-    }
-    const mode = tarOctal(header, 100, 8, 'tar mode');
-    if ((mode & ~0o777) !== 0) {
-      fail(`tar entry ${JSON.stringify(rawPath)} has special permission bits`);
-    }
-    const size = tarOctal(header, 124, 12, 'tar size');
-    const typeFlag = header[156]!;
-    let type: RuntimeArchiveEntry['type'];
-    if (typeFlag === 0 || typeFlag === 0x30) {
-      type = 'file';
-    } else if (typeFlag === 0x35) {
-      type = 'directory';
-    } else {
-      fail(
-        `tar entry ${JSON.stringify(rawPath)} has unsupported link, device, or special type ${JSON.stringify(String.fromCharCode(typeFlag))}`,
-      );
-    }
-    const path = normalizeEntryPath(rawPath, type === 'directory');
-    inventory.add({ path, type, uncompressedBytes: size, mode });
+    const { rawPath, type, mode, size } = parseTarHeader(
+      tar.subarray(offset, offset + TAR_BLOCK_BYTES),
+    );
+    inventory.add({
+      path: normalizeEntryPath(rawPath, type === 'directory'),
+      type,
+      uncompressedBytes: size,
+      mode,
+    });
     const dataOffset = offset + TAR_BLOCK_BYTES;
     const paddedBytes = Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
     requireRange(tar, dataOffset, paddedBytes, `tar data for ${JSON.stringify(rawPath)}`);
-    for (let index = dataOffset + size; index < dataOffset + paddedBytes; index += 1) {
-      if (tar[index] !== 0) {
-        fail(`tar padding for ${JSON.stringify(rawPath)} is non-zero`);
-      }
-    }
+    assertZeroPadding(tar, dataOffset + size, dataOffset + paddedBytes, rawPath);
     offset = dataOffset + paddedBytes;
   }
   if (!foundEnd) {

@@ -14,25 +14,18 @@ Item {
   property string processOutput: ""
   property string processError: ""
   property string errorMessage: ""
-  property string codexState: "Not installed"
-  property string claudeCodeState: "Not installed"
+  property string codexState: labels.notInstalled
+  property string claudeCodeState: labels.notInstalled
   property bool initialized: false
   property var resultPayload: null
   property bool ignoreNextExit: false
 
   signal operationFinished(string action, string connectorId, bool succeeded)
 
-  readonly property var sharedStates: [
-    "Not installed",
-    "Not connected",
-    "Connecting",
-    "Connected",
-    "New session required",
-    "Needs repair",
-    "Configuration conflict",
-    "Unsupported version",
-    "Unavailable"
-  ]
+  // The one vocabulary both native surfaces render; generated from
+  // scripts/generate-state-vocabulary.mjs together with the macOS enum.
+  readonly property var sharedStates: vocabulary.agentLabels
+  readonly property var labels: vocabulary.agentStateLabels
 
   function isObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -48,27 +41,27 @@ Item {
   }
 
   function displayState(value) {
-    if (!isObject(value)) return "Needs repair"
-    if (value.newSessionRequired === true) return "New session required"
+    if (!isObject(value)) return labels.needsRepair
+    if (value.newSessionRequired === true) return labels.newSessionRequired
     switch (value.state) {
-    case "notInstalled": return "Not installed"
-    case "unavailable": return "Unavailable"
+    case "notInstalled": return labels.notInstalled
+    case "unavailable": return labels.unavailable
     case "notConnected":
-    case "absent": return "Not connected"
+    case "absent": return labels.notConnected
     case "ownedCurrent":
-    case "equivalentUnowned": return value.available === true ? "Connected" : "Needs repair"
+    case "equivalentUnowned": return value.available === true ? labels.connected : labels.needsRepair
     case "connected":
-    case "verified": return "Connected"
-    case "ownedStale": return "Needs repair"
-    case "needsRepair": return "Needs repair"
-    case "conflict": return "Configuration conflict"
-    case "unsupportedVersion": return "Unsupported version"
-    default: return "Needs repair"
+    case "verified": return labels.connected
+    case "ownedStale": return labels.needsRepair
+    case "needsRepair": return labels.needsRepair
+    case "conflict": return labels.configurationConflict
+    case "unsupportedVersion": return labels.unsupportedVersion
+    default: return labels.needsRepair
     }
   }
 
   function setState(connectorId, state) {
-    if (sharedStates.indexOf(state) === -1) state = "Needs repair"
+    if (sharedStates.indexOf(state) === -1) state = labels.needsRepair
     if (connectorId === "codex") codexState = state
     else if (connectorId === "claude-code") claudeCodeState = state
   }
@@ -113,7 +106,7 @@ Item {
     processError = ""
     errorMessage = ""
     resultPayload = null
-    if (action === "connect" || action === "repair") setState(connectorId, "Connecting")
+    if (action === "connect" || action === "repair") setState(connectorId, labels.connecting)
     var arguments = [helperPath, action]
     if (needsConnector) arguments.push(connectorId)
     if (replaceReviewed === true) arguments.push("replace")
@@ -164,7 +157,7 @@ Item {
         setState(connection.id, displayState(connection))
     }
     if (validConnectorId(envelope.connectorId)) {
-      if (envelope.action === "disconnect") setState(envelope.connectorId, "Not connected")
+      if (envelope.action === "disconnect") setState(envelope.connectorId, labels.notConnected)
       else if (connections.length === 0 && isObject(data) && typeof data.state === "string")
         setState(envelope.connectorId, displayState(data))
     }
@@ -205,7 +198,7 @@ Item {
 
   function acceptFailure(text) {
     var message = "Agent connection operation failed"
-    var failedState = "Needs repair"
+    var failedState = labels.needsRepair
     if (typeof text === "string" && text.length > 0 && text.length <= 4096) {
       try {
         var envelope = JSON.parse(text)
@@ -215,11 +208,11 @@ Item {
           else if (envelope.code === "timeout") message = "The connection action took too long"
           else if (envelope.code === "connector_conflict") {
             message = "The agent connection changed and needs another review"
-            failedState = "Configuration conflict"
+            failedState = labels.configurationConflict
           }
           else if (envelope.code === "command_failed") {
             message = actionableProcessError(envelope, message)
-            if (boundedCliCode(envelope.cliCode) === "unavailable") failedState = "Unavailable"
+            if (boundedCliCode(envelope.cliCode) === "unavailable") failedState = labels.unavailable
           }
         }
       } catch (error) {}
@@ -237,6 +230,8 @@ Item {
     acceptResult(processOutput)
   }
 
+  StateVocabulary { id: vocabulary }
+
   Timer {
     id: operationDeadline
     interval: root.operationTimeoutMs
@@ -246,7 +241,7 @@ Item {
       root.ignoreNextExit = true
       connectionProcess.running = false
       if (root.validConnectorId(root.pendingConnectorId))
-        root.setState(root.pendingConnectorId, "Needs repair")
+        root.setState(root.pendingConnectorId, root.labels.needsRepair)
       root.rejectCurrent("The connection action took too long")
     }
   }

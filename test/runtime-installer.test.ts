@@ -180,7 +180,7 @@ describe('atomic runtime installer', () => {
     ).toEqual([]);
   });
 
-  it('rejects extra files and symlinks before invoking smoke', async () => {
+  it('rejects extra files and symlinks before invoking smoke (shared tree walk says "symbolic links")', async () => {
     const root = temporaryDirectory('hostile');
     const extra = installInput(root, '2.0.0');
     writeFileSync(join(extra.sourceDirectory, 'extra'), 'unexpected');
@@ -190,7 +190,7 @@ describe('atomic runtime installer', () => {
 
     const linked = installInput(root, '2.1.0');
     symlinkSync('/tmp', join(linked.sourceDirectory, 'unsafe-link'));
-    await expect(installRuntime({ ...linked, smoke })).rejects.toThrow(/symlink/iu);
+    await expect(installRuntime({ ...linked, smoke })).rejects.toThrow(/symbolic link/iu);
     expect(smoke).not.toHaveBeenCalled();
 
     const danglingLauncher = installInput(root, '2.2.0');
@@ -321,12 +321,12 @@ describe('atomic runtime installer', () => {
     );
   });
 
-  it('rejects missing, non-directory, and special-file runtime sources', async () => {
+  it('rejects missing, non-directory, and special-file runtime sources (shared guard wording)', async () => {
     const missingRoot = temporaryDirectory('missing-source');
     const missing = installInput(missingRoot, '2.0.0');
     rmSync(missing.sourceDirectory, { recursive: true });
     await expect(installRuntime({ ...missing, smoke: async () => undefined })).rejects.toThrow(
-      /existing absolute directory/iu,
+      /existing directory/iu,
     );
 
     const fileRoot = temporaryDirectory('file-source');
@@ -341,7 +341,7 @@ describe('atomic runtime installer', () => {
     const fifo = installInput(fifoRoot, '2.0.0');
     execFileSync('/usr/bin/mkfifo', [join(fifo.sourceDirectory, 'named-pipe')]);
     await expect(installRuntime({ ...fifo, smoke: async () => undefined })).rejects.toThrow(
-      /device or special file/iu,
+      /only regular files and directories/iu,
     );
   });
 
@@ -532,6 +532,51 @@ describe('atomic runtime installer', () => {
     await expect(
       installRuntime({ ...committedInput, smoke: async () => undefined }),
     ).resolves.toMatchObject({ activated: false });
+  });
+
+  it('recovers a prepared activation whose created destination never appeared', async () => {
+    // A crash between the journal write and the payload rename leaves `createdFinal: true` with
+    // nothing at the destination. Recovery must only drop the journal and let the install proceed.
+    const root = temporaryDirectory('activation-recovery-no-final');
+    const previousInput = installInput(root, '1.0.0');
+    await installRuntime({ ...previousInput, smoke: async () => undefined });
+    const previousLayout = resolveRuntimeLayout({
+      homeDirectory: previousInput.homeDirectory,
+      platform: previousInput.platform,
+      architecture: previousInput.architecture,
+      version: '1.0.0',
+    });
+    const nextInput = installInput(root, '2.0.0');
+    const nextLayout = resolveRuntimeLayout({
+      homeDirectory: nextInput.homeDirectory,
+      platform: nextInput.platform,
+      architecture: nextInput.architecture,
+      version: '2.0.0',
+    });
+    const journalPath = join(nextInput.dataDirectory, 'runtime-install-journal.json');
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        phase: 'prepared',
+        targetId: nextLayout.targetId,
+        candidateVersion: '2.0.0',
+        finalDirectory: nextLayout.versionDirectory,
+        createdFinal: true,
+        replacedFinal: null,
+        controlLauncher: fileSnapshot(previousLayout.controlLauncherPath),
+        mcpLauncher: fileSnapshot(previousLayout.mcpLauncherPath),
+        receipt: fileSnapshot(join(nextInput.dataDirectory, 'runtime-install-receipt.json')),
+      })}\n`,
+      { mode: 0o600 },
+    );
+    expect(existsSync(nextLayout.versionDirectory)).toBe(false);
+
+    await expect(
+      installRuntime({ ...nextInput, smoke: async () => undefined }),
+    ).resolves.toMatchObject({ activated: true, version: '2.0.0', previousVersion: '1.0.0' });
+    expect(existsSync(journalPath)).toBe(false);
+    expect(inspectInstalledRuntime(nextInput)).toMatchObject({ version: '2.0.0' });
   });
 
   it('restores absent activation snapshots and rejects invalid or public snapshots', async () => {
@@ -1075,6 +1120,10 @@ describe('reversible owned runtime removal', () => {
         controlLauncher: { content: 1, mode: 0o755 },
       }),
     ],
+    [
+      'non-object launcher snapshot',
+      (journal: Record<string, unknown>) => ({ ...journal, controlLauncher: 'not-a-snapshot' }),
+    ],
   ] as const)('rejects a hostile durable removal journal: %s', async (_label, mutate) => {
     const root = temporaryDirectory('remove-hostile-journal');
     const input = installInput(root, '2.0.0');
@@ -1247,12 +1296,12 @@ describe('reversible owned runtime removal', () => {
     expect(() => prepared.rollback()).toThrow(/destination already exists/iu);
   });
 
-  it('cleans quarantine when a hostile journal target blocks preparation', async () => {
+  it('cleans quarantine when a hostile journal target blocks preparation (shared guard says "symbolic link")', async () => {
     const root = temporaryDirectory('remove-journal-symlink');
     const input = installInput(root, '2.0.0');
     await installRuntime({ ...input, smoke: async () => undefined });
     symlinkSync('/dev/null', join(input.dataDirectory, 'runtime-removal-journal.json'));
-    expect(() => prepareOwnedRuntimeRemoval(input)).toThrow(/regular file|symlink/iu);
+    expect(() => prepareOwnedRuntimeRemoval(input)).toThrow(/regular file|symbolic link/iu);
     const layout = resolveRuntimeLayout({
       homeDirectory: input.homeDirectory,
       platform: input.platform,

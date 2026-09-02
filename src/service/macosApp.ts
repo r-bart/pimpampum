@@ -13,9 +13,11 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { z } from 'zod';
+import { collectFailures, runCompensation } from '../aggregateRollback.js';
 import { readRecordedApplicationPath } from '../runtime/bootstrap.js';
 import { acceptLoginAcknowledgement } from './loginHandshake.js';
-import { assertNoSymlinkTraversal, writePrivateFileAtomic } from './receipt.js';
+import { writePrivateFileAtomic } from '../fsAtomic.js';
+import { assertNoSymlinkTraversal } from '../fsGuards.js';
 import type {
   LoginAcknowledgement,
   LoginAcknowledgementStatus,
@@ -287,14 +289,13 @@ function recordApplicationLocation(
   context: ServiceAdapterContext,
   location: ApplicationLocation,
 ): void {
-  writePrivateFileAtomic(
+  writeControlFile(
     controlPath(context, APPLICATION_PATH_FILE),
     `${JSON.stringify(
       { schemaVersion: 2, path: location.path, managed: location.managed },
       null,
       2,
     )}\n`,
-    0o600,
     context.dataDirectory,
   );
 }
@@ -340,16 +341,33 @@ export function installationMarkerPath(
  * reason to skip adopted ones, that the marker would land inside the user's app, is gone.
  */
 function writeInstallationMarker(context: ServiceAdapterContext): void {
-  writePrivateFileAtomic(
+  writeControlFile(
     installationMarkerPath(context),
     `${JSON.stringify(
       { schemaVersion: INSTALLATION_MARKER_SCHEMA_VERSION, dataDirectory: context.dataDirectory },
       null,
       2,
     )}\n`,
-    0o600,
     context.homeDirectory,
   );
+}
+
+/**
+ * Every control file is private and lands under a root the adapter trusts; a missing parent (the
+ * marker directory before the runtime exists) is created with the mode the runtime installer uses.
+ */
+function writeControlFile(
+  path: string,
+  content: string | Buffer,
+  trustedRoot: string,
+  mode = 0o600,
+): void {
+  writePrivateFileAtomic(path, content, {
+    mode,
+    directoryMode: 0o755,
+    trustedRoot,
+    label: 'Login item control file',
+  });
 }
 
 function removeControlFile(path: string, trustedRoot: string): void {
@@ -416,7 +434,7 @@ function snapshot(path: string, trustedRoot: string): FileSnapshot {
 function restoreSnapshots(snapshots: FileSnapshot[]): void {
   for (const item of snapshots) {
     if (item.content === null) rmSync(item.path, { force: true });
-    else writePrivateFileAtomic(item.path, item.content, item.mode, item.trustedRoot);
+    else writeControlFile(item.path, item.content, item.trustedRoot, item.mode);
   }
 }
 
@@ -671,12 +689,7 @@ export function createMacOSDesktopAdapter(
     let registrationChanged = false;
     try {
       rmSync(acknowledgementPath, { force: true });
-      writePrivateFileAtomic(
-        requestPath,
-        `${JSON.stringify(request, null, 2)}\n`,
-        0o600,
-        context.dataDirectory,
-      );
+      writeControlFile(requestPath, `${JSON.stringify(request, null, 2)}\n`, context.dataDirectory);
       const installedApp = applicationLocation(context, options.appBundlePath).path;
       // The first launch of a freshly copied signed app is where Gatekeeper assesses it, so this
       // `open` and the one below get a longer deadline than any other command the adapter runs.
@@ -702,10 +715,9 @@ export function createMacOSDesktopAdapter(
         // leave the user with nothing.
         status = 'error';
       }
-      writePrivateFileAtomic(
+      writeControlFile(
         statusPath,
         `${JSON.stringify({ schemaVersion: 1, status, updatedAt: now().toISOString() }, null, 2)}\n`,
-        0o600,
         context.dataDirectory,
       );
       // A rejected registration is a recoverable state, not an installation failure: the status
@@ -722,28 +734,18 @@ export function createMacOSDesktopAdapter(
         throw new Error(`Unable to open the macOS menu app (${open.exitCode})`);
       return { loginItem: status };
     } catch (error) {
-      const rollbackErrors: unknown[] = [error];
-      if (registrationChanged) {
-        try {
-          await confirmUnregistration(
-            context,
-            openPath,
-            applicationLocation(context, options.appBundlePath).path,
-            clock,
-          );
-        } catch (unregisterError) {
-          rollbackErrors.push(unregisterError);
-        }
-      }
-      try {
-        restoreSnapshots(snapshots);
-      } catch (restoreError) {
-        rollbackErrors.push(restoreError);
-      }
-      if (rollbackErrors.length > 1) {
-        throw new AggregateError(rollbackErrors, 'macOS login registration and rollback failed');
-      }
-      throw error;
+      return runCompensation(
+        error,
+        [
+          async () => {
+            if (!registrationChanged) return;
+            const installedApp = applicationLocation(context, options.appBundlePath).path;
+            await confirmUnregistration(context, openPath, installedApp, clock);
+          },
+          () => restoreSnapshots(snapshots),
+        ],
+        'macOS login registration and rollback failed',
+      );
     }
   };
   let pendingLoginRollbackState: { previousStatus: LoginAcknowledgementStatus | null } | null =
@@ -804,28 +806,19 @@ export function createMacOSDesktopAdapter(
           removeEmptyLegacyAppDirectories(legacyRoot);
         return integration;
       } catch (error) {
-        const errors: unknown[] = [error];
-        if (registered) {
-          try {
-            await confirmUnregistration(context, openPath, location.path, clock);
-          } catch (unregisterError) {
-            errors.push(unregisterError);
-          }
-        }
-        try {
-          runtime?.rollback();
-        } catch (rollbackError) {
-          errors.push(rollbackError);
-        }
-        try {
-          restoreSnapshots([recordSnapshot, markerSnapshot]);
-        } catch (restoreError) {
-          errors.push(restoreError);
-        }
-        if (errors.length > 1) {
-          throw new AggregateError(errors, 'macOS app runtime bootstrap rollback failed');
-        }
-        throw error;
+        return runCompensation(
+          error,
+          [
+            async () => {
+              if (registered) await confirmUnregistration(context, openPath, location.path, clock);
+            },
+            () => {
+              runtime?.rollback();
+            },
+            () => restoreSnapshots([recordSnapshot, markerSnapshot]),
+          ],
+          'macOS app runtime bootstrap rollback failed',
+        );
       }
     },
     async deactivate(context, artifacts) {
@@ -884,32 +877,26 @@ export function createMacOSDesktopAdapter(
             : null,
       };
       pendingLoginRollbackState = loginRollbackState;
+      const restoreLoginItem =
+        loginRollbackState.previousStatus === 'enabled' ||
+        loginRollbackState.previousStatus === 'requiresApproval';
+      // One failure is still reported as the aggregate: the caller reads this message as the
+      // signal that the uninstall rollback, not the uninstall, is what left the machine dirty.
       return async () => {
-        const errors: unknown[] = [];
-        try {
-          if (daemonRollback) await daemonRollback();
-          else await options.daemonAdapter.activate(context, artifacts);
-        } catch (error) {
-          errors.push(error);
-        }
-        try {
-          restoreSnapshots([...controlSnapshots, markerSnapshot]);
-        } catch (error) {
-          errors.push(error);
-        }
-        if (
-          loginRollbackState.previousStatus === 'enabled' ||
-          loginRollbackState.previousStatus === 'requiresApproval'
-        ) {
-          try {
+        const errors = await collectFailures([
+          async () => {
+            if (daemonRollback) await daemonRollback();
+            else await options.daemonAdapter.activate(context, artifacts);
+          },
+          () => restoreSnapshots([...controlSnapshots, markerSnapshot]),
+          async () => {
+            if (!restoreLoginItem) return;
             const restored = await registerLoginItem(context);
             if (restored.loginItem !== loginRollbackState.previousStatus) {
               throw new Error('macOS login item rollback did not restore its previous state');
             }
-          } catch (error) {
-            errors.push(error);
-          }
-        }
+          },
+        ]);
         if (errors.length > 0)
           throw new AggregateError(errors, 'macOS deactivation rollback failed');
       };

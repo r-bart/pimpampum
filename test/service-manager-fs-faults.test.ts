@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPlatformServiceManager } from '../src/service/manager.js';
-import { installReceiptPath, writePrivateFileAtomic } from '../src/service/receipt.js';
+import { writePrivateFileAtomic } from '../src/fsAtomic.js';
+import { installReceiptPath } from '../src/service/receipt.js';
 import type { PlatformServiceAdapter } from '../src/service/types.js';
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -135,15 +136,18 @@ describe('service manager uninstall filesystem faults', () => {
   it('closes the exclusive temporary descriptor and keeps the previous bytes when its write fails', () => {
     const root = fixture('durable-write');
     const target = join(root.dataDirectory, 'receipt.json');
-    writePrivateFileAtomic(target, 'first', 0o600, root.dataDirectory);
+    const options = { mode: 0o600, trustedRoot: root.dataDirectory };
+    writePrivateFileAtomic(target, 'first', options);
     vi.mocked(closeSync).mockClear();
-    // The fault is bound to the descriptor opened for `<target>.<uuid>.tmp`, so the assertion
-    // below proves that exact descriptor was closed rather than counting `closeSync` calls.
+    // The fault is bound to the descriptor opened for `.receipt.json.<pid>.<uuid>.tmp`, so the
+    // assertion below proves that exact descriptor was closed rather than counting `closeSync`.
     let temporaryDescriptor: number | null = null;
     vi.mocked(openSync).mockImplementation((...arguments_: Parameters<typeof openSync>) => {
       const descriptor = defaultOpen(...arguments_);
       const path = String(arguments_[0]);
-      if (path.startsWith(`${target}.`) && path.endsWith('.tmp')) temporaryDescriptor = descriptor;
+      if (path.startsWith(join(root.dataDirectory, '.receipt.json.')) && path.endsWith('.tmp')) {
+        temporaryDescriptor = descriptor;
+      }
       return descriptor;
     });
     vi.mocked(writeFileSync).mockImplementation(
@@ -154,9 +158,7 @@ describe('service manager uninstall filesystem faults', () => {
         return defaultWrite(...arguments_);
       },
     );
-    expect(() => writePrivateFileAtomic(target, 'second', 0o600, root.dataDirectory)).toThrow(
-      'disk full',
-    );
+    expect(() => writePrivateFileAtomic(target, 'second', options)).toThrow('disk full');
     expect(temporaryDescriptor).not.toBeNull();
     expect(vi.mocked(closeSync)).toHaveBeenCalledExactlyOnceWith(temporaryDescriptor);
     expect(readFileSync(target, 'utf8')).toBe('first');

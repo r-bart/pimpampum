@@ -189,13 +189,6 @@ describe('Store coverage closure', () => {
       )
       .run(created.project.id, created.spec.id, created.project.id);
     expect(store.listActivity(created.project.id, 1)[0]?.data).toEqual({});
-    expect(
-      (
-        store as unknown as {
-          count(sql: string): number;
-        }
-      ).count('SELECT count FROM (SELECT 1 AS count WHERE 0)'),
-    ).toBe(0);
     expect(() => store.getWorkspace('missing')).toThrow(/not found/iu);
     expect(() => store.getProject('missing')).toThrow(/not found/iu);
     expect(() => store.getSpec('missing')).toThrow(/not found/iu);

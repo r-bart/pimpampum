@@ -104,7 +104,7 @@ Item {
       // CLI envelope: {data}. A bare overview payload never carries a data key.
       data = envelope.data
     }
-    if (["active", "available", "complete", "draft", "paused", "empty"].indexOf(data.status) === -1) return "invalid"
+    if (vocabulary.overviewStates.indexOf(data.status) === -1) return "invalid"
     if (!isObject(data.daemon) || !isString(data.daemon.version) || !isTimestamp(data.daemon.startedAt)) return "invalid"
     if (!isCount(data.daemon.uptimeSeconds) || !isTimestamp(data.generatedAt)) return "invalid"
     if (!validCounts(data.counts) || !Array.isArray(data.projects) || !Array.isArray(data.specs) || !Array.isArray(data.activeWork)) return "invalid"
@@ -183,6 +183,8 @@ Item {
       fail("invalid", "Pimpampum overview helper path is invalid")
     } else refresh()
   }
+
+  StateVocabulary { id: vocabulary }
 
   Timer {
     interval: root.popoutOpen ? 5000 : 10000

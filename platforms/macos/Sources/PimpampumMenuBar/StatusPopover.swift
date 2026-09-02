@@ -446,7 +446,7 @@ struct StatusPopover: View {
   }
 
   private func projectButton(_ project: OverviewProject) -> some View {
-    ProjectRowButton(project: project) {
+    OverviewRowButton(content: Self.projectRow(project)) {
       do {
         try workspaceOpener.openWorkspace(at: project.workspace.rootPath)
         revealError = nil
@@ -460,7 +460,7 @@ struct StatusPopover: View {
   }
 
   private func specButton(_ spec: OverviewSpec) -> some View {
-    SpecRowButton(spec: spec) {
+    OverviewRowButton(content: Self.specRow(spec)) {
       do {
         try workspaceOpener.openWorkspace(at: spec.workspace.rootPath)
         revealError = nil
@@ -593,9 +593,12 @@ struct StatusPopover: View {
 
 }
 
+/// One selectable portfolio row, for a project and for a spec alike. Every word, including the
+/// accessibility ones, arrives in `OverviewRowContent`; this view only lays it out and carries the
+/// hover treatment the two rows shared.
 @MainActor
-private struct ProjectRowButton: View {
-  let project: OverviewProject
+private struct OverviewRowButton: View {
+  let content: OverviewRowContent
   let action: () -> Void
 
   @State private var isHovering = false
@@ -604,19 +607,21 @@ private struct ProjectRowButton: View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 10) {
         VStack(alignment: .leading, spacing: 3) {
-          Text(project.title)
+          Text(content.title)
             .font(.subheadline.weight(.medium))
             .lineLimit(StatusPopover.contentTitleLineLimit)
 
-          Text(StatusPopover.projectMetadataText(project))
+          Text(content.metadata)
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(StatusPopover.metadataLineLimit)
             .truncationMode(.tail)
 
-          Text(StatusPopover.projectCountsText(project))
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+          if let counts = content.counts {
+            Text(counts)
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+          }
         }
 
         Spacer(minLength: 4)
@@ -634,51 +639,8 @@ private struct ProjectRowButton: View {
     .buttonStyle(.plain)
     .frame(maxWidth: .infinity, alignment: .leading)
     .onHover { isHovering = $0 }
-    .accessibilityLabel(StatusPopover.projectOpenAccessibilityLabel(project))
-    .accessibilityValue(StatusPopover.projectAccessibilityValue(project))
-    .accessibilityHint(StatusPopover.projectOpenAccessibilityHint(project))
-  }
-}
-
-@MainActor
-private struct SpecRowButton: View {
-  let spec: OverviewSpec
-  let action: () -> Void
-
-  @State private var isHovering = false
-
-  var body: some View {
-    Button(action: action) {
-      HStack(alignment: .top, spacing: 10) {
-        VStack(alignment: .leading, spacing: 3) {
-          Text(spec.title)
-            .font(.subheadline.weight(.medium))
-            .lineLimit(StatusPopover.contentTitleLineLimit)
-
-          Text(StatusPopover.specMetadataText(spec))
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(StatusPopover.metadataLineLimit)
-            .truncationMode(.tail)
-        }
-
-        Spacer(minLength: 4)
-
-      }
-      .padding(.horizontal, 6)
-      .padding(.vertical, 5)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .contentShape(Rectangle())
-      .background(
-        isHovering ? Color.primary.opacity(0.06) : Color.clear,
-        in: RoundedRectangle(cornerRadius: 6)
-      )
-    }
-    .buttonStyle(.plain)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .onHover { isHovering = $0 }
-    .accessibilityLabel(StatusPopover.specOpenAccessibilityLabel(spec))
-    .accessibilityValue(StatusPopover.specAccessibilityValue(spec))
-    .accessibilityHint(StatusPopover.specOpenAccessibilityHint(spec))
+    .accessibilityLabel(content.accessibilityLabel)
+    .accessibilityValue(content.accessibilityValue)
+    .accessibilityHint(content.accessibilityHint)
   }
 }

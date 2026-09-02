@@ -7,12 +7,7 @@ extension WorkspaceOpener {
     openDirectory: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }
   ) {
     self.init(
-      validateDirectory: { path in
-        var isDirectory = ObjCBool(false)
-        return fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
-          && isDirectory.boolValue
-          && fileManager.isReadableFile(atPath: path)
-      },
+      validateDirectory: DirectoryOpener.isReadableDirectory(fileManager),
       openDirectory: openDirectory
     )
   }
