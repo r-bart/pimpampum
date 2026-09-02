@@ -10,15 +10,6 @@ enum SetupOnboardingStep: Int, CaseIterable, Sendable {
   /// The step a fresh onboarding opens on. Naming it keeps the view's initial state from drifting
   /// away from the first case whenever a step is added ahead of the others.
   static let first = SetupOnboardingStep.welcome
-
-  var marker: String {
-    switch self {
-    case .welcome: "1 OF 4"
-    case .explain: "2 OF 4"
-    case .agents: "3 OF 4"
-    case .progress: "4 OF 4"
-    }
-  }
 }
 
 struct SetupTrustPoint: Identifiable, Equatable {
@@ -82,6 +73,9 @@ struct SetupOnboardingView: View {
   /// Tall enough to hold the welcome and the explanation without either of them resizing the
   /// popover. Taller steps grow past it; the point is that the short ones do not shrink.
   static let stepMinimumHeight: CGFloat = 320
+  /// Wide enough for four readable segments, narrow enough to stay a header ornament
+  /// rather than a full-width bar competing with the title under it.
+  static let stepProgressMaximumWidth: CGFloat = 132
 
   /// Owned by the app. This view is one rendering of a session that outlives it.
   @ObservedObject var session: SetupSession
@@ -125,13 +119,27 @@ struct SetupOnboardingView: View {
     .animation(accessibilityReduceMotion ? nil : .easeInOut(duration: 0.18), value: step)
   }
 
+  /// Four segments that fill as the setup advances, in place of the old "1 OF 4" label. The bar
+  /// reads at a glance where a counter had to be parsed, and it inherits the container's
+  /// `.animation`, which is already `nil` under Reduce Motion.
+  private var stepProgress: some View {
+    HStack(spacing: 4) {
+      ForEach(SetupOnboardingStep.allCases, id: \.rawValue) { segment in
+        Capsule(style: .continuous)
+          .fill(
+            Color.primary.opacity(
+              SetupOnboardingPresentation.isSegmentFilled(segment, at: step) ? 0.8 : 0.16))
+          .frame(height: 3)
+      }
+    }
+    .frame(maxWidth: Self.stepProgressMaximumWidth)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(SetupOnboardingPresentation.progressLabel(for: step))
+  }
+
   private var stepHeader: some View {
     VStack(alignment: .leading, spacing: 7) {
-      Text(step.marker)
-        .font(.caption2.weight(.semibold))
-        .tracking(0.8)
-        .foregroundStyle(.secondary)
-        .accessibilityLabel("Step \(step.rawValue) of \(SetupOnboardingStep.allCases.count)")
+      stepProgress
 
       // The welcome step carries its own centered lockup, so it must not repeat a leading title.
       if let stepTitle = SetupOnboardingPresentation.stepTitle(for: step) {

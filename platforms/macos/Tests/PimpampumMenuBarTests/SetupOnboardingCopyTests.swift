@@ -60,7 +60,7 @@ struct SetupOnboardingCopyTests {
     // welcome step was inserted ahead of it, which hid the new step entirely.
     #expect(SetupOnboardingStep.first == .welcome)
     #expect(SetupOnboardingStep.first == SetupOnboardingStep.allCases.first)
-    #expect(SetupOnboardingStep.first.marker == "1 OF 4")
+    #expect(SetupOnboardingPresentation.progressLabel(for: .first) == "Step 1 of 4")
   }
 
   @Test
@@ -101,8 +101,11 @@ struct SetupOnboardingCopyTests {
 
   @Test
   func numbersTheFourGuidedSteps() {
+    // The screens show a four-segment bar; this sentence is the only place the count is spelled
+    // out, and it is what assistive technology reads.
     #expect(
-      SetupOnboardingStep.allCases.map(\.marker) == ["1 OF 4", "2 OF 4", "3 OF 4", "4 OF 4"])
+      SetupOnboardingStep.allCases.map(SetupOnboardingPresentation.progressLabel(for:))
+        == ["Step 1 of 4", "Step 2 of 4", "Step 3 of 4", "Step 4 of 4"])
   }
 }
 

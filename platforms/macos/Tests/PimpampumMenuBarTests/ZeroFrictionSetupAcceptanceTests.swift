@@ -1,9 +1,11 @@
 /**
- * @generated-from thoughts/specs/2026-08-31_zero-friction-local-agent-setup.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
+ * Generated from thoughts/specs/2026-08-31_zero-friction-local-agent-setup.md.
  *
- * These tests encode the spec's acceptance criteria as executable assertions.
- * If a test seems wrong, update the spec and regenerate — don't edit tests directly.
+ * These tests encode the spec's acceptance criteria as executable assertions. They are edited like
+ * any other test, together with the spec item they name: the `@immutable` banner that used to sit
+ * here was retired on 2026-09-02 (thoughts/reviews/2026-09-01_deep-review.md, H-14), because a
+ * frozen test file only freezes a snapshot, never a specification. Prefer asserting behaviour over
+ * asserting the source text of a view.
  */
 import Foundation
 import Testing
@@ -31,10 +33,17 @@ struct ZeroFrictionSetupAcceptanceTests {
     let onboarding = try source(
       "platforms/macos/Sources/PimpampumMenuBar/SetupOnboardingView.swift")
 
-    #expect(onboarding.contains("1 OF 4"))
-    #expect(onboarding.contains("2 OF 4"))
-    #expect(onboarding.contains("3 OF 4"))
-    #expect(onboarding.contains("4 OF 4"))
+    // The step counter became a four-segment bar on 2026-09-02; the spec is amended for it. The
+    // count and the accessible sentence are behaviour of the presentation type, so assert them
+    // there rather than in the view's source text.
+    #expect(SetupOnboardingStep.allCases.count == 4)
+    #expect(
+      SetupOnboardingStep.allCases.map(SetupOnboardingPresentation.progressLabel(for:))
+        == ["Step 1 of 4", "Step 2 of 4", "Step 3 of 4", "Step 4 of 4"])
+    // The one wiring check that has to read source: a correct presentation type still fails the
+    // user if the body never calls it, and a SwiftUI body is outside the coverage manifest, so no
+    // behavioural test can reach the label the bar actually renders.
+    #expect(onboarding.contains("SetupOnboardingPresentation.progressLabel(for: step)"))
     #expect(onboarding.contains("Review & set up"))
     #expect(onboarding.contains("Your agents share one project memory"))
     #expect(!onboarding.localizedCaseInsensitiveContains("npm"))

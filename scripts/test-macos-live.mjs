@@ -977,10 +977,27 @@ async function verifyBackupSettings() {
     env: environment,
     encoding: 'utf8',
   });
+  // A retry that ends in `state: 'error'` is a successful report of a failed backup, so the CLI
+  // exits zero and puts the reason in the payload; see the comment on `backup retry` in
+  // src/cliHandlers/backup.ts. Up to v1.2.11 it threw `internal_error` instead, which flattened
+  // the reason into an exit code. Asserting the payload is the stronger check either way.
+  expect(
+    'backup-retry-reports',
+    failedRetryCommand.status === 0,
+    'A failed backup must be reported in the payload, not flattened into an exit code.',
+    { status: failedRetryCommand.status, stderr: failedRetryCommand.stderr },
+  );
+  const retryReport = unwrapCliEnvelope(
+    parseJsonObject(failedRetryCommand.stdout, 'backup retry'),
+    'backup retry',
+  );
   expect(
     'backup-retry-refused',
-    failedRetryCommand.status !== 0,
+    retryReport.state === 'error' &&
+      typeof retryReport.error === 'string' &&
+      retryReport.error.length > 0,
     'Automatic backup unexpectedly succeeded against a file destination.',
+    retryReport,
   );
   const failedBackup = await waitForBackupState('error');
   expect(

@@ -735,3 +735,14 @@ work still goes only through the domain tools. The README documents the launcher
 to `~/Library/Application Support/Pimpampum/installation.json` (schema 2), because a file added
 under `Contents/Resources` breaks the code seal of a signed copy. The app reads the legacy in-bundle
 marker for one more release.
+
+**Step indicator (2026-09-02, released as `v1.3.0`).** The step marker is no longer the text
+`1 OF 4`. The four steps are drawn as four segments of a thin bar in the screen header, and every
+segment up to and including the current step is filled, so the bar reads as progress rather than as
+a cursor. The flow is unchanged: four steps, one mutating confirmation on **Review & set up**.
+
+A11Y-2 is served by the bar's accessibility label, which is the only place the count is still
+spelled out: `Step 1 of 4` through `Step 4 of 4`. The decision lives in
+`SetupOnboardingPresentation.isSegmentFilled(_:at:)` and `SetupOnboardingPresentation.progressLabel(for:)`,
+inside the type `scripts/check-swift-coverage.sh` measures, rather than in the SwiftUI body. The bar
+inherits the onboarding container's animation, which is already `nil` under Reduce Motion.

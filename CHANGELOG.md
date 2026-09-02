@@ -12,10 +12,12 @@ findings, in four waves plus their documentation. Section 1b of that report is t
 wave closed each finding. Grouped below by finding family.
 
 The release the review's plan mapped to five tags (`v1.2.12` to `v1.2.15`, then `v1.3.0`) ships as
-one minor version. No wire contract changed: every public method set, error code, message and
-envelope shape is preserved. Databases migrate forward to schema v3, which is one-way: a
-`v1.2.11` daemon that opens one afterwards refuses with a typed error naming both versions, so a
-rollback needs a backup taken before the upgrade.
+one minor version. The HTTP and MCP wire contracts are unchanged: every public method set, error
+code, message and envelope shape is preserved. Two things do change for a caller, and both are
+listed below: `pimpampum backup retry` reports a failed backup in its payload instead of in its
+exit code, and databases migrate forward to schema v3, which is one-way. A `v1.2.11` daemon that
+opens a v3 database refuses with a typed error naming both versions, so a rollback needs a backup
+taken before the upgrade.
 
 ### Wave 1 — release channel, sync integrity, macOS topology, Omarchy helpers, runtime installer
 
@@ -50,6 +52,11 @@ rollback needs a backup taken before the upgrade.
   the router; one error-code constant; duplicated MCP schemas removed.
 - CLI (M-S1 to M-S3, X-04, X-06, X-08): lazy composition so `help`, `version`, and `status` never
   fail on local state; every verb routes through the catalog; uninstall supersedes the setup journal.
+- **Behaviour change.** `pimpampum backup retry` now exits zero when the backup itself failed, and
+  puts the reason in the payload as `state: "error"` with a populated `error`. Up to `v1.2.11` it
+  raised `internal_error`, so the reason was flattened into an exit code. The macOS Settings card
+  calls the daemon over HTTP and is unaffected; the Omarchy card reads the returned state and still
+  shows the failure. A script that only checked the exit code must now read `state`.
 - Service and setup (M-V2, M-V4, M-V6 to M-V9): one lifecycle lock; bounded service commands;
   fsynced receipts with a repair path; manual uninstall instructions propagate; older manifests are
   rejected by `issuedAt`.

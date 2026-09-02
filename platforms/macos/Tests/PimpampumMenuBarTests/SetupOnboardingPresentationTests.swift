@@ -10,6 +10,19 @@ struct SetupOnboardingPresentationTests {
     error: nil)
 
   @Test
+  func fillsEverySegmentUpToTheCurrentStep() {
+    // A cursor would light one segment; progress lights every segment up to here. The welcome step
+    // already shows one filled segment, so the bar is never empty.
+    let filled = { (step: SetupOnboardingStep) in
+      SetupOnboardingStep.allCases.map { SetupOnboardingPresentation.isSegmentFilled($0, at: step) }
+    }
+    #expect(filled(.welcome) == [true, false, false, false])
+    #expect(filled(.explain) == [true, true, false, false])
+    #expect(filled(.agents) == [true, true, true, false])
+    #expect(filled(.progress) == [true, true, true, true])
+  }
+
+  @Test
   func titlesEveryStepButTheWelcome() {
     #expect(SetupOnboardingPresentation.stepTitle(for: .welcome) == nil)
     #expect(SetupOnboardingPresentation.stepTitle(for: .explain) == SetupOnboardingCopy.title)

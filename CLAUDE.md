@@ -106,7 +106,7 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER send a `Process` stream to `FileHandle.nullDevice` just to dodge the pipe-buffer deadlock; you throw away the diagnosis. Drain it concurrently instead.
 - NEVER collapse a failed `npm` invocation to `"<operation> failed"`; quote a bounded line from its stderr, or a registry policy, a permission error, and an offline machine become one message.
 - ALWAYS put macOS copy decisions in a covered presentation type, never in a SwiftUI body; `scripts/check-swift-coverage.sh` demands 100% and its manifest cannot include a view.
-- NEVER approve a macOS artifact locally to ship it; approval happens in the `publish` job of `.github/workflows/release.yml`, where `check-macos-artifact.mjs --approve --require-signature --require-notarization` records `sourceGitCommit` from the tagged checkout after the live smoke. `npm run approve:macos` exists to debug the checker on a committed tree, and its output is ignored by Git.
+- NEVER approve a macOS artifact locally to ship it; approval happens in the `publish` job of `.github/workflows/release.yml`, where `check-macos-artifact.mjs --approve --require-signature --require-notarization` records `sourceGitCommit` from the tagged checkout. It runs **before** the live smoke, not after: the smoke's `readReleaseArtifact()` reads the `platforms/macos/dist/PimpampumMenuBar.artifact.json` that approval writes, and without it the run dies with `ENOENT` after every scenario has already passed. `npm run approve:macos` writes it locally and its output is ignored by Git.
 - NEVER derive a test fixture path from `process.cwd()`'s parent; it silently binds the test to the checkout directory name. Build a temporary directory instead.
 - ALWAYS mirror a new `HelpDialogCopy.items` entry in `HelpDialogTests`; that list is frozen copy and the macOS CI job runs `npm run test:macos`.
 - ALWAYS regenerate the README `CLI reference` block from `pimpampum help` when you touch `src/cliCommands.ts`; `test/cli-agent-surface.test.ts` compares the whole block and a new verb otherwise ships undocumented.
@@ -138,6 +138,7 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER hand-edit the version in `platforms/macos/Resources/Info.plist`; it carries `__PIMPAMPUM_VERSION__` and `scripts/build-macos-app.sh` substitutes `package.json`'s version, failing if the placeholder is gone. It was bumped by hand up to v1.2.11, outside `check-release-versions.mjs`, so a forgotten bump surfaced late as "The packaged app must use the package release version". That checker now rejects a literal there.
 - NEVER read the macOS app out of the installed npm package; H-12 removed it from `package.json#files` and `platforms/macos/dist/.npmignore` guards it again, so `node_modules/pimpampum/platforms/macos/dist` does not exist. The live smoke stages `platforms/macos/dist/Pimpampum.app` with `/usr/bin/ditto`, which preserves the signed Mach-O and its modes.
 - NEVER let a coverage line depend on an unref'd timer firing before a test ends; `runServiceCommand`'s SIGKILL escalation passed the 100% gate by luck and failed it on a loaded machine with every test green. Assert the effect instead: wait until `process.kill(pid, 0)` throws.
+- NEVER kill `swift-test` mid-run and then re-run `npm run test:macos`; the orphaned `*.profraw` files leave `swift test --enable-code-coverage` hanging at 0% CPU while the plain `swift test` still passes in under a second. Delete `platforms/macos/.build/**/codecov` and every `*.profraw` first.
 
 ## Release checklist
 
@@ -149,7 +150,11 @@ Before the tag:
    the product diverged from with a dated section.
 3. Run `node scripts/check-release-versions.mjs vX.Y.Z`, `npm run check:omarchy-mirror`, and
    `npm run check:package-size`.
-4. Run `PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos` on a Mac with no user installation.
+4. Approve the local build first, then run the smoke, on a Mac with no user installation:
+   `npm run approve:macos && PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos`. Approval needs a
+   committed tree, because `approvedSourceCommit()` refuses uncommitted build inputs. Never pipe
+   the smoke through `tail`: the pipeline then reports `tail`'s exit code and a crash reads as a
+   pass.
 
 Once per repository, not per release: `gh secret set RELEASE_MANIFEST_SIGNING_KEY` (the Ed25519
 private key that signs `release-manifest.json`) and `gh secret set OMARCHY_MIRROR_DEPLOY_KEY` (the

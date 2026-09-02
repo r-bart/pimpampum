@@ -19,6 +19,19 @@ enum SetupOnboardingPresentation {
   static let planRetryButton = "Try again"
   static let planRetryAccessibilityLabel = "Try working out the exact list again"
 
+  /// Whether one segment of the step bar is filled at the current step. Every step at or before
+  /// the current one is filled, so the bar reads as progress rather than as a cursor.
+  static func isSegmentFilled(_ segment: SetupOnboardingStep, at step: SetupOnboardingStep) -> Bool
+  {
+    segment.rawValue <= step.rawValue
+  }
+
+  /// What assistive technology reads instead of the bar. The bar replaced a "1 OF 4" label, and
+  /// that sentence is the only place the count is still spelled out.
+  static func progressLabel(for step: SetupOnboardingStep) -> String {
+    "Step \(step.rawValue) of \(SetupOnboardingStep.allCases.count)"
+  }
+
   static func stepTitle(for step: SetupOnboardingStep) -> String? {
     switch step {
     case .welcome: nil
