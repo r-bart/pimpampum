@@ -3,7 +3,8 @@
 Recorded on 2026-08-26 for the native macOS menu bar application. Updated on 2026-08-30,
 when `SyncSettings.swift` was split so its deterministic half could join the enforced core, and on
 2026-09-01, when the whole guided-setup lifecycle joined it after the deep review found every
-first-run defect in files the gate never measured (review section 8, findings X-01 to X-09).
+first-run defect in files the gate never measured (review section 8, findings X-01 to X-09). Updated
+again on 2026-09-02, when `WorkspaceRegistration.swift` joined with the workspace action (D-01).
 
 ## Enforced core
 
@@ -33,6 +34,10 @@ first-run defect in files the gate never measured (review section 8, findings X-
 - `ApplicationLaunchCoordinator.swift`: the launch sequence (helper roles, the bounded wait for a
   relauncher that promised to exit) and the single-instance rule, which stands down only for an
   older, still-running copy of the same bundle path.
+- `WorkspaceRegistration.swift`: the `workspace:add` request built from a chosen folder (slug
+  derivation with diacritic folding, the 80- and 120-character bounds, rejected folders), the
+  decoder of the CLI's indented envelope, the registration state machine, and every word of the
+  action's copy (`WorkspaceRegistrationCopy`).
 - `OverviewClient.swift`: receipt/token parsing, loopback validation, HTTP response semantics, decoding, and payload validation.
 - `AuthenticatedDaemonConfiguration.swift`: the single receipt, loopback URL, and token-validation authority shared by every native daemon client.
 - `OverviewStore.swift`: grouping, ordering, stale state, claim expiry, polling intervals, refreshes, and cancellation semantics.
@@ -49,8 +54,8 @@ first-run defect in files the gate never measured (review section 8, findings X-
 - `SyncSettingsClient.swift`: authenticated requests, strict envelope decoding, timestamp parsing, semantic validation, token redaction, and bounded server messages.
 - `SyncSettingsStore.swift`: operation serialization, state publication, cancellation, and stable failure messages.
 
-The current result is 1543/1543 regions, 514/514 functions, and 3203/3203 lines. The suite
-executes 290 tests across 38 suites.
+The current result is 1630/1630 regions, 546/546 functions, and 3381/3381 lines. The suite
+executes 314 tests across 43 suites.
 
 Any deterministic behavior added to the macOS application must live in one of these files or be added explicitly to the coverage manifest in the gate script.
 
@@ -66,7 +71,7 @@ Any deterministic behavior added to the macOS application must live in one of th
 - `StatusPopover.swift`: declarative SwiftUI view composition only; all extracted presentation decisions are enforced through `StatusPresentation.swift`, including which body the popover renders (`content`), when the help button is hidden, and when the footer shows Settings.
 - `SetupOnboardingView.swift`: declarative SwiftUI composition of the four steps plus the step
   vocabulary and copy (`SetupOnboardingStep`, `SetupOnboardingCopy`, pinned by
-  `SetupOnboardingCopyTests` and the frozen acceptance tests). Every branch it renders is decided
+  `SetupOnboardingCopyTests` and the TypeScript acceptance tests). Every branch it renders is decided
   in `SetupOnboardingPresentation.swift`; the step and the store belong to `SetupSession`.
 - `HelpDialog.swift` and `SetupChangesHelp.swift`: declarative dialogs with frozen copy; native
   tests compose them and `HelpDialogTests` pins the dialog to the popover width.
@@ -74,6 +79,9 @@ Any deterministic behavior added to the macOS application must live in one of th
 - `UpdateSettingsView.swift`: declarative SwiftUI composition only. Every copy, version line, relaunch notice, and button state comes from the covered `UpdateSettingsPresentation` in `UpdateSettingsStore.swift`; a native test composes its body.
 - `UpdateSettingsSystemAdapter.swift`: one `Process` adapter. It returns the exit code and both streams unchanged so the covered store, not this file, decides what the user reads, and it enforces the deadline the covered `UpdateOperation` declares. `UpdateCommandRunnerTests` drives it with real processes, including one that floods a stream and one that outlives its deadline.
 - `SyncSettings.swift`: declarative SwiftUI composition and the `NSWindow` controller only. Its models, client, and store were extracted on 2026-08-30 into the three covered files above; `SyncSettingsView.recoveryGuidance` remains under test.
+- `WorkspaceFolderPicker.swift`: the `NSOpenPanel` adapter behind **Add a workspace**. It returns
+  the chosen URL unchanged; the covered `WorkspaceRegistration.swift` decides whether that folder
+  can become a workspace.
 - `BackupDirectoryPicker.swift`: thin `NSOpenPanel`, `FileManager`, and `NSWorkspace` adapters. Its injected selection, path validation, standardization, availability, and open outcomes are exercised by native tests.
 - `ApplicationConfigurationSystemAdapter.swift`: one `Data(contentsOf:)` call.
 - `LoginItemSystemAdapters.swift`: thin `SMAppService`, private atomic-file, and System Settings adapters.

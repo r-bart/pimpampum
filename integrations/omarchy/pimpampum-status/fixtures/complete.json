@@ -1,12 +1,5 @@
 {
-  "meta": { "schemaVersion": 2 },
   "data": {
-    "daemon": {
-      "version": "1.0.0",
-      "startedAt": "2026-08-26T20:00:00.000Z",
-      "uptimeSeconds": 120
-    },
-    "generatedAt": "2026-08-26T20:02:00.000Z",
     "status": "complete",
     "counts": {
       "workspaces": 1,
@@ -62,11 +55,20 @@
         "openTaskCount": 0,
         "completedTaskCount": 1,
         "activeClaimCount": 0,
-        "updatedAt": "2026-08-26T19:00:00.000Z"
+        "updatedAt": "2026-08-26T20:00:55.000Z"
       }
     ],
     "specsTruncated": false,
     "activeWork": [],
-    "activeWorkTruncated": false
+    "activeWorkTruncated": false,
+    "daemon": {
+      "version": "1.0.0",
+      "startedAt": "2026-08-26T20:00:00.000Z",
+      "uptimeSeconds": 120
+    },
+    "generatedAt": "2026-08-26T20:02:00.000Z"
+  },
+  "meta": {
+    "schemaVersion": 2
   }
 }

@@ -1074,22 +1074,33 @@ describe('macOS menu app service integration', () => {
     }
   });
 
-  it('removes a regular embedded runtime during uninstall cleanup of a managed copy only', async () => {
+  it('removes a regular embedded runtime during uninstall cleanup of a managed copy', async () => {
     const managed = fixture('embedded-regular-remove');
     const destination = writeEmbeddedRuntime(join(managed.home, 'Applications', 'Pimpampum.app'));
     await testDesktopAdapter(managed).afterUninstall!(context(managed), []);
     expect(existsSync(destination)).toBe(false);
+  });
 
-    const adopted = fixture('embedded-adopted-keep');
+  it('keeps the runtime inside an adopted user bundle when a failed install rolls back', async () => {
+    const adopted = fixture('embedded-adopted-keep-rollback');
     const userApp = join(adopted.home, 'Applications', 'Pimpampum.app');
     const kept = writeEmbeddedRuntime(userApp, 'the user runtime');
     writeFileSync(
       join(adopted.data, 'application-path.json'),
       JSON.stringify({ schemaVersion: 2, path: userApp, managed: false }),
     );
-    // Neither a rolled-back install nor an uninstall prunes directories inside the user's app.
     await testDesktopAdapter(adopted).afterRollback!(context(adopted), []);
     expect(readFileSync(join(kept, 'node'), 'utf8')).toBe('the user runtime');
+  });
+
+  it('keeps the runtime inside an adopted user bundle when the service is uninstalled', async () => {
+    const adopted = fixture('embedded-adopted-keep-uninstall');
+    const userApp = join(adopted.home, 'Applications', 'Pimpampum.app');
+    const kept = writeEmbeddedRuntime(userApp, 'the user runtime');
+    writeFileSync(
+      join(adopted.data, 'application-path.json'),
+      JSON.stringify({ schemaVersion: 2, path: userApp, managed: false }),
+    );
     await testDesktopAdapter(adopted).afterUninstall!(context(adopted), []);
     expect(readFileSync(join(kept, 'node'), 'utf8')).toBe('the user runtime');
     expect(existsSync(join(adopted.data, 'application-path.json'))).toBe(false);
@@ -1751,14 +1762,15 @@ describe('macOS menu app service integration', () => {
     ).toThrow('pkill path must be absolute');
   });
 
-  it('replaces prior unregistration acknowledgement and guards cleanup targets', async () => {
+  it('replaces a stale unregistration acknowledgement before asking the helper to unregister', async () => {
     const root = fixture('unregister-prior');
     installedBundle(root);
     const acknowledgementPath = join(root.data, 'login-unregistration-acknowledgement.json');
     writeFileSync(acknowledgementPath, 'stale');
+    let staleSeenByHelper: boolean | null = null;
     const runCommand: RunCommand = async (_executable, arguments_) => {
       if (arguments_.includes('--unregister-login-item')) {
-        expect(existsSync(acknowledgementPath)).toBe(false);
+        staleSeenByHelper = existsSync(acknowledgementPath);
         writeFileSync(
           acknowledgementPath,
           JSON.stringify({
@@ -1775,31 +1787,47 @@ describe('macOS menu app service integration', () => {
     await expect(
       adapter.deactivate(testContext, adapter.artifacts(testContext)),
     ).resolves.toBeUndefined();
-
-    rmSync(acknowledgementPath);
-    mkdirSync(acknowledgementPath);
-    await expect(
-      testDesktopAdapter(root).deactivate(context(root, runCommand), []),
-    ).rejects.toThrow(/must be a file/);
-
-    const statusPath = join(root.data, 'login-item-status.json');
-    mkdirSync(statusPath);
-    await expect(
-      testDesktopAdapter(root).integrationStatus!(context(root, runCommand), []),
-    ).rejects.toThrow(/regular file/);
-    await expect(
-      testDesktopAdapter(root).afterUninstall!(context(root, runCommand), []),
-    ).rejects.toThrow(/must be a file/);
-    await expect(
-      testDesktopAdapter(root, { daemonAdapter: idleDaemon() }).prepareDeactivationRollback!(
-        context(root, runCommand),
-        [],
-      ),
-    ).rejects.toThrow(/regular file/);
+    expect(staleSeenByHelper).toBe(false);
   });
 
-  it('preserves unrelated app files and propagates unexpected directory cleanup errors', async () => {
-    const root = fixture('cleanup');
+  it('refuses to deactivate when a directory sits where the unregistration acknowledgement goes', async () => {
+    const root = fixture('unregister-directory');
+    installedBundle(root);
+    mkdirSync(join(root.data, 'login-unregistration-acknowledgement.json'));
+    await expect(testDesktopAdapter(root).deactivate(context(root), [])).rejects.toThrow(
+      /must be a file/,
+    );
+  });
+
+  it.each([
+    {
+      hook: 'integrationStatus',
+      run: (root: Fixture) => testDesktopAdapter(root).integrationStatus!(context(root), []),
+      message: /regular file/,
+    },
+    {
+      hook: 'afterUninstall',
+      run: (root: Fixture) => testDesktopAdapter(root).afterUninstall!(context(root), []),
+      message: /must be a file/,
+    },
+    {
+      hook: 'prepareDeactivationRollback',
+      run: (root: Fixture) =>
+        testDesktopAdapter(root, { daemonAdapter: idleDaemon() }).prepareDeactivationRollback!(
+          context(root),
+          [],
+        ),
+      message: /regular file/,
+    },
+  ])('$hook rejects a directory where login-item-status.json belongs', async ({ run, message }) => {
+    const root = fixture('status-directory');
+    installedBundle(root);
+    mkdirSync(join(root.data, 'login-item-status.json'));
+    await expect(run(root)).rejects.toThrow(message);
+  });
+
+  it('afterUninstall removes only its owned resource and keeps an unrelated file and the app', async () => {
+    const root = fixture('cleanup-unrelated');
     const app = join(root.home, 'Applications', 'Pimpampum.app');
     const resources = join(app, 'Contents', 'Resources');
     mkdirSync(resources, { recursive: true });
@@ -1808,9 +1836,13 @@ describe('macOS menu app service integration', () => {
     await expect(
       testDesktopAdapter(root).afterUninstall!(context(root), artifacts),
     ).resolves.toBeUndefined();
+    expect(readFileSync(join(resources, 'unrelated'), 'utf8')).toBe('keep');
     expect(existsSync(app)).toBe(true);
+  });
 
-    rmSync(join(resources, 'unrelated'));
+  it('afterRollback leaves a parent directory that still holds another file', async () => {
+    const root = fixture('cleanup-blocked');
+    const resources = join(root.home, 'Applications', 'Pimpampum.app', 'Contents', 'Resources');
     mkdirSync(join(resources, 'blocked'), { recursive: true });
     writeFileSync(join(resources, 'blocked', 'file'), 'x');
     await expect(
@@ -1818,10 +1850,14 @@ describe('macOS menu app service integration', () => {
         { path: join(resources, 'blocked', 'owned'), content: '', mode: 0o600 },
       ]),
     ).resolves.toBeUndefined();
+    expect(readFileSync(join(resources, 'blocked', 'file'), 'utf8')).toBe('x');
+  });
 
-    rmSync(join(resources, 'blocked'), { recursive: true });
+  it('afterRollback propagates a permission error while pruning an empty owned directory', async () => {
+    const root = fixture('cleanup-eacces');
+    const app = join(root.home, 'Applications', 'Pimpampum.app');
     const empty = join(app, 'empty');
-    mkdirSync(empty);
+    mkdirSync(empty, { recursive: true });
     chmodSync(app, 0o500);
     try {
       await expect(

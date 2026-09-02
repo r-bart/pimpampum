@@ -37,10 +37,11 @@ phases:
 gates:
   # Tier ① — objective: deterministic commands. Run EVERY iteration, fail-fast.
   objective:
-    - cmd: npm run check:desktop-contract # immutable generated DoD and fixtures
+    - cmd: npm run check:desktop-contract # frozen overview fixtures (test/fixtures/overview)
     - cmd: npm run typecheck # type safety
     - cmd: npm run lint # style + rules
-    - cmd: npm test # the DoD tests must stay green
+    - cmd: npm run format:check # prettier, the same gate quality.yml runs
+    - cmd: npm test # build, 100% coverage on the measured files, compiled E2E
   # Tier ② — subjective: judgment delegated to reviewing agents. Run per phase,
   # adversarially (multiple refuters; majority confirms). `strict` fails the phase
   # on an unresolved finding.
@@ -54,7 +55,7 @@ gates:
 # dod: the Definition of Done for THIS feature (the front barbell end).
 # `as_tests` points at the test manifest produced by /generate-tests — done = green.
 dod:
-  as_tests: thoughts/tests/2026-08-26_desktop-status-integrations.md # signed feature contract
+  as_tests: thoughts/plans/2026-09-01_deep-review-remediation.md # coverage matrix: one row per finding
   # extra: []                       # optional extra human-checkable criteria
 
 # ship: how the converged change leaves the loop (the back barbell end).

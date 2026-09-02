@@ -1,13 +1,13 @@
 /**
  * @generated-from thoughts/specs/2026-08-31_zero-friction-local-agent-setup.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
- * These tests encode the spec's acceptance criteria as executable assertions.
- * If a test seems wrong, update the spec and regenerate — don't edit tests directly.
+ * These tests encode the spec's acceptance criteria as executable assertions. Each test names the
+ * spec items it covers; a test changes only together with the spec item it names. The source scan
+ * this file carried for SEC-1 through SEC-4 and SEC-10 through SEC-12 moved to
+ * test/source-contract.test.ts on 2026-09-02 (H-13); the loopback listener is proven by
+ * test/server.test.ts and test/http.test.ts.
  */
 import {
-  chmodSync,
-  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -20,43 +20,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-type InstallationSnapshot = {
-  runtimeVersion: string;
-  serviceCommand: string[];
-  connectorEntries: Record<string, unknown>;
-};
-
-type LifecycleDependencies = {
-  dataDirectory: string;
-  homeDirectory: string;
-  lifecycleLock: { run<T>(operation: () => Promise<T>): Promise<T> };
-  runtime: {
-    stage(version: string): Promise<{ version: string; nodePath: string; cliPath: string }>;
-    activate(version: string): Promise<void>;
-    restore(version: string): Promise<void>;
-    removeOwned(): Promise<void>;
-  };
-  service: {
-    stop(): Promise<void>;
-    install(input: { nodePath: string; cliPath: string }): Promise<void>;
-    start(): Promise<void>;
-    verify(): Promise<void>;
-    restore(snapshot: InstallationSnapshot): Promise<void>;
-    removeOwned(): Promise<void>;
-  };
-  connectors: {
-    reconcileOwned(): Promise<void>;
-    snapshotOwned(): Promise<Record<string, unknown>>;
-    restoreOwned(entries: Record<string, unknown>): Promise<void>;
-    disconnectOwned(): Promise<void>;
-  };
-  receipt: {
-    read(): Promise<InstallationSnapshot>;
-    commit(snapshot: InstallationSnapshot): Promise<void>;
-    remove(): Promise<void>;
-  };
-};
+import { configurationRevision, replaceHostConfigurationEntry } from '../src/connectors/process.js';
+import {
+  createInstallationLifecycle,
+  type InstallationLifecycleDependencies,
+} from '../src/setup/coordinator.js';
+import type { InstallationSnapshot } from '../src/setup/types.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -66,7 +35,7 @@ function temporaryDirectory(label: string): string {
   return directory;
 }
 
-function lifecycleDependencies(root: string): LifecycleDependencies {
+function lifecycleDependencies(root: string): InstallationLifecycleDependencies {
   const snapshot: InstallationSnapshot = {
     runtimeVersion: '1.1.3',
     serviceCommand: ['/usr/local/bin/node', '/usr/local/lib/node_modules/pimpampum/dist/cli.js'],
@@ -110,32 +79,6 @@ function lifecycleDependencies(root: string): LifecycleDependencies {
   };
 }
 
-async function lifecycleContract() {
-  const coordinatorUrl = new URL('../src/setup/coordinator.ts', import.meta.url).href;
-  const processUrl = new URL('../src/connectors/process.ts', import.meta.url).href;
-  const [coordinator, process] = await Promise.all([import(coordinatorUrl), import(processUrl)]);
-  return {
-    createInstallationLifecycle: coordinator.createInstallationLifecycle as (
-      dependencies: LifecycleDependencies,
-    ) => {
-      migrate(input: {
-        targetVersion: string;
-      }): Promise<{ migrated: boolean; dataPreserved: boolean }>;
-      update(input: {
-        targetVersion: string;
-      }): Promise<{ updated: boolean; connectorsPreserved: boolean }>;
-      remove(): Promise<{ removed: boolean; dataPreserved: boolean; manualInstructions: string[] }>;
-    },
-    replaceHostConfigurationEntry: process.replaceHostConfigurationEntry as (input: {
-      path: string;
-      expectedRevision: string | null;
-      mode: number;
-      update(current: unknown): unknown;
-    }) => Promise<{ revision: string }>,
-    configurationRevision: process.configurationRevision as (path: string) => string,
-  };
-}
-
 afterEach(() => {
   vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
@@ -158,7 +101,6 @@ describe('Migration, update, removal and security boundaries', () => {
     for (const [name, content] of Object.entries(files)) {
       writeFileSync(join(deps.dataDirectory, name), content);
     }
-    const { createInstallationLifecycle } = await lifecycleContract();
     const lifecycle = createInstallationLifecycle(deps);
 
     await expect(lifecycle.migrate({ targetVersion: '2.0.0' })).resolves.toEqual({
@@ -183,7 +125,6 @@ describe('Migration, update, removal and security boundaries', () => {
     vi.mocked(deps.service.verify).mockRejectedValueOnce(new Error('new daemon unhealthy'));
     const previous = await deps.receipt.read();
     vi.mocked(deps.receipt.read).mockClear();
-    const { createInstallationLifecycle } = await lifecycleContract();
 
     await expect(
       createInstallationLifecycle(deps).migrate({ targetVersion: '2.0.0' }),
@@ -198,7 +139,6 @@ describe('Migration, update, removal and security boundaries', () => {
     // Spec: FR-8.1, FR-8.2, EC-16
     const root = temporaryDirectory('update');
     const deps = lifecycleDependencies(root);
-    const { createInstallationLifecycle } = await lifecycleContract();
 
     await expect(
       createInstallationLifecycle(deps).update({ targetVersion: '2.1.0' }),
@@ -218,7 +158,6 @@ describe('Migration, update, removal and security boundaries', () => {
     writeFileSync(join(deps.dataDirectory, 'pimpampum.sqlite'), 'database-bytes');
     writeFileSync(join(deps.dataDirectory, 'token'), 'token-bytes');
     writeFileSync(join(deps.dataDirectory, 'export.md'), '# User export');
-    const { createInstallationLifecycle } = await lifecycleContract();
 
     await expect(createInstallationLifecycle(deps).remove()).resolves.toEqual({
       removed: true,
@@ -242,7 +181,6 @@ describe('Migration, update, removal and security boundaries', () => {
     vi.mocked(deps.runtime.removeOwned).mockRejectedValueOnce(new Error('runtime directory busy'));
     const previous = await deps.receipt.read();
     vi.mocked(deps.receipt.read).mockClear();
-    const { createInstallationLifecycle } = await lifecycleContract();
 
     await expect(createInstallationLifecycle(deps).remove()).rejects.toThrow(
       'runtime directory busy',
@@ -261,7 +199,6 @@ describe('Migration, update, removal and security boundaries', () => {
       JSON.stringify({ theme: 'dark', projects: { client: { trusted: true } }, mcpServers: {} }),
       { mode: 0o600 },
     );
-    const { replaceHostConfigurationEntry, configurationRevision } = await lifecycleContract();
     const revision = configurationRevision(path);
 
     await replaceHostConfigurationEntry({
@@ -303,7 +240,6 @@ describe('Migration, update, removal and security boundaries', () => {
     const missing = join(root, 'new-home', '.claude.json');
     const readOnly = join(root, 'managed.json');
     writeFileSync(readOnly, '{"managed":true}', { mode: 0o400 });
-    const { replaceHostConfigurationEntry } = await lifecycleContract();
 
     await replaceHostConfigurationEntry({
       path: missing,
@@ -346,7 +282,6 @@ describe('Migration, update, removal and security boundaries', () => {
     const link = join(root, '.claude.json');
     writeFileSync(victim, '{"untouched":true}');
     symlinkSync(victim, link);
-    const { replaceHostConfigurationEntry, configurationRevision } = await lifecycleContract();
 
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(() => configurationRevision(link)).toThrow(/symlink|regular file/i);
@@ -359,29 +294,5 @@ describe('Migration, update, removal and security boundaries', () => {
       }),
     ).rejects.toThrow(/symlink|regular file/i);
     expect(readFileSync(victim, 'utf8')).toBe('{"untouched":true}');
-  });
-
-  it('SEC-1 through SEC-4/SEC-10 through SEC-12: product sources preserve the local secret boundary', () => {
-    // Spec: SEC-1, SEC-2, SEC-3, SEC-4, SEC-10, SEC-11, SEC-12
-    const sourcePaths = [
-      'src/connectors',
-      'src/runtime',
-      'src/setup',
-      'platforms/macos/Sources/PimpampumMenuBar/SetupCommandRunner.swift',
-      'integrations/omarchy/pimpampum-status/pimpampum-connections',
-    ].map((path) => join(process.cwd(), path));
-    for (const path of sourcePaths) expect(existsSync(path)).toBe(true);
-
-    const cli = readFileSync(join(process.cwd(), 'src/cliMain.ts'), 'utf8');
-    const mcp = readFileSync(join(process.cwd(), 'src/mcpStdio.ts'), 'utf8');
-    const server = readFileSync(join(process.cwd(), 'src/server.ts'), 'utf8');
-    expect(server).toMatch(/127\.0\.0\.1|loopback/u);
-    expect(`${cli}\n${mcp}`).not.toMatch(/sudo|setuid|telemetry|analytics/iu);
-    expect(`${cli}\n${mcp}`).not.toMatch(/SELECT\s+\*\s+FROM|better-sqlite3/iu);
-
-    const tokenPath = join(temporaryDirectory('token-mode'), 'token');
-    writeFileSync(tokenPath, 'private-token', { mode: 0o600 });
-    chmodSync(tokenPath, 0o600);
-    expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
   });
 });

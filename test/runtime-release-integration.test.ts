@@ -11,67 +11,80 @@ import {
   type PackagedReleaseTarget,
 } from '../src/update.js';
 import { PIMPAMPUM_VERSION } from '../src/version.js';
+import { parsePlist } from './helpers/serviceArtifacts.js';
+import {
+  readWorkflow,
+  stepIndex,
+  stepsNamed,
+  usedActions,
+  type WorkflowStep,
+  type YamlMapping,
+} from './helpers/workflowYaml.js';
 
 const root = process.cwd();
 const source = (path: string) => readFileSync(join(root, path), 'utf8');
+const release = readWorkflow(join(root, '.github/workflows/release.yml'));
+const quality = readWorkflow(join(root, '.github/workflows/quality.yml'));
+const audit = readWorkflow(join(root, '.github/workflows/audit.yml'));
+
+function ordered(steps: WorkflowStep[], names: string[]): number[] {
+  const indexes = names.map((name) => stepIndex(steps, name));
+  expect(
+    indexes.every((index) => index >= 0),
+    `missing step among ${names.join(', ')}`,
+  ).toBe(true);
+  expect(indexes).toEqual([...indexes].sort((left, right) => left - right));
+  return indexes;
+}
 
 describe('runtime release integration', () => {
-  it('embeds only a checked Darwin payload and verifies its complete inventory', () => {
-    const build = source('scripts/build-macos-app.sh');
-    const check = source('scripts/check-macos-artifact.mjs');
-
-    expect(build).toContain('build-runtime-bundle.mjs');
-    expect(build).toContain('--target darwin-arm64');
-    expect(build).toContain('check-runtime-bundle.mjs');
-    expect(build).toContain('Contents/Resources/PimpampumRuntime');
-    expect(check).toContain('runtime-manifest.json');
-    expect(check).toContain('better_sqlite3.node');
-    expect(check).toContain('missing or unexpected files');
-    expect(check).toContain('Runtime mode drift');
-    expect(check).toContain('Runtime hash drift');
-  });
-
-  it('signs nested runtime code before the outer app and enforces distribution policy', () => {
-    const build = source('scripts/build-macos-app.sh');
-    const workflow = source('.github/workflows/release.yml');
-    const check = source('scripts/check-macos-artifact.mjs');
-    const nodeEntitlements = source('platforms/macos/Resources/Node.entitlements');
-    const nodeSign = workflow.indexOf('$runtime/bin/node');
-    const addonSign = workflow.indexOf('better-sqlite3/build/Release/better_sqlite3.node');
-    const outerSign = workflow.indexOf('platforms/macos/dist/Pimpampum.app', addonSign);
-
-    expect(nodeSign).toBeGreaterThan(0);
+  it('signs nested runtime code before the outer app, notarizes, then approves that exact artifact', () => {
+    const steps = release.jobs.publish!.steps;
+    ordered(steps, [
+      'Build app and sign nested runtime first',
+      'Verify nested runtime and sign final app',
+      'Notarize and staple',
+      'Approve and exercise the exact notarized artifact',
+      'Build release assets',
+    ]);
+    const [verify, approve] = stepsNamed(steps, [
+      'Verify nested runtime and sign final app',
+      'Approve and exercise the exact notarized artifact',
+    ]);
+    // Inside the one signing step: the embedded node, then the SQLite addon, then the outer app.
+    const script = verify!.run ?? '';
+    const nodeSign = script.indexOf('bin/node');
+    const addonSign = script.indexOf('better_sqlite3.node');
+    const outerSign = script.indexOf('--sign');
+    expect(nodeSign).toBeGreaterThanOrEqual(0);
     expect(addonSign).toBeGreaterThan(nodeSign);
     expect(outerSign).toBeGreaterThan(addonSign);
-    expect(check).toContain("['--verify', '--deep', '--strict'");
-    expect(check).toContain("['stapler', 'validate'");
-    expect(check).toContain('Developer ID Application');
-    expect(check).toContain('com\\.apple\\.security\\.cs\\.allow-jit');
-    expect(workflow).toContain('--require-signature --require-notarization');
-    expect(build).toContain('Node.entitlements');
-    expect(nodeEntitlements).toContain('com.apple.security.cs.allow-jit');
-    expect(nodeEntitlements).not.toContain('disable-library-validation');
-    expect(nodeEntitlements).not.toContain('allow-unsigned-executable-memory');
+    expect(approve!.run).toContain('--approve --require-signature --require-notarization');
   });
 
-  it('builds and publishes the complete tagged target matrix', () => {
-    const quality = source('.github/workflows/quality.yml');
-    const release = source('.github/workflows/release.yml');
-    const packager = source('scripts/package-release-assets.sh');
+  it('grants the embedded Node the JIT entitlement and nothing that weakens the hardened runtime', () => {
+    const entitlements = parsePlist(source('platforms/macos/Resources/Node.entitlements'));
+    expect(entitlements).toEqual({ 'com.apple.security.cs.allow-jit': true });
+  });
 
-    for (const target of ['darwin-arm64', 'linux-arm64', 'linux-x64']) {
-      expect(quality).toContain(`target: ${target}`);
-      expect(release).toContain(`target: ${target}`);
+  it('builds every runtime target on both workflows with the pinned Node and reviewed pins', () => {
+    for (const workflow of [quality, release]) {
+      const runtime = workflow.jobs.runtime!;
+      const matrix = runtime.strategy?.matrix as YamlMapping;
+      const include = matrix.include as YamlMapping[];
+      expect(include.map((entry) => entry.target).sort()).toEqual([
+        'darwin-arm64',
+        'linux-arm64',
+        'linux-x64',
+      ]);
+      const setupNode = runtime.steps.find((step) => step.uses?.startsWith('actions/setup-node@'));
+      expect(setupNode?.with?.['node-version']).toBe('24.19.0');
+      expect(workflow.jobs['runtime-manifest']?.needs).toBe('runtime');
+      const [match] = stepsNamed(workflow.jobs['runtime-manifest']!.steps, [
+        'Match reviewed Omarchy pins to exact release archives',
+      ]);
+      expect(match!.run).toContain('check-reviewed-runtime-manifest.mjs');
     }
-    expect(release).toContain('node-version: 24.19.0');
-    expect(release).toContain('package-lock.json');
-    expect(packager).toContain('runtime-sbom.spdx.json');
-    expect(packager).toContain('runtime-inventory.json');
-    expect(packager).toContain('archive-sha256.json');
-    expect(packager).toContain('pimpampum-omarchy-runtime-manifest');
-    expect(packager).toContain('cmp -s "$reviewed_plugin_manifest" "$generated_plugin_manifest"');
-    expect(quality).toContain('runtime-manifest:');
-    expect(quality).toContain('check-reviewed-runtime-manifest.mjs');
   });
 
   it('pins Omarchy to versioned bounded Linux assets', () => {
@@ -305,44 +318,54 @@ describe('release channel pipeline scripts', () => {
   });
 
   it('publishes draft-first, then npm, then undrafts, then the channel and the mirror', () => {
-    const release = source('.github/workflows/release.yml');
-    const quality = source('.github/workflows/quality.yml');
-    const audit = source('.github/workflows/audit.yml');
-    const order = [
+    const steps = release.jobs.publish!.steps;
+    const names = [
       'Sign the update-channel manifest',
       'Create the draft GitHub Release with every asset',
       'Publish npm package with provenance',
       'Publish the GitHub Release',
       'Publish the update channel',
-      'mirror:',
-      'git subtree split --prefix integrations/omarchy/pimpampum-status',
-      'check-omarchy-mirror.mjs',
-    ].map((marker) => release.indexOf(marker));
-    expect(order.every((index) => index > 0)).toBe(true);
-    expect([...order].sort((left, right) => left - right)).toEqual(order);
-    expect(release).toContain('--draft --generate-notes --verify-tag');
-    expect(release).toContain('gh release edit "$GITHUB_REF_NAME" --draft=false');
-    expect(release).toContain('gh release upload update-channel-stable');
-    expect(release).toContain(
-      'RELEASE_MANIFEST_SIGNING_KEY: ${{ secrets.RELEASE_MANIFEST_SIGNING_KEY }}',
+    ];
+    ordered(steps, names);
+    const [sign, draft, npmPublish, undraft, channel] = stepsNamed(steps, names);
+    expect(sign!.env?.RELEASE_MANIFEST_SIGNING_KEY).toBe(
+      '${{ secrets.RELEASE_MANIFEST_SIGNING_KEY }}',
     );
-    expect(release).toContain(
-      'OMARCHY_MIRROR_DEPLOY_KEY: ${{ secrets.OMARCHY_MIRROR_DEPLOY_KEY }}',
-    );
-    expect(release).toMatch(/^permissions: \{\}$/mu);
-    expect(release.indexOf('runtime-manifest:')).toBeLessThan(release.indexOf('publish:'));
-    expect(quality).toContain('branches: [master, develop]');
+    expect(sign!.run).toContain('sign-release-manifest.mjs --check');
+    expect(draft!.run).toContain('--draft --generate-notes --verify-tag');
+    expect(npmPublish!.env?.NODE_AUTH_TOKEN).toBe('${{ secrets.NPM_TOKEN }}');
+    expect(npmPublish!.run).toContain('npm publish');
+    expect(undraft!.run).toContain('gh release edit "$GITHUB_REF_NAME" --draft=false');
+    expect(channel!.run).toContain('gh release upload update-channel-stable');
+
+    expect(release.jobs.publish!.needs).toEqual(['validate', 'runtime', 'runtime-manifest']);
+    expect(release.jobs.mirror!.needs).toBe('publish');
+    const [push, verifyMirror] = stepsNamed(release.jobs.mirror!.steps, [
+      'Push the Omarchy plugin to its mirror',
+      'Verify the mirror carries this release',
+    ]);
+    expect(push!.env?.OMARCHY_MIRROR_DEPLOY_KEY).toBe('${{ secrets.OMARCHY_MIRROR_DEPLOY_KEY }}');
+    expect(push!.run).toContain('git subtree split --prefix integrations/omarchy/pimpampum-status');
+    expect(verifyMirror!.run).toContain('check-omarchy-mirror.mjs');
+
+    // The workflow holds no token scope; each job requests what it needs.
+    expect(release.permissions).toEqual({});
+    for (const job of Object.values(release.jobs)) expect(job.permissions).toBeDefined();
+    expect(quality.on.push).toEqual({ branches: ['master', 'develop'] });
+    expect(audit.on.schedule).toEqual([{ cron: '0 6 * * 1' }]);
     for (const workflow of [release, quality, audit]) {
-      expect(workflow).not.toContain('test:evals');
-      expect(workflow).toContain('concurrency:');
-      for (const uses of workflow.match(/uses: [^\n]+/gu) ?? []) {
-        expect(uses).toMatch(/^uses: actions\/[a-z-]+@[a-f0-9]{40} # v\d+$/u);
+      expect(workflow.concurrency).not.toBeNull();
+      for (const job of Object.values(workflow.jobs)) {
+        for (const step of job.steps) expect(step.run ?? '').not.toContain('test:evals');
       }
-      for (const checkout of workflow.matchAll(/actions\/checkout@[^\n]+\n((?: {6,}.*\n)+)/gu)) {
-        expect(checkout[1]).toContain('persist-credentials: false');
+      for (const { step } of usedActions(workflow)) {
+        expect(step.uses).toMatch(/^actions\/[a-z-]+@[a-f0-9]{40}$/u);
+        if (step.uses!.startsWith('actions/checkout@')) {
+          expect(step.with?.['persist-credentials']).toBe(false);
+        }
       }
     }
-    expect(audit).toContain("cron: '0 6 * * 1'");
-    expect(release).toContain('npm audit --omit=dev --audit-level=high');
+    const tagAudit = release.jobs.validate!.steps.find((step) => step.run?.startsWith('npm audit'));
+    expect(tagAudit?.run).toBe('npm audit --omit=dev --audit-level=high');
   });
 });

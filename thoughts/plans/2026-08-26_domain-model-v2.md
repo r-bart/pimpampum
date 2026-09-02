@@ -1,7 +1,7 @@
 # Implementation Plan: Domain Model v2
 
 **Date**: 2026-08-26
-**Status**: Implemented; exact-target Quattro live evidence pending
+**Status**: Complete — released as `v1.0.0`; the Quattro live gate was retired on 2026-08-28 (`../notes/2026-08-28_quattro-gate-removed.md`)
 **Source spec**: `thoughts/specs/2026-08-26_domain-model-v2.md`
 
 ---

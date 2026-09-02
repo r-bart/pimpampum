@@ -1,71 +1,18 @@
 /**
  * @generated-from thoughts/specs/2026-08-31_zero-friction-local-agent-setup.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
- * These tests encode the spec's acceptance criteria as executable assertions.
- * If a test seems wrong, update the spec and regenerate — don't edit tests directly.
+ * These tests encode the spec's acceptance criteria as executable assertions. Each test names the
+ * spec items it covers; a test changes only together with the spec item it names.
  */
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-type ConnectorId = 'codex' | 'claude-code';
-type ConnectorResult = {
-  id: ConnectorId;
-  configured: boolean;
-  available: boolean;
-  newSessionRequired: boolean;
-  state: string;
-  error?: string;
-};
-
-type SetupPlan = {
-  operationId: string;
-  revision: string;
-  selectedConnectors: ConnectorId[];
-  changes: Array<{ kind: string; summary: string; path?: string }>;
-  conflicts: Array<{ connectorId: ConnectorId; comparison: string }>;
-  requiresConfirmation: boolean;
-};
-
-type SetupResult = {
-  status: 'complete' | 'partial' | 'conflict' | 'failed';
-  service: { installed: boolean; running: boolean; verified: boolean };
-  connectors: ConnectorResult[];
-  nextAction: 'done' | 'retry' | 'new-session' | 'resolve-conflict' | 'recover-login-item';
-};
-
-type SetupDependencies = {
-  lifecycleLock: { run<T>(operation: () => Promise<T>): Promise<T> };
-  changeTargets: {
-    runtimeDirectory: string;
-    servicePath: string;
-    dataDirectory: string;
-    connectorConfigPaths: Partial<Record<'codex' | 'claude-code', string>>;
-  };
-  runtime: {
-    install(): Promise<{ version: string }>;
-    rollback(): Promise<void>;
-  };
-  service: {
-    install(): Promise<void>;
-    verify(): Promise<void>;
-    rollback(): Promise<void>;
-  };
-  connectors: Record<
-    ConnectorId,
-    {
-      inspect(): Promise<{ state: string; comparison?: string }>;
-      connect(): Promise<void>;
-      verify(): Promise<{ available: boolean; newSessionRequired: boolean }>;
-      restore(): Promise<void>;
-    }
-  >;
-  loginItem: { register(): Promise<'enabled' | 'requires-approval' | 'denied'> };
-  dataDirectory: string;
-  now(): string;
-};
+import {
+  createSetupCoordinator,
+  type SetupCoordinatorDependencies,
+} from '../src/setup/coordinator.js';
+import { readSetupState } from '../src/setup/state.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -75,7 +22,10 @@ function temporaryDirectory(label: string): string {
   return directory;
 }
 
-function dependencies(root: string, overrides: Partial<SetupDependencies> = {}): SetupDependencies {
+function dependencies(
+  root: string,
+  overrides: Partial<SetupCoordinatorDependencies> = {},
+): SetupCoordinatorDependencies {
   const connector = () => ({
     inspect: vi.fn(async () => ({ state: 'notConnected' })),
     connect: vi.fn(async () => undefined),
@@ -107,34 +57,6 @@ function dependencies(root: string, overrides: Partial<SetupDependencies> = {}):
   };
 }
 
-async function setupContract() {
-  const coordinatorUrl = new URL('../src/setup/coordinator.ts', import.meta.url).href;
-  const stateUrl = new URL('../src/setup/state.ts', import.meta.url).href;
-  const [coordinator, state] = await Promise.all([import(coordinatorUrl), import(stateUrl)]);
-  return {
-    createSetupCoordinator: coordinator.createSetupCoordinator as (
-      dependencies: SetupDependencies,
-    ) => {
-      plan(input: { selectedConnectors: ConnectorId[] }): Promise<SetupPlan>;
-      apply(input: {
-        operationId: string;
-        expectedRevision: string;
-        confirmed: boolean;
-        conflictDecisions?: Partial<Record<ConnectorId, 'keep' | 'replace' | 'cancel'>>;
-      }): Promise<SetupResult>;
-      resume(): Promise<SetupResult>;
-      retryConnector(id: ConnectorId): Promise<SetupResult>;
-    },
-    readSetupState: state.readSetupState as (dataDirectory: string) => {
-      operationId: string;
-      phase: string;
-      selectedConnectors: ConnectorId[];
-      completedPhases: string[];
-      diagnostics: string[];
-    } | null,
-  };
-}
-
 afterEach(() => {
   vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
@@ -147,7 +69,6 @@ describe('Durable one-confirmation setup coordinator', () => {
     // Spec: US-1/AC-3, FR-3.3, FR-4.1, FR-4.4
     const root = temporaryDirectory('plan');
     const deps = dependencies(root);
-    const { createSetupCoordinator } = await setupContract();
     const coordinator = createSetupCoordinator(deps);
 
     const plan = await coordinator.plan({ selectedConnectors: ['codex', 'claude-code'] });
@@ -180,7 +101,7 @@ describe('Durable one-confirmation setup coordinator', () => {
     const withoutPaths = createSetupCoordinator({
       ...deps,
       changeTargets: { ...deps.changeTargets, connectorConfigPaths: {} },
-    } as unknown as Parameters<typeof createSetupCoordinator>[0]);
+    });
     const bare = await withoutPaths.plan({ selectedConnectors: ['codex'] });
     expect(bare.changes.find((change) => change.kind === 'connector:codex')?.path).toBeUndefined();
     expect(deps.runtime.install).not.toHaveBeenCalled();
@@ -193,7 +114,6 @@ describe('Durable one-confirmation setup coordinator', () => {
     // Spec: US-1/AC-4, FR-4.2, FR-4.3, FR-4.4, FR-7.3
     const root = temporaryDirectory('selected');
     const deps = dependencies(root);
-    const { createSetupCoordinator } = await setupContract();
     const coordinator = createSetupCoordinator(deps);
     const plan = await coordinator.plan({ selectedConnectors: ['codex'] });
 
@@ -224,7 +144,6 @@ describe('Durable one-confirmation setup coordinator', () => {
     // Spec: EC-1, Success metric: successful setup with no supported agents
     const root = temporaryDirectory('no-agent');
     const deps = dependencies(root);
-    const { createSetupCoordinator } = await setupContract();
     const coordinator = createSetupCoordinator(deps);
     const plan = await coordinator.plan({ selectedConnectors: [] });
     const result = await coordinator.apply({
@@ -248,7 +167,6 @@ describe('Durable one-confirmation setup coordinator', () => {
     vi.mocked(deps.connectors['claude-code'].verify).mockRejectedValueOnce(
       new Error('MCP initialization timed out after 10 seconds'),
     );
-    const { createSetupCoordinator } = await setupContract();
     const coordinator = createSetupCoordinator(deps);
     const plan = await coordinator.plan({ selectedConnectors: ['codex', 'claude-code'] });
 
@@ -282,7 +200,6 @@ describe('Durable one-confirmation setup coordinator', () => {
     vi.mocked(deps.service.verify).mockRejectedValueOnce(
       new Error('Port 7337 belongs to an unknown process'),
     );
-    const { createSetupCoordinator } = await setupContract();
     const coordinator = createSetupCoordinator(deps);
     const plan = await coordinator.plan({ selectedConnectors: ['codex', 'claude-code'] });
 
@@ -310,7 +227,6 @@ describe('Durable one-confirmation setup coordinator', () => {
           releaseService = resolve;
         }),
     );
-    const { createSetupCoordinator, readSetupState } = await setupContract();
     const firstCoordinator = createSetupCoordinator(deps);
     const plan = await firstCoordinator.plan({ selectedConnectors: ['codex'] });
     const pending = firstCoordinator.apply({
@@ -339,7 +255,6 @@ describe('Durable one-confirmation setup coordinator', () => {
       state: 'conflict',
       comparison: 'Existing: custom local server\nProposed: Pimpampum-owned launcher',
     });
-    const { createSetupCoordinator } = await setupContract();
     const coordinator = createSetupCoordinator(deps);
     const plan = await coordinator.plan({ selectedConnectors: ['codex'] });
 
@@ -367,7 +282,6 @@ describe('Durable one-confirmation setup coordinator', () => {
     const deps = dependencies(root, {
       loginItem: { register: vi.fn(async () => 'requires-approval' as const) },
     });
-    const { createSetupCoordinator } = await setupContract();
     const coordinator = createSetupCoordinator(deps);
     const plan = await coordinator.plan({ selectedConnectors: [] });
     const result = await coordinator.apply({
@@ -401,7 +315,6 @@ describe('Durable one-confirmation setup coordinator', () => {
       },
     };
     const deps = dependencies(root, { lifecycleLock });
-    const { createSetupCoordinator } = await setupContract();
     const coordinator = createSetupCoordinator(deps);
     const first = await coordinator.plan({ selectedConnectors: [] });
     const second = await coordinator.plan({ selectedConnectors: [] });

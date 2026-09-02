@@ -1,56 +1,20 @@
 /**
  * @generated-from thoughts/specs/2026-08-31_zero-friction-local-agent-setup.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
- * These tests encode the spec's acceptance criteria as executable assertions.
- * If a test seems wrong, update the spec and regenerate — don't edit tests directly.
+ * These tests encode the spec's acceptance criteria as executable assertions. Each test names the
+ * spec items it covers; a test changes only together with the spec item it names.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-type ConnectorState =
-  | 'notInstalled'
-  | 'unsupportedVersion'
-  | 'notConnected'
-  | 'ownedCurrent'
-  | 'ownedStale'
-  | 'equivalentUnowned'
-  | 'conflict'
-  | 'unavailable';
-
-type CommandInvocation = {
-  executable: string;
-  arguments: string[];
-  environment?: NodeJS.ProcessEnv;
-};
-
-type HostEntry = {
-  command: string;
-  arguments: string[];
-  scope: 'user' | 'project' | 'local' | 'global';
-};
-
-type ConnectionReceipt = {
-  schemaVersion: 1;
-  connectorId: 'codex' | 'claude-code';
-  scope: 'user' | 'global';
-  commandFingerprint: string;
-  configuredAt: string;
-  lastVerifiedAt: string | null;
-};
-
-type ConnectionPlan = {
-  connectorId: 'codex' | 'claude-code';
-  state: ConnectorState;
-  selectedByDefault: boolean;
-  mutations: CommandInvocation[];
-  requiresConflictDecision: boolean;
-  newSessionRequired: boolean;
-  approvalPolicy: 'hostDefault' | 'promptForWrites';
-  summary: string;
-};
+import { planClaudeCodeConnection } from '../src/connectors/claudeCode.js';
+import { createCodexConnector, planCodexConnection } from '../src/connectors/codex.js';
+import { detectExecutable } from '../src/connectors/process.js';
+import { classifyConnectorOwnership, fingerprintCommand } from '../src/connectors/receipt.js';
+import { createConnectorRegistry } from '../src/connectors/registry.js';
+import type { CommandInvocation, ConnectionReceipt, HostEntry } from '../src/connectors/types.js';
+import { verifyMcpRoute } from '../src/connectors/verifier.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -58,62 +22,6 @@ function temporaryDirectory(label: string): string {
   const directory = mkdtempSync(join(tmpdir(), `pimpampum-connectors-${label}-`));
   temporaryDirectories.push(directory);
   return directory;
-}
-
-async function connectorContract() {
-  const receiptUrl = new URL('../src/connectors/receipt.ts', import.meta.url).href;
-  const codexUrl = new URL('../src/connectors/codex.ts', import.meta.url).href;
-  const claudeUrl = new URL('../src/connectors/claudeCode.ts', import.meta.url).href;
-  const registryUrl = new URL('../src/connectors/registry.ts', import.meta.url).href;
-  const verifierUrl = new URL('../src/connectors/verifier.ts', import.meta.url).href;
-  const [receipt, codex, claude, registry, verifier] = await Promise.all([
-    import(receiptUrl),
-    import(codexUrl),
-    import(claudeUrl),
-    import(registryUrl),
-    import(verifierUrl),
-  ]);
-  return {
-    fingerprintCommand: receipt.fingerprintCommand as (entry: HostEntry) => string,
-    classifyConnectorOwnership: receipt.classifyConnectorOwnership as (input: {
-      entry: HostEntry | null;
-      receipt: ConnectionReceipt | null;
-      expected: HostEntry;
-      recognizedLegacyEntries: HostEntry[];
-    }) => ConnectorState,
-    planCodexConnection: codex.planCodexConnection as (input: {
-      executable: string | null;
-      supported: boolean;
-      launcherPath: string;
-      inspection: HostEntry | null;
-      receipt: ConnectionReceipt | null;
-    }) => ConnectionPlan,
-    planClaudeCodeConnection: claude.planClaudeCodeConnection as (input: {
-      executable: string | null;
-      supported: boolean;
-      launcherPath: string;
-      inspection: HostEntry | null;
-      higherPrecedenceEntry: HostEntry | null;
-      receipt: ConnectionReceipt | null;
-    }) => ConnectionPlan,
-    createConnectorRegistry: registry.createConnectorRegistry as () => Array<{
-      id: string;
-      displayName: string;
-    }>,
-    verifyMcpRoute: verifier.verifyMcpRoute as (input: {
-      command: string;
-      arguments: string[];
-      timeoutMilliseconds: number;
-      requiredTools: string[];
-      expectedServerName: string;
-      spawn: (command: string, arguments_: string[]) => unknown;
-    }) => Promise<{
-      available: boolean;
-      serverName: string;
-      tools: string[];
-      diagnostics: string[];
-    }>,
-  };
 }
 
 afterEach(() => {
@@ -126,7 +34,6 @@ afterEach(() => {
 describe('Codex and Claude Code connector contract', () => {
   it('US-1/AC-2/AC-3: registry exposes both initial connectors in deterministic order', async () => {
     // Spec: US-1/AC-2, US-1/AC-3, FR-2.1, FR-2.10, FR-3.2
-    const { createConnectorRegistry } = await connectorContract();
 
     expect(createConnectorRegistry()).toEqual([
       { id: 'codex', displayName: 'Codex' },
@@ -140,20 +47,9 @@ describe('Codex and Claude Code connector contract', () => {
     const bin = join(root, 'bin');
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(bin, 'codex'), '#!/bin/sh\necho codex-cli 0.151.0\n', { mode: 0o755 });
-    const processUrl = new URL('../src/connectors/process.ts', import.meta.url).href;
-    const processContract = (await import(processUrl)) as {
-      detectExecutable(input: {
-        id: string;
-        names: string[];
-        boundedLocations: string[];
-        path: string;
-        timeoutMilliseconds: number;
-        run: (invocation: CommandInvocation) => Promise<unknown>;
-      }): Promise<{ executable: string | null; supported: boolean; versionOutput: string | null }>;
-    };
     const run = vi.fn(async () => ({ exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' }));
 
-    const result = await processContract.detectExecutable({
+    const result = await detectExecutable({
       id: 'codex',
       names: ['codex'],
       boundedLocations: [bin],
@@ -175,7 +71,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('FR-5.3/FR-5.4: Codex plan uses its official CLI and an absolute tokenless stdio launcher', async () => {
     // Spec: US-1/AC-4, FR-2.3, FR-2.4, FR-5.1, FR-5.3, FR-5.4
-    const { planCodexConnection } = await connectorContract();
     const plan = planCodexConnection({
       executable: '/Applications/Codex.app/Contents/Resources/codex',
       supported: true,
@@ -209,7 +104,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('FR-5.1: Claude Code plan uses the official CLI at user scope', async () => {
     // Spec: US-1/AC-4, FR-2.3, FR-5.1, FR-5.3, FR-9.1
-    const { planClaudeCodeConnection } = await connectorContract();
     const plan = planClaudeCodeConnection({
       executable: '/Users/roberto/.local/bin/claude',
       supported: true,
@@ -238,7 +132,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('US-3/AC-3: exact owned entries are idempotent and recognized stale entries are repairable', async () => {
     // Spec: US-3/AC-3, FR-2.4, FR-2.7, FR-2.8, EC-6
-    const { classifyConnectorOwnership, fingerprintCommand } = await connectorContract();
     const expected: HostEntry = {
       command: '/Users/roberto/.local/share/pimpampum/bin/pimpampum-mcp',
       arguments: [],
@@ -286,7 +179,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('US-3/AC-4: unknown and higher-precedence entries are conflicts with zero implicit mutation', async () => {
     // Spec: US-3/AC-4, FR-2.3, FR-5.6, FR-7.2, EC-7, EC-12
-    const { planClaudeCodeConnection } = await connectorContract();
     const unknown: HostEntry = {
       command: '/opt/acme/private-memory-server',
       arguments: ['--workspace', 'critical-client'],
@@ -314,13 +206,6 @@ describe('Codex and Claude Code connector contract', () => {
     const bin = join(root, 'bin');
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    const { fingerprintCommand } = await connectorContract();
-    const codexUrl = new URL('../src/connectors/codex.ts', import.meta.url).href;
-    const { createCodexConnector } = (await import(codexUrl)) as {
-      createCodexConnector(input: Record<string, unknown>): {
-        disconnect(): Promise<{ state: ConnectorState; changed: boolean }>;
-      };
-    };
     const entry: HostEntry = {
       command: '/Users/roberto/.local/share/pimpampum/bin/pimpampum-mcp',
       arguments: [],
@@ -415,7 +300,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('US-4/AC-3: missing or unsupported clients stay neutral and never install third-party software', async () => {
     // Spec: US-4/AC-3, FR-3.4, FR-3.5, EC-1, EC-2
-    const { planCodexConnection } = await connectorContract();
     const missing = planCodexConnection({
       executable: null,
       supported: false,
@@ -446,7 +330,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('US-2/AC-3: verification requires identity, initialization and the bounded tool catalog', async () => {
     // Spec: US-2/AC-1, US-2/AC-3, FR-2.5, FR-6.1, FR-6.2, FR-6.3
-    const { verifyMcpRoute } = await connectorContract();
     const child = {
       initialize: vi.fn(async () => ({ serverInfo: { name: 'pimpampum', version: '2.0.0' } })),
       listTools: vi.fn(async () => ({ tools: [{ name: 'project_list' }, { name: 'work_claim' }] })),
@@ -474,7 +357,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('FR-6.3/FR-6.4: wrong identity, timeout or secrets fail closed and always reap the bridge', async () => {
     // Spec: FR-6.3, FR-6.4, SEC-4, EC-9
-    const { verifyMcpRoute } = await connectorContract();
     const token = 'pimpampum-private-token-never-report';
     const child = {
       initialize: vi.fn(async () => ({ serverInfo: { name: 'another-server', version: '1.0.0' } })),
@@ -502,13 +384,6 @@ describe('Codex and Claude Code connector contract', () => {
     const bin = join(root, 'bin');
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    const codexUrl = new URL('../src/connectors/codex.ts', import.meta.url).href;
-    const { createCodexConnector } = (await import(codexUrl)) as {
-      createCodexConnector(input: Record<string, unknown>): {
-        plan(): Promise<ConnectionPlan>;
-        connect(plan: ConnectionPlan): Promise<unknown>;
-      };
-    };
     const token = 'private-bearer-token-000000000000';
     const run = async (invocation: CommandInvocation) => {
       const args = invocation.arguments;

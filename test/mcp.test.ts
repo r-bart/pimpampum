@@ -9,41 +9,7 @@ import { AppError } from '../src/errors.js';
 import { PimpampumStore } from '../src/store.js';
 import { SyncController } from '../src/syncController.js';
 import type { PimpampumGateway } from '../src/types.js';
-
-const canonicalTools = [
-  'workspace_list',
-  'workspace_resolve',
-  'project_list',
-  'project_get',
-  'project_create',
-  'project_update',
-  'project_complete',
-  'project_cancel',
-  'project_completion_get',
-  'spec_list',
-  'spec_get',
-  'spec_read',
-  'spec_create',
-  'spec_update',
-  'spec_completion_get',
-  'spec_cancel',
-  'task_list',
-  'task_get',
-  'task_read',
-  'task_create',
-  'task_update',
-  'task_completion_get',
-  'task_cancel',
-  'context_list',
-  'context_read',
-  'context_put',
-  'activity_list',
-  'work_list',
-  'work_start',
-  'work_renew',
-  'work_release',
-  'work_complete',
-] as const;
+import { canonicalTools } from './helpers/canonicalTools.js';
 
 describe('MCP endpoint v2', () => {
   let store: PimpampumStore;

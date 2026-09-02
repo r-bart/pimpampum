@@ -181,85 +181,59 @@ describe('SyncController safeguards and lifecycle', () => {
     await throwing.close();
   });
 
-  it('rejects invalid, tampered, and symbolic-link snapshots', async () => {
+  it('blocks invalid, oversized, tampered and misnamed snapshots and names the first one', async () => {
+    // Every rejection below is observed through `reconcile()`: the file is listed, `readSnapshot`
+    // refuses it, the status names it as the blocked snapshot, and the other devices still import.
     const data = root();
-    const sync = controller(data);
-    const configured = await sync.configure(data, 'linux');
-    const deviceDirectory = join(configured.directory!, 'devices/linux');
-    const invalidId = randomUUID();
-    const invalid = join(deviceDirectory, `000000000002-${invalidId}.json`);
-    writeFileSync(invalid, '{}');
-    expect(() =>
-      (
-        sync as unknown as {
-          readSnapshot(path: string, expected: object): unknown;
-        }
-      ).readSnapshot(invalid, { deviceId: 'linux', sequence: 2, snapshotId: invalidId }),
-    ).toThrow(/invalid/);
+    const shared = join(data, 'Pimpampum');
+    const remote = join(shared, 'devices/remote');
+    mkdirSync(remote, { recursive: true });
+    const importer = vi.fn();
+    const sync = controller(data, { importer });
+    await sync.configure(shared, 'linux');
+    const blockedReason = async (name: string, content: string): Promise<string> => {
+      const path = join(remote, name);
+      writeFileSync(path, content);
+      const status = await sync.reconcile();
+      expect(status).toMatchObject({
+        state: 'error',
+        blockedSnapshot: { path: `devices/remote/${name}` },
+      });
+      expect(status.error).toBe(
+        `Blocked snapshot devices/remote/${name}: ${status.blockedSnapshot!.reason}`,
+      );
+      rmSync(path);
+      return status.blockedSnapshot!.reason;
+    };
 
-    const target = join(deviceDirectory, 'target.json');
-    writeFileSync(target, '{}');
-    const linkId = randomUUID();
-    const link = join(deviceDirectory, `000000000003-${linkId}.json`);
-    symlinkSync(target, link);
-    expect(() =>
-      (
-        sync as unknown as {
-          readSnapshot(path: string, expected: object): unknown;
-        }
-      ).readSnapshot(link, { deviceId: 'linux', sequence: 3, snapshotId: linkId }),
-    ).toThrow(/symbolic links/);
-    expect(() =>
-      (
-        sync as unknown as {
-          readSnapshot(path: string, expected: object): unknown;
-        }
-      ).readSnapshot(deviceDirectory, {
-        deviceId: 'linux',
-        sequence: 3,
-        snapshotId: linkId,
-      }),
-    ).toThrow(/bounded regular file/);
-    const missingId = randomUUID();
-    expect(() =>
-      (
-        sync as unknown as {
-          readSnapshot(path: string, expected: object): unknown;
-        }
-      ).readSnapshot(join(deviceDirectory, `000000000005-${missingId}.json`), {
-        deviceId: 'linux',
-        sequence: 5,
-        snapshotId: missingId,
-      }),
-    ).toThrow();
-    const tamperedId = randomUUID();
-    const tampered = join(deviceDirectory, `000000000004-${tamperedId}.json`);
-    writeFileSync(
-      tampered,
-      JSON.stringify({
-        schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
-        snapshotId: tamperedId,
-        deviceId: 'linux',
-        sequence: 4,
-        createdAt: '2026-08-26T00:00:00.000Z',
-        parentSnapshots: [],
-        stateHash: `sha256:${'0'.repeat(64)}`,
-        state: empty,
-      }),
+    // Not a snapshot at all.
+    await expect(blockedReason(`000000000001-${randomUUID()}.json`, '{}')).resolves.toMatch(
+      /invalid/u,
     );
-    expect(() =>
-      (
-        sync as unknown as {
-          readSnapshot(path: string, expected: object): unknown;
-        }
-      ).readSnapshot(tampered, {
-        deviceId: 'linux',
-        sequence: 4,
-        snapshotId: tamperedId,
-      }),
-    ).toThrow(/hash/);
-    const valid = {
-      schemaVersion: 1 as const,
+    // Larger than the 20 MiB bound: refused before any parsing.
+    await expect(
+      blockedReason(`000000000002-${randomUUID()}.json`, 'x'.repeat(20 * 1024 * 1024 + 1)),
+    ).resolves.toMatch(/bounded regular file/u);
+    // A hash that does not match the state.
+    const tamperedId = randomUUID();
+    await expect(
+      blockedReason(
+        `000000000003-${tamperedId}.json`,
+        JSON.stringify({
+          schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
+          snapshotId: tamperedId,
+          deviceId: 'remote',
+          sequence: 3,
+          createdAt: '2026-08-26T00:00:00.000Z',
+          parentSnapshots: [],
+          stateHash: `sha256:${'0'.repeat(64)}`,
+          state: empty,
+        }),
+      ),
+    ).resolves.toMatch(/hash/u);
+    // A valid snapshot whose file name claims another device, sequence and id.
+    const misnamed = {
+      schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
       snapshotId: randomUUID(),
       deviceId: 'linux',
       sequence: 1,
@@ -268,18 +242,35 @@ describe('SyncController safeguards and lifecycle', () => {
       stateHash: syncHash(empty),
       state: empty,
     };
-    writeFileSync(tampered, canonicalJson(valid));
-    expect(() =>
-      (
-        sync as unknown as {
-          readSnapshot(path: string, expected: object): unknown;
-        }
-      ).readSnapshot(tampered, {
-        deviceId: 'linux',
-        sequence: 4,
-        snapshotId: tamperedId,
-      }),
-    ).toThrow(/filename tuple/);
+    await expect(
+      blockedReason(`000000000004-${randomUUID()}.json`, canonicalJson(misnamed)),
+    ).resolves.toMatch(/filename tuple/u);
+    // A file the process may not open: the failure happens before a descriptor exists.
+    const unreadable = {
+      schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
+      snapshotId: randomUUID(),
+      deviceId: 'remote',
+      sequence: 5,
+      createdAt: '2026-08-26T00:00:00.000Z',
+      parentSnapshots: [],
+      stateHash: syncHash(empty),
+      state: empty,
+    };
+    const unreadablePath = join(remote, `000000000005-${unreadable.snapshotId}.json`);
+    writeFileSync(unreadablePath, canonicalJson(unreadable), { mode: 0o000 });
+    try {
+      const status = await sync.reconcile();
+      expect(status.blockedSnapshot).toMatchObject({
+        path: `devices/remote/000000000005-${unreadable.snapshotId}.json`,
+        reason: expect.stringMatching(/unreadable: EACCES/u),
+      });
+    } finally {
+      chmodSync(unreadablePath, 0o600);
+      rmSync(unreadablePath);
+    }
+    // With the offending files gone the folder converges again and only the own publish happened.
+    expect(await sync.reconcile()).toMatchObject({ state: 'healthy', blockedSnapshot: null });
+    expect(importer).not.toHaveBeenCalled();
     await sync.close();
   });
 
@@ -376,7 +367,7 @@ describe('SyncController safeguards and lifecycle', () => {
     await sync.close();
   });
 
-  it('covers scheduler handoff and default polling defensively', async () => {
+  it('polls every five seconds by default and coalesces work marked dirty mid-run', async () => {
     vi.useFakeTimers();
     const data = root();
     const shared = join(data, 'Pimpampum');
@@ -396,39 +387,73 @@ describe('SyncController safeguards and lifecycle', () => {
         lastPublishedHash: null,
       }),
     );
-    const sync = new SyncController({
+    let snapshots = 0;
+    let sync!: SyncController;
+    sync = new SyncController({
       settingsPath: join(data, 'sync.json'),
-      snapshotter: () => empty,
+      snapshotter: () => {
+        snapshots += 1;
+        // The first export marks the controller dirty again while it runs: the loop must hand
+        // off to one more generation instead of dropping the mutation or running twice at once.
+        if (snapshots === 1) sync.markDirty();
+        return empty;
+      },
       importer: vi.fn(),
     });
     await sync.start();
+    await sync.drain();
+    expect(snapshots).toBe(2);
+    expect(sync.getStatus().state).toBe('healthy');
+
+    // No `pollMilliseconds`: the poller wakes after the 5 s default, not before.
+    await vi.advanceTimersByTimeAsync(4_999);
+    await sync.drain();
+    expect(snapshots).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await sync.drain();
+    expect(snapshots).toBe(3);
+
+    // Pausing stops the poller; resuming restarts it on the same default cadence.
+    await sync.pause();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await sync.drain();
+    expect(snapshots).toBe(3);
+    await sync.resume();
+    const afterResume = snapshots;
     await vi.advanceTimersByTimeAsync(5_000);
     await sync.drain();
-    const internals = sync as unknown as {
-      completedGeneration: number;
-      dirtyGeneration: number;
-      running: Promise<void> | null;
-      runLoop(): Promise<void>;
-      ensureRun(): void;
-      settings: { paused: boolean };
-      restartPolling(): void;
-    };
-    await sync.drain();
-    internals.completedGeneration = 0;
-    internals.dirtyGeneration = 1;
-    let handoffs = 0;
-    internals.runLoop = async () => {
-      handoffs += 1;
-      internals.completedGeneration = internals.dirtyGeneration;
-      if (handoffs === 1) internals.dirtyGeneration = 2;
-    };
-    internals.ensureRun();
-    await sync.drain();
-    internals.restartPolling();
-    await vi.advanceTimersByTimeAsync(5_000);
-    await sync.drain();
-    internals.settings.paused = true;
-    internals.restartPolling();
+    expect(snapshots).toBe(afterResume + 1);
+    await sync.close();
+  });
+
+  it('runs once more when a mutation lands after the loop finished but before it released', async () => {
+    const data = root();
+    const shared = join(data, 'Drive');
+    mkdirSync(shared);
+    let sync!: SyncController;
+    let exports = 0;
+    sync = controller(data, {
+      snapshotter: () => {
+        exports += 1;
+        if (exports !== 2) return empty;
+        // The failure's message is read while the loop records its result, after the last
+        // generation check; the mutation it schedules lands in the gap before the run releases.
+        // The scheduler must notice the pending generation and run again instead of dropping it.
+        const failure = new Error('store unavailable');
+        Object.defineProperty(failure, 'message', {
+          get() {
+            queueMicrotask(() => sync.markDirty());
+            return 'store unavailable';
+          },
+        });
+        throw failure;
+      },
+    });
+    await sync.configure(shared, 'linux');
+    expect(exports).toBe(1);
+    await sync.reconcile();
+    expect(exports).toBe(3);
+    expect(sync.getStatus()).toMatchObject({ state: 'healthy', error: null });
     await sync.close();
   });
 
@@ -486,6 +511,8 @@ describe('SyncController safeguards and lifecycle', () => {
     });
     await sync.reconcile();
     expect(sync.listConflicts()).toHaveLength(1);
+    expect(sync.getConflict(id)).toMatchObject({ id, entityType: 'workspace', entityId: 'one' });
+    expect(sync.getConflict('f'.repeat(64))).toBeNull();
     await expect(sync.resolveConflict('f'.repeat(64), 'local')).rejects.toMatchObject({
       code: 'not_found',
     });
@@ -641,12 +668,17 @@ describe('SyncController safeguards and lifecycle', () => {
     await sync.close();
   });
 
-  it('rolls back its in-memory ledger when persisting an import fails', async () => {
+  it('rolls back its in-memory ledger when the settings directory refuses the import', async () => {
     const data = root();
     const shared = join(data, 'Drive');
     mkdirSync(shared);
+    const settingsDirectory = join(data, 'settings');
+    mkdirSync(settingsDirectory);
     const importer = vi.fn();
-    const sync = controller(data, { importer });
+    const sync = controller(data, {
+      settingsPath: join(settingsDirectory, 'sync.json'),
+      importer,
+    });
     await sync.configure(shared, 'linux');
     const remoteDirectory = join(shared, 'Pimpampum/devices/remote');
     mkdirSync(remoteDirectory, { recursive: true });
@@ -664,41 +696,59 @@ describe('SyncController safeguards and lifecycle', () => {
       join(remoteDirectory, `000000000001-${snapshot.snapshotId}.json`),
       canonicalJson(snapshot),
     );
-    const internals = sync as unknown as { writeSettings(): void };
-    const originalWrite = internals.writeSettings.bind(sync);
-    internals.writeSettings = () => {
-      throw new Error('ledger unavailable');
-    };
-    await sync.reconcile();
-    expect(sync.getStatus()).toMatchObject({ state: 'error', error: 'ledger unavailable' });
-    internals.writeSettings = originalWrite;
+    const ledgerBefore = readFileSync(join(settingsDirectory, 'sync.json'), 'utf8');
+    // The ledger lives in a directory that no longer accepts new files, so the atomic
+    // partial-then-rename write of the applied snapshot fails after the importer ran.
+    chmodSync(settingsDirectory, 0o500);
+    try {
+      await sync.reconcile();
+    } finally {
+      chmodSync(settingsDirectory, 0o700);
+    }
+    expect(importer).toHaveBeenCalledTimes(1);
+    expect(sync.getStatus()).toMatchObject({
+      state: 'error',
+      error: expect.stringMatching(/EACCES|permission/iu),
+    });
+    // Neither the file nor the in-memory ledger recorded the snapshot: it is imported again.
+    expect(readFileSync(join(settingsDirectory, 'sync.json'), 'utf8')).toBe(ledgerBefore);
     await sync.reconcile();
     expect(sync.getStatus().state).toBe('healthy');
     expect(importer).toHaveBeenCalledTimes(2);
+    expect(
+      (
+        JSON.parse(readFileSync(join(settingsDirectory, 'sync.json'), 'utf8')) as {
+          appliedSnapshotIds: string[];
+        }
+      ).appliedSnapshotIds,
+    ).toContain(snapshot.snapshotId);
     await sync.close();
   });
 
-  it('applies a resolution that intentionally deletes an entity', () => {
+  it('applies a remote resolution that intentionally deletes an entity', async () => {
     const data = root();
-    const sync = controller(data);
+    const shared = join(data, 'Pimpampum');
     const workspace = {
       id: 'gone',
       name: 'Gone',
       createdAt: '2026-08-26T00:00:00.000Z',
       updatedAt: '2026-08-26T00:00:00.000Z',
     };
-    const result = (
-      sync as unknown as {
-        applyResolutions(
-          target: SyncState,
-          source: SyncState,
-          resolutions: Array<{ entityType: 'workspace'; entityId: string }>,
-        ): SyncState;
-      }
-    ).applyResolutions({ ...empty, workspaces: [workspace] }, empty, [
-      { entityType: 'workspace', entityId: 'gone' },
-    ]);
-    expect(result.workspaces).toEqual([]);
+    // The remote device resolved a conflict on `gone` by deleting it: its snapshot carries the
+    // resolution and no such workspace. The local state still has it.
+    remoteSnapshot(shared, 'remote', 1, {
+      resolutions: [{ entityType: 'workspace', entityId: 'gone' }],
+    });
+    const importer = vi.fn();
+    const sync = controller(data, {
+      snapshotter: () => ({ ...empty, workspaces: [workspace] }),
+      importer,
+    });
+    await sync.configure(shared, 'linux');
+    expect(importer).toHaveBeenCalledTimes(1);
+    expect((importer.mock.calls[0]![0] as SyncState).workspaces).toEqual([]);
+    expect(sync.listConflicts()).toEqual([]);
+    await sync.close();
   });
 });
 
@@ -797,7 +847,7 @@ describe('SyncController operability', () => {
   it('accepts a version 1 snapshot whose hash matches and blocks the ones that need an upgrade', async () => {
     const data = root();
     const shared = join(data, 'Pimpampum');
-    const legacy = remoteSnapshot(shared, 'legacy', 1, { schemaVersion: 1 });
+    remoteSnapshot(shared, 'legacy', 1, { schemaVersion: 1 });
     const state: SyncState = {
       ...empty,
       workspaces: [
@@ -814,9 +864,7 @@ describe('SyncController operability', () => {
       state,
       stateHash: syncHash({ ...state, workspaces: [] }),
     });
-    const future = remoteSnapshot(shared, 'future', 1, {
-      schemaVersion: 3 as unknown as 2,
-    });
+    remoteSnapshot(shared, 'future', 1, { schemaVersion: 3 as unknown as 2 });
     const importer = vi.fn();
     const sync = controller(data, { importer });
     const status = await sync.configure(shared, 'linux');
@@ -825,26 +873,23 @@ describe('SyncController operability', () => {
       path: fileName(localeHashed),
       reason: expect.stringMatching(/upgrade Pimpampum on device "danish" so it republishes/),
     });
-    const internals = sync as unknown as {
-      readSnapshot(path: string, expected: object): unknown;
-    };
-    // The configured directory is the realpath; the temporary root may not be.
-    const directory = status.directory!;
-    expect(() =>
-      internals.readSnapshot(join(directory, fileName(future)), {
-        deviceId: 'future',
-        sequence: 1,
-        snapshotId: future.snapshotId,
-      }),
-    ).toThrow(/uses format 3; upgrade Pimpampum on this device/);
-    expect(() =>
-      internals.readSnapshot(join(directory, fileName(legacy)), {
-        deviceId: 'legacy',
-        sequence: 1,
-        snapshotId: legacy.snapshotId,
-      }),
-    ).not.toThrow();
+    // The legacy file was the one imported: its hash matched, so version 1 needs no upgrade.
+    expect(importer.mock.calls[0]![0]).toEqual(expect.objectContaining({ workspaces: [] }));
     await sync.close();
+
+    // The future-format file alone: its block names the format and the device that must upgrade.
+    const futureData = root();
+    const futureShared = join(futureData, 'Pimpampum');
+    const futureOnly = remoteSnapshot(futureShared, 'future', 1, {
+      schemaVersion: 3 as unknown as 2,
+    });
+    const futureSync = controller(futureData);
+    expect((await futureSync.configure(futureShared, 'linux')).blockedSnapshot).toEqual({
+      path: fileName(futureOnly),
+      reason: expect.stringMatching(/uses format 3; upgrade Pimpampum on this device/u),
+    });
+    expect(futureSync.getStatus().state).toBe('error');
+    await futureSync.close();
   });
 
   it('blocks a child whose applied parent file is corrupt', async () => {

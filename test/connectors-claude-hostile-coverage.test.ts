@@ -14,6 +14,7 @@ import type {
   ConnectorVerification,
   HostEntry,
 } from '../src/connectors/types.js';
+import { readConnectorJson } from './fixtures/connectors/load.js';
 
 const launcher = '/synthetic/runtime/bin/pimpampum-mcp';
 const expected: HostEntry = { command: launcher, arguments: [], scope: 'user' };
@@ -306,22 +307,28 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
     ).toHaveLength(1);
   });
 
+  // No observed Claude Code release (2.1.251, 2.1.257) advertises `--json` on `mcp get`, so this
+  // is the forward-compatible branch: should a release add it, the connector must accept only the
+  // same bounded target shape it reads from `~/.claude.json`. The stdout below is therefore the
+  // recorded `mcpServers.pimpampum` entry, not a shape invented for the test.
   it('uses JSON inspection when valid and bounded config fallback when JSON fails', async () => {
+    const recordedEntry = readConnectorJson<{ mcpServers: { pimpampum: unknown } }>(
+      'claude-code',
+      'entry-owned-current.json',
+    ).mcpServers.pimpampum as { command: string; args: string[] };
     const json = createHarness({
       inspectJson: true,
       target: { command: '/synthetic/config-value', args: [] },
-      jsonResult: {
-        exitCode: 0,
-        stdout: JSON.stringify({ type: 'stdio', command: launcher, args: [], env: {} }),
-        stderr: '',
-      },
+      jsonResult: { exitCode: 0, stdout: JSON.stringify(recordedEntry), stderr: '' },
     });
     await expect(json.connector.detect()).resolves.toMatchObject({
       capabilities: { inspect: 'json' },
     });
+    // The JSON answer wins over the config file: the reported entry is the recorded one, which
+    // differs from this harness's launcher and therefore classifies as a conflict.
     await expect(json.connector.inspect()).resolves.toMatchObject({
-      state: 'equivalentUnowned',
-      entry: expected,
+      state: 'conflict',
+      entry: { command: recordedEntry.command, arguments: recordedEntry.args, scope: 'user' },
     });
 
     const malformed = createHarness({

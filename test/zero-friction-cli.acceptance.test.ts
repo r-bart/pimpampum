@@ -1,9 +1,8 @@
 /**
  * @generated-from thoughts/specs/2026-08-31_zero-friction-local-agent-setup.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
- * These tests encode the spec's acceptance criteria as executable assertions.
- * If a test seems wrong, update the spec and regenerate — don't edit tests directly.
+ * These tests encode the spec's acceptance criteria as executable assertions. Amend the spec
+ * item they cite together with the test (decision of 2026-09-01, review H-14).
  */
 import { describe, expect, it, vi } from 'vitest';
 import { runCli, type CliRuntime } from '../src/cliProgram.js';

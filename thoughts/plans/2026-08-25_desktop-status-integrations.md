@@ -1,7 +1,7 @@
 # Implementation Plan: Automatic Service and Desktop Status Integrations
 
 **Date**: 2026-08-25  
-**Status**: In progress  
+**Status**: Complete — released as `v1.0.0`  
 **Source specification**: [../specs/2026-08-25_desktop-status-integrations.md](../specs/2026-08-25_desktop-status-integrations.md)
 
 ---
@@ -14,8 +14,9 @@ Add a bounded project overview contract, safe per-user service installation, a n
 
 - Phases 0–3 are implemented and verified, including a real macOS service, rendered UI, Finder, login-item, and uninstall smoke tied to the packaged app hash.
 - Phase 4 implementation and static/adversarial verification are complete. Transactional rollback preserves the exact daemon state and the exact Pimpampum bar placement/settings through supported Omarchy IPC, including the pinned runtime's asynchronous rescan behavior.
-- The final cross-platform release gate remains open only because the target Quattro machine is unreachable from the current host. No `quattro-live.json` evidence has been fabricated or inferred from fixtures.
-- Current gates: 238 TypeScript unit tests at 100% coverage, 7 compiled workflow evals, 51 Swift tests at 100% core coverage, 26 focused Omarchy tests, 0 production audit vulnerabilities, and a verified 105-file npm package.
+- The Quattro live gate was retired on 2026-08-28 (`../notes/2026-08-28_quattro-gate-removed.md`); the live smoke is opt-in evidence and its absence does not block a tag. No `quattro-live.json` evidence has been fabricated or inferred from fixtures.
+- Gates when this plan closed (2026-08-27): 238 TypeScript unit tests at 100% coverage, the compiled E2E gate, 51 Swift tests at 100% core coverage, 26 focused Omarchy tests, 0 production audit vulnerabilities, and a verified 105-file npm package. `docs/evals.md` holds the current E2E count.
+- Released in `v1.0.0` on 2026-08-28. The app has been signed and notarized since that tag; see the 2026-09-02 amendment of the spec.
 
 ---
 

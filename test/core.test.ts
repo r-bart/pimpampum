@@ -11,12 +11,13 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { backupDatabase, exportPortable } from '../src/backup.js';
 import { PimpampumHttpClient, createHttpClient } from '../src/client.js';
 import { loadConfig } from '../src/config.js';
 import { openDatabase } from '../src/db.js';
 import { AppError, asAppError } from '../src/errors.js';
+import { openApiDocument } from '../src/openapi.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -26,13 +27,19 @@ function temporaryDirectory(): string {
   return directory;
 }
 
+/** Every `PIMPAMPUM_*` variable the developer shell exports would change a `loadConfig` result. */
+function clearPimpampumEnvironment(): void {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('PIMPAMPUM_')) delete process.env[key];
+  }
+}
+
+beforeEach(clearPimpampumEnvironment);
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  delete process.env.PIMPAMPUM_DATA_DIR;
-  delete process.env.PIMPAMPUM_HOST;
-  delete process.env.PIMPAMPUM_PORT;
-  delete process.env.PIMPAMPUM_TOKEN;
+  clearPimpampumEnvironment();
   for (const directory of temporaryDirectories.splice(0)) {
     chmodSync(directory, 0o700);
     rmSync(directory, { recursive: true, force: true });
@@ -620,10 +627,41 @@ describe('HTTP client adapter', () => {
     await client.backup('/tmp/backups');
     await client.exportPortable('/tmp/exports');
 
-    expect(calls).toHaveLength(57);
+    // Every request the client can build must land on an operation the OpenAPI document declares:
+    // the same method on a path template whose `{parameters}` cover the caller-supplied segments.
+    const documentedOperations = Object.entries(openApiDocument.paths).flatMap(([path, item]) =>
+      Object.keys(item as object)
+        .filter((method) => ['get', 'post', 'put', 'patch', 'delete'].includes(method))
+        .map((method) => ({
+          method: method.toUpperCase(),
+          path,
+          pattern: new RegExp(
+            `^${path.replace(/[.*+?^$()|[\]\\]/gu, '\\$&').replace(/\{[^}]+\}/gu, '[^/]+')}$`,
+            'u',
+          ),
+        })),
+    );
+    const resolveOperation = (method: string, url: string): string | null => {
+      const pathname = new URL(url).pathname;
+      const operation = documentedOperations.find(
+        (candidate) => candidate.method === method && candidate.pattern.test(pathname),
+      );
+      return operation === undefined ? null : `${operation.method} ${operation.path}`;
+    };
+    const unresolved = calls
+      .map(({ url, init }) => ({ method: init.method ?? 'GET', url }))
+      .filter(({ method, url }) => resolveOperation(method, url) === null);
+    expect(unresolved).toEqual([]);
+    // The client exercised most of the documented surface, not one route many times.
+    const exercised = new Set(
+      calls.map(({ url, init }) => resolveOperation(init.method ?? 'GET', url)),
+    );
+    expect(exercised.size).toBeGreaterThanOrEqual(45);
+
     expect(new Headers(calls[0]?.init.headers).has('authorization')).toBe(false);
     expect(new Headers(calls[1]?.init.headers).get('authorization')).toBe('Bearer secret');
     expect(calls[1]?.url).toBe('http://127.0.0.1:7337/api/v1/overview');
+    // Query strings carry the bounded list parameters exactly as the caller passed them.
     expect(calls.some(({ url }) => url.endsWith('/work?limit=4'))).toBe(true);
     expect(
       calls.some(({ url }) =>
@@ -635,13 +673,7 @@ describe('HTTP client adapter', () => {
         url.endsWith('/projects?limit=10&offset=2&workspaceId=ws&state=open'),
       ),
     ).toBe(true);
-    expect(calls.some(({ url }) => url.includes('/projects/project-1/specs?'))).toBe(true);
-    expect(calls.some(({ url }) => url.includes('/specs/spec-1/body?'))).toBe(true);
-    expect(calls.some(({ url }) => url.includes('/specs/spec-1/tasks?'))).toBe(true);
-    expect(calls.some(({ url }) => url.includes('/projects/project-1/context?'))).toBe(true);
-    expect(
-      calls.some(({ url }) => url.includes('/workspaces/ws/context/shared%20architecture')),
-    ).toBe(true);
+    // Heavy bodies never travel on the manifest route and the PRD route no longer exists.
     expect(calls.every(({ url }) => !url.includes('/prd'))).toBe(true);
     expect(
       calls.some(
@@ -651,7 +683,9 @@ describe('HTTP client adapter', () => {
           !String(init.body).includes('prd'),
       ),
     ).toBe(true);
-    expect(calls.some(({ url }) => url.includes('architecture%20notes'))).toBe(true);
+    expect(
+      calls.some(({ url }) => url.includes('/workspaces/ws/context/shared%20architecture')),
+    ).toBe(true);
     expect(calls.some(({ init }) => init.body !== undefined)).toBe(true);
 
     // Every caller-supplied segment is encoded; an id can never rewrite the route.

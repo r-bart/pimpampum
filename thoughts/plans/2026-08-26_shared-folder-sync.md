@@ -1,7 +1,7 @@
 # Implementation Plan: Shared-folder synchronization
 
 **Date**: 2026-08-26  
-**Status**: Implemented  
+**Status**: Complete — released as `v1.0.0`  
 **Scope**: Local-first synchronization of the complete Pimpampum portfolio between a user's
 computers through an existing synchronized folder.
 

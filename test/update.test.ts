@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -21,6 +21,20 @@ function installedGlobalRoot(): string {
   return root;
 }
 
+// A Node installation laid out the way `resolveNpmPath` expects: `bin/node` with an executable
+// `bin/npm` beside it. L-35: the test used to require an npm next to `process.execPath`, so a
+// version-manager Node without a sibling npm failed it.
+function nodeInstallation(options: { withNpm: boolean }): { nodePath: string; npmPath: string } {
+  const root = mkdtempSync(join(tmpdir(), 'pimpampum-node-installation-'));
+  globalRoots.push(root);
+  mkdirSync(join(root, 'bin'));
+  const nodePath = join(root, 'bin', 'node');
+  const npmPath = join(root, 'bin', 'npm');
+  writeFileSync(nodePath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  if (options.withNpm) writeFileSync(npmPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  return { nodePath, npmPath };
+}
+
 afterEach(() => {
   for (const root of globalRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -28,14 +42,26 @@ afterEach(() => {
 describe('update manager', () => {
   it('finds npm next to Node when a graphical session has a sparse PATH', () => {
     expect(resolveNpmPath('/mise/bin/node', '', () => false)).toBeNull();
-    expect(resolveNpmPath(process.execPath, '')).toMatch(/\/npm-cli\.js$/u);
+    const installation = nodeInstallation({ withNpm: true });
+    expect(resolveNpmPath(installation.nodePath, '')).toBe(realpathSync(installation.npmPath));
     expect(resolveNpmPath('/path/that/does/not/exist/node', '')).toBeNull();
   });
 
   it("prefers Node's sibling npm over a version-manager shim on PATH", () => {
-    expect(resolveNpmPath(process.execPath, `${process.env.HOME}/.local/share/mise/shims`)).toMatch(
-      /\/npm-cli\.js$/u,
+    const shims = nodeInstallation({ withNpm: true });
+    const installation = nodeInstallation({ withNpm: true });
+    expect(resolveNpmPath(installation.nodePath, join(shims.nodePath, '..'))).toBe(
+      realpathSync(installation.npmPath),
     );
+  });
+
+  it('falls back to the npm on PATH when Node has no sibling npm', () => {
+    const shims = nodeInstallation({ withNpm: true });
+    const bare = nodeInstallation({ withNpm: false });
+    expect(resolveNpmPath(bare.nodePath, join(shims.nodePath, '..'))).toBe(
+      realpathSync(shims.npmPath),
+    );
+    expect(resolveNpmPath(bare.nodePath, '')).toBeNull();
   });
 
   it('quotes only a bounded prefix of an oversized npm version', () => {

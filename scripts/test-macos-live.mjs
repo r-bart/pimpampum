@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepareMacosRuntimePackage } from './macos-live-package.mjs';
+import { GUIDED_SETUP_BUDGET_MILLISECONDS, LIVE_SETUP_SCENARIOS } from './macos-live-contract.mjs';
 
 if (process.env.PIMPAMPUM_RUN_LIVE_MACOS !== '1') {
   throw new Error('Set PIMPAMPUM_RUN_LIVE_MACOS=1 to run the reversible real macOS smoke.');
@@ -45,20 +46,7 @@ const environment = {
 };
 let installed = false;
 let smokeCompleted = false;
-const scenarios = {
-  cleanNoNode: false,
-  guidedSetupPopover: false,
-  legacyNpmMigration: false,
-  noAgent: false,
-  oneAgent: false,
-  twoAgents: false,
-  partialFailure: false,
-  conflictDecision: false,
-  popoverRestartResume: false,
-  packagedUpdate: false,
-  disconnect: false,
-  removal: false,
-};
+const scenarios = Object.fromEntries(LIVE_SETUP_SCENARIOS.map((name) => [name, false]));
 
 function command(executable, arguments_, options = {}) {
   const result = spawnSync(executable, arguments_, {
@@ -906,7 +894,7 @@ try {
     );
   }
 
-  if (durationMilliseconds >= 120_000) {
+  if (durationMilliseconds >= GUIDED_SETUP_BUDGET_MILLISECONDS) {
     throw new Error(`macOS live setup exceeded two minutes: ${durationMilliseconds}ms.`);
   }
 

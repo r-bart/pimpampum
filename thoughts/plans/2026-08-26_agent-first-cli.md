@@ -1,7 +1,7 @@
 # Implementation Plan: Agent-first CLI
 
 **Date**: 2026-08-26
-**Status**: completed
+**Status**: Complete — released as `v1.0.0`; hardened in `v1.1.0` (see `../notes/2026-08-29_agent-first-cli-hardening.md`)
 
 ## Overview
 

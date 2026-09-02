@@ -1,27 +1,20 @@
 {
-  "meta": { "schemaVersion": 2 },
   "data": {
-    "daemon": {
-      "version": "1.0.0",
-      "startedAt": "2026-08-26T20:00:00.000Z",
-      "uptimeSeconds": 90
-    },
-    "generatedAt": "2026-08-26T20:01:30.000Z",
     "status": "active",
     "counts": {
       "workspaces": 1,
       "projects": 6,
-      "specs": 3,
+      "specs": 5,
       "draftProjects": 1,
       "openProjects": 2,
       "pausedProjects": 1,
       "completedProjects": 1,
       "cancelledProjects": 1,
-      "openTasks": 2,
-      "completedTasks": 2,
-      "cancelledTasks": 1,
-      "activeClaims": 2,
-      "availableWork": 1
+      "openTasks": 7,
+      "completedTasks": 4,
+      "cancelledTasks": 0,
+      "activeClaims": 3,
+      "availableWork": 5
     },
     "projects": [
       {
@@ -36,11 +29,11 @@
         "lifecycleState": "open",
         "status": "active",
         "specCount": 2,
-        "openTaskCount": 1,
-        "completedTaskCount": 0,
-        "activeClaimCount": 2,
-        "availableWorkCount": 0,
-        "updatedAt": "2026-08-26T20:01:00.000Z"
+        "openTaskCount": 3,
+        "completedTaskCount": 2,
+        "activeClaimCount": 3,
+        "availableWorkCount": 1,
+        "updatedAt": "2026-08-26T20:00:26.000Z"
       },
       {
         "id": "project-available",
@@ -54,11 +47,11 @@
         "lifecycleState": "open",
         "status": "available",
         "specCount": 1,
-        "openTaskCount": 1,
+        "openTaskCount": 4,
         "completedTaskCount": 0,
         "activeClaimCount": 0,
-        "availableWorkCount": 1,
-        "updatedAt": "2026-08-26T20:00:50.000Z"
+        "availableWorkCount": 4,
+        "updatedAt": "2026-08-26T20:00:29.000Z"
       },
       {
         "id": "project-draft",
@@ -71,12 +64,12 @@
         "title": "Draft project",
         "lifecycleState": "draft",
         "status": "draft",
-        "specCount": 1,
+        "specCount": 0,
         "openTaskCount": 0,
         "completedTaskCount": 0,
         "activeClaimCount": 0,
         "availableWorkCount": 0,
-        "updatedAt": "2026-08-26T20:00:40.000Z"
+        "updatedAt": "2026-08-26T20:00:03.000Z"
       },
       {
         "id": "project-paused",
@@ -94,7 +87,7 @@
         "completedTaskCount": 0,
         "activeClaimCount": 0,
         "availableWorkCount": 0,
-        "updatedAt": "2026-08-26T20:00:35.000Z"
+        "updatedAt": "2026-08-26T20:00:23.000Z"
       },
       {
         "id": "project-complete",
@@ -112,7 +105,7 @@
         "completedTaskCount": 2,
         "activeClaimCount": 0,
         "availableWorkCount": 0,
-        "updatedAt": "2026-08-26T20:00:30.000Z"
+        "updatedAt": "2026-08-26T20:00:19.000Z"
       },
       {
         "id": "project-cancelled",
@@ -125,12 +118,12 @@
         "title": "Cancelled project",
         "lifecycleState": "cancelled",
         "status": "complete",
-        "specCount": 1,
+        "specCount": 0,
         "openTaskCount": 0,
         "completedTaskCount": 0,
         "activeClaimCount": 0,
         "availableWorkCount": 0,
-        "updatedAt": "2026-08-26T20:00:20.000Z"
+        "updatedAt": "2026-08-26T20:00:07.000Z"
       }
     ],
     "projectsTruncated": false,
@@ -152,7 +145,7 @@
         "openTaskCount": 3,
         "completedTaskCount": 2,
         "activeClaimCount": 2,
-        "updatedAt": "2026-08-26T20:00:20.000Z"
+        "updatedAt": "2026-08-26T20:00:35.000Z"
       },
       {
         "id": "spec-sync",
@@ -171,7 +164,45 @@
         "openTaskCount": 4,
         "completedTaskCount": 0,
         "activeClaimCount": 0,
-        "updatedAt": "2026-08-26T19:00:00.000Z"
+        "updatedAt": "2026-08-26T20:00:28.000Z"
+      },
+      {
+        "id": "spec-release-integration",
+        "projectId": "project-active",
+        "projectTitle": "Active project",
+        "projectLifecycleState": "open",
+        "workspace": {
+          "id": "projects",
+          "name": "100 Projects",
+          "rootPath": "/Users/example/100 Projects"
+        },
+        "slug": "release-integration",
+        "title": "Release integration",
+        "lifecycleState": "ready",
+        "taskCount": 0,
+        "openTaskCount": 0,
+        "completedTaskCount": 0,
+        "activeClaimCount": 1,
+        "updatedAt": "2026-08-26T20:00:25.000Z"
+      },
+      {
+        "id": "spec-rollout",
+        "projectId": "project-paused",
+        "projectTitle": "Paused project",
+        "projectLifecycleState": "paused",
+        "workspace": {
+          "id": "projects",
+          "name": "100 Projects",
+          "rootPath": "/Users/example/100 Projects"
+        },
+        "slug": "rollout",
+        "title": "Paused rollout",
+        "lifecycleState": "ready",
+        "taskCount": 0,
+        "openTaskCount": 0,
+        "completedTaskCount": 0,
+        "activeClaimCount": 0,
+        "updatedAt": "2026-08-26T20:00:21.000Z"
       },
       {
         "id": "spec-onboarding",
@@ -190,7 +221,7 @@
         "openTaskCount": 0,
         "completedTaskCount": 2,
         "activeClaimCount": 0,
-        "updatedAt": "2026-08-25T20:00:00.000Z"
+        "updatedAt": "2026-08-26T20:00:18.000Z"
       }
     ],
     "specsTruncated": false,
@@ -201,27 +232,49 @@
         "workspaceId": "projects",
         "projectId": "project-active",
         "projectTitle": "Active project",
-        "specId": "spec-with-task",
-        "specTitle": "Desktop status",
+        "specId": "spec-widget-v1",
+        "specTitle": "Widget V1",
         "taskId": "task-active",
         "taskTitle": "Current work",
         "agentId": "codex-task",
         "expiresAt": "2026-08-26T20:31:00.000Z"
       },
       {
-        "targetType": "spec",
-        "targetId": "spec-direct",
+        "targetType": "task",
+        "targetId": "task-review-copy",
         "workspaceId": "projects",
         "projectId": "project-active",
         "projectTitle": "Active project",
-        "specId": "spec-direct",
+        "specId": "spec-widget-v1",
+        "specTitle": "Widget V1",
+        "taskId": "task-review-copy",
+        "taskTitle": "Review copy",
+        "agentId": "codex-review",
+        "expiresAt": "2026-08-26T20:30:55.000Z"
+      },
+      {
+        "targetType": "spec",
+        "targetId": "spec-release-integration",
+        "workspaceId": "projects",
+        "projectId": "project-active",
+        "projectTitle": "Active project",
+        "specId": "spec-release-integration",
         "specTitle": "Release integration",
         "taskId": null,
         "taskTitle": null,
         "agentId": "codex-spec",
-        "expiresAt": "2026-08-26T20:21:00.000Z"
+        "expiresAt": "2026-08-26T20:20:50.000Z"
       }
     ],
-    "activeWorkTruncated": false
+    "activeWorkTruncated": false,
+    "daemon": {
+      "version": "1.0.0",
+      "startedAt": "2026-08-26T20:00:00.000Z",
+      "uptimeSeconds": 90
+    },
+    "generatedAt": "2026-08-26T20:01:30.000Z"
+  },
+  "meta": {
+    "schemaVersion": 2
   }
 }

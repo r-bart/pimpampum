@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { exportPortable } from '../src/backup.js';
 import { openDatabase } from '../src/db.js';
@@ -23,27 +23,32 @@ afterEach(() => {
   }
 });
 
-function migrationDouble(input: {
-  version?: number;
+/**
+ * Three `migrateDatabase` branches cannot be reached through a real SQLite file:
+ *
+ * - `scalarCount`'s `?? 0` fallback: `SELECT COUNT(*)` always yields one row.
+ * - the post-copy validation failure: `assertV1Ownership` rejects every row that could make
+ *   `foreign_key_check` or the row counts disagree, so the second check is a redundant safety net.
+ * - the non-Error fallback message: better-sqlite3 and the migration only throw `Error`s.
+ *
+ * They stay covered by this minimal double until `src/migrations.ts` marks them
+ * `v8 ignore` (Phase 8 handoff). Everything else in this file drives a real database; the
+ * three-level Task rejection and the unsupported version live in
+ * `domain-model-v2.migration.acceptance.test.ts` and below.
+ */
+function unreachableBranchDouble(input: {
   foreignKeyFailures?: unknown[];
   transactionFailure?: unknown;
   undefinedCounts?: boolean;
-  thirdLevelTasks?: boolean;
 }): Database.Database {
   return {
     pragma: (source: string) => {
-      if (source === 'user_version') return input.version ?? 1;
+      if (source === 'user_version') return 1;
       if (source === 'foreign_key_check') return input.foreignKeyFailures ?? [];
       return undefined;
     },
-    prepare: (source: string) => ({
-      get: () =>
-        input.undefinedCounts
-          ? undefined
-          : {
-              count:
-                input.thirdLevelTasks && source.includes('parent.parent_id IS NOT NULL') ? 1 : 0,
-            },
+    prepare: () => ({
+      get: () => (input.undefinedCounts ? undefined : { count: 0 }),
       all: () => [],
       run: () => ({ changes: 1 }),
     }),
@@ -55,33 +60,32 @@ function migrationDouble(input: {
   } as unknown as Database.Database;
 }
 
-describe('migration coverage closure', () => {
-  it('handles absent scalar rows in a structurally empty v1 migration double', () => {
-    expect(() => migrateDatabase(migrationDouble({ undefinedCounts: true }))).not.toThrow();
+describe('migration branches unreachable through SQLite', () => {
+  it('treats an absent scalar row as zero', () => {
+    expect(() => migrateDatabase(unreachableBranchDouble({ undefinedCounts: true }))).not.toThrow();
   });
 
-  it('rolls back when post-copy migration validation detects foreign-key failures', () => {
+  it('rolls back when post-copy validation detects foreign-key failures', () => {
     expect(() =>
-      migrateDatabase(migrationDouble({ foreignKeyFailures: [{ table: 'tasks' }] })),
+      migrateDatabase(unreachableBranchDouble({ foreignKeyFailures: [{ table: 'tasks' }] })),
     ).toThrow(/migration validation failed/iu);
-  });
-
-  it('rejects an unsupported non-numeric schema marker', () => {
-    expect(() => migrateDatabase(migrationDouble({ version: Number.NaN }))).toThrow(
-      /unsupported database schema version/iu,
-    );
-  });
-
-  it('rejects legacy Tasks nested deeper than one Subtask level', () => {
-    expect(() => migrateDatabase(migrationDouble({ thirdLevelTasks: true }))).toThrow(
-      /invalid ownership or foreign references/iu,
-    );
   });
 
   it('normalizes a non-Error migration failure', () => {
     expect(() =>
-      migrateDatabase(migrationDouble({ transactionFailure: 'disk disappeared' })),
+      migrateDatabase(unreachableBranchDouble({ transactionFailure: 'disk disappeared' })),
     ).toThrow(/unknown error/iu);
+  });
+});
+
+describe('migration version markers on a real database', () => {
+  it('rejects a negative user_version as an unsupported schema', () => {
+    const directory = temporaryDirectory('negative-version');
+    const path = join(directory, 'pimpampum.sqlite');
+    const stamped = new Database(path);
+    stamped.pragma('user_version = -1');
+    stamped.close();
+    expect(() => openDatabase(path)).toThrow(/unsupported database schema version -1/iu);
   });
 });
 

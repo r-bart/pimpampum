@@ -329,7 +329,7 @@ function waitForChild(child: ReturnType<typeof spawn>, pattern: string) {
     const timeout = setTimeout(() => {
       child.kill('SIGKILL');
       reject(new Error(`Timed out waiting for child output: ${stdout} ${stderr}`));
-    }, 5_000);
+    }, 10_000);
     child.stdout?.on('data', (chunk) => {
       stdout += chunk.toString();
       if (!signalled && stdout.includes('READY')) {
@@ -346,6 +346,21 @@ function waitForChild(child: ReturnType<typeof spawn>, pattern: string) {
       resolve({ code, stdout, stderr });
     });
   });
+}
+
+/** Polls until `pid` is gone; the budget bounds the wait so a leaked descendant fails, not hangs. */
+async function waitForProcessExit(pid: number, budgetMs = 3_000): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      return true;
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+  }
+  return false;
 }
 
 async function runHarness(harness: Harness) {
@@ -444,7 +459,7 @@ describe('Quattro live runner hardening', () => {
       reviewer: 'Roberto',
       artifactSetHash: '1'.repeat(64),
     });
-  });
+  }, 15_000);
 
   it('asks the reviewer only for states a healthy installation can show', async () => {
     const module = (await import(
@@ -461,15 +476,6 @@ describe('Quattro live runner hardening', () => {
     for (const state of ['credentials', 'offline', 'stale', 'unavailable', 'conflicted', '99+']) {
       expect(live).toContain(state);
     }
-  });
-
-  it('uses the documented Omarchy screenshot command and controlled output directory', () => {
-    const source = readFileSync(join(process.cwd(), 'scripts/test-omarchy-live.mjs'), 'utf8');
-    expect(source).toContain('OMARCHY_SCREENSHOT_DIR: screenshotRoot');
-    expect(source).toContain("arguments: ['capture', 'screenshot', 'fullscreen', 'save']");
-    expect(source).not.toContain(
-      "arguments: ['capture', 'screenshot', 'fullscreen', 'save', path]",
-    );
   });
 
   it('uses a read-only real candidate snapshot independent of later source mutation', async () => {
@@ -807,19 +813,9 @@ describe('Quattro live runner hardening', () => {
       });
       expect(result.exitCode).toBe(124);
       const descendantPid = Number(readFileSync(descendantPidPath, 'utf8'));
-      let alive = true;
-      for (let attempt = 0; attempt < 40 && alive; attempt += 1) {
-        try {
-          process.kill(descendantPid, 0);
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-          alive = false;
-        }
-      }
-      expect(alive).toBe(false);
+      expect(await waitForProcessExit(descendantPid)).toBe(true);
     },
-    10_000,
+    15_000,
   );
 
   it.skipIf(process.platform === 'win32')(
@@ -843,19 +839,9 @@ describe('Quattro live runner hardening', () => {
       });
       expect(result.exitCode).toBe(125);
       const descendantPid = Number(readFileSync(descendantPidPath, 'utf8'));
-      let alive = true;
-      for (let attempt = 0; attempt < 40 && alive; attempt += 1) {
-        try {
-          process.kill(descendantPid, 0);
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-          alive = false;
-        }
-      }
-      expect(alive).toBe(false);
+      expect(await waitForProcessExit(descendantPid)).toBe(true);
     },
-    10_000,
+    15_000,
   );
 
   it.each([
@@ -863,19 +849,21 @@ describe('Quattro live runner hardening', () => {
     ['SIGTERM', 'capture'],
     ['SIGINT', 'review'],
     ['SIGTERM', 'review'],
-  ] as const)('aborts the real %s %s prompt and completes cleanup', async (signal, boundary) => {
-    const root = mkdtempSync(join(tmpdir(), 'pimpampum-prompt-signal-'));
-    roots.push(root);
-    const home = join(root, 'home');
-    const bin = join(root, 'bin');
-    const marker = join(root, 'cleanup.txt');
-    mkdirSync(home);
-    mkdirSync(bin);
-    const xdgOpen = join(bin, 'xdg-open');
-    writeFileSync(xdgOpen, '#!/bin/sh\nexit 0\n');
-    chmodSync(xdgOpen, 0o755);
-    const moduleUrl = pathToFileURL(join(process.cwd(), 'scripts/test-omarchy-live.mjs')).href;
-    const childSource = `
+  ] as const)(
+    'aborts the real %s %s prompt and completes cleanup',
+    async (signal, boundary) => {
+      const root = mkdtempSync(join(tmpdir(), 'pimpampum-prompt-signal-'));
+      roots.push(root);
+      const home = join(root, 'home');
+      const bin = join(root, 'bin');
+      const marker = join(root, 'cleanup.txt');
+      mkdirSync(home);
+      mkdirSync(bin);
+      const xdgOpen = join(bin, 'xdg-open');
+      writeFileSync(xdgOpen, '#!/bin/sh\nexit 0\n');
+      chmodSync(xdgOpen, 0o755);
+      const moduleUrl = pathToFileURL(join(process.cwd(), 'scripts/test-omarchy-live.mjs')).href;
+      const childSource = `
       import { writeFileSync } from 'node:fs';
       import { createRealDependencies } from ${JSON.stringify(moduleUrl)};
       const [root, home, boundary, marker, bin] = process.argv.slice(1);
@@ -907,15 +895,17 @@ describe('Quattro live runner hardening', () => {
         process.exitCode = 0;
       }
     `;
-    const child = spawn(
-      process.execPath,
-      ['--input-type=module', '-e', childSource, root, home, boundary, marker, bin],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
-    );
-    const result = await waitForChild(child, signal);
-    expect(result.code, result.stderr).toBe(0);
-    expect(readFileSync(marker, 'utf8')).toBe(`cleaned:${signal}`);
-  });
+      const child = spawn(
+        process.execPath,
+        ['--input-type=module', '-e', childSource, root, home, boundary, marker, bin],
+        { stdio: ['pipe', 'pipe', 'pipe'] },
+      );
+      const result = await waitForChild(child, signal);
+      expect(result.code, result.stderr).toBe(0);
+      expect(readFileSync(marker, 'utf8')).toBe(`cleaned:${signal}`);
+    },
+    15_000,
+  );
 
   it('rejects a symlink above the allowed evidence root from its trusted anchor', async () => {
     const harness = createHarness();

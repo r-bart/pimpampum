@@ -12,12 +12,19 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { readWorkflow, stepIndex, stepsNamed } from './helpers/workflowYaml.js';
 
 const repositoryRoot = process.cwd();
 const checker = join(repositoryRoot, 'scripts/check-macos-evidence.mjs');
 const runner = join(repositoryRoot, 'scripts/test-macos-live.mjs');
 const roots: string[] = [];
+// The live runner refuses to load without PIMPAMPUM_RUN_LIVE_MACOS=1, so the scenario table and
+// the PERF-1 budget it enforces live in a sibling module both it and this suite import.
+const contract = (await import(
+  pathToFileURL(join(repositoryRoot, 'scripts/macos-live-contract.mjs')).href
+)) as { LIVE_SETUP_SCENARIOS: readonly string[]; GUIDED_SETUP_BUDGET_MILLISECONDS: number };
 
 function sha256(bytes: Buffer | string): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -95,7 +102,7 @@ function fixture() {
     schemaVersion: 3,
     status: 'passed',
     testedAt: new Date().toISOString(),
-    durationMilliseconds: 90_000,
+    durationMilliseconds: contract.GUIDED_SETUP_BUDGET_MILLISECONDS - 30_000,
     platform: 'macOS',
     architecture: 'arm64',
     gitCommit: commit,
@@ -110,22 +117,7 @@ function fixture() {
       claudeCode: '1.0.0 (Claude Code)',
     },
     artifactHashes,
-    scenarios: Object.fromEntries(
-      [
-        'cleanNoNode',
-        'guidedSetupPopover',
-        'legacyNpmMigration',
-        'noAgent',
-        'oneAgent',
-        'twoAgents',
-        'partialFailure',
-        'conflictDecision',
-        'popoverRestartResume',
-        'packagedUpdate',
-        'disconnect',
-        'removal',
-      ].map((name) => [name, true]),
-    ),
+    scenarios: Object.fromEntries(contract.LIVE_SETUP_SCENARIOS.map((name) => [name, true])),
     sessionRestart: {
       required: true,
       observedAfterNewSession: true,
@@ -189,11 +181,8 @@ describe('expanded macOS live release gates', () => {
   it.each([
     [
       'over budget',
-      (input: ReturnType<typeof fixture>) => (input.evidence.durationMilliseconds = 120_000),
-    ],
-    [
-      'missing scenario',
-      (input: ReturnType<typeof fixture>) => (input.evidence.scenarios.partialFailure = false),
+      (input: ReturnType<typeof fixture>) =>
+        (input.evidence.durationMilliseconds = contract.GUIDED_SETUP_BUDGET_MILLISECONDS),
     ],
     [
       'wrong artifact',
@@ -211,6 +200,18 @@ describe('expanded macOS live release gates', () => {
     expect(check(input).status).not.toBe(0);
   });
 
+  // The runner's scenario table and the checker's requirement are one contract: evidence that
+  // skipped any scenario the runner must observe is refused.
+  it.each([...contract.LIVE_SETUP_SCENARIOS])(
+    'rejects evidence that skipped the %s scenario',
+    (name) => {
+      const input = fixture();
+      input.evidence.scenarios[name] = false;
+      writeFileSync(input.evidencePath, `${JSON.stringify(input.evidence)}\n`);
+      expect(check(input).status).not.toBe(0);
+    },
+  );
+
   it('keeps the live runner opt-in and leaves existing approved evidence untouched', () => {
     const approved = join(repositoryRoot, 'thoughts/evidence/macos-live.json');
     const before = readFileSync(approved);
@@ -224,55 +225,81 @@ describe('expanded macOS live release gates', () => {
   });
 
   it('enforces release ordering and enumerates every live setup lifecycle case', () => {
-    const workflow = readFileSync(join(repositoryRoot, '.github/workflows/release.yml'), 'utf8');
-    const source = readFileSync(runner, 'utf8');
-    const nested = workflow.indexOf('Verify nested runtime and sign final app');
-    const notarize = workflow.indexOf('Notarize and staple');
-    const approve = workflow.indexOf('Approve and exercise the exact notarized artifact');
-    expect(nested).toBeGreaterThan(0);
+    const release = readWorkflow(join(repositoryRoot, '.github/workflows/release.yml'));
+    const steps = release.jobs.publish!.steps;
+    const nested = stepIndex(steps, 'Verify nested runtime and sign final app');
+    const notarize = stepIndex(steps, 'Notarize and staple');
+    const approve = stepIndex(steps, 'Approve and exercise the exact notarized artifact');
+    expect(nested).toBeGreaterThanOrEqual(0);
     expect(notarize).toBeGreaterThan(nested);
     expect(approve).toBeGreaterThan(notarize);
-    expect(workflow.slice(notarize, approve)).not.toContain(
-      'node scripts/check-macos-artifact.mjs',
-    );
-    expect(workflow.slice(approve)).toContain(
-      '--approve --require-signature --require-notarization',
-    );
-    for (const scenario of [
-      'cleanNoNode',
-      'legacyNpmMigration',
-      'noAgent',
-      'oneAgent',
-      'twoAgents',
-      'partialFailure',
-      'conflictDecision',
-      'popoverRestartResume',
-      'packagedUpdate',
-      'disconnect',
-      'removal',
-    ]) {
-      expect(source).toContain(scenario);
+    // Nothing between notarization and approval may run the artifact checker: approval happens
+    // once, on the stapled bundle, with signature and notarization required.
+    for (const step of steps.slice(notarize, approve)) {
+      expect(step.run ?? '').not.toContain('check-macos-artifact.mjs');
     }
-    expect(source).toContain('config="$HOME/.claude.json"');
-    expect(source).toContain('"mcpServers":{"pimpampum"');
-    expect(source).toContain("spawnSync(controlNode, [cli, 'backup', 'retry']");
-    expect(source).toContain('connector.newSessionRequired');
-    expect(source).toContain('durationMilliseconds >= 120_000');
-    expect(source).toContain("environment.PATH = '/usr/bin:/bin:/usr/sbin:/sbin'");
+    const approveStep = steps[approve]!;
+    expect(approveStep.run).toContain('--approve --require-signature --require-notarization');
+    expect(approveStep.run).toContain('PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos');
+    expect(approveStep.run).toContain('npm run check:macos-evidence');
+
+    // PERF-1: the guided setup budget is two minutes, and the runner observes every lifecycle
+    // case the evidence checker demands (see the it.each above for the checker half).
+    expect(contract.GUIDED_SETUP_BUDGET_MILLISECONDS).toBe(120_000);
+    expect(new Set(contract.LIVE_SETUP_SCENARIOS).size).toBe(contract.LIVE_SETUP_SCENARIOS.length);
+    expect(contract.LIVE_SETUP_SCENARIOS).toEqual(
+      expect.arrayContaining([
+        'cleanNoNode',
+        'guidedSetupPopover',
+        'legacyNpmMigration',
+        'noAgent',
+        'oneAgent',
+        'twoAgents',
+        'partialFailure',
+        'conflictDecision',
+        'popoverRestartResume',
+        'packagedUpdate',
+        'disconnect',
+        'removal',
+      ]),
+    );
   });
 
   it('preserves complete runtime artifacts and addresses their versioned download layout', () => {
-    const quality = readFileSync(join(repositoryRoot, '.github/workflows/quality.yml'), 'utf8');
-    const release = readFileSync(join(repositoryRoot, '.github/workflows/release.yml'), 'utf8');
+    const quality = readWorkflow(join(repositoryRoot, '.github/workflows/quality.yml'));
+    const release = readWorkflow(join(repositoryRoot, '.github/workflows/release.yml'));
 
     for (const workflow of [quality, release]) {
-      expect(workflow).toContain('include-hidden-files: true');
-      expect(workflow).toContain('pimpampum-runtime-$version-darwin-arm64');
-      expect(workflow).toContain('Pack mode-preserving runtime transport');
-      expect(workflow).toContain('runtime-${{ matrix.target }}.tar.gz');
+      const steps = workflow.jobs.runtime!.steps;
+      const pack = stepIndex(steps, 'Pack mode-preserving runtime transport');
+      const upload = steps.findIndex((step) => step.uses?.startsWith('actions/upload-artifact@'));
+      expect(pack).toBeGreaterThanOrEqual(0);
+      expect(upload).toBeGreaterThan(pack);
+      // The tarball preserves modes across the artifact hop; hidden files must not be dropped and
+      // a missing bundle is a failure, never an empty artifact.
+      expect(steps[upload]!.with).toMatchObject({
+        name: 'runtime-${{ matrix.target }}',
+        path: '${{ runner.temp }}/runtime-${{ matrix.target }}.tar.gz',
+        'include-hidden-files': true,
+        'if-no-files-found': 'error',
+      });
     }
-    expect(quality).toContain('Unpack mode-preserving runtime transport');
-    expect(release).toContain('merge-multiple: true');
-    expect(release).toContain('Unpack mode-preserving runtime transports');
+    const macos = quality.jobs.macos!.steps;
+    const download = macos.find((step) => step.uses?.startsWith('actions/download-artifact@'));
+    expect(download?.with?.name).toBe('runtime-darwin-arm64');
+    expect(stepIndex(macos, 'Unpack mode-preserving runtime transport')).toBeGreaterThanOrEqual(0);
+
+    const publish = release.jobs.publish!.steps;
+    const bundles = publish.find((step) => step.uses?.startsWith('actions/download-artifact@'));
+    expect(bundles?.with).toMatchObject({ pattern: 'runtime-*', 'merge-multiple': true });
+    const [unpack, build] = [
+      'Unpack mode-preserving runtime transports',
+      'Build app and sign nested runtime first',
+    ].map((name) => stepIndex(publish, name));
+    expect(unpack).toBeGreaterThanOrEqual(0);
+    expect(build).toBeGreaterThan(unpack!);
+    expect(stepsNamed(publish, ['Build app and sign nested runtime first'])[0]!.run).toContain(
+      'pimpampum-runtime-$version-darwin-arm64',
+    );
   });
 });

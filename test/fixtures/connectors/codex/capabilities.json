@@ -1,35 +1,43 @@
 {
-  "fixtureVersion": 1,
-  "synthetic": true,
+  "fixtureVersion": 2,
+  "synthetic": false,
   "observedCliVersion": "codex-cli 0.151.0",
+  "observedOn": "2026-09-02",
+  "versionFixture": "version.txt",
   "probes": {
-    "listJson": {
-      "arguments": ["mcp", "list", "--json"],
-      "supported": true
-    },
     "getJson": {
-      "arguments": ["mcp", "get", "pimpampum", "--json"],
+      "arguments": ["mcp", "get", "--help"],
+      "helpFixture": "help-mcp-get.txt",
+      "token": "--json",
       "supported": true
     },
-    "addStdio": {
-      "arguments": [
-        "mcp",
-        "add",
-        "pimpampum",
-        "--",
-        "/Users/example/.local/share/pimpampum/bin/pimpampum-mcp"
-      ],
+    "listJson": {
+      "arguments": ["mcp", "list", "--help"],
+      "helpFixture": "help-mcp-list.txt",
+      "token": "--json",
+      "supported": true
+    },
+    "add": {
+      "arguments": ["mcp", "add", "--help"],
+      "helpFixture": "help-mcp-add.txt",
+      "token": "<NAME> (--url <URL> | -- <COMMAND>...)",
       "supported": true
     },
     "remove": {
-      "arguments": ["mcp", "remove", "pimpampum"],
+      "arguments": ["mcp", "remove", "--help"],
+      "helpFixture": "help-mcp-remove.txt",
+      "token": "<NAME>",
       "supported": true
     }
+  },
+  "expectedDetection": {
+    "version": "codex-cli 0.151.0",
+    "supported": true,
+    "capabilities": { "inspect": "json", "add": true, "remove": true, "scopes": ["global"] }
   },
   "scope": {
     "kind": "global-user",
     "explicitScopeFlag": false,
-    "addConfirmation": "Added global MCP server 'pimpampum'.",
     "sharedSurfaces": ["cli", "desktop", "ide"]
   }
 }

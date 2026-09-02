@@ -175,3 +175,20 @@ jobs:
           path: ${{ runner.temp }}/macos-live
           if-no-files-found: warn
           retention-days: 7
+
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm install --global npm@11
+      - run: npm ci
+        working-directory: site
+      - run: npm run build
+        working-directory: site

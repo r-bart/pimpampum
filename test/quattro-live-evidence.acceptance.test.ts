@@ -1,6 +1,5 @@
 /**
  * @generated-from thoughts/specs/2026-08-25_desktop-status-integrations.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
  * Supplemental executable contract for the Task 4.4 live Quattro gate.
  */

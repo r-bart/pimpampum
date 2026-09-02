@@ -1,11 +1,13 @@
 /**
  * @generated-from thoughts/specs/2026-08-25_desktop-status-integrations.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
- * These tests encode the spec's acceptance criteria as executable assertions.
- * If a test seems wrong, update the spec and regenerate — don't edit tests directly.
+ * These tests encode the spec's acceptance criteria as executable assertions. Each test names the
+ * spec items it covers; a test changes only together with the spec item it names. Source-text
+ * assertions over Swift, QML and the README were retired on 2026-09-02 (H-13): the negative
+ * security checks live in test/source-contract.test.ts, the Swift suites and
+ * scripts/validate-omarchy-plugin.mjs observe the rest.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
@@ -14,7 +16,10 @@ import type { RuntimeConfig } from '../src/config.js';
 import { openDatabase } from '../src/db.js';
 import { createHttpApp } from '../src/http.js';
 import { runCli, type CliRuntime } from '../src/cliProgram.js';
+import { renderLaunchAgent } from '../src/service/launchd.js';
+import { renderSystemdUnit } from '../src/service/systemd.js';
 import { PimpampumStore } from '../src/store.js';
+import { parsePlist, parseSystemdUnit, type PlistDictionary } from './helpers/serviceArtifacts.js';
 
 const token = 'desktop-status-acceptance-token-000000000000';
 
@@ -286,126 +291,87 @@ describe('Automatic service and desktop status integrations', () => {
   });
 
   describe('FR-2: platform service definitions', () => {
-    it('FR-2/macOS: renders a user LaunchAgent without embedding the bearer token', async () => {
-      // Spec: FR-2, Security
-      const moduleUrl = new URL('../src/service/launchd.ts', import.meta.url).href;
-      const launchd = (await import(moduleUrl)) as {
-        renderLaunchAgent(input: {
-          nodePath: string;
-          cliPath: string;
-          dataDirectory: string;
-          host: string;
-          port: number;
-          logDirectory: string;
-        }): string;
-      };
-      const plist = launchd.renderLaunchAgent({
-        nodePath: '/opt/pimpampum runtime/bin/node',
-        cliPath: '/opt/pimpampum/dist/cli.js',
-        dataDirectory: '/Users/roberto/Pimpampum Data',
-        host: '127.0.0.1',
-        port: 7337,
-        logDirectory: '/Users/roberto/Pimpampum Data/logs',
-      });
+    it('FR-2/macOS: renders a LaunchAgent that restarts on failure without the bearer token', () => {
+      // Spec: US-1/AC-2, US-1/AC-3, FR-2, Security
+      const plist = parsePlist(
+        renderLaunchAgent({
+          nodePath: '/opt/pimpampum runtime/bin/node',
+          cliPath: '/opt/pimpampum/dist/cli.js',
+          dataDirectory: '/Users/roberto/Pimpampum Data',
+          host: '127.0.0.1',
+          port: 7337,
+          logDirectory: '/Users/roberto/Pimpampum Data/logs',
+        }),
+      );
 
-      expect(plist).toContain('dev.pimpampum.daemon');
-      expect(plist).toContain('/opt/pimpampum runtime/bin/node');
-      expect(plist).toContain('RunAtLoad');
-      expect(plist).toContain('KeepAlive');
-      expect(plist).not.toContain('PIMPAMPUM_TOKEN');
-      expect(plist).not.toContain('Bearer');
+      expect(plist.Label).toBe('dev.pimpampum.daemon');
+      expect(plist.ProgramArguments).toEqual([
+        '/opt/pimpampum runtime/bin/node',
+        '/opt/pimpampum/dist/cli.js',
+        'serve',
+      ]);
+      expect(plist.RunAtLoad).toBe(true);
+      // Restart after an abnormal exit only; a stop requested by the lifecycle must stay stopped.
+      expect(plist.KeepAlive).toEqual({ SuccessfulExit: false });
+      expect(plist.ThrottleInterval).toBe(5);
+      const environment = plist.EnvironmentVariables as PlistDictionary;
+      expect(Object.keys(environment).sort()).toEqual([
+        'PIMPAMPUM_DATA_DIR',
+        'PIMPAMPUM_HOST',
+        'PIMPAMPUM_PORT',
+      ]);
+      expect(environment.PIMPAMPUM_HOST).toBe('127.0.0.1');
+      expect(JSON.stringify(plist)).not.toMatch(/PIMPAMPUM_TOKEN|Bearer/u);
     });
 
-    it('FR-2/Linux: renders a non-root systemd user service with failure backoff', async () => {
-      // Spec: FR-2, Security
-      const moduleUrl = new URL('../src/service/systemd.ts', import.meta.url).href;
-      const systemd = (await import(moduleUrl)) as {
-        renderSystemdUnit(input: {
-          nodePath: string;
-          cliPath: string;
-          dataDirectory: string;
-          host: string;
-          port: number;
-        }): string;
-      };
-      const unit = systemd.renderSystemdUnit({
-        nodePath: '/home/dev/Pimpampum Runtime/bin/node',
-        cliPath: '/home/dev/pimpampum/dist/cli.js',
-        dataDirectory: '/home/dev/Pimpampum Data',
-        host: '127.0.0.1',
-        port: 7337,
-      });
+    it('FR-2/Linux: renders a non-root systemd user service with failure backoff', () => {
+      // Spec: US-1/AC-2, US-1/AC-3, FR-2, Security
+      const unit = parseSystemdUnit(
+        renderSystemdUnit({
+          nodePath: '/home/dev/Pimpampum Runtime/bin/node',
+          cliPath: '/home/dev/pimpampum/dist/cli.js',
+          dataDirectory: '/home/dev/Pimpampum Data',
+          host: '127.0.0.1',
+          port: 7337,
+        }),
+      );
 
-      expect(unit).toContain('Restart=on-failure');
-      expect(unit).toContain('RestartSec=');
-      expect(unit).toContain('WantedBy=default.target');
-      expect(unit).toContain('PIMPAMPUM_DATA_DIR=');
-      expect(unit).not.toContain('PIMPAMPUM_TOKEN');
-      expect(unit).not.toContain('User=root');
+      expect(unit.Service?.Restart).toEqual(['on-failure']);
+      expect(unit.Service?.RestartSec).toEqual(['5s']);
+      expect(unit.Service?.ExecStart).toEqual([
+        '"/home/dev/Pimpampum Runtime/bin/node" "/home/dev/pimpampum/dist/cli.js" serve',
+      ]);
+      // A user unit: no `User=` setting, installed into the user's default target.
+      expect(unit.Service?.User).toBeUndefined();
+      expect(unit.Install?.WantedBy).toEqual(['default.target']);
+      expect(unit.Service?.Environment).toEqual([
+        '"PIMPAMPUM_DATA_DIR=/home/dev/Pimpampum Data"',
+        '"PIMPAMPUM_HOST=127.0.0.1"',
+        '"PIMPAMPUM_PORT=7337"',
+      ]);
     });
   });
 
-  describe('US-2 through US-4: native read-only status artifacts', () => {
-    it('FR-3: ships a menu-bar-only SwiftUI application with login registration', () => {
-      // Spec: FR-3
-      const app = readFileSync(
-        join(process.cwd(), 'platforms/macos/Sources/PimpampumMenuBar/App.swift'),
-        'utf8',
+  describe('FR-3 and FR-4: native status surfaces', () => {
+    it('FR-3: declares a menu-bar-only application in its bundle manifest', () => {
+      // Spec: FR-3. MenuBarExtra, SMAppService and the read-only popover are covered by the Swift
+      // suites (LoginItemManagerTests, StatusPopoverTests) and the live smoke's noDockIcon check.
+      const info = parsePlist(
+        readFileSync(join(process.cwd(), 'platforms/macos/Resources/Info.plist'), 'utf8'),
       );
-      const login = readFileSync(
-        join(process.cwd(), 'platforms/macos/Sources/PimpampumMenuBar/LoginItemManager.swift'),
-        'utf8',
-      );
-      const plist = readFileSync(
-        join(process.cwd(), 'platforms/macos/Resources/Info.plist'),
-        'utf8',
-      );
-
-      expect(app).toContain('MenuBarExtra');
-      expect(login).toContain('SMAppService');
-      expect(plist).toContain('LSUIElement');
-      expect(plist).toContain('<true/>');
-    });
-
-    it('US-3/AC-4: separates completed and cancelled projects and keeps the macOS UI read-only', () => {
-      // Spec: US-3/AC-4, FR-5
-      const popover = readFileSync(
-        join(process.cwd(), 'platforms/macos/Sources/PimpampumMenuBar/StatusPopover.swift'),
-        'utf8',
-      );
-      const presentation = readFileSync(
-        join(process.cwd(), 'platforms/macos/Sources/PimpampumMenuBar/StatusPresentation.swift'),
-        'utf8',
-      );
-      const overviewStore = readFileSync(
-        join(process.cwd(), 'platforms/macos/Sources/PimpampumMenuBar/OverviewStore.swift'),
-        'utf8',
-      );
-
-      expect(popover).toContain('Completed');
-      expect(popover).toContain('Cancelled');
-      expect(popover).toContain('work.specTitle');
-      expect(popover).not.toMatch(/uptimeSeconds|\bsecs?\b/);
-      expect(popover).toContain('isCompletedExpanded');
-      expect(popover).toContain('isCancelledExpanded');
-      expect(overviewStore).toContain('$0.lifecycleState == .done');
-      expect(overviewStore).toContain('$0.lifecycleState == .cancelled');
-      expect(presentation).toContain('case .cancellationX: "xmark.circle.fill"');
-      expect(presentation).toContain('case .cancelled: .cancellationX');
-      expect(presentation).toContain(
-        'case .loading, .draft, .paused, .cancelled, .empty: .secondary',
-      );
-      expect(popover).not.toMatch(/work_complete|project_update|task_update|DELETE|PATCH|POST/);
+      expect(info.CFBundleIdentifier).toBe('dev.pimpampum.menubar');
+      expect(info.LSUIElement).toBe(true);
     });
 
     it('FR-4: ships a valid dedicated Omarchy Quattro bar-widget manifest', () => {
-      // Spec: FR-4
-      const manifestPath = join(
-        process.cwd(),
-        'integrations/omarchy/pimpampum-status/manifest.json',
-      );
-      expect(existsSync(manifestPath)).toBe(true);
-      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      // Spec: FR-4. scripts/validate-omarchy-plugin.mjs, run by test/omarchy-plugin.test.ts,
+      // checks the QML entry point, popout coordination and terminal disclosures.
+      const manifest = JSON.parse(
+        readFileSync(
+          join(process.cwd(), 'integrations/omarchy/pimpampum-status/manifest.json'),
+          'utf8',
+        ),
+      ) as {
         schemaVersion: number;
         id: string;
         kinds: string[];
@@ -421,46 +387,10 @@ describe('Automatic service and desktop status integrations', () => {
         barWidget: { allowMultiple: false, defaultSection: 'right' },
       });
     });
-
-    it('US-3/FR-4: uses native popout coordination, active count, and terminal disclosures', () => {
-      // Spec: US-2/AC-2, US-3/AC-4, FR-4
-      const widget = readFileSync(
-        join(process.cwd(), 'integrations/omarchy/pimpampum-status/BarWidget.qml'),
-        'utf8',
-      );
-      const popout = readFileSync(
-        join(process.cwd(), 'integrations/omarchy/pimpampum-status/StatusPopout.qml'),
-        'utf8',
-      );
-
-      expect(widget).toContain('requestPopout');
-      expect(widget).toMatch(/activeClaims|activeClaim/);
-      expect(popout).toContain('Completed');
-      expect(popout).toContain('Cancelled');
-      expect(popout).toContain('root.cancelledProjects');
-      expect(popout).not.toMatch(/work_complete|project_update|task_update/);
-    });
-
-    it('US-4/AC-1: uses native file-opening APIs without shell interpolation', () => {
-      // Spec: US-4/AC-1, US-4/AC-2, US-4/AC-4
-      const macOpener = readFileSync(
-        join(process.cwd(), 'platforms/macos/Sources/PimpampumMenuBar/WorkspaceOpener.swift'),
-        'utf8',
-      );
-      const omarchyPopout = readFileSync(
-        join(process.cwd(), 'integrations/omarchy/pimpampum-status/StatusPopout.qml'),
-        'utf8',
-      );
-
-      expect(macOpener).toContain('NSWorkspace');
-      expect(macOpener).not.toContain('/bin/sh');
-      expect(omarchyPopout).toContain('xdg-open');
-      expect(omarchyPopout).toMatch(/shellQuote|arguments/);
-    });
   });
 
-  describe('Packaging and documentation', () => {
-    it('FR-3/FR-4: defines native build and validation commands', () => {
+  describe('Packaging', () => {
+    it('FR-3/FR-4: defines native build and validation commands and keeps the app out of npm', () => {
       // Spec: FR-3, FR-4, Testing and Definition of Done
       const packageJson = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
         scripts: Record<string, string>;
@@ -474,17 +404,6 @@ describe('Automatic service and desktop status integrations', () => {
       // never inside the npm package; the Omarchy plugin still does.
       expect(packageJson.files).toEqual(expect.arrayContaining(['integrations/omarchy']));
       expect(packageJson.files).not.toContain('platforms/macos/dist');
-    });
-
-    it('FR-2: documents automatic install, status, uninstall and data preservation', () => {
-      // Spec: FR-2, US-1/AC-5
-      const readme = readFileSync(join(process.cwd(), 'README.md'), 'utf8');
-      expect(readme).toContain('pimpampum install');
-      expect(readme).toContain('pimpampum status');
-      expect(readme).toContain('pimpampum uninstall');
-      expect(readme).toContain('preserve');
-      expect(readme).toContain('Omarchy Quattro');
-      expect(readme).toContain('unsigned');
     });
   });
 });

@@ -1,22 +1,12 @@
-## Development
+# Working on the site
 
-When starting the dev server, use background mode:
+This directory is the public landing page for Pimpampum. Read the repository's `CLAUDE.md` first;
+its rules apply here. `CLAUDE.md` in this directory is a symbolic link to this file.
 
-```
-astro dev --background
-```
-
-Manage the background server with `astro dev stop`, `astro dev status`, and `astro dev logs`.
-
-## Documentation
-
-Full documentation: https://docs.astro.build
-
-Consult these guides before working on related tasks:
-
-- [Adding pages, dynamic routes, or middleware](https://docs.astro.build/en/guides/routing/)
-- [Working with Astro components](https://docs.astro.build/en/basics/astro-components/)
-- [Using React, Vue, Svelte, or other framework components](https://docs.astro.build/en/guides/framework-components/)
-- [Adding or managing content](https://docs.astro.build/en/guides/content-collections/)
-- [Adding styles or using Tailwind](https://docs.astro.build/en/guides/styling/)
-- [Supporting multiple languages](https://docs.astro.build/en/guides/internationalization/)
+- Keep the install story identical to the root `README.md`: the macOS app and
+  `omarchy plugin add` first, the npm package under "advanced".
+- Never write a version literal in `src/pages/index.astro`; it imports `package.json`.
+- `public/llms.txt` must say what `docs/agents.md` says: an agent stops and asks the operator, and
+  never runs `pimpampum install` unattended.
+- Run `npm run build` before finishing. `astro dev --background` starts the dev server; stop it with
+  `astro dev stop`.

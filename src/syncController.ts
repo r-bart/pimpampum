@@ -874,6 +874,7 @@ export class SyncController implements SyncGateway {
 
   private restartPolling(): void {
     this.stopPolling();
+    /* v8 ignore next -- every caller (configure, resume) clears `paused` first; the guard is defensive. */
     if (!this.settings.paused) {
       this.poller = setInterval(() => this.markDirty(), this.options.pollMilliseconds ?? 5_000);
       this.poller.unref();

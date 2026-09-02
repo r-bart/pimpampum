@@ -25,9 +25,11 @@ struct OverviewClientTests {
         == [.active, .available, .draft, .paused, .complete, .complete]
     )
     #expect(overview.projects.last?.lifecycleState == .cancelled)
-    #expect(overview.specs.map(\.title) == [
-      "Widget V1", "Cross-device synchronization", "First-run onboarding",
-    ])
+    #expect(
+      overview.specs.map(\.title) == [
+        "Widget V1", "Cross-device synchronization", "Release integration", "Paused rollout",
+        "First-run onboarding",
+      ])
     #expect(overview.specs.first?.completedTaskCount == 2)
     #expect(overview.specs.first?.activeClaimCount == 2)
     #expect(overview.specs.last?.lifecycleState == .done)
@@ -355,8 +357,9 @@ struct OverviewClientTests {
     mutations.append { root in
       var data = root["data"] as! [String: Any]
       var work = data["activeWork"] as! [[String: Any]]
-      work[1]["taskId"] = "unexpected-task"
-      work[1]["taskTitle"] = "Unexpected task"
+      // The last entry is the spec-level claim; task fields on it are a contradiction.
+      work[work.count - 1]["taskId"] = "unexpected-task"
+      work[work.count - 1]["taskTitle"] = "Unexpected task"
       data["activeWork"] = work
       root["data"] = data
     }

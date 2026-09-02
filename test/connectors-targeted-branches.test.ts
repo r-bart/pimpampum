@@ -16,7 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   createClaudeCodeConnector,
   planClaudeCodeConnection,
@@ -125,9 +125,36 @@ async function processGone(pid: number): Promise<boolean> {
 }
 
 describe('targeted SDK verifier branches', () => {
+  // M-T8: the three synthetic servers are written once for the whole describe instead of once per
+  // test; each variant keeps its own directory because the server writes its pid and close marker
+  // next to itself.
+  let serversRoot = '';
+  let defaultServer = { root: '', executable: '' };
+  let stubbornServer = { root: '', executable: '' };
+  let oversizedServer = { root: '', executable: '' };
+
+  beforeAll(() => {
+    serversRoot = mkdtempSync(join(tmpdir(), 'pimpampum-targeted-mcp-servers-'));
+    const variant = (
+      name: string,
+      options?: Parameters<typeof writeSyntheticMcpServer>[1],
+    ): { root: string; executable: string } => {
+      const root = join(serversRoot, name);
+      mkdirSync(root);
+      return { root, executable: writeSyntheticMcpServer(root, options) };
+    };
+    defaultServer = variant('default');
+    stubbornServer = variant('stubborn', { ignoreTermination: true });
+    oversizedServer = variant('oversized', { oversizedStderr: true });
+  });
+
+  afterAll(() => {
+    rmSync(serversRoot, { recursive: true, force: true });
+  });
+
   it('verifies and reaps a real synthetic stdio SDK route with bounded stderr', async () => {
-    const root = temporaryDirectory('mcp-sdk');
-    const executable = writeSyntheticMcpServer(root);
+    const { root, executable } = defaultServer;
+    rmSync(join(root, 'closed.marker'), { force: true });
     await expect(
       verifyMcpRoute({
         command: executable,
@@ -157,8 +184,7 @@ describe('targeted SDK verifier branches', () => {
   });
 
   it('SIGKILLs a real bridge that ignores the graceful close once the shutdown deadline passes', async () => {
-    const root = temporaryDirectory('sdk-stubborn');
-    const executable = writeSyntheticMcpServer(root, { ignoreTermination: true });
+    const { root, executable } = stubbornServer;
     await expect(
       verifyMcpRoute({
         command: process.execPath,
@@ -185,8 +211,7 @@ describe('targeted SDK verifier branches', () => {
   });
 
   it('fails closed and reaps a real SDK route whose stderr exceeds the diagnostic cap', async () => {
-    const root = temporaryDirectory('mcp-overflow');
-    const executable = writeSyntheticMcpServer(root, { oversizedStderr: true });
+    const { executable } = oversizedServer;
     await expect(
       verifyMcpRoute({
         command: executable,
@@ -275,9 +300,55 @@ describe('targeted SDK verifier branches', () => {
     ).rejects.toThrow(/secret leakage.*diagnostics/iu);
   });
 
-  it('handles string stderr chunks and missing official SDK metadata without weakening checks', async () => {
-    const root = temporaryDirectory('mcp-sdk-seams');
-    const executable = writeSyntheticMcpServer(root);
+  it('accepts string diagnostics and rejects a probe without server identity or negotiated protocol', async () => {
+    // M-T6: these are the verifier's own contracts, driven through its `spawn` seam rather than
+    // through spies on the SDK client's prototype.
+    const probe = (overrides: {
+      serverInfo?: { name: string };
+      protocolVersion?: string;
+      requiresProtocolVersion?: boolean;
+      diagnostics?: unknown;
+    }) => ({
+      ...(overrides.requiresProtocolVersion === undefined
+        ? {}
+        : { requiresProtocolVersion: overrides.requiresProtocolVersion }),
+      initialize: async () => ({
+        ...(overrides.serverInfo === undefined ? {} : { serverInfo: overrides.serverInfo }),
+        ...(overrides.protocolVersion === undefined
+          ? {}
+          : { protocolVersion: overrides.protocolVersion }),
+        diagnostics: overrides.diagnostics,
+      }),
+      listTools: async () => ({ tools: [{ name: 'project_list' }] }),
+      close: async () => undefined,
+    });
+    const verify = (spawnProbe: ReturnType<typeof probe>) =>
+      verifyMcpRoute({
+        command: '/synthetic/pimpampum-mcp',
+        arguments: [],
+        timeoutMilliseconds: 1_000,
+        expectedServerName: 'pimpampum',
+        requiredTools: ['project_list'],
+        spawn: () => spawnProbe,
+      });
+
+    await expect(
+      verify(
+        probe({ serverInfo: { name: 'pimpampum' }, diagnostics: 'synthetic string diagnostic' }),
+      ),
+    ).resolves.toMatchObject({ diagnostics: ['synthetic string diagnostic'] });
+    await expect(verify(probe({}))).rejects.toThrow(/identity/iu);
+    await expect(
+      verify(probe({ serverInfo: { name: 'pimpampum' }, requiresProtocolVersion: true })),
+    ).rejects.toThrow(/protocol/iu);
+  });
+
+  it('pins the defensive SDK metadata branches inside spawnSdkProbe through prototype spies', async () => {
+    // A real server always reports `serverInfo`, negotiates a protocol version and writes Buffer
+    // chunks, so the `undefined` and string-chunk arms of `spawnSdkProbe` are unreachable through
+    // the synthetic server. `src/` is frozen this wave; the handoff is to make the SDK client
+    // injectable (or `v8 ignore` those arms) and delete this test.
+    const { executable } = defaultServer;
     const stderr = vi
       .spyOn(StdioClientTransport.prototype, 'stderr', 'get')
       .mockReturnValue(Readable.from(['synthetic string diagnostic']) as never);
@@ -337,11 +408,13 @@ describe('targeted SDK verifier branches', () => {
       }),
     ).rejects.toThrow(/protocol/iu);
     missingProtocol.mockRestore();
+  });
 
+  it('rejects credential-shaped arguments before spawning and forwards safe ones to the probe', async () => {
     for (const argument of ['Authorization: synthetic-credential', 'Bearer synthetic-credential']) {
       await expect(
         verifyMcpRoute({
-          command: executable,
+          command: defaultServer.executable,
           arguments: [argument],
           timeoutMilliseconds: 10,
           expectedServerName: 'pimpampum',
@@ -445,16 +518,25 @@ describe('targeted process branches', () => {
     const spawnFor = (child: ReturnType<typeof fakeChild>) =>
       vi.fn(() => child) as unknown as typeof import('node:child_process').spawn;
 
+    // The 250 ms termination grace runs on fake timers, so the SIGKILL escalation is asserted at
+    // the exact deadline instead of after a real sleep. A child that never reported a pid receives
+    // no signal at all; the deadline only clears its escalation timer.
+    vi.useFakeTimers();
     const noPid = fakeChild(undefined, () => true);
-    const escalated = runBoundedHostCommand(
-      { executable: '/synthetic/host', arguments: [] },
-      { timeoutMilliseconds: 1_000, maxOutputBytes: 1, spawnProcess: spawnFor(noPid) },
-    );
-    noPid.stdout.emit('data', 'too large');
-    noPid.stderr.emit('data', 'repeated termination');
-    await new Promise((resolve) => setTimeout(resolve, 275));
-    noPid.emit('close', null, null);
-    await expect(escalated).rejects.toThrow(/output exceeded/iu);
+    try {
+      const escalated = runBoundedHostCommand(
+        { executable: '/synthetic/host', arguments: [] },
+        { timeoutMilliseconds: 1_000, maxOutputBytes: 1, spawnProcess: spawnFor(noPid) },
+      );
+      noPid.stdout.emit('data', 'too large');
+      noPid.stderr.emit('data', 'repeated termination');
+      await vi.advanceTimersByTimeAsync(250);
+      expect(noPid.kill).not.toHaveBeenCalled();
+      noPid.emit('close', null, null);
+      await expect(escalated).rejects.toThrow(/output exceeded/iu);
+    } finally {
+      vi.useRealTimers();
+    }
 
     const processKill = vi.spyOn(process, 'kill').mockImplementation(() => {
       throw new Error('synthetic group signal failure');
@@ -481,20 +563,31 @@ describe('targeted process branches', () => {
     clean.emit('close', null, null);
     await expect(completed).resolves.toMatchObject({ exitCode: 1 });
 
+    // Windows signals the child directly, so the escalation is observable on `kill`: SIGTERM at
+    // the output overflow, SIGKILL exactly when the 250 ms grace ends.
+    vi.useFakeTimers();
     const windows = fakeChild(13, () => true);
-    const windowsFailure = runBoundedHostCommand(
-      { executable: '/synthetic/windows-host.exe', arguments: [] },
-      {
-        timeoutMilliseconds: 1_000,
-        maxOutputBytes: 1,
-        spawnProcess: spawnFor(windows),
-        platform: 'win32',
-      },
-    );
-    windows.stdout.emit('data', 'too large');
-    windows.emit('close', null, null);
-    await expect(windowsFailure).rejects.toThrow(/output exceeded/iu);
-    expect(windows.kill).toHaveBeenCalledWith('SIGTERM');
+    try {
+      const windowsFailure = runBoundedHostCommand(
+        { executable: '/synthetic/windows-host.exe', arguments: [] },
+        {
+          timeoutMilliseconds: 1_000,
+          maxOutputBytes: 1,
+          spawnProcess: spawnFor(windows),
+          platform: 'win32',
+        },
+      );
+      windows.stdout.emit('data', 'too large');
+      expect(windows.kill.mock.calls).toEqual([['SIGTERM']]);
+      await vi.advanceTimersByTimeAsync(249);
+      expect(windows.kill.mock.calls).toEqual([['SIGTERM']]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(windows.kill.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
+      windows.emit('close', null, null);
+      await expect(windowsFailure).rejects.toThrow(/output exceeded/iu);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('propagates non-missing path lookup errors before creating a temporary file', async () => {

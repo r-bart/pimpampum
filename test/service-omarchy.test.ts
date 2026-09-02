@@ -994,206 +994,6 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
     }
   });
 
-  it('covers exact layout restore mutations, disabled layout restore and IPC errors', async () => {
-    const moved = fixture('layout-restore-moved');
-    const movedQuattro = fakeQuattro(moved);
-    const movedAdapter = adapter(moved, daemon(moved, []));
-    const movedManager = createPlatformServiceManager(
-      managerInput(moved, movedQuattro.runCommand, movedAdapter),
-    );
-    await movedManager.install();
-    const movedContext = context(moved, movedQuattro.runCommand);
-    await movedAdapter.preflight!(movedContext, movedAdapter.artifacts(movedContext), 'uninstall');
-    const restoreMoved = await movedAdapter.prepareDeactivationRollback!(
-      movedContext,
-      movedAdapter.artifacts(movedContext),
-    );
-    const widget = movedQuattro.state.layout.right.pop()!;
-    movedQuattro.state.layout.left.unshift(widget);
-    await restoreMoved();
-    expect(movedQuattro.state.layout.right.at(-1)).toEqual({ id: OMARCHY_PLUGIN_ID });
-
-    const disabled = fixture('layout-restore-disabled');
-    const disabledQuattro = fakeQuattro(disabled);
-    const disabledAdapter = adapter(disabled, daemon(disabled, []));
-    const disabledManager = createPlatformServiceManager(
-      managerInput(disabled, disabledQuattro.runCommand, disabledAdapter),
-    );
-    await disabledManager.install();
-    await disabledQuattro.runCommand('/usr/bin/omarchy', ['plugin', 'disable', OMARCHY_PLUGIN_ID]);
-    const disabledContext = context(disabled, disabledQuattro.runCommand);
-    await disabledAdapter.preflight!(
-      disabledContext,
-      disabledAdapter.artifacts(disabledContext),
-      'uninstall',
-    );
-    const restoreDisabled = await disabledAdapter.prepareDeactivationRollback!(
-      disabledContext,
-      disabledAdapter.artifacts(disabledContext),
-    );
-    disabledQuattro.state.layout.left.push({ id: OMARCHY_PLUGIN_ID });
-    disabledQuattro.state.enabled = true;
-    await restoreDisabled();
-    expect(disabledQuattro.state.enabled).toBe(false);
-
-    disabledQuattro.state.layout.right.push({ id: OMARCHY_PLUGIN_ID });
-    disabledQuattro.state.enabled = true;
-    await disabledAdapter.preflight!(
-      disabledContext,
-      disabledAdapter.artifacts(disabledContext),
-      'install',
-    );
-    disabledQuattro.state.enabled = false;
-    await disabledAdapter.afterRollback!(
-      disabledContext,
-      disabledAdapter.artifacts(disabledContext),
-    );
-    expect(disabledQuattro.state.enabled).toBe(true);
-
-    for (const stdout of ['denied', '']) {
-      const failing = fixture(`layout-restore-ipc-${stdout || 'empty'}`);
-      const failingQuattro = fakeQuattro(failing);
-      const failingAdapter = adapter(failing, daemon(failing, []));
-      await createPlatformServiceManager(
-        managerInput(failing, failingQuattro.runCommand, failingAdapter),
-      ).install();
-      const failingContext = context(failing, failingQuattro.runCommand);
-      await failingAdapter.preflight!(
-        failingContext,
-        failingAdapter.artifacts(failingContext),
-        'uninstall',
-      );
-      const restore = await failingAdapter.prepareDeactivationRollback!(
-        failingContext,
-        failingAdapter.artifacts(failingContext),
-      );
-      failingQuattro.state.layout.right.pop();
-      failingQuattro.state.enabled = false;
-      const original = failingQuattro.runCommand.getMockImplementation()!;
-      failingQuattro.runCommand.mockImplementation(async (executable, arguments_) =>
-        arguments_[0] === 'shell' && arguments_[1] === 'enablePlugin'
-          ? ok(stdout)
-          : original(executable, arguments_),
-      );
-      await expect(restore()).rejects.toThrow(/restore Pimpampum widget placement returned/u);
-    }
-
-    const exhausted = fixture('layout-restore-readiness-exhausted');
-    const exhaustedQuattro = fakeQuattro(exhausted);
-    const exhaustedAdapter = adapter(exhausted, daemon(exhausted, []));
-    await createPlatformServiceManager(
-      managerInput(exhausted, exhaustedQuattro.runCommand, exhaustedAdapter),
-    ).install();
-    const exhaustedContext = context(exhausted, exhaustedQuattro.runCommand);
-    await exhaustedAdapter.preflight!(
-      exhaustedContext,
-      exhaustedAdapter.artifacts(exhaustedContext),
-      'uninstall',
-    );
-    const restoreExhausted = await exhaustedAdapter.prepareDeactivationRollback!(
-      exhaustedContext,
-      exhaustedAdapter.artifacts(exhaustedContext),
-    );
-    exhaustedQuattro.state.layout.right.pop();
-    exhaustedQuattro.state.enabled = false;
-    exhaustedQuattro.state.installed = false;
-    exhaustedQuattro.state.ignoredRescans = 100;
-    const rescansBeforeExhaustion = exhaustedQuattro.commands.filter(
-      ([, arguments_]) => arguments_[0] === 'shell' && arguments_[1] === 'rescanPlugins',
-    ).length;
-    vi.useFakeTimers();
-    const readinessStartedAt = Date.now();
-    try {
-      const exhaustedResult = expect(restoreExhausted()).rejects.toThrow(/within 5000ms/u);
-      await vi.runAllTimersAsync();
-      await exhaustedResult;
-      expect(Date.now() - readinessStartedAt).toBe(5000);
-    } finally {
-      vi.useRealTimers();
-    }
-    expect(
-      exhaustedQuattro.commands.filter(
-        ([, arguments_]) => arguments_[0] === 'shell' && arguments_[1] === 'enablePlugin',
-      ),
-    ).toHaveLength(10);
-    expect(
-      exhaustedQuattro.commands.filter(
-        ([, arguments_]) => arguments_[0] === 'shell' && arguments_[1] === 'rescanPlugins',
-      ),
-    ).toHaveLength(rescansBeforeExhaustion + 11);
-
-    const unverified = fixture('layout-restore-unverified');
-    const unverifiedQuattro = fakeQuattro(unverified);
-    const unverifiedAdapter = adapter(unverified, daemon(unverified, []));
-    await createPlatformServiceManager(
-      managerInput(unverified, unverifiedQuattro.runCommand, unverifiedAdapter),
-    ).install();
-    unverifiedQuattro.state.layout.right.at(-1)!.density = 'compact';
-    const unverifiedContext = context(unverified, unverifiedQuattro.runCommand);
-    await unverifiedAdapter.preflight!(
-      unverifiedContext,
-      unverifiedAdapter.artifacts(unverifiedContext),
-      'uninstall',
-    );
-    const restoreUnverified = await unverifiedAdapter.prepareDeactivationRollback!(
-      unverifiedContext,
-      unverifiedAdapter.artifacts(unverifiedContext),
-    );
-    unverifiedQuattro.state.layout.right.pop();
-    unverifiedQuattro.state.enabled = false;
-    unverifiedQuattro.state.ignoreWidgetSettings = true;
-    await expect(restoreUnverified()).rejects.toThrow(/did not restore the exact/u);
-
-    for (const stdout of ['setting denied', '']) {
-      const settingFailure = fixture(`layout-setting-ipc-${stdout || 'empty'}`);
-      const settingQuattro = fakeQuattro(settingFailure);
-      const settingAdapter = adapter(settingFailure, daemon(settingFailure, []));
-      await createPlatformServiceManager(
-        managerInput(settingFailure, settingQuattro.runCommand, settingAdapter),
-      ).install();
-      settingQuattro.state.layout.right.at(-1)!.density = 'compact';
-      const settingContext = context(settingFailure, settingQuattro.runCommand);
-      await settingAdapter.preflight!(
-        settingContext,
-        settingAdapter.artifacts(settingContext),
-        'uninstall',
-      );
-      const restoreSetting = await settingAdapter.prepareDeactivationRollback!(
-        settingContext,
-        settingAdapter.artifacts(settingContext),
-      );
-      settingQuattro.state.layout.right.pop();
-      settingQuattro.state.enabled = false;
-      const original = settingQuattro.runCommand.getMockImplementation()!;
-      settingQuattro.runCommand.mockImplementation(async (executable, arguments_) =>
-        arguments_[0] === 'shell' && arguments_[1] === 'setBarWidget'
-          ? ok(stdout)
-          : original(executable, arguments_),
-      );
-      await expect(restoreSetting()).rejects.toThrow(/widget setting density returned/u);
-    }
-
-    const inconsistent = fixture('layout-restore-inconsistent');
-    const inconsistentQuattro = fakeQuattro(inconsistent);
-    const inconsistentAdapter = adapter(inconsistent, daemon(inconsistent, []));
-    await createPlatformServiceManager(
-      managerInput(inconsistent, inconsistentQuattro.runCommand, inconsistentAdapter),
-    ).install();
-    inconsistentQuattro.state.layout.right.pop();
-    const inconsistentContext = context(inconsistent, inconsistentQuattro.runCommand);
-    await inconsistentAdapter.preflight!(
-      inconsistentContext,
-      inconsistentAdapter.artifacts(inconsistentContext),
-      'uninstall',
-    );
-    await expect(
-      inconsistentAdapter.prepareDeactivationRollback!(
-        inconsistentContext,
-        inconsistentAdapter.artifacts(inconsistentContext),
-      ),
-    ).rejects.toThrow(/state and Pimpampum bar layout are inconsistent/u);
-  });
-
   it('covers daemon activation rollback fallbacks and activation failure cleanup', async () => {
     for (const variant of ['rollback-hook', 'running-fallback', 'activation-failure'] as const) {
       const root = fixture(`daemon-activation-${variant}`);
@@ -1326,89 +1126,407 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
     });
   });
 
-  it('covers direct hook guards, fallback rollback and aggregated compensation failures', async () => {
-    const missing = fixture('missing-preflight');
-    const missingQuattro = fakeQuattro(missing);
-    const missingAdapter = adapter(missing, daemon(missing, []));
-    await expect(
-      missingAdapter.activate!(context(missing, missingQuattro.runCommand), []),
-    ).rejects.toThrow(/completed preflight/u);
-    await missingAdapter.afterRollback!(context(missing, missingQuattro.runCommand), []);
-    const noStateRestore = await missingAdapter.prepareDeactivationRollback!(
-      context(missing, missingQuattro.runCommand),
-      [],
-    );
-    await noStateRestore();
+  // M-T4: the scenarios below drive the composite adapter through the manager, so every hook runs
+  // in the order the product runs it. Each `it` states one invariant about external state.
 
-    const fallback = fixture('fallback-hooks');
-    const fallbackQuattro = fakeQuattro(fallback);
-    let daemonRunning = false;
-    let fallbackActivations = 0;
-    const fallbackDaemon: PlatformServiceAdapter = {
-      id: 'fallback-daemon',
-      platform: 'linux',
-      artifacts: () => [{ path: fallback.unit, content: 'unit', mode: 0o600 }],
-      async activate() {
-        daemonRunning = true;
-        fallbackActivations += 1;
-      },
-      async deactivate() {
-        daemonRunning = false;
-      },
-      async isRunning() {
-        return daemonRunning;
+  /** Installs, then fails the uninstall after the plugin was removed so the manager rolls back. */
+  async function failedUninstallAfterRemoval(
+    label: string,
+    options: {
+      prepare?: (quattro: FakeQuattro) => void;
+      onCleanup?: (quattro: FakeQuattro) => void;
+    } = {},
+  ): Promise<{ quattro: FakeQuattro; root: Fixture; error: unknown; events: string[] }> {
+    const root = fixture(label);
+    const quattro = fakeQuattro(root);
+    const events: string[] = [];
+    const daemonAdapter: PlatformServiceAdapter = {
+      ...daemon(root, events),
+      async afterUninstall() {
+        options.onCleanup?.(quattro);
+        throw new Error('daemon cleanup failed');
       },
     };
-    const fallbackAdapter = adapter(fallback, fallbackDaemon);
-    const fallbackContext = context(fallback, fallbackQuattro.runCommand);
-    await createPlatformServiceManager(
-      managerInput(fallback, fallbackQuattro.runCommand, fallbackAdapter),
-    ).install();
-    fallbackQuattro.state.installed = true;
-    fallbackQuattro.state.enabled = true;
-    await fallbackAdapter.preflight!(
-      fallbackContext,
-      fallbackAdapter.artifacts(fallbackContext),
-      'uninstall',
+    const manager = createPlatformServiceManager(
+      managerInput(root, quattro.runCommand, adapter(root, daemonAdapter)),
     );
-    const restore = await fallbackAdapter.prepareDeactivationRollback!(
-      fallbackContext,
-      fallbackAdapter.artifacts(fallbackContext),
-    );
-    await fallbackDaemon.deactivate(fallbackContext, []);
-    fallbackQuattro.state.enabled = false;
-    for (const entries of Object.values(fallbackQuattro.state.layout)) {
-      const index = entries.findIndex((entry) => entry.id === OMARCHY_PLUGIN_ID);
-      if (index >= 0) entries.splice(index, 1);
+    await manager.install();
+    options.prepare?.(quattro);
+    const error = await manager.uninstall().catch((caught: unknown) => caught);
+    return { quattro, root, error, events };
+  }
+
+  function messagesOf(error: unknown): string[] {
+    if (error instanceof AggregateError) return error.errors.flatMap(messagesOf);
+    return [String((error as Error).message)];
+  }
+
+  it('puts the widget back in its original section when a failed uninstall left it elsewhere', async () => {
+    const { quattro, error, root } = await failedUninstallAfterRemoval('layout-restore-moved', {
+      // The shell re-added the widget at the front of the left section before the rollback ran.
+      onCleanup: (state) => {
+        state.state.layout.left.unshift({ id: OMARCHY_PLUGIN_ID });
+        state.state.enabled = true;
+      },
+    });
+    expect(messagesOf(error)).toEqual(['daemon cleanup failed']);
+    expect(quattro.state.layout.left.map((entry) => entry.id)).toEqual(['omarchy.menu']);
+    expect(quattro.state.layout.right.at(-1)).toEqual({ id: OMARCHY_PLUGIN_ID });
+    expect(existsSync(join(root.target, 'manifest.json'))).toBe(true);
+  });
+
+  it('disables a widget that appeared during a failed uninstall of a disabled plugin', async () => {
+    const { quattro, error } = await failedUninstallAfterRemoval('layout-restore-disabled', {
+      prepare: (state) => {
+        // The user had disabled the plugin: no widget in the layout before the uninstall began.
+        for (const entries of Object.values(state.state.layout)) {
+          const index = entries.findIndex((entry) => entry.id === OMARCHY_PLUGIN_ID);
+          if (index >= 0) entries.splice(index, 1);
+        }
+        state.state.enabled = false;
+      },
+      onCleanup: (state) => {
+        state.state.layout.left.push({ id: OMARCHY_PLUGIN_ID });
+        state.state.enabled = true;
+      },
+    });
+    expect(messagesOf(error)).toEqual(['daemon cleanup failed']);
+    expect(quattro.state.enabled).toBe(false);
+    expect(
+      Object.values(quattro.state.layout)
+        .flat()
+        .some((entry) => entry.id === OMARCHY_PLUGIN_ID),
+    ).toBe(false);
+  });
+
+  it.each([{ response: 'denied' }, { response: '' }])(
+    'reports the placement restore answer $response together with the uninstall failure',
+    async ({ response }) => {
+      const { error, quattro } = await failedUninstallAfterRemoval(
+        `layout-restore-ipc-${response || 'empty'}`,
+        {
+          onCleanup: (state) => {
+            const original = state.runCommand.getMockImplementation()!;
+            state.runCommand.mockImplementation(async (executable, arguments_) =>
+              arguments_[0] === 'shell' && arguments_[1] === 'enablePlugin'
+                ? ok(response)
+                : original(executable, arguments_),
+            );
+          },
+        },
+      );
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(messagesOf(error)).toEqual([
+        'daemon cleanup failed',
+        `omarchy-shell restore Pimpampum widget placement returned ${JSON.stringify(response || 'no result')}`,
+      ]);
+      expect(quattro.state.enabled).toBe(false);
+    },
+  );
+
+  it('gives up restoring the widget after five seconds of "unknown" answers with exponential backoff', async () => {
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    try {
+      const outcome = failedUninstallAfterRemoval('layout-restore-readiness-exhausted', {
+        // The shell never rediscovers the restored plugin: every rescan is ignored.
+        onCleanup: (state) => {
+          state.state.ignoredRescans = 100;
+        },
+      });
+      await vi.runAllTimersAsync();
+      const { error, quattro } = await outcome;
+      expect(Date.now() - startedAt).toBe(5000);
+      expect(messagesOf(error)).toEqual([
+        'daemon cleanup failed',
+        `omarchy-shell did not rediscover ${OMARCHY_PLUGIN_ID} within 5000ms`,
+      ]);
+      expect(
+        quattro.commands.filter(
+          ([, arguments_]) => arguments_[0] === 'shell' && arguments_[1] === 'enablePlugin',
+        ),
+      ).toHaveLength(10);
+    } finally {
+      vi.useRealTimers();
     }
-    await restore();
-    expect(fallbackQuattro.state.enabled).toBe(true);
-    expect(fallbackActivations).toBe(2);
+  });
 
-    await fallbackDaemon.deactivate(fallbackContext, []);
-    const stoppedRestore = await fallbackAdapter.prepareDeactivationRollback!(
-      fallbackContext,
-      fallbackAdapter.artifacts(fallbackContext),
+  it('reports a widget setting the shell silently dropped during the rollback', async () => {
+    const { error } = await failedUninstallAfterRemoval('layout-restore-unverified', {
+      prepare: (state) => {
+        state.state.layout.right.at(-1)!.density = 'compact';
+      },
+      onCleanup: (state) => {
+        state.state.ignoreWidgetSettings = true;
+      },
+    });
+    expect(messagesOf(error)).toEqual([
+      'daemon cleanup failed',
+      'omarchy-shell did not restore the exact Pimpampum bar widget layout',
+    ]);
+  });
+
+  it.each([{ response: 'setting denied' }, { response: '' }])(
+    'reports the widget setting restore answer $response together with the uninstall failure',
+    async ({ response }) => {
+      const { error } = await failedUninstallAfterRemoval(
+        `layout-setting-ipc-${response || 'empty'}`,
+        {
+          prepare: (state) => {
+            state.state.layout.right.at(-1)!.density = 'compact';
+          },
+          onCleanup: (state) => {
+            const original = state.runCommand.getMockImplementation()!;
+            state.runCommand.mockImplementation(async (executable, arguments_) =>
+              arguments_[0] === 'shell' && arguments_[1] === 'setBarWidget'
+                ? ok(response)
+                : original(executable, arguments_),
+            );
+          },
+        },
+      );
+      expect(messagesOf(error)).toEqual([
+        'daemon cleanup failed',
+        `omarchy-shell restore Pimpampum widget setting density returned ${JSON.stringify(response || 'no result')}`,
+      ]);
+    },
+  );
+
+  it('refuses to uninstall while the plugin is enabled but absent from the bar layout', async () => {
+    const root = fixture('layout-restore-inconsistent');
+    const quattro = fakeQuattro(root);
+    const manager = createPlatformServiceManager(
+      managerInput(root, quattro.runCommand, adapter(root, daemon(root, []))),
     );
-    await stoppedRestore();
-    expect(fallbackActivations).toBe(2);
+    await manager.install();
+    quattro.state.layout.right.pop();
+    await expect(manager.uninstall()).rejects.toThrow(
+      'Omarchy plugin state and Pimpampum bar layout are inconsistent',
+    );
+    expect(existsSync(join(root.target, 'manifest.json'))).toBe(true);
+    expect(quattro.backups).toEqual([]);
+  });
 
-    fallbackQuattro.state.fail = 'shell rescanPlugins';
+  it('re-enables the plugin after a failed upgrade whose validation disabled it', async () => {
+    const root = fixture('upgrade-restores-enabled');
+    const quattro = fakeQuattro(root);
+    const events: string[] = [];
+    const composite = adapter(root, daemon(root, events));
+    const input = managerInput(root, quattro.runCommand, composite);
+    await createPlatformServiceManager(input).install();
+    expect(quattro.state.enabled).toBe(true);
+
+    const original = quattro.runCommand.getMockImplementation()!;
+    quattro.runCommand.mockImplementation(async (executable, arguments_) => {
+      if (
+        arguments_[0] === 'plugin' &&
+        arguments_[1] === 'validate' &&
+        arguments_[2] === root.target
+      ) {
+        // The shell dropped the plugin while rejecting the candidate.
+        quattro.state.enabled = false;
+        return { exitCode: 74, stdout: '', stderr: 'candidate failure' };
+      }
+      return original(executable, arguments_);
+    });
     await expect(
-      fallbackAdapter.rollbackActivation!(
-        fallbackContext,
-        fallbackAdapter.artifacts(fallbackContext),
-      ),
-    ).rejects.toThrow(/rescanPlugins/u);
+      createPlatformServiceManager({ ...input, version: '2.0.0' }).install(),
+    ).rejects.toThrow(/candidate failure/u);
+    expect(quattro.state.enabled).toBe(true);
+    expect(existsSync(join(root.target, 'manifest.json'))).toBe(true);
+    expect(JSON.parse(readFileSync(join(root.data, 'install-receipt.json'), 'utf8'))).toMatchObject(
+      { version: '1.0.0' },
+    );
+  });
 
+  it('keeps an already enabled plugin enabled across a repeat install without re-enabling it', async () => {
+    const root = fixture('repeat-install-enabled');
+    const quattro = fakeQuattro(root);
+    const composite = adapter(root, daemon(root, []));
+    const input = managerInput(root, quattro.runCommand, composite);
+    await createPlatformServiceManager(input).install();
+    const enablesAfterFirstInstall = quattro.commands.filter(
+      ([, arguments_]) => arguments_.join(' ') === `plugin enable ${OMARCHY_PLUGIN_ID}`,
+    ).length;
+    expect(enablesAfterFirstInstall).toBe(1);
+
+    await expect(
+      createPlatformServiceManager({ ...input, version: '2.0.0' }).install(),
+    ).resolves.toMatchObject({ installed: true, reconciled: true, omarchyPlugin: 'enabled' });
+    expect(quattro.state.enabled).toBe(true);
+    expect(
+      quattro.commands.filter(
+        ([, arguments_]) => arguments_.join(' ') === `plugin enable ${OMARCHY_PLUGIN_ID}`,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('restarts a daemon without rollback hooks when the uninstall fails after stopping it', async () => {
+    const root = fixture('fallback-daemon-restart');
+    const quattro = fakeQuattro(root);
+    let running = false;
+    let activations = 0;
+    const plainDaemon: PlatformServiceAdapter = {
+      id: 'fallback-daemon',
+      platform: 'linux',
+      artifacts: () => [{ path: root.unit, content: 'unit', mode: 0o600 }],
+      async activate() {
+        running = true;
+        activations += 1;
+      },
+      async deactivate() {
+        running = false;
+      },
+      async isRunning() {
+        return running;
+      },
+      async afterUninstall() {
+        throw new Error('daemon cleanup failed');
+      },
+    };
+    const manager = createPlatformServiceManager(
+      managerInput(root, quattro.runCommand, adapter(root, plainDaemon)),
+    );
+    await manager.install();
+    expect(activations).toBe(1);
+    await expect(manager.uninstall()).rejects.toThrow('daemon cleanup failed');
+    expect(running).toBe(true);
+    expect(activations).toBe(2);
+    expect(quattro.state.enabled).toBe(true);
+  });
+
+  it('leaves a daemon without rollback hooks stopped when it was not running before the uninstall', async () => {
+    const root = fixture('fallback-daemon-stopped');
+    const quattro = fakeQuattro(root);
+    let running = false;
+    let activations = 0;
+    const plainDaemon: PlatformServiceAdapter = {
+      id: 'fallback-daemon',
+      platform: 'linux',
+      artifacts: () => [{ path: root.unit, content: 'unit', mode: 0o600 }],
+      async activate() {
+        running = true;
+        activations += 1;
+      },
+      async deactivate() {
+        running = false;
+      },
+      async isRunning() {
+        return running;
+      },
+      async afterUninstall() {
+        throw new Error('daemon cleanup failed');
+      },
+    };
+    const manager = createPlatformServiceManager(
+      managerInput(root, quattro.runCommand, adapter(root, plainDaemon)),
+    );
+    await manager.install();
+    running = false;
+    await expect(manager.uninstall()).rejects.toThrow('daemon cleanup failed');
+    expect(running).toBe(false);
+    expect(activations).toBe(1);
+  });
+
+  it('rolls activation back and reports a rescan failure when the install cannot read the plugin state', async () => {
+    const root = fixture('rollback-activation-rescan-failure');
+    const quattro = fakeQuattro(root);
+    const events: string[] = [];
+    const composite = adapter(root, daemon(root, events));
+    const original = quattro.runCommand.getMockImplementation()!;
+    let activated = false;
+    quattro.runCommand.mockImplementation(async (executable, arguments_) => {
+      const key = arguments_.join(' ');
+      if (key === `plugin enable ${OMARCHY_PLUGIN_ID}`) activated = true;
+      // After activation the plugin list breaks (afterInstall fails) and so does the rescan the
+      // rollback issues; the manager must report both and still stop the daemon.
+      if (activated && key === 'plugin list --json') {
+        return { exitCode: 75, stdout: '', stderr: 'list broken' };
+      }
+      if (activated && key === 'shell rescanPlugins') {
+        return { exitCode: 73, stdout: '', stderr: 'rescan failed' };
+      }
+      return original(executable, arguments_);
+    });
+    const error = await createPlatformServiceManager(
+      managerInput(root, quattro.runCommand, composite),
+    )
+      .install()
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    // The list failure, the rescan the activation rollback issues, and the rescan the artifact
+    // rollback issues while restoring the prior plugin state.
+    expect(messagesOf(error)).toEqual([
+      expect.stringContaining('list broken'),
+      expect.stringContaining('rescan failed'),
+      expect.stringContaining('rescan failed'),
+    ]);
+    expect(events).toContain('daemon-deactivate');
+    expect(quattro.state.enabled).toBe(false);
+    expect(existsSync(root.target)).toBe(false);
+  });
+
+  it('keeps an already enabled plugin enabled when an upgrade fails after activation and rolls back', async () => {
+    const root = fixture('rollback-activation-already-enabled');
+    const quattro = fakeQuattro(root);
+    const events: string[] = [];
+    const composite = adapter(root, daemon(root, events));
+    const input = managerInput(root, quattro.runCommand, composite);
+    await createPlatformServiceManager(input).install();
+    expect(quattro.state.enabled).toBe(true);
+    events.length = 0;
+
+    // The plugin is already enabled, so the upgrade activation changes nothing about it; the
+    // plugin list then breaks, the manager rolls the activation back, and the rollback must not
+    // disable a plugin the activation never enabled.
+    const original = quattro.runCommand.getMockImplementation()!;
+    let upgradeActivated = false;
+    let listBroken = false;
+    quattro.runCommand.mockImplementation(async (executable, arguments_) => {
+      const key = arguments_.join(' ');
+      if (
+        arguments_[0] === 'plugin' &&
+        arguments_[1] === 'validate' &&
+        arguments_[2] === root.target
+      ) {
+        upgradeActivated = true;
+      }
+      // Only the read that finalizes the install breaks; the rollback reads the list again.
+      if (upgradeActivated && !listBroken && key === 'plugin list --json') {
+        listBroken = true;
+        return { exitCode: 75, stdout: '', stderr: 'list broken' };
+      }
+      return original(executable, arguments_);
+    });
+    await expect(
+      createPlatformServiceManager({ ...input, version: '2.0.0' }).install(),
+    ).rejects.toThrow('omarchy plugin list failed with exit code 75; stderr="list broken"');
+
+    expect(quattro.state.enabled).toBe(true);
+    expect(
+      quattro.commands.filter(
+        ([, arguments_]) => arguments_.join(' ') === `plugin disable ${OMARCHY_PLUGIN_ID}`,
+      ),
+    ).toEqual([]);
+    expect(events.slice(events.indexOf('daemon-activate'))).toEqual([
+      'daemon-activate',
+      'daemon-deactivate',
+      'daemon-restore-deactivation',
+      'daemon-after-rollback',
+    ]);
+    expect(JSON.parse(readFileSync(join(root.data, 'install-receipt.json'), 'utf8'))).toMatchObject(
+      { version: '1.0.0' },
+    );
+    expect(existsSync(join(root.target, 'manifest.json'))).toBe(true);
+  });
+
+  it('aggregates an activation failure with a failed compensation', async () => {
     const aggregate = fixture('aggregate-compensation');
     const aggregateQuattro = fakeQuattro(aggregate);
     const original = aggregateQuattro.runCommand.getMockImplementation()!;
-    let rescans = 0;
     aggregateQuattro.runCommand.mockImplementation(async (executable, arguments_) => {
       if (arguments_.join(' ') === 'shell rescanPlugins') {
-        rescans += 1;
-        if (rescans >= 1) return { exitCode: 73, stdout: '', stderr: 'rescan failed' };
+        return { exitCode: 73, stdout: '', stderr: 'rescan failed' };
       }
       return original(executable, arguments_);
     });
@@ -1422,54 +1540,95 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
       },
       isRunning: async () => false,
     };
-    await expect(
-      createPlatformServiceManager(
-        managerInput(aggregate, aggregateQuattro.runCommand, adapter(aggregate, aggregateDaemon)),
-      ).install(),
-    ).rejects.toThrow(AggregateError);
+    const error = await createPlatformServiceManager(
+      managerInput(aggregate, aggregateQuattro.runCommand, adapter(aggregate, aggregateDaemon)),
+    )
+      .install()
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(messagesOf(error)).toEqual(
+      expect.arrayContaining([expect.stringContaining('rescan failed'), 'raw daemon failure']),
+    );
   });
 
-  it('exercises enabled reinstall, changed-enable compensation and daemon rollback hooks', async () => {
-    const root = fixture('direct-rollbacks');
-    mkdirSync(join(root.source, '.git'));
+  it('disables the plugin again when a second activation on one adapter fails after the first enabled it', async () => {
+    // Only a stale lifecycle reaches this compensation: the manager re-runs `preflight` before
+    // every activation, which resets `enableChanged`. Handoff: drop the branch or `v8 ignore` it in
+    // src/service/omarchy.ts and delete this test.
+    const root = fixture('stale-lifecycle-compensation');
     const quattro = fakeQuattro(root);
     const events: string[] = [];
     const composite = adapter(root, daemon(root, events));
     const ctx = context(root, quattro.runCommand);
-    const artifacts = composite.artifacts(ctx);
-    expect(artifacts.some((artifact) => artifact.path.includes('/.git/'))).toBe(false);
     await createPlatformServiceManager(managerInput(root, quattro.runCommand, composite)).install();
-    quattro.state.installed = true;
-    quattro.state.enabled = true;
-
-    await composite.rollbackActivation!(ctx, artifacts);
-    expect(quattro.state.enabled).toBe(false);
-    expect(events).toContain('daemon-deactivate');
-
-    const original = quattro.runCommand.getMockImplementation()!;
-    quattro.runCommand.mockImplementation(async (executable, arguments_) => {
-      if (
-        arguments_[0] === 'plugin' &&
-        arguments_[1] === 'validate' &&
-        arguments_[2] === root.target
-      ) {
-        return { exitCode: 74, stdout: '', stderr: 'candidate failure' };
-      }
-      return original(executable, arguments_);
-    });
-    await expect(composite.activate(ctx, artifacts)).rejects.toThrow(/candidate failure/u);
-    quattro.runCommand.mockImplementation(original);
-
-    quattro.state.installed = true;
-    quattro.state.enabled = true;
-    await composite.preflight!(ctx, artifacts, 'install');
-    await composite.activate(ctx, artifacts);
     expect(quattro.state.enabled).toBe(true);
+    const original = quattro.runCommand.getMockImplementation()!;
+    quattro.runCommand.mockImplementation(async (executable, arguments_) =>
+      arguments_[0] === 'plugin' && arguments_[1] === 'validate' && arguments_[2] === root.target
+        ? { exitCode: 74, stdout: '', stderr: 'candidate failure' }
+        : original(executable, arguments_),
+    );
+    await expect(composite.activate(ctx, composite.artifacts(ctx))).rejects.toThrow(
+      /candidate failure/u,
+    );
+    expect(quattro.state.enabled).toBe(false);
+    expect(events.at(-1)).toBe('daemon-deactivate');
+  });
 
+  it('never plans a .git directory inside the plugin source as an artifact', () => {
+    const root = fixture('git-excluded');
+    mkdirSync(join(root.source, '.git'));
+    writeFileSync(join(root.source, '.git', 'HEAD'), 'ref: refs/heads/main');
+    const composite = adapter(root, daemon(root, []));
+    const artifacts = composite.artifacts(context(root, fakeQuattro(root).runCommand));
+    expect(artifacts.some((artifact) => artifact.path.includes('/.git/'))).toBe(false);
+    expect(artifacts.some((artifact) => artifact.path.endsWith('/manifest.json'))).toBe(true);
+  });
+
+  // The manager always runs `preflight` first; these guards exist for a caller that does not.
+  it('refuses to activate before preflight ran', async () => {
+    const root = fixture('missing-preflight');
+    const quattro = fakeQuattro(root);
+    const composite = adapter(root, daemon(root, []));
+    await expect(composite.activate(context(root, quattro.runCommand), [])).rejects.toThrow(
+      'Omarchy activation requires a completed preflight',
+    );
+    expect(quattro.commands).toEqual([]);
+  });
+
+  it('afterRollback is a no-op before preflight ran', async () => {
+    const root = fixture('missing-preflight-rollback');
+    const quattro = fakeQuattro(root);
+    const composite = adapter(root, daemon(root, []));
+    await composite.afterRollback!(context(root, quattro.runCommand), []);
+    expect(quattro.commands).toEqual([]);
+  });
+
+  it('prepareDeactivationRollback reads the plugin state itself before preflight ran', async () => {
+    const root = fixture('missing-preflight-deactivation');
+    const quattro = fakeQuattro(root);
+    const composite = adapter(root, daemon(root, []));
+    const restore = await composite.prepareDeactivationRollback!(
+      context(root, quattro.runCommand),
+      [],
+    );
+    expect(quattro.commands.map(([, arguments_]) => arguments_.join(' '))).toEqual([
+      'plugin list --json',
+      'shell listShellConfig',
+    ]);
+    await restore();
+    expect(quattro.state.enabled).toBe(false);
+  });
+
+  it('afterUninstall keeps a plugin directory that still holds content', async () => {
+    const root = fixture('after-uninstall-nonempty');
+    const quattro = fakeQuattro(root);
+    const composite = adapter(root, daemon(root, []));
+    const ctx = context(root, quattro.runCommand);
+    mkdirSync(root.target, { recursive: true });
     writeFileSync(join(root.target, 'keep-directory-nonempty'), 'sentinel');
-    await composite.afterUninstall!(ctx, artifacts);
-    expect(existsSync(root.target)).toBe(true);
-    rmSync(join(root.target, 'keep-directory-nonempty'));
+    await composite.afterUninstall!(ctx, composite.artifacts(ctx));
+    expect(readFileSync(join(root.target, 'keep-directory-nonempty'), 'utf8')).toBe('sentinel');
   });
 
   it('replays a recorded Omarchy fixture for every command the adapter issues', async () => {

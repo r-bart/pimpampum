@@ -1,42 +1,49 @@
 {
-  "fixtureVersion": 1,
-  "synthetic": true,
-  "observedCliVersion": "2.1.251 (Claude Code)",
+  "fixtureVersion": 2,
+  "synthetic": false,
+  "observedCliVersion": "2.1.257 (Claude Code)",
+  "observedOn": "2026-09-02",
+  "versionFixture": "version.txt",
   "probes": {
-    "listJson": {
-      "arguments": ["mcp", "list", "--json"],
-      "supported": false,
-      "stderrFixture": "unsupported-json-flag.txt"
-    },
     "getJson": {
-      "arguments": ["mcp", "get", "pimpampum", "--json"],
-      "supported": false
+      "arguments": ["mcp", "get", "--help"],
+      "helpFixture": "help-mcp-get.txt",
+      "token": "--json",
+      "supported": false,
+      "rejectedInvocation": {
+        "arguments": ["mcp", "list", "--json"],
+        "exitCode": 1,
+        "stderrFixture": "unsupported-json-flag.txt"
+      }
     },
-    "addStdioAtUserScope": {
-      "arguments": [
-        "mcp",
-        "add",
-        "--scope",
-        "user",
-        "pimpampum",
-        "--",
-        "/Users/example/.local/share/pimpampum/bin/pimpampum-mcp"
-      ],
+    "addJsonScope": {
+      "arguments": ["mcp", "add-json", "--help"],
+      "helpFixture": "help-mcp-add-json.txt",
+      "token": "--scope",
       "supported": true
     },
-    "addJsonAtUserScope": {
-      "argumentsPrefix": ["mcp", "add-json", "--scope", "user", "pimpampum"],
+    "addScope": {
+      "arguments": ["mcp", "add", "--help"],
+      "helpFixture": "help-mcp-add.txt",
+      "token": "--scope",
       "supported": true
     },
-    "removeAtUserScope": {
-      "arguments": ["mcp", "remove", "--scope", "user", "pimpampum"],
+    "removeScope": {
+      "arguments": ["mcp", "remove", "--help"],
+      "helpFixture": "help-mcp-remove.txt",
+      "token": "--scope",
       "supported": true
     }
+  },
+  "expectedDetection": {
+    "version": "2.1.257 (Claude Code)",
+    "supported": true,
+    "capabilities": { "inspect": "boundedConfig", "add": true, "remove": true, "scopes": ["user"] }
   },
   "scope": {
     "configured": "user",
     "confirmation": "to user config",
     "availability": "all projects",
-    "boundedFallback": "Read only mcpServers.pimpampum from synthetic or bounded user JSON when CLI output is not safely parseable."
+    "boundedFallback": "Read only mcpServers.pimpampum from the user JSON; `claude mcp get` has no --json output."
   }
 }

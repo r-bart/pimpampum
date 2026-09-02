@@ -14,11 +14,11 @@ import { readFileSync } from 'node:fs';
 const frozen = new Map([
   [
     'test/fixtures/overview/complete.json',
-    'a622e45665a33646afb10eeeea78b3f8ec7248cad176163d1c7f47870520ec5f',
+    'c4adbf635a04bc125c7bb897c1e8aafd8bff4ef9149df20b0dbba75b903a6a21',
   ],
   [
     'test/fixtures/overview/empty.json',
-    'bbf834d7bd82369eb53ccebc3f90c0237342ebd2ab1f579a2047d25e343366eb',
+    '378cecf4b52ea3e1627908e34b788c5c637479153aea1b60a608636f09ea886f',
   ],
   [
     'test/fixtures/overview/invalid.json',
@@ -26,7 +26,7 @@ const frozen = new Map([
   ],
   [
     'test/fixtures/overview/mixed.json',
-    '27fb33e9d3113c073d8e08aaa17b96d789d873d555630dfbcf6cfa99d3571453',
+    '8ebf307074059edc00d66f61d596f8f7dc5b1bb9d7e9db9da641339700c42ff4',
   ],
 ]);
 

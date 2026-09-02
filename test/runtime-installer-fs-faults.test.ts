@@ -103,6 +103,94 @@ function ioError(message: string): NodeJS.ErrnoException {
   return error;
 }
 
+/**
+ * `atomicWrite` opens `<directory>/.<uuid>.tmp` exclusively and writes through the descriptor, so
+ * a fault cannot be bound to the final path directly. This records the temporary path of every
+ * descriptor `openSync` returns and lets a test name the write it fails by its directory and
+ * content (M-T5): the control launcher, the receipt, the removal journal.
+ */
+interface AtomicWriteTarget {
+  descriptor: number;
+  temporaryPath: string;
+  directory: string;
+  content: string;
+}
+
+function observeAtomicWrites(onWrite: (target: AtomicWriteTarget) => void): {
+  descriptorOf(match: (target: AtomicWriteTarget) => boolean): number | null;
+} {
+  const paths = new Map<number, string>();
+  const seen: AtomicWriteTarget[] = [];
+  vi.mocked(openSync).mockImplementation((...arguments_: Parameters<typeof openSync>) => {
+    const descriptor = defaultOpen(...arguments_);
+    paths.set(descriptor, String(arguments_[0]));
+    return descriptor;
+  });
+  vi.mocked(writeFileSync).mockImplementation((...arguments_: Parameters<typeof writeFileSync>) => {
+    const temporaryPath = typeof arguments_[0] === 'number' ? paths.get(arguments_[0]) : undefined;
+    if (temporaryPath !== undefined) {
+      const target: AtomicWriteTarget = {
+        descriptor: arguments_[0] as number,
+        temporaryPath,
+        directory: dirname(temporaryPath),
+        content: String(arguments_[1]),
+      };
+      seen.push(target);
+      onWrite(target);
+    }
+    return defaultWrite(...arguments_);
+  });
+  return {
+    descriptorOf: (match) => seen.find(match)?.descriptor ?? null,
+  };
+}
+
+/**
+ * Fails the first atomic write that matches and lets every later one through, including the
+ * rollback that rewrites the same file from its snapshot.
+ */
+function failFirstAtomicWrite(
+  match: (target: AtomicWriteTarget) => boolean,
+  error: Error,
+): ReturnType<typeof observeAtomicWrites> {
+  let failed = false;
+  return observeAtomicWrites((target) => {
+    if (!failed && match(target)) {
+      failed = true;
+      throw error;
+    }
+  });
+}
+
+/** The stable `pimpampum-control` launcher for `version`: written into the shared launchers directory. */
+function isControlLauncherWrite(
+  target: AtomicWriteTarget,
+  layout: ReturnType<typeof resolveRuntimeLayout>,
+): boolean {
+  return (
+    target.directory === layout.launchersDirectory &&
+    target.content.includes(layout.versionDirectory) &&
+    target.content.includes('dist/cli.js')
+  );
+}
+
+function isReceiptWrite(target: AtomicWriteTarget, dataDirectory: string): boolean {
+  return target.directory === dataDirectory && target.content.includes('"currentVersion"');
+}
+
+function isRemovalJournalWrite(target: AtomicWriteTarget, dataDirectory: string): boolean {
+  return target.directory === dataDirectory && target.content.includes('"quarantineRoot"');
+}
+
+function layoutOf(runtimeInput: ReturnType<typeof input>, version: string) {
+  return resolveRuntimeLayout({
+    homeDirectory: runtimeInput.homeDirectory,
+    platform: runtimeInput.platform,
+    architecture: runtimeInput.architecture,
+    version,
+  });
+}
+
 afterEach(() => {
   for (const mock of [closeSync, fsyncSync, lstatSync, openSync, renameSync, writeFileSync]) {
     vi.mocked(mock).mockClear();
@@ -127,28 +215,34 @@ describe('runtime installer filesystem fault injection', () => {
     expect(() => recoverInterruptedRuntimeRemoval(runtimeInput)).toThrow('ownership probe failed');
   });
 
-  it('closes an atomic metadata descriptor when its first write fails', async () => {
+  it('closes the staging-owner descriptor and leaves no stage when its write fails', async () => {
     const root = temporaryDirectory('metadata-write');
     const runtimeInput = input(root, '2.0.0');
-    vi.mocked(writeFileSync).mockImplementationOnce(() => {
-      throw ioError('metadata write failed');
-    });
+    const layout = layoutOf(runtimeInput, '2.0.0');
+    const writes = failFirstAtomicWrite(
+      (target) => target.content.includes('pimpampum-runtime-installer'),
+      ioError('metadata write failed'),
+    );
     await expect(installRuntime({ ...runtimeInput, smoke: async () => undefined })).rejects.toThrow(
       'metadata write failed',
     );
-    expect(vi.mocked(closeSync)).toHaveBeenCalled();
+    const descriptor = writes.descriptorOf((target) =>
+      target.content.includes('pimpampum-runtime-installer'),
+    );
+    expect(descriptor).not.toBeNull();
+    expect(vi.mocked(closeSync)).toHaveBeenCalledWith(descriptor);
+    expect(
+      readdirSync(layout.versionsDirectory).filter((name) => name.startsWith('.pimpampum-stage-')),
+    ).toEqual([]);
   });
 
-  it('rolls activation state back when the stable launcher write fails', async () => {
+  it('leaves no journal, receipt or launcher when the stable control launcher write fails', async () => {
     const root = temporaryDirectory('activation-write');
     const runtimeInput = input(root, '2.0.0');
-    let writes = 0;
-    vi.mocked(writeFileSync).mockImplementation(
-      (...arguments_: Parameters<typeof writeFileSync>) => {
-        writes += 1;
-        if (writes === 5) throw ioError('launcher write failed');
-        return defaultWrite(...arguments_);
-      },
+    const layout = layoutOf(runtimeInput, '2.0.0');
+    failFirstAtomicWrite(
+      (target) => isControlLauncherWrite(target, layout),
+      ioError('launcher write failed'),
     );
     await expect(installRuntime({ ...runtimeInput, smoke: async () => undefined })).rejects.toThrow(
       'launcher write failed',
@@ -159,21 +253,20 @@ describe('runtime installer filesystem fault injection', () => {
     expect(existsSync(join(runtimeInput.dataDirectory, 'runtime-install-receipt.json'))).toBe(
       false,
     );
+    expect(existsSync(layout.controlLauncherPath)).toBe(false);
+    expect(existsSync(layout.mcpLauncherPath)).toBe(false);
   });
 
-  it('preserves an already-owned inactive runtime when reactivation fails', async () => {
+  it('keeps the active receipt when the control launcher write of a reactivated version fails', async () => {
     const root = temporaryDirectory('inactive-reactivation-write');
     const first = input(root, '1.0.0');
     await installRuntime({ ...first, smoke: async () => undefined });
     const second = input(root, '2.0.0');
-    await installRuntime({ ...second, smoke: async () => undefined });
-    let writes = 0;
-    vi.mocked(writeFileSync).mockImplementation(
-      (...arguments_: Parameters<typeof writeFileSync>) => {
-        writes += 1;
-        if (writes === 5) throw ioError('inactive launcher write failed');
-        return defaultWrite(...arguments_);
-      },
+    const active = await installRuntime({ ...second, smoke: async () => undefined });
+    const firstLayout = layoutOf(first, '1.0.0');
+    failFirstAtomicWrite(
+      (target) => isControlLauncherWrite(target, firstLayout),
+      ioError('inactive launcher write failed'),
     );
 
     await expect(installRuntime({ ...first, smoke: async () => undefined })).rejects.toThrow(
@@ -182,6 +275,10 @@ describe('runtime installer filesystem fault injection', () => {
     expect(
       JSON.parse(readFileSync(join(first.dataDirectory, 'runtime-install-receipt.json'), 'utf8')),
     ).toMatchObject({ currentVersion: '2.0.0' });
+    expect(inspectInstalledRuntime(second)).toMatchObject({
+      version: '2.0.0',
+      nodePath: active.nodePath,
+    });
   });
 
   it('fails closed when the activation journal is replaced with a symlink', async () => {
@@ -200,14 +297,23 @@ describe('runtime installer filesystem fault injection', () => {
     ).rejects.toThrow(/refusing to replace symlink/iu);
   });
 
-  it('removes quarantine when the durable removal journal write fails', async () => {
+  it('removes the quarantine root and keeps the runtime when the removal journal write fails', async () => {
     const root = temporaryDirectory('removal-journal-write');
     const runtimeInput = input(root, '2.0.0');
-    await installRuntime({ ...runtimeInput, smoke: async () => undefined });
-    vi.mocked(writeFileSync).mockImplementationOnce(() => {
-      throw ioError('removal journal write failed');
-    });
+    const installed = await installRuntime({ ...runtimeInput, smoke: async () => undefined });
+    const layout = layoutOf(runtimeInput, '2.0.0');
+    failFirstAtomicWrite(
+      (target) => isRemovalJournalWrite(target, runtimeInput.dataDirectory),
+      ioError('removal journal write failed'),
+    );
     expect(() => prepareOwnedRuntimeRemoval(runtimeInput)).toThrow('removal journal write failed');
+    expect(
+      readdirSync(layout.versionsDirectory).filter((name) => name.startsWith('.pimpampum-remove-')),
+    ).toEqual([]);
+    expect(existsSync(installed.nodePath)).toBe(true);
+    expect(existsSync(join(runtimeInput.dataDirectory, 'runtime-removal-journal.json'))).toBe(
+      false,
+    );
   });
 
   it('aggregates a removal mutation fault with rollback rename failure', async () => {
@@ -326,23 +432,22 @@ describe('runtime installer filesystem fault injection', () => {
     const installedFirst = await installRuntime({ ...first, smoke: async () => undefined });
     const second = input(root, '2.0.0');
     const observed: unknown[] = [];
-    let writes = 0;
-    vi.mocked(writeFileSync).mockImplementation(
-      (...arguments_: Parameters<typeof writeFileSync>) => {
-        writes += 1;
-        // Write 5 is the first stable launcher: the journal is durable and the candidate directory
-        // has been renamed in, but launchers and receipt still describe 1.0.0.
-        // Write 7 is the receipt: both launchers already point at 2.0.0.
-        if (writes === 5 || writes === 7) {
-          try {
-            observed.push(inspectInstalledRuntime(second));
-          } catch (error) {
-            observed.push(error);
-          }
+    const secondLayout = layoutOf(second, '2.0.0');
+    observeAtomicWrites((target) => {
+      // At the control launcher write the journal is durable and the candidate directory has been
+      // renamed in, but launchers and receipt still describe 1.0.0. At the receipt write both
+      // launchers already point at 2.0.0.
+      if (
+        isControlLauncherWrite(target, secondLayout) ||
+        isReceiptWrite(target, second.dataDirectory)
+      ) {
+        try {
+          observed.push(inspectInstalledRuntime(second));
+        } catch (error) {
+          observed.push(error);
         }
-        return defaultWrite(...arguments_);
-      },
-    );
+      }
+    });
 
     const installedSecond = await installRuntime({ ...second, smoke: async () => undefined });
 
@@ -376,13 +481,10 @@ describe('runtime installer filesystem fault injection', () => {
     writeFileSync(installed.cliPath, 'corrupt bytes the receipt still owns');
     const driftedBytes = readFileSync(installed.cliPath);
     const receiptBytes = readFileSync(receiptPath);
-    let writes = 0;
-    vi.mocked(writeFileSync).mockImplementation(
-      (...arguments_: Parameters<typeof writeFileSync>) => {
-        writes += 1;
-        if (writes === 5) throw ioError('launcher write failed during repair');
-        return defaultWrite(...arguments_);
-      },
+    // The rollback rewrites the same launcher from its snapshot, so only the first write fails.
+    failFirstAtomicWrite(
+      (target) => isControlLauncherWrite(target, layout),
+      ioError('launcher write failed during repair'),
     );
 
     await expect(installRuntime({ ...runtimeInput, smoke: async () => undefined })).rejects.toThrow(

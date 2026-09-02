@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -12,15 +13,22 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { repositoryRoot } from './helpers/compiledDaemon.js';
 
 const roots: string[] = [];
-const sourceApp = join(process.cwd(), 'platforms/macos/dist/Pimpampum.app');
-const checker = join(process.cwd(), 'scripts/check-macos-artifact.mjs');
+const stagedApp = join(repositoryRoot, 'platforms/macos/dist/Pimpampum.app');
+const checker = join(repositoryRoot, 'scripts/check-macos-artifact.mjs');
+const compactMark = join(repositoryRoot, 'platforms/macos/Resources/PimpampumCompact.pdf');
 const packageVersion = (
-  JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+  JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8')) as {
     version: string;
   }
 ).version;
+// L-38 / M-T9: the staged app stops being tracked in Git, so a clean checkout has none before
+// `npm run build:macos`. The gate is then exercised against a synthetic bundle built here from the
+// checker's own contract; when a staged app exists it is used as the candidate source instead.
+const darwin = process.platform === 'darwin';
+const stagedAppPresent = existsSync(join(stagedApp, 'Contents/MacOS/PimpampumMenuBar'));
 
 function sha256(content: Buffer | string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -36,6 +44,74 @@ function arm64MachO(): Buffer {
   bytes.writeUInt32LE(0xfeedfacf, 0);
   bytes.writeUInt32LE(0x0100000c, 4);
   return bytes;
+}
+
+/**
+ * The smallest Mach-O the checker accepts as the app executable: a 64-bit arm64 header with one
+ * LC_BUILD_VERSION load command whose platform is macOS and whose minimum version is 13.0.0.
+ */
+function arm64MenuBarExecutable(): Buffer {
+  const header = Buffer.alloc(32);
+  header.writeUInt32LE(0xfeedfacf, 0);
+  header.writeUInt32LE(0x0100000c, 4);
+  header.writeUInt32LE(1, 16); // ncmds
+  header.writeUInt32LE(24, 20); // sizeofcmds
+  const buildVersion = Buffer.alloc(24);
+  buildVersion.writeUInt32LE(0x32, 0); // LC_BUILD_VERSION
+  buildVersion.writeUInt32LE(24, 4);
+  buildVersion.writeUInt32LE(1, 8); // PLATFORM_MACOS
+  buildVersion.writeUInt32LE((13 << 16) | (0 << 8) | 0, 12); // minos 13.0.0
+  buildVersion.writeUInt32LE((13 << 16) | (0 << 8) | 0, 16); // sdk
+  buildVersion.writeUInt32LE(0, 20); // ntools
+  return Buffer.concat([header, buildVersion]);
+}
+
+function syntheticInfoPlist(): string {
+  const entries: Array<[string, string]> = [
+    ['CFBundleDevelopmentRegion', '<string>en</string>'],
+    ['CFBundleExecutable', '<string>PimpampumMenuBar</string>'],
+    ['CFBundleIdentifier', '<string>dev.pimpampum.menubar</string>'],
+    ['CFBundleInfoDictionaryVersion', '<string>6.0</string>'],
+    ['CFBundleDisplayName', '<string>Pimpampum</string>'],
+    ['CFBundleIconFile', '<string>Pimpampum</string>'],
+    ['CFBundleIconName', '<string>Pimpampum</string>'],
+    ['CFBundleName', '<string>Pimpampum</string>'],
+    ['CFBundlePackageType', '<string>APPL</string>'],
+    ['CFBundleShortVersionString', `<string>${packageVersion}</string>`],
+    ['CFBundleVersion', '<string>1</string>'],
+    ['LSMinimumSystemVersion', '<string>13.0</string>'],
+    ['LSUIElement', '<true/>'],
+  ];
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    ...entries.map(([key, value]) => `  <key>${key}</key>\n  ${value}`),
+    '</dict>',
+    '</plist>',
+    '',
+  ].join('\n');
+}
+
+/** An ICNS container whose length header matches its size, and a BOM asset catalog header. */
+function syntheticIconBytes(): { icns: Buffer; assetCatalog: Buffer } {
+  const icns = Buffer.alloc(2_048);
+  icns.write('icns', 0, 'ascii');
+  icns.writeUInt32BE(icns.length, 4);
+  const assetCatalog = Buffer.alloc(2_048);
+  assetCatalog.write('BOMStore', 0, 'ascii');
+  return { icns, assetCatalog };
+}
+
+/** A bundle that satisfies every structural check of `check-macos-artifact.mjs` without Xcode. */
+function writeSyntheticBundle(app: string): void {
+  const { icns, assetCatalog } = syntheticIconBytes();
+  write(join(app, 'Contents/MacOS/PimpampumMenuBar'), arm64MenuBarExecutable(), 0o755);
+  write(join(app, 'Contents/Info.plist'), syntheticInfoPlist());
+  write(join(app, 'Contents/Resources/Pimpampum.icns'), icns);
+  write(join(app, 'Contents/Resources/Assets.car'), assetCatalog);
+  write(join(app, 'Contents/Resources/PimpampumCompact.pdf'), readFileSync(compactMark));
 }
 
 function addRuntimeFixture(app: string): void {
@@ -73,7 +149,7 @@ function addRuntimeFixture(app: string): void {
     join(runtimeRoot, 'runtime-inventory.json'),
     `${JSON.stringify({ schemaVersion: 1, target: 'darwin-arm64', files: manifestFiles }, null, 2)}\n`,
   );
-  const lockfileHash = sha256(readFileSync(join(process.cwd(), 'package-lock.json')));
+  const lockfileHash = sha256(readFileSync(join(repositoryRoot, 'package-lock.json')));
   write(
     join(runtimeRoot, 'runtime-sbom.spdx.json'),
     `${JSON.stringify(
@@ -89,11 +165,12 @@ function addRuntimeFixture(app: string): void {
   );
 }
 
-function candidate(label: string): string {
+function candidate(label: string, source: 'staged' | 'synthetic' = 'synthetic'): string {
   const root = mkdtempSync(join(tmpdir(), `pimpampum-macos-artifact-${label}-`));
   roots.push(root);
   const app = join(root, 'Pimpampum.app');
-  cpSync(sourceApp, app, { recursive: true });
+  if (source === 'staged') cpSync(stagedApp, app, { recursive: true });
+  else writeSyntheticBundle(app);
   addRuntimeFixture(app);
   return app;
 }
@@ -108,10 +185,31 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe.skipIf(process.platform !== 'darwin')('packaged macOS artifact gate', () => {
+// The checker parses the plist with `/usr/bin/plutil` and refuses `--approve` off macOS, so the
+// gate can only be exercised on darwin. Off darwin this is a visible todo, not a silent pass.
+if (!darwin) {
+  it.todo(
+    'packaged macOS artifact gate requires macOS: check-macos-artifact.mjs parses Info.plist with /usr/bin/plutil and only approves on darwin',
+  );
+}
+
+describe.runIf(darwin)('packaged macOS artifact gate', () => {
+  it.runIf(stagedAppPresent)(
+    'canonically approves the staged Xcode build in platforms/macos/dist',
+    () => {
+      const app = candidate('staged', 'staged');
+      const approval = check(app, true);
+      expect(approval.stderr).toBe('');
+      expect(approval.status).toBe(0);
+      expect(check(app).status).toBe(0);
+    },
+  );
+
   it('canonically approves the named app, Icon Composer output, plist and executable', () => {
     const app = candidate('valid');
-    expect(check(app, true).status).toBe(0);
+    const approval = check(app, true);
+    expect(approval.stderr).toBe('');
+    expect(approval.status).toBe(0);
     const metadata = JSON.parse(
       readFileSync(join(app, '..', 'PimpampumMenuBar.artifact.json'), 'utf8'),
     ) as {
@@ -136,6 +234,7 @@ describe.skipIf(process.platform !== 'darwin')('packaged macOS artifact gate', (
     expect(metadata.assetCatalogSha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(metadata.runtimeManifestSha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(metadata.runtimeFileCount).toBe(4);
+    expect(metadata).toMatchObject({ minimumMacOS: '13.0.0', lsMinimumSystemVersion: '13.0' });
     expect(check(app).status).toBe(0);
   });
 

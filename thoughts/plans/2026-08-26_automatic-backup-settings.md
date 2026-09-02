@@ -1,7 +1,7 @@
 # Implementation Plan: Automatic Backup Settings
 
 **Date**: 2026-08-26  
-**Status**: complete  
+**Status**: Complete — released as `v1.0.0`  
 **Specification**: [../specs/2026-08-26_automatic-backup-settings.md](../specs/2026-08-26_automatic-backup-settings.md)  
 **Test contract**: [../tests/2026-08-26_automatic-backup-settings.md](../tests/2026-08-26_automatic-backup-settings.md)
 

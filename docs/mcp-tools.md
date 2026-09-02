@@ -168,8 +168,10 @@ candidate autonomously.
 | `workspace_list`    | List registered repository and directory roots.                   | None            |
 | `workspace_resolve` | Resolve a working directory to the most specific registered root. | `path` absolute |
 
-Workspace registration is an administrative CLI or HTTP operation. Agents normally resolve an
-already registered repository.
+Workspace registration is an operator action, not an agent tool: **Add a workspace** in the macOS
+app or the Omarchy popout, `pimpampum workspace:add` (or the packaged
+`bin/pimpampum-control workspace:add` on a native installation), or `POST /api/v1/workspaces`.
+Agents normally resolve an already registered repository.
 
 ### Project
 

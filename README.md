@@ -82,6 +82,54 @@ verifies it, and installs the `systemd --user` service without a separate Node.j
 installation. Start a new agent session whenever the completed card requests one. Do not copy the
 plugin directory or edit Quickshell configuration by hand.
 
+### Register your first workspace
+
+A Workspace is a folder your agents work in. Both native surfaces register one without Terminal:
+
+- On macOS, the last step of Guided setup and the empty overview show **Add a workspace**. Choose
+  a folder. Pimpampum derives the identifier from the folder name and runs `workspace:add` through
+  the packaged CLI.
+- On Omarchy, the empty popout shows **Add a workspace** and opens the same GTK folder dialog the
+  Backup and Synchronization cards use. The bounded route accepts one absolute folder and an
+  optional name.
+
+Every native installation also contains the packaged CLI. Nothing places it on `PATH`; call it by
+its absolute path:
+
+| Platform       | Packaged CLI                                                    |
+| -------------- | --------------------------------------------------------------- |
+| macOS          | `~/Library/Application Support/Pimpampum/bin/pimpampum-control` |
+| Omarchy, Linux | `~/.local/share/pimpampum/bin/pimpampum-control`                |
+
+```bash
+~/.local/share/pimpampum/bin/pimpampum-control workspace:add storefront "Storefront" /absolute/path/to/storefront
+```
+
+`pimpampum-control` accepts every verb in the [CLI reference](#cli-reference). The npm package
+installs the same CLI as `pimpampum` on `PATH`; see
+[Advanced installation and development](#advanced-installation-and-development).
+
+### What gets installed where
+
+Everything lives in your home directory. No path needs root.
+
+| Path                                                        | Platform | Contents                                                                                     | Removed by uninstall |
+| ----------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------- | -------------------- |
+| `~/.pimpampum/`                                             | Both     | `pimpampum.sqlite`, `token`, `logs/`, the setup journal and the update trust state           | No                   |
+| `~/Applications/Pimpampum.app`                              | macOS    | The managed copy of the app. An app you placed in an Applications folder yourself is adopted | Managed copy only    |
+| `~/Library/Application Support/Pimpampum/Runtime/`          | macOS    | The packaged runtime, one directory per version and target                                   | Yes                  |
+| `~/Library/Application Support/Pimpampum/bin/`              | macOS    | `pimpampum-control` and `pimpampum-mcp`, the stable launchers                                | Yes                  |
+| `~/Library/Application Support/Pimpampum/installation.json` | macOS    | The installation marker. It lives outside the bundle so the code signature stays intact      | Yes                  |
+| `~/Library/LaunchAgents/dev.pimpampum.daemon.plist`         | macOS    | The `launchd` agent that starts the daemon at login                                          | Yes                  |
+| `~/.local/share/pimpampum/runtime/`                         | Omarchy  | The packaged runtime, one directory per version and target                                   | Yes                  |
+| `~/.local/share/pimpampum/bin/`                             | Omarchy  | `pimpampum-control` and `pimpampum-mcp`, the stable launchers                                | Yes                  |
+| `~/.config/systemd/user/pimpampum.service`                  | Omarchy  | The `systemd --user` unit                                                                    | Yes                  |
+| `~/.config/omarchy/plugins/dev.pimpampum.status/`           | Omarchy  | The Quickshell plugin, installed and removed by `omarchy plugin`                             | By `omarchy plugin`  |
+| Codex and Claude Code MCP configuration                     | Both     | One `pimpampum` entry that names the absolute `pimpampum-mcp` launcher and carries no token  | Proven entries only  |
+
+Backups, exports, and synchronization snapshots stay where you put them. Uninstall never touches
+them.
+
 ### Manage agent connections
 
 On macOS, open **Settings… → Agents**. On Omarchy, open **Settings → Agents** in the Pimpampum
@@ -185,7 +233,10 @@ pimpampum workspace:add storefront "Storefront" /absolute/path/to/storefront
 pimpampum workspace:list
 ```
 
-Nested directories resolve to the most specific registered Workspace.
+The native surfaces do the same with **Add a workspace**; a native installation without the npm
+package calls `pimpampum-control` by its absolute path instead of `pimpampum` (see
+[Register your first workspace](#register-your-first-workspace)). Nested directories resolve to the
+most specific registered Workspace.
 
 ### 2. Create the initiative and its first Spec
 
@@ -584,8 +635,8 @@ and Projects, opens Workspaces with `xdg-open`, and exposes agent, update, synch
 and service controls.
 
 Portfolio content remains read-only in both native clients. Their bounded writes are explicit
-agent connection, update, synchronization, backup, and service lifecycle actions; project work
-still goes through the domain tools.
+workspace registration (**Add a workspace**), agent connection, update, synchronization, backup,
+and service lifecycle actions; project work still goes through the domain tools.
 
 ## Persistence, backup, and export
 
@@ -742,12 +793,17 @@ npm run build
 ```
 
 `npm test` builds from a clean `dist/`, enforces 100% statement, branch, function, and line
-coverage, and runs the six compiled E2E scenarios. `npm run test:evals` is an alias of that
-deterministic E2E gate kept for the evals documentation: four product workflows plus two synthetic
-Git development sessions that test handoff, restart, repository tests, commits, and artifact
-verification. CI runs `npm test`, which already contains it, so the alias is not part of any
-workflow. It does not launch or evaluate an LLM. The exact boundaries and rubric live in
-[docs/evals.md](docs/evals.md).
+coverage, and runs the twelve compiled E2E scenarios. The 100% applies to the files
+`vitest.config.ts` measures. It excludes the entrypoints `src/cli.ts`, `src/daemon.ts`, and
+`src/mcpStdio.ts`, the type-only `src/types.ts`, and `src/cliMain.ts`, which still holds the
+install, uninstall, update, and setup orchestration; the E2E scenarios exercise that file through
+the compiled CLI, but no coverage number is reported for it. `npm run test:evals` is an alias of
+the E2E gate kept for the evals documentation: seven product scenarios, two synthetic Git
+development sessions that test handoff, restart, repository tests, commits, and artifact
+verification, two update-channel scenarios, and one two-machine synchronization scenario. CI runs
+`npm test`, which already contains it, so
+the alias is not part of any workflow. It does not launch or evaluate an LLM. The exact boundaries
+and rubric live in [docs/evals.md](docs/evals.md).
 
 Native live validation remains separate and explicitly opt-in because it depends on the target
 desktop and may touch the current user's installed integration:

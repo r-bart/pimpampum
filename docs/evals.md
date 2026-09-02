@@ -7,16 +7,19 @@ and local development-session mechanics. Run it from a full source checkout with
 npm run test:evals
 ```
 
-The command builds the TypeScript product once, then runs exactly these six tests:
+The command is an alias of `npm run test:e2e`. It builds the TypeScript product once, then runs
+exactly these twelve tests:
 
-- Four compiled product scenarios from `test/e2e.test.ts`.
+- Seven compiled product scenarios from `test/e2e.test.ts`.
 - Two synthetic development-session scenarios from `test/development-sessions.e2e.test.ts`.
+- Two update-channel scenarios from `test/update-channel.e2e.test.ts`.
+- One two-machine synchronization scenario from `test/sync.e2e.test.ts`.
 
 Every scenario must pass. The gate does not retry failures or assign a partial score.
 
 ## Compiled product scenarios
 
-The original four scenarios exercise the shared daemon and SQLite store through public compiled
+The seven product scenarios exercise the shared daemon and SQLite store through public compiled
 boundaries:
 
 1. A complete multi-Spec portfolio workflow, including independently scoped Context, direct Spec
@@ -28,6 +31,12 @@ boundaries:
    export.
 4. Authentication and the canonical v2 HTTP, MCP, Claim-target, and overview contracts, including
    rejection of obsolete routes and tool names.
+5. Twenty concurrent HTTP Claims on one target: exactly one is granted and nineteen are rejected
+   with `409`.
+6. Twenty concurrent `work_start` calls through the compiled stdio MCP bridge, after mutating
+   through it: exactly one is granted.
+7. `help`, `version`, `commands`, and `config` answered from a read-only home directory without
+   writing anything.
 
 These tests start the compiled daemon on loopback, use the compiled administrative CLI and
 authenticated HTTP API for setup and lifecycle operations, and exercise the compiled MCP stdio
@@ -55,6 +64,23 @@ Git commits with repository-local test identity. Before accepting completion, th
 independently verifies final source bytes, passing tests, a clean worktree, changed paths, and every
 reported `git:<commit>` artifact against that temporary repository.
 
+## Update-channel scenarios
+
+The two update-channel scenarios start a loopback HTTP server that answers a redirect and then the
+signed `release-manifest.json` the release pipeline emits:
+
+1. With `PIMPAMPUM_DEV_RELEASE_KEY=1` and `PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH`, the compiled
+   `update:check` follows the redirect, verifies the signature with the development key, and
+   resolves the manifest.
+2. Without the development flag, the same manifest is refused with the typed `unavailable` code, so
+   a release build never trusts a key from disk.
+
+## Synchronization scenario
+
+Two compiled daemons with separate data directories share one temporary folder as the synchronized
+location. Every Project moves from one machine to the other, and unrelated concurrent work on both
+sides merges without a conflict. The scenario runs through the compiled CLI and HTTP API only.
+
 ## Deterministic boundaries
 
 - Daemons bind to authenticated loopback ports selected for the test run.
@@ -76,7 +102,7 @@ commands. They are complementary evidence, not additional scenarios hidden insid
 
 In particular, focused suites cover edge cases such as Claim expiry, populated v1 migration,
 automatic-backup failure and recovery, exhaustive CLI/MCP schemas, and native contract fixtures.
-Their presence must not be interpreted as membership in the six-test eval gate.
+Their presence must not be interpreted as membership in the twelve-test eval gate.
 
 ## Opt-in native live gates
 
@@ -106,5 +132,5 @@ captured lifecycle, restoration, and screenshot evidence without performing the 
 npm run test:e2e:omarchy
 ```
 
-The portable six-test eval gate and these opt-in native gates answer different questions and do not
-invoke one another.
+The portable twelve-test eval gate and these opt-in native gates answer different questions and do
+not invoke one another.

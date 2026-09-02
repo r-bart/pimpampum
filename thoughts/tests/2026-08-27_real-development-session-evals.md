@@ -89,8 +89,8 @@ Source: `thoughts/reviews/2026-09-01_deep-review.md`, finding H-14, and Task 0.1
 - The "Frozen SHA-256" section was removed. The recorded hash
   (`0ef2b34949d12a829f1f9f202de0127b75487630be206e8b4efc1bb1ff00749a`) no longer matched the file
   and no script verified it, so it documented nothing.
-- `test/development-sessions.e2e.test.ts` is no longer frozen. Its `@immutable` header will be
-  removed in a later phase of the remediation plan. The `@generated-from` reference and the
+- `test/development-sessions.e2e.test.ts` is no longer frozen. Its `@immutable` header was removed
+  on 2026-09-02 (Task 8.2). The `@generated-from` reference and the
   US-1/US-2 test titles remain the contract: the file changes only together with the spec item it
   names.
 - The "Baseline" column was replaced by the observed status.

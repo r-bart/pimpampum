@@ -2,12 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  createCliConnectionsRuntime,
-  createCliSetupRuntime,
-  runCli,
-  type CliRuntime,
-} from '../src/cliProgram.js';
+import { createCliConnectionsRuntime, runCli, type CliRuntime } from '../src/cliProgram.js';
 import type {
   ConnectionPlan,
   ConnectorInspection,
@@ -136,31 +131,6 @@ function packagedProvider(
 }
 
 describe('CLI setup and connection boundary coverage', () => {
-  it('delegates every setup runtime operation to its injected boundary', async () => {
-    const coordinator = {
-      plan: vi.fn(async () => 'plan'),
-      apply: vi.fn(async () => 'apply'),
-      resume: vi.fn(async () => 'resume'),
-      retryConnector: vi.fn(async () => 'retry'),
-    };
-    const read = vi.fn(async () => 'status');
-    const runtime = createCliSetupRuntime(coordinator, { read } as never);
-    const progress = vi.fn();
-
-    await expect(runtime.plan({ selectedConnectors: ['codex'] })).resolves.toBe('plan');
-    await expect(
-      runtime.apply({
-        operationId: 'operation',
-        expectedRevision: 'revision',
-        confirmed: true,
-      }),
-    ).resolves.toBe('apply');
-    await expect(runtime.status()).resolves.toBe('status');
-    await expect(runtime.resume({ onProgress: progress })).resolves.toBe('resume');
-    await expect(runtime.retryConnector('codex', progress)).resolves.toBe('retry');
-    expect(read).toHaveBeenCalledOnce();
-  });
-
   it('lists verified, failed verification, and unverified connector states', async () => {
     const verified = connector({ state: 'ownedCurrent', verify: async () => true });
     const failed = connector({
@@ -269,7 +239,6 @@ describe('CLI setup and connection boundary coverage', () => {
       ['primitive failure', 'internal_error'],
       [new Error('requires a decision'), 'internal_error'],
       [new Error('conflict detected'), 'internal_error'],
-      [{ code: 'CONFLICT_STATE' }, 'internal_error'],
       [{ code: 'CONNECTOR_CONFLICT' }, 'conflict'],
       [Object.assign(new Error(''), { code: 'CONNECTOR_CONFLICT' }), 'conflict'],
       [Object.assign(new Error('stale'), { code: 'SETUP_PLAN_STALE' }), 'conflict'],

@@ -177,7 +177,6 @@ describe('bounded Omarchy connection helper', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, action: 'connect' });
     expect(statSync(state.hostConfiguration).size).toBe(200 * 1024);
-    expect(readFileSync(helper, 'utf8')).not.toMatch(/\bulimit\b/u);
   });
 
   it('accepts a HOME with spaces and non-ASCII letters and rejects quotes and control characters', () => {

@@ -1,7 +1,7 @@
 # Implementation Plan: Desktop V1 Release Readiness
 
 **Date**: 2026-08-27  
-**Status**: Ready for execution  
+**Status**: Complete — released as `v1.0.0`  
 **Scope**: Bring the Omarchy Quattro plugin and native macOS menu-bar application to one coherent,
 tested, reproducible V1 release.
 

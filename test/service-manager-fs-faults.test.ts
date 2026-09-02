@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -20,6 +21,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return {
     ...actual,
     rmSync: vi.fn(actual.rmSync),
+    openSync: vi.fn(actual.openSync),
     writeFileSync: vi.fn(actual.writeFileSync),
     closeSync: vi.fn(actual.closeSync),
   };
@@ -27,11 +29,14 @@ vi.mock('node:fs', async (importOriginal) => {
 
 const roots: string[] = [];
 const defaultRemove = vi.mocked(rmSync).getMockImplementation()!;
+const defaultOpen = vi.mocked(openSync).getMockImplementation()!;
 const defaultWrite = vi.mocked(writeFileSync).getMockImplementation()!;
 
 afterEach(() => {
   vi.mocked(rmSync).mockClear();
   vi.mocked(rmSync).mockImplementation(defaultRemove);
+  vi.mocked(openSync).mockClear();
+  vi.mocked(openSync).mockImplementation(defaultOpen);
   vi.mocked(writeFileSync).mockClear();
   vi.mocked(writeFileSync).mockImplementation(defaultWrite);
   vi.mocked(closeSync).mockClear();
@@ -127,18 +132,33 @@ describe('service manager uninstall filesystem faults', () => {
     ]);
   });
 
-  it('closes and removes the exclusive temporary file when the durable write fails', () => {
+  it('closes the exclusive temporary descriptor and keeps the previous bytes when its write fails', () => {
     const root = fixture('durable-write');
     const target = join(root.dataDirectory, 'receipt.json');
     writePrivateFileAtomic(target, 'first', 0o600, root.dataDirectory);
     vi.mocked(closeSync).mockClear();
-    vi.mocked(writeFileSync).mockImplementationOnce(() => {
-      throw new Error('disk full');
+    // The fault is bound to the descriptor opened for `<target>.<uuid>.tmp`, so the assertion
+    // below proves that exact descriptor was closed rather than counting `closeSync` calls.
+    let temporaryDescriptor: number | null = null;
+    vi.mocked(openSync).mockImplementation((...arguments_: Parameters<typeof openSync>) => {
+      const descriptor = defaultOpen(...arguments_);
+      const path = String(arguments_[0]);
+      if (path.startsWith(`${target}.`) && path.endsWith('.tmp')) temporaryDescriptor = descriptor;
+      return descriptor;
     });
+    vi.mocked(writeFileSync).mockImplementation(
+      (...arguments_: Parameters<typeof writeFileSync>) => {
+        if (temporaryDescriptor !== null && arguments_[0] === temporaryDescriptor) {
+          throw new Error('disk full');
+        }
+        return defaultWrite(...arguments_);
+      },
+    );
     expect(() => writePrivateFileAtomic(target, 'second', 0o600, root.dataDirectory)).toThrow(
       'disk full',
     );
-    expect(vi.mocked(closeSync)).toHaveBeenCalledOnce();
+    expect(temporaryDescriptor).not.toBeNull();
+    expect(vi.mocked(closeSync)).toHaveBeenCalledExactlyOnceWith(temporaryDescriptor);
     expect(readFileSync(target, 'utf8')).toBe('first');
     expect(readdirSync(root.dataDirectory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
     expect(existsSync(target)).toBe(true);

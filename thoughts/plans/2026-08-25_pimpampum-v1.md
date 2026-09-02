@@ -1,7 +1,7 @@
 # Implementation Plan: Pimpampum v1
 
 **Date**: 2026-08-25
-**Status**: Complete
+**Status**: Complete — released as `v1.0.0`
 
 ## Overview
 

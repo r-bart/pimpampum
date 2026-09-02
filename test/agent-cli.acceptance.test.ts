@@ -1,12 +1,27 @@
 /**
  * @generated-from thoughts/specs/2026-08-26_agent-first-cli.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
- * These tests encode the spec's acceptance criteria as executable assertions.
- * If a test seems wrong, update the spec and regenerate — don't edit tests directly.
+ * These tests encode the spec's acceptance criteria as executable assertions. Each test names the
+ * spec items it covers; a test changes only together with the spec item it names. Every tool name
+ * the file passes to `call` is checked against the canonical catalog the daemon registers, so a
+ * tool removed from the product cannot survive here behind a mock that echoes any name (H-14).
  */
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { describe, expect, it, vi } from 'vitest';
 import { runCli, type CliRuntime } from '../src/cliProgram.js';
+import { openDatabase } from '../src/db.js';
+import { createPimpampumMcpHandler } from '../src/mcp.js';
+import { PimpampumStore } from '../src/store.js';
+import { canonicalTools, isCanonicalTool, type CanonicalTool } from './helpers/canonicalTools.js';
+
+/** Every tool this file invokes through `pimpampum call`; the type pins each name to the catalog. */
+const toolsCalled = [
+  'workspace_list',
+  'work_list',
+  'spec_update',
+  'activity_list',
+  'project_update',
+] as const satisfies readonly CanonicalTool[];
 
 class CliExit extends Error {
   constructor(readonly code: number) {
@@ -30,15 +45,18 @@ function fixture() {
   ];
   const agentClient = {
     listTools: vi.fn(async () => ({ tools })),
-    callTool: vi.fn(async ({ name, arguments: input }: { name: string; arguments: unknown }) => ({
-      isError: false as boolean,
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ data: { name, input } }),
-        },
-      ],
-    })),
+    callTool: vi.fn(async ({ name, arguments: input }: { name: string; arguments: unknown }) => {
+      expect(isCanonicalTool(name), `${name} is not a tool the daemon registers`).toBe(true);
+      return {
+        isError: false as boolean,
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ data: { name, input } }),
+          },
+        ],
+      };
+    }),
     close: vi.fn(async () => undefined),
   };
   const runtime = {
@@ -98,6 +116,29 @@ function payload<T>(chunks: string[]): T {
 }
 
 describe('Agent-first CLI', () => {
+  it('names only tools the daemon registers', async () => {
+    // Spec: US-2/AC-1, FR-1. The helper list is compared with the live catalog here so it cannot
+    // drift from the product, and the names above are compared with the helper.
+    const store = new PimpampumStore(openDatabase(':memory:'));
+    const handler = createPimpampumMcpHandler(store);
+    const client = new Client(
+      { name: 'agent-cli-acceptance', version: '1.0.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+    const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {
+      fetch: (url, init) => handler.fetch(new Request(url, init)),
+    });
+    await client.connect(transport);
+    try {
+      const live = (await client.listTools()).tools.map((tool) => tool.name);
+      expect(live).toEqual([...canonicalTools]);
+      for (const name of toolsCalled) expect(live).toContain(name);
+    } finally {
+      await client.close();
+      store.close();
+    }
+  });
+
   it('US-1/AC-2: reports effective configuration without exposing the token', async () => {
     // Spec: US-1/AC-2, US-1/AC-3
     const state = fixture();
@@ -146,13 +187,13 @@ describe('Agent-first CLI', () => {
   it('US-3/AC-2: accepts Unicode and multiline Markdown through stdin', async () => {
     // Spec: US-3/AC-2, EC-6
     const state = fixture();
-    state.setStdin(JSON.stringify({ projectId: 'project-id', prd: '# Diseño\n\n“Pimpampum” 🚀' }));
+    state.setStdin(JSON.stringify({ specId: 'spec-id', body: '# Diseño\n\n“Pimpampum” 🚀' }));
 
-    await runCli(['call', 'project_update_prd', '--stdin'], state.runtime);
+    await runCli(['call', 'spec_update', '--stdin'], state.runtime);
 
     expect(state.agentClient.callTool).toHaveBeenCalledWith({
-      name: 'project_update_prd',
-      arguments: { projectId: 'project-id', prd: '# Diseño\n\n“Pimpampum” 🚀' },
+      name: 'spec_update',
+      arguments: { specId: 'spec-id', body: '# Diseño\n\n“Pimpampum” 🚀' },
     });
   });
 

@@ -4,8 +4,9 @@ This native `bar-widget` gives Omarchy Quattro a compact view of the single
 Pimpampum instance running for the current user. It shows semantic
 project health, active-claim count, active work, specs in progress, available work, and a collapsed
 completed-spec group. Selecting a project or spec opens its registered workspace root with
-`xdg-open`. Settings contains separate Updates, Synchronization, Backup, and service cards. Help is
-a dedicated page opened from the persistent footer.
+`xdg-open`. Settings contains separate Agents, Updates, Synchronization, Backup, and service cards.
+Help is a dedicated page opened from the persistent footer. An empty portfolio offers **Add a
+workspace**, so the first folder is registered without a terminal.
 
 The integration targets the Quattro plugin contract pinned at Omarchy commit
 `0ae1694830b6bd9511042fe1b89a0062d8c083cb`. Waybar is not supported.
@@ -20,8 +21,8 @@ Clicking opens one bounded 380-unit native `PopupCard`. Its Portfolio view is or
 state, Active work, Specs in progress, Projects, and collapsed Completed specs. Active work names
 the claimed task plus its project, Spec, agent, and lease; in-progress Specs remain visible without
 an active claim and show completed versus total tasks. **Settings** switches the same card to a
-dedicated second view showing Updates, Synchronization, and Backup controls directly, without
-nested disclosures. The fixed footer opens Help on the left and stops or starts Pimpampum on the
+dedicated second view showing Agents, Updates, Synchronization, and Backup controls directly,
+without nested disclosures. The fixed footer opens Help on the left and stops or starts Pimpampum on the
 right. A 44-unit vector header icon opens Settings and changes to a back arrow on internal pages,
 without opening a competing Quattro popout.
 Horizontal bars place mark and count side by side;
@@ -34,6 +35,25 @@ vertical bars stack them. Project rows open the exact registered workspace root.
   canonical Node, CLI, data-directory, host, and port configuration.
   Authentication remains inside the CLI and no bearer token enters QML,
   settings, or process arguments.
+- Every helper sources `pimpampum-common.sh` by absolute path. That file defines functions only
+  (`fail`, `require_absolute`, `sha256_file`, the manifest readers, the `HOME` check, and the
+  receipt check that proves the control launcher is owned); it is never executed on its own, and
+  each helper refuses to start when the file is missing or is a symlink.
+- Agent actions use the bounded `pimpampum-connections` helper behind the **Agents** card. It
+  accepts only `list`, `resume`, `plan <codex|claude-code>`, `connect <codex|claude-code>`,
+  `test <codex|claude-code>`, `disconnect <codex|claude-code>`, and
+  `repair <codex|claude-code> [replace]`, and maps them to the CLI's `setup` and connection verbs.
+  These are the writes that change host configuration: each one edits only the `pimpampum` MCP
+  entry of the selected agent, after confirmation, and never writes a token. A failed CLI call is
+  forwarded as one JSON line on stderr with the typed envelope `code` as `cliCode` and one bounded
+  `message` line, so the card distinguishes a stopped daemon (`unavailable`), a rejected route
+  (`unauthorized`), a missing agent (`not_found`), and a changed entry (`conflict`).
+- Overview, backup, synchronization, update, and workspace actions go through the bounded
+  `pimpampum-control-route` helper, which validates each surface's arguments and `exec`s the
+  receipt-owned `pimpampum-control` launcher. Its `workspace add <absolute-directory> [name]` route
+  is the one registration the popout offers: the folder the GTK dialog returned becomes
+  `workspace:add <id> <name> <directory>`, with the id derived from the name by the CLI's slug
+  rule. The daemon validates the request again.
 - Update actions launch the bounded `pimpampum-update` helper. It accepts only `check` and
   `install`, and maps them to `pimpampum update:check` and `pimpampum update`. The helper takes no
   version, registry, or path argument, so the popout cannot select what gets installed.
@@ -41,53 +61,77 @@ vertical bars stack them. Project rows open the exact registered workspace root.
   It accepts only `status`, `configure <absolute-directory>`, `retry`, and
   `disable`, delegates to the canonical JSON CLI contract, and passes the
   selected directory as one process argument. No token enters QML.
-- Synchronization actions use the bounded `pimpampum-sync` helper. It derives a safe device ID from
-  the hostname and accepts only status, configure, sync-now, pause, resume, conflict-list, and forget.
+- Synchronization actions use the bounded `pimpampum-sync` helper. It accepts only status,
+  configure, sync-now, pause, resume, conflict-list, and forget. The device id comes from
+  `uname -n`, lowercased and reduced to `[a-z0-9-]`; an id that collapses to nothing is an error,
+  never a shared `linux`.
 - Service actions use the bounded `pimpampum-service` helper. It accepts only status, start, stop,
   and restart for the fixed `pimpampum.service` systemd user unit; it accepts no user-controlled
   service name or shell input. Stopping the daemon leaves the Quickshell widget installed so the
   user can start it again without a terminal.
 - Workspace paths are accepted only when absolute and are passed to `xdg-open`
   as one argument. They are never evaluated as shell source.
-- The UI exposes no project, task, or claim mutation. Its writes are limited to the fixed service
-  lifecycle, the fixed update installation, and daemon-owned synchronization and automatic-backup
-  preferences.
+- The UI exposes no project, task, or claim mutation. Its writes are limited to workspace
+  registration, the agent connections above, the fixed service lifecycle, the fixed update
+  installation, and daemon-owned synchronization and automatic-backup preferences.
 - Plugin installation, ownership checks, lifecycle locking, rollback, status,
   and removal are owned by the same `pimpampum` CLI lifecycle.
 
 ## Install
 
-Run the single automatic lifecycle command on the Quattro machine:
+Install the plugin with Omarchy's supported plugin flow. Nothing else is required: no Node.js, no
+npm, no terminal after this command.
 
 ```bash
+omarchy plugin add https://github.com/r-bart/pimpampum-omarchy.git --enable --yes
+```
+
+Open the widget, choose **Get started**, review the detected agents, and choose **Connect selected
+agents**. The plugin's `pimpampum-bootstrap` helper reads `runtime-manifest.json`, downloads the
+exact pinned runtime archive for the current Linux architecture, verifies its SHA-256, and installs
+the `systemd --user` service and the stable launchers under `~/.local/share/pimpampum`. Start a new
+agent session when the completed card asks for one. Do not copy the plugin directory or edit
+Quickshell configuration by hand.
+
+After an official plugin fast-forward (`omarchy plugin update`), the lifecycle compares the
+checked-in runtime version, Linux target, and archive SHA with its private receipt under the setup
+lock. An unchanged pin performs no runtime work; a new version or target invokes the verified
+bootstrap and commits the new receipt only after the packaged installer succeeds. A checksum change
+without a version change fails closed because release assets are immutable. The previous runtime
+and connector route remain available if reconciliation fails. Installed helpers do not depend on
+the graphical session's `PATH`.
+
+### CLI-first alternative
+
+If Pimpampum is already installed from npm, `pimpampum install` installs the plugin as part of the
+same lifecycle:
+
+```bash
+npm install --global pimpampum
 pimpampum install
 ```
 
-`pimpampum install` detects Quattro, installs the user service and plugin under
-one lifecycle lock, validates the staged candidate with `omarchy plugin
-validate`, asks `omarchy-shell` to rescan, and enables it with the official
-plugin command. It never reads or edits `shell.json` directly. A failed
-installation restores the previous owned state and leaves unrelated plugins
-alone.
-
-The repository-local `install.sh` remains a thin wrapper around the bounded
-plugin lifecycle. After an official plugin fast-forward, that lifecycle compares
-the checked-in runtime version, Linux target, and archive SHA with its private
-receipt under the same setup lock. An unchanged pin performs no runtime work; a
-new version or target invokes the verified bootstrap and commits the new receipt
-only after the packaged installer succeeds. A checksum change without a version
-change fails closed because release assets are immutable. The previous runtime
-and connector route remain available if reconciliation fails. Installed helpers
-do not depend on the graphical session's `PATH`.
+`pimpampum install` detects Quattro, installs the user service and plugin under one lifecycle lock,
+validates the staged candidate with `omarchy plugin validate`, asks `omarchy-shell` to rescan, and
+enables it with the official plugin command. It never reads or edits `shell.json` directly. A failed
+installation restores the previous owned state and leaves unrelated plugins alone. The
+repository-local `install.sh` is a thin wrapper around that bounded plugin lifecycle.
 
 ## Update settings
 
-Open **Settings** and use the **Updates** card. **Check for updates** is read-only. When npm
-publishes a newer release the button becomes **Install update**, which installs it and reconciles
-the background service and the plugin.
+Open **Settings** and use the **Updates** card. **Check for updates** is read-only. It asks the
+packaged release provider for the signed `release-manifest.json` of the rolling
+`update-channel-stable` GitHub release, verified with the Ed25519 key embedded in the CLI. When a
+newer version exists the card names it.
+
+On Linux the runtime is pinned by this plugin, so **Install update** answers with a typed
+`unavailable` error whose `details.remedy` is `pimpampum-bootstrap`. The card renders that remedy
+as the command to run from the plugin directory: update the Pimpampum Status plugin with
+`omarchy plugin update`, then run `pimpampum-bootstrap` from `~/.config/omarchy/plugins/dev.pimpampum.status`
+to install the newly pinned runtime. The CLI does not download Linux runtimes itself.
 
 A failure shows the reason the CLI reported, not a guess. The CLI writes its typed error envelope
-to stderr, so the card reads that stream first and falls back to stdout. A registry policy, a
+to stderr, so the card reads that stream first and falls back to stdout. A signature failure, a
 permission error, and an offline machine therefore read as three different messages.
 
 ## Backup settings
@@ -136,6 +180,8 @@ required to recover.
 pimpampum uninstall
 ```
 
+`omarchy plugin remove dev.pimpampum.status` removes the widget. `pimpampum uninstall` (or the
+plugin's `uninstall.sh`, which calls the same lifecycle) removes the service and runtime as well.
 Removal uses the same receipt and lifecycle lock. It asks the bounded connection
 helper to disconnect only entries whose connector receipts prove ownership, then
 delegates service and plugin removal to the receipt-selected control launcher and

@@ -1,1 +1,1 @@
-No MCP server named "pimpampum". Run `claude mcp add` to add one.
+No MCP server named "pimpampum". Configured servers: synthetic-notes, synthetic-search

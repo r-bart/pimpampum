@@ -1,0 +1,119 @@
+# Changelog
+
+User-facing changes per release. Versions follow semantic versioning; every tag is a GitHub Release
+with signed macOS, Linux runtime, manifest, SBOM, and checksum assets, and an npm publication with
+provenance. Earlier releases (`v1.0.0` to `v1.2.8`) are described by their GitHub Release notes and
+by `thoughts/summaries/`.
+
+## Unreleased
+
+Remediation of the 2026-09-01 deep review (`thoughts/reviews/2026-09-01_deep-review.md`), on the
+`remediation/deep-review` branch. Grouped by finding family.
+
+### Wave 1 — release channel, sync integrity, macOS topology, Omarchy helpers, runtime installer
+
+- Update channel (H-01, L-15, L-16, M-V9): the Ed25519 release public key is embedded in the CLI;
+  `release-manifest.json` is signed in the release job and published to the rolling
+  `update-channel-stable` release with `issuedAt`; redirects are followed only over HTTPS to
+  allow-listed hosts; on Linux `update` answers a typed `unavailable` whose remedy is
+  `pimpampum-bootstrap`.
+- Omarchy delivery (H-02, H-03, M-O3 to M-O7): the plugin mirror is pushed and verified from the
+  release workflow; `ulimit -f` no longer breaks Claude Code connect; the connections helper forwards
+  CLI error codes.
+- Sync (H-04, H-05, H-11, M-C1, M-C2, M-S4 to M-S7): locale-independent canonical ordering with a
+  versioned hash; no phantom workspace from an unresolved import; synced context names cannot escape
+  the export directory; delete order and chunking fixed; the blocking file is named.
+- macOS install topology (H-06, H-07, M-V1 to M-V3, M-V5, X-01 to X-07, X-09): the installed CLI
+  records the app location and the `managed` flag; an adopted user-owned bundle is never modified or
+  deleted; the login-item wait is extended; the setup session is owned outside the conditional view;
+  the single-instance guard compares bundle URLs.
+- Service (H-08, H-09, M-R1): the systemd adapter restarts a running daemon; journal recovery is
+  read-only outside the lifecycle lock; drift is repaired.
+- Packaging (H-12, L-38): the npm package no longer ships the 150 MB macOS app; the
+  `platforms/macos/dist/` tree is ignored.
+- Release process (M-O1, M-O2, D-08): draft release first, scoped permissions,
+  `check-release-versions.mjs` keeps `server.json`, the plugin manifests, and the site aligned with
+  the tag.
+- Tests (M-T1, M-T3, M-T7, M-T8, H-14 policy): shared test helpers; the frozen hashes stay on the
+  four overview fixtures only.
+
+### Wave 2 — adapter contracts, CLI composition, service and connector hardening, macOS follow-ups
+
+- Adapters (H-10, M-A1 to M-A8): the OpenAPI components are generated from Zod and checked against
+  the router; one error-code constant; duplicated MCP schemas removed.
+- CLI (M-S1 to M-S3, X-04, X-06, X-08): lazy composition so `help`, `version`, and `status` never
+  fail on local state; every verb routes through the catalog; uninstall supersedes the setup journal.
+- Service and setup (M-V2, M-V4, M-V6 to M-V9): one lifecycle lock; bounded service commands;
+  fsynced receipts with a repair path; manual uninstall instructions propagate; older manifests are
+  rejected by `issuedAt`.
+- Connectors (M-R2 to M-R4): memoized detection and a shared connector core for Codex and Claude
+  Code.
+- macOS (D-01, L-21): **Add a workspace** on the last setup step and the empty overview; the
+  installation marker moved out of the signed bundle to
+  `~/Library/Application Support/Pimpampum/installation.json`; Swift decoders accept
+  `blockedSnapshot` and the backup error state.
+- Omarchy (D-01): **Add a workspace** in the empty popout through the bounded
+  `pimpampum-control-route workspace add` route; the Updates card renders the Linux remedy.
+
+### Wave 3 — documentation (this changelog)
+
+- One install story: the macOS app and `omarchy plugin add` first, npm as the advanced alternative,
+  in the README, the plugin README, `llms.txt`, and the site (D-02, D-03, D-05).
+- README: "What gets installed where", the packaged CLI path per platform, workspace registration
+  among the bounded native writes, named coverage exclusions (D-06, D-10).
+- Plugin README security boundary: `pimpampum-common.sh`, `pimpampum-connections` and its verbs, the
+  Agents card, `cliCode` forwarding, `workspace add`, the `uname -n` device id (D-04).
+- Reference gaps closed: agent error table, `PIMPAMPUM_RELEASE_*` variables, the site's omission
+  list, eval counts (D-11).
+- Process artefacts: plan statuses name their release tag; the desktop-status spec is amended for
+  signing; `AGENTS.md`, `loop.manifest.yaml`, `.claude/rules/architecture.md`, and
+  `thoughts/SUMMARY.md` are real; `.ai-template/manifest.json` is deleted (D-07, D-12, D-13).
+- Site hygiene: canonical URL, sitemap, Open Graph tags, `robots.txt` with `Sitemap:` and the
+  `llms.txt` path (D-09).
+
+## v1.2.11 — 2026-09-01
+
+macOS first-run reliability. The published `v1.2.10` could not complete setup on a clean Mac.
+
+- Fixed fourteen first-run defects: the setup decoder now parses the CLI's indented envelope;
+  `status` and `uninstall` no longer plan artifacts from the app bundle; `resume` reads the journal
+  before announcing a mutation; a Mac with no detected agent can confirm setup; agent detection
+  follows symlinks in `~/.local/bin`; the relaunch runs after `apply()` completes; the overview waits
+  through the cold-start grace before reporting offline.
+- Install topology: an app already placed in an Applications folder is adopted instead of copied, so
+  the login item no longer starts a second copy; the installed CLI records the application path.
+- Guided setup rewritten: four steps with a welcome step; the confirmation screen lists the real
+  path of every planned change; help opens inside the popover instead of a sheet that closed it; the
+  popover keeps one size across steps.
+- Swift coverage manifest widened with `SetupModels.swift`.
+- Release: four failed attempts before the tag, all caught before publication by the live smoke and
+  the runtime digest check. The Omarchy runtime digests are the ones CI produces.
+
+## v1.2.10 — 2026-08-31
+
+macOS first-run hotfix.
+
+- The first-run popover no longer collapses to an empty body when the menu-bar host proposes zero
+  height; Guided setup is visible on a clean install.
+- The distributed bundle is `Pimpampum.app` (the executable remains `PimpampumMenuBar`).
+- Relaunch after installation targets the exact installed app with a fresh LaunchServices instance.
+- Native and live smoke harnesses require a visible Guided setup popover before any installation
+  mutation.
+- Omarchy runtime pins updated to the native Linux arm64 and x64 archives of this version.
+
+## v1.2.9 — 2026-08-31
+
+Zero-friction local agent setup: the release that closed the feature plan
+`thoughts/plans/2026-08-31_zero-friction-local-agent-setup.md`.
+
+- Setup rollback and disconnect hardening: Codex verifies absence and restores owned state on a
+  failed disconnect; the Omarchy lifecycle treats a still-present entry as a failed disconnect even
+  when the host command exits zero; aggregate compensation failures stay durable in the setup journal.
+- The app and the plugin ship their own pinned runtime (`darwin-arm64`, `linux-arm64`, `linux-x64`)
+  with manifest, inventory, and SBOM; `launchd` or `systemd --user` owns the daemon.
+- Codex and Claude Code connectors with ownership receipts, conflict detection, atomic changes,
+  disconnect, and a bounded MCP verifier; the stable `pimpampum-mcp` launcher carries no token.
+- Guided setup on macOS and the Agents card on Omarchy; `setup plan`, `setup apply`,
+  `setup status`, `setup resume`, `connect`, `repair`, and `disconnect` in the CLI.
+- Release qualification: nested macOS signing, notarization and stapling, exact-artifact live smoke,
+  npm provenance, and the reviewed Omarchy runtime pins checked before a tag.
