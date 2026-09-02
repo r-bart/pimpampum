@@ -52,6 +52,12 @@ taken before the upgrade.
   the router; one error-code constant; duplicated MCP schemas removed.
 - CLI (M-S1 to M-S3, X-04, X-06, X-08): lazy composition so `help`, `version`, and `status` never
   fail on local state; every verb routes through the catalog; uninstall supersedes the setup journal.
+- The macOS live smoke's two-minute guided-setup budget measured the wrong span. `main` runs
+  `verifyLegacyMigration` between the first-run UI and the connector lifecycle, so 88s of legacy
+  migration sat inside a window meant to cover preflight through the first verified agent. The
+  guided setup itself costs 44.7s and the whole measured window now reports 91.3s against the 120s
+  budget. The migration is excluded by subtraction, not by reordering, because the later scenarios
+  build on the state it leaves. Nothing in the product changed.
 - **Behaviour change.** `pimpampum backup retry` now exits zero when the backup itself failed, and
   puts the reason in the payload as `state: "error"` with a populated `error`. Up to `v1.2.11` it
   raised `internal_error`, so the reason was flattened into an exit code. The macOS Settings card

@@ -35,6 +35,11 @@ if (process.platform !== 'darwin') throw new Error('The macOS live smoke require
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const liveStartedAt = Date.now();
+// Spans measured inside the budget window that are not guided setup. `verifyLegacyMigration`
+// sits between the first-run UI and the connector lifecycle only because of the order of `main`,
+// and it cost 88s of the 120s budget on 2026-09-02 while the guided setup itself cost 44.7s. It is
+// subtracted rather than reordered, because the later scenarios build on the state it leaves.
+let budgetExcludedMilliseconds = 0;
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'pimpampum-macos-live-'));
 const liveHome = join(temporaryRoot, 'home');
 mkdirSync(liveHome, { recursive: true });
@@ -642,10 +647,11 @@ function verifyOneAgent() {
     message,
     oneAgent.result,
   );
-  // The release budget is download/artifact preflight through the first verified agent. The
-  // remaining fault injection, UI rendering, update and removal cases are exhaustive release
-  // validation, not part of the guided setup time shown to a user.
-  run.durationMilliseconds = Date.now() - liveStartedAt;
+  // The release budget is download/artifact preflight through the first verified agent, minus the
+  // exhaustive release validation that `main` happens to run inside that window. The remaining
+  // fault injection, UI rendering, update and removal cases run after this point and are excluded
+  // by ordering; `verifyLegacyMigration` runs before it and is excluded by subtraction.
+  run.durationMilliseconds = Date.now() - liveStartedAt - budgetExcludedMilliseconds;
   scenarios.oneAgent = true;
   runCli('disconnect', 'codex', '--yes');
   return oneAgent;
@@ -1314,7 +1320,9 @@ async function main() {
   prepareRuntime();
   await verifyCleanSetup();
   verifyFirstRunUi();
+  const legacyMigrationStartedAt = Date.now();
   await verifyLegacyMigration();
+  budgetExcludedMilliseconds += Date.now() - legacyMigrationStartedAt;
   await verifyConnectorLifecycle();
   verifyEmptyAndSettingsUi();
   seedPortfolio();
