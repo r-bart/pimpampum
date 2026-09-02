@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "bar": {
+    "layout": {
+      "left": [{ "id": "omarchy.menu" }],
+      "center": [{ "id": "omarchy.clock", "format": "HH:mm" }],
+      "right": [{ "id": "omarchy.tray" }]
+    }
+  }
+}

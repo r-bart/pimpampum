@@ -2,8 +2,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createConnectionReceiptStore } from '../src/cliMain.js';
-import { createCliConnectionsRuntime, runCli, type CliRuntime } from '../src/cliProgram.js';
+import { createConnectionReceiptStore } from '../src/cliComposition/connectionReceipts.js';
+import {
+  createCliConnectionsRuntime,
+  createCliSetupRuntime,
+  runCli,
+  type CliRuntime,
+} from '../src/cliProgram.js';
 import type { HostConnector } from '../src/connectors/types.js';
 
 const temporaryDirectories: string[] = [];
@@ -245,5 +250,32 @@ describe('zero-friction CLI commands', () => {
     await runtime.connect('codex', { confirmed: true, conflictDecision: 'replace' });
     expect(plan).toHaveBeenLastCalledWith({ conflictDecision: 'replace' });
     expect(connect).toHaveBeenCalledOnce();
+  });
+});
+
+describe('CLI setup runtime boundary', () => {
+  it('forwards every setup verb to the coordinator and reads status from the journal store', async () => {
+    const onProgress = () => undefined;
+    const coordinator = {
+      plan: vi.fn(async (input: unknown) => ({ planned: input })),
+      apply: vi.fn(async (input: unknown) => ({ applied: input })),
+      resume: vi.fn(async (input?: unknown) => ({ resumed: input })),
+      retryConnector: vi.fn(async (id: string, progress?: unknown) => ({ id, progress })),
+    };
+    const stateStore = { read: vi.fn((): null => null) };
+    const runtime = createCliSetupRuntime(coordinator, stateStore);
+
+    await expect(runtime.plan({ selectedConnectors: ['codex'] })).resolves.toEqual({
+      planned: { selectedConnectors: ['codex'] },
+    });
+    const apply = { operationId: 'operation', expectedRevision: 'revision', confirmed: true };
+    await expect(runtime.apply(apply)).resolves.toEqual({ applied: apply });
+    await expect(runtime.status()).resolves.toBeNull();
+    await expect(runtime.resume({ onProgress })).resolves.toEqual({ resumed: { onProgress } });
+    await expect(runtime.retryConnector('claude-code', onProgress)).resolves.toEqual({
+      id: 'claude-code',
+      progress: onProgress,
+    });
+    expect(stateStore.read).toHaveBeenCalledOnce();
   });
 });

@@ -1,20 +1,8 @@
 import Foundation
 
-enum BackupHealthState: String, Codable, CaseIterable, Sendable {
-  case disabled
-  case pending
-  case healthy
-  case error
-
-  var label: String {
-    switch self {
-    case .disabled: "Automatic backup is off"
-    case .pending: "Backing up…"
-    case .healthy: "Up to date"
-    case .error: "Backup needs attention"
-    }
-  }
-
+// The cases and `label` of `BackupHealthState` are generated into `StateVocabulary.swift` from
+// the one table the Omarchy plugin shares; the panel's symbol choice stays here.
+extension BackupHealthState {
   var symbolName: String {
     switch self {
     case .disabled: "externaldrive"
@@ -33,6 +21,13 @@ struct BackupSettings: Codable, Equatable, Sendable {
   let lastAttemptAt: Date?
   let lastSuccessAt: Date?
   let error: String?
+
+  /// The third valid shape (M-C6): the daemon could not read its persisted backup settings, so
+  /// automatic backup is off with no destination and `error` says why. The panel shows that line
+  /// under "Backup needs attention"; choosing a folder rewrites the file and repairs it.
+  var unreadableSettingsMessage: String? {
+    !enabled && state == .error ? error : nil
+  }
 }
 
 enum BackupSettingsActivity: Equatable, Sendable {

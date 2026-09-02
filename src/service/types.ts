@@ -4,7 +4,20 @@ export interface CommandResult {
   stderr: string;
 }
 
-export type RunCommand = (executable: string, arguments_: string[]) => Promise<CommandResult>;
+/**
+ * Per-call bounds a caller may ask of the command runner. Every field is optional and the runner
+ * keeps its own defaults for the rest, so a runner built with fixed bounds is still a `RunCommand`.
+ */
+export interface RunCommandOptions {
+  /** Wall-clock limit before the runner stops the child. */
+  timeoutMilliseconds?: number;
+}
+
+export type RunCommand = (
+  executable: string,
+  arguments_: string[],
+  options?: RunCommandOptions,
+) => Promise<CommandResult>;
 
 export type SupportedServicePlatform = 'darwin' | 'linux';
 
@@ -72,7 +85,15 @@ export interface PlatformServiceAdapter {
   ): Promise<ServiceIntegrationStatus | undefined>;
   afterRollback?(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
   rollbackActivation?(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
-  afterUninstall?(context: ServiceAdapterContext, artifacts: ServiceArtifact[]): Promise<void>;
+  /**
+   * Final cleanup once the owned files are gone. An adapter that had to leave part of the teardown
+   * to the user — a login item whose helper app is already gone — reports it through the outcome,
+   * and the manager forwards it as `UninstallResult.manualInstructions`.
+   */
+  afterUninstall?(
+    context: ServiceAdapterContext,
+    artifacts: ServiceArtifact[],
+  ): Promise<void | ServiceUninstallOutcome>;
   integrationStatus?(
     context: ServiceAdapterContext,
     artifacts: ServiceArtifactRef[],
@@ -82,6 +103,11 @@ export interface PlatformServiceAdapter {
 export interface ServiceIntegrationStatus {
   loginItem?: 'enabled' | 'requiresApproval' | 'error';
   omarchyPlugin?: 'enabled' | 'disabled' | 'missing';
+}
+
+/** What the uninstall could not finish on the user's behalf. */
+export interface ServiceUninstallOutcome {
+  manualInstructions?: string[];
 }
 
 export interface InstallResult {

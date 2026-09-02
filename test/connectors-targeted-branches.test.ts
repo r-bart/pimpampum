@@ -1,11 +1,13 @@
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   unlinkSync,
@@ -14,7 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   createClaudeCodeConnector,
   planClaudeCodeConnection,
@@ -35,7 +37,7 @@ import type {
   ConnectorVerification,
   HostEntry,
 } from '../src/connectors/types.js';
-import { verifyMcpRoute } from '../src/connectors/verifier.js';
+import { killBridgeProcess, verifyMcpRoute } from '../src/connectors/verifier.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -68,9 +70,13 @@ afterEach(() => {
   }
 });
 
-function writeSyntheticMcpServer(root: string, options?: { oversizedStderr?: boolean }): string {
+function writeSyntheticMcpServer(
+  root: string,
+  options?: { oversizedStderr?: boolean; ignoreTermination?: boolean },
+): string {
   const executable = join(root, 'synthetic-mcp.mjs');
   const closeMarker = join(root, 'closed.marker');
+  const pidFile = join(root, 'server.pid');
   const serverModule = import.meta.resolve('@modelcontextprotocol/server');
   const stdioModule = import.meta.resolve('@modelcontextprotocol/server/stdio');
   writeExecutable(
@@ -79,7 +85,13 @@ function writeSyntheticMcpServer(root: string, options?: { oversizedStderr?: boo
 import { McpServer } from ${JSON.stringify(serverModule)};
 import { serveStdio } from ${JSON.stringify(stdioModule)};
 import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
 ${options?.oversizedStderr ? `process.stderr.write('x'.repeat(9000));` : `process.stderr.write('safe synthetic diagnostic\\n');`}
+${
+  options?.ignoreTermination
+    ? `process.on('SIGTERM', () => undefined); process.on('SIGINT', () => undefined); process.stdin.on('end', () => setInterval(() => undefined, 1000));`
+    : ''
+}
 const handle = serveStdio(() => {
   const server = new McpServer({ name: 'pimpampum', version: '1.0.0' });
   server.registerTool('project_list', { description: 'synthetic' }, async () => ({
@@ -89,17 +101,60 @@ const handle = serveStdio(() => {
 });
 const close = async () => { await handle.close(); process.exit(0); };
 process.once('exit', () => writeFileSync(${JSON.stringify(closeMarker)}, 'closed'));
-process.once('SIGTERM', () => void close());
-process.once('SIGINT', () => void close());
+${
+  options?.ignoreTermination
+    ? ''
+    : `process.once('SIGTERM', () => void close());
+process.once('SIGINT', () => void close());`
+}
 `,
   );
   return executable;
 }
 
+async function processGone(pid: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+}
+
 describe('targeted SDK verifier branches', () => {
+  // M-T8: the three synthetic servers are written once for the whole describe instead of once per
+  // test; each variant keeps its own directory because the server writes its pid and close marker
+  // next to itself.
+  let serversRoot = '';
+  let defaultServer = { root: '', executable: '' };
+  let stubbornServer = { root: '', executable: '' };
+  let oversizedServer = { root: '', executable: '' };
+
+  beforeAll(() => {
+    serversRoot = mkdtempSync(join(tmpdir(), 'pimpampum-targeted-mcp-servers-'));
+    const variant = (
+      name: string,
+      options?: Parameters<typeof writeSyntheticMcpServer>[1],
+    ): { root: string; executable: string } => {
+      const root = join(serversRoot, name);
+      mkdirSync(root);
+      return { root, executable: writeSyntheticMcpServer(root, options) };
+    };
+    defaultServer = variant('default');
+    stubbornServer = variant('stubborn', { ignoreTermination: true });
+    oversizedServer = variant('oversized', { oversizedStderr: true });
+  });
+
+  afterAll(() => {
+    rmSync(serversRoot, { recursive: true, force: true });
+  });
+
   it('verifies and reaps a real synthetic stdio SDK route with bounded stderr', async () => {
-    const root = temporaryDirectory('mcp-sdk');
-    const executable = writeSyntheticMcpServer(root);
+    const { root, executable } = defaultServer;
+    rmSync(join(root, 'closed.marker'), { force: true });
     await expect(
       verifyMcpRoute({
         command: executable,
@@ -128,9 +183,35 @@ describe('targeted SDK verifier branches', () => {
     ).rejects.toThrow(/incompatible protocol version/iu);
   });
 
+  it('SIGKILLs a real bridge that ignores the graceful close once the shutdown deadline passes', async () => {
+    const { root, executable } = stubbornServer;
+    await expect(
+      verifyMcpRoute({
+        command: process.execPath,
+        arguments: [executable],
+        timeoutMilliseconds: 10_000,
+        shutdownTimeoutMilliseconds: 750,
+        requiredTools: ['project_list'],
+        expectedServerName: 'pimpampum',
+      }),
+    ).rejects.toThrow(/could not reap the stdio route/iu);
+    const pid = Number(readFileSync(join(root, 'server.pid'), 'utf8'));
+    expect(Number.isInteger(pid) && pid > 0).toBe(true);
+    await expect(processGone(pid)).resolves.toBe(true);
+  }, 15_000);
+
+  it('kills a real child through the default signal of the bridge reaper', async () => {
+    const child = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
+    await new Promise<void>((resolve) => child.once('spawn', resolve));
+    const exited = new Promise<NodeJS.Signals | null>((resolve) =>
+      child.once('exit', (_code, signal) => resolve(signal)),
+    );
+    killBridgeProcess(child.pid);
+    await expect(exited).resolves.toBe('SIGKILL');
+  });
+
   it('fails closed and reaps a real SDK route whose stderr exceeds the diagnostic cap', async () => {
-    const root = temporaryDirectory('mcp-overflow');
-    const executable = writeSyntheticMcpServer(root, { oversizedStderr: true });
+    const { executable } = oversizedServer;
     await expect(
       verifyMcpRoute({
         command: executable,
@@ -219,9 +300,55 @@ describe('targeted SDK verifier branches', () => {
     ).rejects.toThrow(/secret leakage.*diagnostics/iu);
   });
 
-  it('handles string stderr chunks and missing official SDK metadata without weakening checks', async () => {
-    const root = temporaryDirectory('mcp-sdk-seams');
-    const executable = writeSyntheticMcpServer(root);
+  it('accepts string diagnostics and rejects a probe without server identity or negotiated protocol', async () => {
+    // M-T6: these are the verifier's own contracts, driven through its `spawn` seam rather than
+    // through spies on the SDK client's prototype.
+    const probe = (overrides: {
+      serverInfo?: { name: string };
+      protocolVersion?: string;
+      requiresProtocolVersion?: boolean;
+      diagnostics?: unknown;
+    }) => ({
+      ...(overrides.requiresProtocolVersion === undefined
+        ? {}
+        : { requiresProtocolVersion: overrides.requiresProtocolVersion }),
+      initialize: async () => ({
+        ...(overrides.serverInfo === undefined ? {} : { serverInfo: overrides.serverInfo }),
+        ...(overrides.protocolVersion === undefined
+          ? {}
+          : { protocolVersion: overrides.protocolVersion }),
+        diagnostics: overrides.diagnostics,
+      }),
+      listTools: async () => ({ tools: [{ name: 'project_list' }] }),
+      close: async () => undefined,
+    });
+    const verify = (spawnProbe: ReturnType<typeof probe>) =>
+      verifyMcpRoute({
+        command: '/synthetic/pimpampum-mcp',
+        arguments: [],
+        timeoutMilliseconds: 1_000,
+        expectedServerName: 'pimpampum',
+        requiredTools: ['project_list'],
+        spawn: () => spawnProbe,
+      });
+
+    await expect(
+      verify(
+        probe({ serverInfo: { name: 'pimpampum' }, diagnostics: 'synthetic string diagnostic' }),
+      ),
+    ).resolves.toMatchObject({ diagnostics: ['synthetic string diagnostic'] });
+    await expect(verify(probe({}))).rejects.toThrow(/identity/iu);
+    await expect(
+      verify(probe({ serverInfo: { name: 'pimpampum' }, requiresProtocolVersion: true })),
+    ).rejects.toThrow(/protocol/iu);
+  });
+
+  it('pins the defensive SDK metadata branches inside spawnSdkProbe through prototype spies', async () => {
+    // A real server always reports `serverInfo`, negotiates a protocol version and writes Buffer
+    // chunks, so the `undefined` and string-chunk arms of `spawnSdkProbe` are unreachable through
+    // the synthetic server. `src/` is frozen this wave; the handoff is to make the SDK client
+    // injectable (or `v8 ignore` those arms) and delete this test.
+    const { executable } = defaultServer;
     const stderr = vi
       .spyOn(StdioClientTransport.prototype, 'stderr', 'get')
       .mockReturnValue(Readable.from(['synthetic string diagnostic']) as never);
@@ -281,11 +408,13 @@ describe('targeted SDK verifier branches', () => {
       }),
     ).rejects.toThrow(/protocol/iu);
     missingProtocol.mockRestore();
+  });
 
+  it('rejects credential-shaped arguments before spawning and forwards safe ones to the probe', async () => {
     for (const argument of ['Authorization: synthetic-credential', 'Bearer synthetic-credential']) {
       await expect(
         verifyMcpRoute({
-          command: executable,
+          command: defaultServer.executable,
           arguments: [argument],
           timeoutMilliseconds: 10,
           expectedServerName: 'pimpampum',
@@ -324,7 +453,7 @@ describe('targeted process branches', () => {
         timeoutMilliseconds: 20,
         run: async () => ({ exitCode: 0, stdout: 'version' }),
       }),
-    ).resolves.toEqual({ executable: null, supported: false });
+    ).resolves.toEqual({ executable: null, supported: false, versionOutput: null });
     mkdirSync(join(root, 'codex'));
     await expect(
       detectExecutable({
@@ -335,7 +464,7 @@ describe('targeted process branches', () => {
         timeoutMilliseconds: 20,
         run: async () => ({ exitCode: 0, stdout: 'version' }),
       }),
-    ).resolves.toEqual({ executable: null, supported: false });
+    ).resolves.toEqual({ executable: null, supported: false, versionOutput: null });
 
     for (const mode of [0.5, -1, 0o1000, 0o606]) {
       await expect(
@@ -389,16 +518,25 @@ describe('targeted process branches', () => {
     const spawnFor = (child: ReturnType<typeof fakeChild>) =>
       vi.fn(() => child) as unknown as typeof import('node:child_process').spawn;
 
+    // The 250 ms termination grace runs on fake timers, so the SIGKILL escalation is asserted at
+    // the exact deadline instead of after a real sleep. A child that never reported a pid receives
+    // no signal at all; the deadline only clears its escalation timer.
+    vi.useFakeTimers();
     const noPid = fakeChild(undefined, () => true);
-    const escalated = runBoundedHostCommand(
-      { executable: '/synthetic/host', arguments: [] },
-      { timeoutMilliseconds: 1_000, maxOutputBytes: 1, spawnProcess: spawnFor(noPid) },
-    );
-    noPid.stdout.emit('data', 'too large');
-    noPid.stderr.emit('data', 'repeated termination');
-    await new Promise((resolve) => setTimeout(resolve, 275));
-    noPid.emit('close', null, null);
-    await expect(escalated).rejects.toThrow(/output exceeded/iu);
+    try {
+      const escalated = runBoundedHostCommand(
+        { executable: '/synthetic/host', arguments: [] },
+        { timeoutMilliseconds: 1_000, maxOutputBytes: 1, spawnProcess: spawnFor(noPid) },
+      );
+      noPid.stdout.emit('data', 'too large');
+      noPid.stderr.emit('data', 'repeated termination');
+      await vi.advanceTimersByTimeAsync(250);
+      expect(noPid.kill).not.toHaveBeenCalled();
+      noPid.emit('close', null, null);
+      await expect(escalated).rejects.toThrow(/output exceeded/iu);
+    } finally {
+      vi.useRealTimers();
+    }
 
     const processKill = vi.spyOn(process, 'kill').mockImplementation(() => {
       throw new Error('synthetic group signal failure');
@@ -425,20 +563,31 @@ describe('targeted process branches', () => {
     clean.emit('close', null, null);
     await expect(completed).resolves.toMatchObject({ exitCode: 1 });
 
+    // Windows signals the child directly, so the escalation is observable on `kill`: SIGTERM at
+    // the output overflow, SIGKILL exactly when the 250 ms grace ends.
+    vi.useFakeTimers();
     const windows = fakeChild(13, () => true);
-    const windowsFailure = runBoundedHostCommand(
-      { executable: '/synthetic/windows-host.exe', arguments: [] },
-      {
-        timeoutMilliseconds: 1_000,
-        maxOutputBytes: 1,
-        spawnProcess: spawnFor(windows),
-        platform: 'win32',
-      },
-    );
-    windows.stdout.emit('data', 'too large');
-    windows.emit('close', null, null);
-    await expect(windowsFailure).rejects.toThrow(/output exceeded/iu);
-    expect(windows.kill).toHaveBeenCalledWith('SIGTERM');
+    try {
+      const windowsFailure = runBoundedHostCommand(
+        { executable: '/synthetic/windows-host.exe', arguments: [] },
+        {
+          timeoutMilliseconds: 1_000,
+          maxOutputBytes: 1,
+          spawnProcess: spawnFor(windows),
+          platform: 'win32',
+        },
+      );
+      windows.stdout.emit('data', 'too large');
+      expect(windows.kill.mock.calls).toEqual([['SIGTERM']]);
+      await vi.advanceTimersByTimeAsync(249);
+      expect(windows.kill.mock.calls).toEqual([['SIGTERM']]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(windows.kill.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
+      windows.emit('close', null, null);
+      await expect(windowsFailure).rejects.toThrow(/output exceeded/iu);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('propagates non-missing path lookup errors before creating a temporary file', async () => {
@@ -593,13 +742,24 @@ describe('targeted Codex branches', () => {
         list: { exitCode: 1, stdout: '', stderr: 'failed' },
       }),
     ];
-    for (const fixture of cases) await expect(fixture.connector.inspect()).rejects.toThrow();
+    for (const fixture of cases) {
+      await expect(fixture.connector.inspect()).rejects.toMatchObject({
+        code: 'unavailable',
+        status: 503,
+        details: { connectorId: 'codex' },
+      });
+    }
 
+    // Detection and its feature probe are memoized per instance: a host that changes its answers
+    // after detection cannot flip the connector into a different inspection strategy.
     const lost = createCodexFixture();
     const detection = await lost.connector.detect();
     expect(detection.supported).toBe(true);
     lost.setSupports(false, false);
-    await expect(lost.connector.inspect()).resolves.toMatchObject({ state: 'unsupportedVersion' });
+    await expect(lost.connector.inspect()).resolves.toMatchObject({ state: 'notConnected' });
+    expect(lost.run.mock.calls.filter(([call]) => call.arguments.at(-1) === '--help')).toHaveLength(
+      4,
+    );
   });
 
   it('covers default bounded runner and neutral/unavailable restore paths', async () => {
@@ -629,12 +789,17 @@ esac
     });
     await expect(connector.detect()).resolves.toMatchObject({ executable, supported: true });
 
+    // The detection is reused; a CLI that vanishes afterwards surfaces as one typed host failure.
     unlinkSync(executable);
-    const missingPlan = await connector.plan();
-    await expect(connector.connect(missingPlan)).rejects.toThrow(/cannot be connected/iu);
+    await expect(connector.plan()).rejects.toMatchObject({
+      code: 'unavailable',
+      message: expect.stringMatching(
+        /Codex configuration could not be inspected: spawn .* ENOENT/u,
+      ),
+    });
     await expect(
       connector.restore({ connectorId: 'codex', revision: null, entry: null }),
-    ).rejects.toThrow(/unavailable/iu);
+    ).rejects.toMatchObject({ code: 'unavailable' });
   });
 
   it('executes best-effort receipt rollback catch callbacks for absent and prior receipts', async () => {
@@ -683,7 +848,7 @@ esac
         revision: null,
         entry: { command: '/synthetic/prior', arguments: [], scope: 'global' },
       }),
-    ).rejects.toThrow(/restore.*previous/iu);
+    ).rejects.toThrow(/could not remove the Pimpampum MCP entry: synthetic remove rejection/iu);
 
     const conflictJson = JSON.stringify({
       name: 'pimpampum',
@@ -698,14 +863,18 @@ esac
     await expect(conflict.connector.connect(withoutFingerprint)).rejects.toThrow(/changed/iu);
   });
 
-  it('detects a CLI disappearing only after the reviewed plan is revalidated', async () => {
+  it('reuses one detection across plan and connect, so a vanished CLI fails at persistence', async () => {
     const root = temporaryDirectory('codex-disappears');
     const executable = join(root, 'codex');
     writeExecutable(executable, '#!/bin/sh\nexit 0\n');
     let getCount = 0;
+    let versionCalls = 0;
     const run = async (invocation: CommandInvocation) => {
       const args = invocation.arguments;
-      if (args[0] === '--version') return { exitCode: 0, stdout: 'codex 1.0.0', stderr: '' };
+      if (args[0] === '--version') {
+        versionCalls += 1;
+        return { exitCode: 0, stdout: 'codex 1.0.0', stderr: '' };
+      }
       if (args.at(-1) === '--help') {
         return {
           exitCode: 0,
@@ -733,10 +902,11 @@ esac
       },
     });
     const plan = await connector.plan();
-    await expect(connector.connect(plan)).rejects.toThrow(/became unavailable/iu);
+    await expect(connector.connect(plan)).rejects.toThrow(/did not persist/iu);
+    expect(versionCalls).toBe(1);
   });
 
-  it('fails when JSON inspection support disappears between detection and inspection', async () => {
+  it('probes the host features once per connector instance', async () => {
     const root = temporaryDirectory('codex-probe-change');
     const executable = join(root, 'codex');
     writeExecutable(executable, '#!/bin/sh\nexit 0\n');
@@ -759,6 +929,9 @@ esac
             stderr: '',
           };
         }
+        if (args[1] === 'get') {
+          return { exitCode: 1, stdout: '', stderr: "No MCP server named 'pimpampum' found." };
+        }
         return { exitCode: 0, stdout: '', stderr: '' };
       },
       receipt: {
@@ -767,10 +940,12 @@ esac
         remove: async () => undefined,
       },
     });
-    await expect(connector.inspect()).rejects.toThrow(/does not support.*JSON.*inspection/iu);
+    await expect(connector.inspect()).resolves.toMatchObject({ state: 'notConnected' });
+    await expect(connector.plan()).resolves.toMatchObject({ state: 'notConnected' });
+    expect(helpCalls).toBe(4);
   });
 
-  it('returns no version when the second bounded version probe exits nonzero', async () => {
+  it('takes the version from the single detection probe and never runs --version twice', async () => {
     const root = temporaryDirectory('codex-version-exit');
     const executable = join(root, 'codex');
     writeExecutable(executable, '#!/bin/sh\nexit 0\n');
@@ -783,11 +958,10 @@ esac
       run: async (invocation) => {
         if (invocation.arguments[0] === '--version') {
           versionCalls += 1;
-          return {
-            exitCode: versionCalls === 1 ? 0 : 9,
-            stdout: versionCalls === 1 ? 'codex 1.0.0' : 'rejected',
-            stderr: '',
-          };
+          return { exitCode: 0, stdout: '  codex 1.0.0\n', stderr: '' };
+        }
+        if (invocation.arguments[1] === 'get' && invocation.arguments.at(-1) !== '--help') {
+          return { exitCode: 1, stdout: '', stderr: "No MCP server named 'pimpampum' found." };
         }
         return { exitCode: 0, stdout: '--json', stderr: '' };
       },
@@ -797,7 +971,12 @@ esac
         remove: async () => undefined,
       },
     });
-    await expect(connector.detect()).resolves.toMatchObject({ version: null, supported: false });
+    await expect(connector.detect()).resolves.toMatchObject({
+      version: 'codex 1.0.0',
+      supported: true,
+    });
+    await connector.inspect();
+    expect(versionCalls).toBe(1);
   });
 });
 
@@ -1065,7 +1244,13 @@ esac
         },
       },
     });
-    await expect(connector.disconnect()).rejects.toThrow(/receipt removal rejected/iu);
+    const error = await connector.disconnect().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).message).toMatch(/disconnect and rollback failed/iu);
+    expect((error as AggregateError).errors.map((item) => (item as Error).message)).toEqual([
+      'receipt removal rejected',
+      expect.stringMatching(/could not restore the Pimpampum MCP entry: restore rejected/iu),
+    ]);
   });
 
   it('treats config without mcpServers as absent and covers default discovery option fallbacks', async () => {

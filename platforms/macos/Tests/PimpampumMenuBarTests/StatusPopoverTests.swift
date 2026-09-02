@@ -202,6 +202,42 @@ struct StatusPopoverTests {
     #expect(StatusPopover.projectCountsText(complete) == "Complete · 2 completed tasks")
   }
 
+  /// One row view now draws both kinds, so the difference between them has to be data. A project
+  /// row carries the counts line; a spec row has none, and the shared view renders nothing there.
+  @Test
+  func projectAndSpecRowsDifferOnlyInTheirContent() {
+    let project = makeProject(status: .active, activeClaimCount: 2, availableWorkCount: 3)
+    #expect(
+      StatusPopover.projectRow(project)
+        == OverviewRowContent(
+          title: "Project",
+          metadata: "100 Projects · project-slug",
+          counts: "2 active · 3 available",
+          accessibilityLabel: "Open Project in Finder",
+          accessibilityValue: "active, 2 active · 3 available",
+          accessibilityHint: "Opens workspace 100 Projects"
+        ))
+
+    let spec = testSpec(
+      id: "widget-v1",
+      lifecycleState: .ready,
+      updatedAt: Date(timeIntervalSince1970: 100),
+      taskCount: 5,
+      completedTaskCount: 2,
+      activeClaimCount: 2
+    )
+    #expect(
+      StatusPopover.specRow(spec)
+        == OverviewRowContent(
+          title: "Spec widget-v1",
+          metadata: "Project widget-v1 · 2/5 tasks · 2 active",
+          counts: nil,
+          accessibilityLabel: "Open Spec widget-v1 in Finder",
+          accessibilityValue: "ready, Project widget-v1 · 2/5 tasks · 2 active",
+          accessibilityHint: "Opens project Project widget-v1 in workspace Workspace"
+        ))
+  }
+
   @Test
   func formatsBoundedSummary() {
     let counts = makeOverview(status: .active).counts
@@ -307,7 +343,46 @@ struct StatusPopoverTests {
     assistant.prepareApp()
     #expect(events == ["register"])
     #expect(SetupOnboardingCopy.title == "Your agents share one project memory")
-    _ = SetupOnboardingView(assistant: assistant, onCheckAgain: {})
+    let session = SetupSession(store: SetupStore(runner: UnavailableSetupCommandRunner()))
+    _ = SetupOnboardingView(session: session).body
+    _ = StatusPopover(store: OverviewStore(reader: StaticOverviewReader(overview: makeOverview(status: .empty))), setupSession: session, setupAssistant: assistant)
+  }
+
+  @Test
+  func keepsTheGuidedSetupWhileItsSessionIsActiveWhateverTheDaemonReports() {
+    // The overview poll used to switch the body to "Loading overview" as soon as the daemon
+    // answered, mid-apply, destroying the setup store and its step.
+    for state in [
+      OverviewConnectionState.online, .loading, .offline("down"), .invalidToken("denied"),
+      .incompatible("schema"), .setupRequired("missing"),
+    ] {
+      #expect(
+        StatusPopover.content(
+          isHelpPresented: false, setupSessionActive: true, connectionState: state)
+          == .guidedSetup)
+    }
+    #expect(
+      StatusPopover.content(
+        isHelpPresented: false, setupSessionActive: false, connectionState: .setupRequired("m"))
+        == .guidedSetup)
+    #expect(
+      StatusPopover.content(
+        isHelpPresented: false, setupSessionActive: false, connectionState: .online) == .overview)
+    #expect(
+      StatusPopover.content(
+        isHelpPresented: true, setupSessionActive: true, connectionState: .online) == .help)
+    #expect(StatusPopover.isSetupRequired(.setupRequired("m")))
+    #expect(!StatusPopover.isSetupRequired(.loading))
+  }
+
+  @Test
+  func hidesHelpDuringASetupSessionAndSettingsDuringTheGuidedSetup() {
+    // The header help button swapped the body and discarded the setup in progress.
+    #expect(StatusPopover.showsHelpButton(setupSessionActive: false))
+    #expect(!StatusPopover.showsHelpButton(setupSessionActive: true))
+    #expect(StatusPopover.showsSettingsButton(content: .overview))
+    #expect(StatusPopover.showsSettingsButton(content: .help))
+    #expect(!StatusPopover.showsSettingsButton(content: .guidedSetup))
   }
 
   @Test

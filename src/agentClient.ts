@@ -12,7 +12,7 @@ import {
   type Transport,
 } from '@modelcontextprotocol/client';
 import { createAgentErrorEnvelope } from './agentProtocol.js';
-import { AppError } from './errors.js';
+import { AppError, errorCodeForHttpStatus } from './errors.js';
 import { PIMPAMPUM_VERSION } from './version.js';
 
 export interface AgentCliClient {
@@ -47,19 +47,31 @@ const defaultFactories: AgentCliClientFactories = {
   createTransport: (url, options) => new StreamableHTTPClientTransport(url, options),
 };
 
+const unauthorized = () =>
+  new AppError('unauthorized', 'Pimpampum rejected the configured token', 401);
+
+/**
+ * Maps SDK failures onto the stable error codes. An HTTP status from the daemon
+ * keeps its meaning the way `PimpampumHttpClient` maps it; only a transport
+ * that produced no status at all becomes `unavailable`.
+ */
 function normalizeClientError(error: unknown): AppError {
   if (error instanceof AppError) return error;
-  if (
-    UnauthorizedError.isInstance(error) ||
-    (SdkHttpError.isInstance(error) && (error.status === 401 || error.status === 403))
-  ) {
-    return new AppError('unauthorized', 'Pimpampum rejected the configured token', 401);
+  if (UnauthorizedError.isInstance(error)) return unauthorized();
+  if (SdkHttpError.isInstance(error)) {
+    const code = errorCodeForHttpStatus(error.status);
+    if (code === 'unauthorized') return unauthorized();
+    return new AppError(
+      code,
+      `The Pimpampum daemon answered HTTP ${String(error.status)}`,
+      error.status,
+      error.status >= 500,
+    );
   }
   if (ProtocolError.isInstance(error)) {
     if (
       error.code === ProtocolErrorCode.MethodNotFound ||
-      error.code === ProtocolErrorCode.ResourceNotFound ||
-      /\bnot found\b/iu.test(error.message)
+      error.code === ProtocolErrorCode.ResourceNotFound
     ) {
       return new AppError('not_found', error.message, 404);
     }

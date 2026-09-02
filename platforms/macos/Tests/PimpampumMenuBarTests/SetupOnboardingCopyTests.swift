@@ -60,7 +60,7 @@ struct SetupOnboardingCopyTests {
     // welcome step was inserted ahead of it, which hid the new step entirely.
     #expect(SetupOnboardingStep.first == .welcome)
     #expect(SetupOnboardingStep.first == SetupOnboardingStep.allCases.first)
-    #expect(SetupOnboardingStep.first.marker == "1 OF 4")
+    #expect(SetupOnboardingPresentation.progressLabel(for: .first) == "Step 1 of 4")
   }
 
   @Test
@@ -101,14 +101,17 @@ struct SetupOnboardingCopyTests {
 
   @Test
   func numbersTheFourGuidedSteps() {
+    // The screens show a four-segment bar; this sentence is the only place the count is spelled
+    // out, and it is what assistive technology reads.
     #expect(
-      SetupOnboardingStep.allCases.map(\.marker) == ["1 OF 4", "2 OF 4", "3 OF 4", "4 OF 4"])
+      SetupOnboardingStep.allCases.map(SetupOnboardingPresentation.progressLabel(for:))
+        == ["Step 1 of 4", "Step 2 of 4", "Step 3 of 4", "Step 4 of 4"])
   }
 }
 
-/// Reads the very bytes a real `pimpampum setup …` run produced. `test/setup-envelope-shape.test.ts`
-/// pins the same files from the CLI side, so a format change on either end fails a test instead of
-/// reaching a user's first run.
+/// Reads the bytes `pimpampum setup …` prints. `test/setup-envelope-shape.test.ts` regenerates the
+/// same files from the real coordinator behind `runCli` and compares them, so a format change on
+/// either end fails a test instead of reaching a user's first run.
 @Suite
 struct SetupEnvelopeFixtureTests {
   private var repositoryRoot: URL {
@@ -125,8 +128,8 @@ struct SetupEnvelopeFixtureTests {
     )
   }
 
-  @Test("decodes the real setup plan envelope captured from the CLI")
-  func decodesCapturedPlanEnvelope() throws {
+  @Test("decodes the setup plan envelope the CLI prints, with its four disclosed changes")
+  func decodesProducedPlanEnvelope() throws {
     let events = try SetupNDJSONDecoder.decode(try fixture("plan-envelope"))
     #expect(events.count == 1)
     guard case .plan(let plan) = events.last else {
@@ -134,12 +137,26 @@ struct SetupEnvelopeFixtureTests {
       return
     }
     #expect(plan.requiresConfirmation)
-    #expect(!plan.operationId.isEmpty)
-    #expect(!plan.revision.isEmpty)
+    #expect(plan.operationId == "6c5bd965-8f55-455f-84f8-64aa3eb5693c")
+    #expect(plan.revision.count == 64)
+    #expect(plan.selectedConnectors.isEmpty)
+    #expect(plan.conflicts.isEmpty)
+    // The confirmation screen renders these rows verbatim: four changes, three of them with the
+    // exact path they touch and the login item without one.
+    #expect(plan.changes.count == 4)
+    #expect(plan.changes.map(\.kind) == ["runtime", "service", "data", "login-item"])
+    #expect(
+      plan.changes.map(\.path) == [
+        "/Users/example/Library/Application Support/Pimpampum/Runtime",
+        "/Users/example/Library/LaunchAgents/dev.pimpampum.daemon.plist",
+        "/Users/example/.pimpampum",
+        nil,
+      ])
+    #expect(plan.changes.allSatisfy { !$0.summary.isEmpty })
   }
 
-  @Test("decodes the real empty setup status envelope captured from the CLI")
-  func decodesCapturedEmptyJournalEnvelope() throws {
+  @Test("decodes the empty setup status envelope the CLI prints")
+  func decodesProducedEmptyJournalEnvelope() throws {
     let events = try SetupNDJSONDecoder.decode(try fixture("empty-journal-envelope"))
     #expect(events.count == 1)
     guard case .journal(let journal) = events.last else {

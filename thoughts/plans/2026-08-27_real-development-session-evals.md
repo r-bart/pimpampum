@@ -1,7 +1,7 @@
 # Implementation Plan: Real Development Session Evals
 
 **Date**: 2026-08-27
-**Status**: Complete
+**Status**: Complete — released as `v1.0.0`
 **Spec**: `thoughts/specs/2026-08-27_real-development-session-evals.md`
 
 ---

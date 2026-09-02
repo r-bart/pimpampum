@@ -13,7 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 const bootstrap = join(process.cwd(), 'integrations/omarchy/pimpampum-status/pimpampum-bootstrap');
 const temporaryDirectories: string[] = [];
@@ -42,15 +42,16 @@ type Fixture = {
   log: string;
 };
 
-function fixture(label: string): Fixture {
-  const root = temporaryDirectory(label);
-  const source = join(root, 'archive');
-  const home = join(root, 'home');
-  const archive = join(root, 'runtime.tar.gz');
-  const manifest = join(root, 'runtime-manifest.json');
-  const uname = join(root, 'uname');
-  const log = join(root, 'cli.log');
-  mkdirSync(home);
+// The runtime archive is identical for every fixture, so it is built once per file and copied;
+// spawning tar for each test was the slowest part of this suite.
+let cachedRoot: string;
+let cachedArchive: string;
+let cachedArchiveSha256: string;
+
+beforeAll(() => {
+  cachedRoot = mkdtempSync(join(tmpdir(), 'pimpampum-bootstrap-cache-'));
+  const source = join(cachedRoot, 'archive');
+  cachedArchive = join(cachedRoot, 'runtime.tar.gz');
   write(
     join(source, 'payload/bin/node'),
     `#!/bin/sh
@@ -86,11 +87,27 @@ printf '{"version": "1.1.3", "nodePath": "%s"}\n' "$runtime_node" > "$HOME/.pimp
     'payload/dist/mcpStdio.js',
     'payload/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
   ];
-  const tar = spawnSync('/usr/bin/tar', ['-czf', archive, ...entries], {
+  const tar = spawnSync('/usr/bin/tar', ['-czf', cachedArchive, ...entries], {
     cwd: source,
     encoding: 'utf8',
   });
   if (tar.status !== 0) throw new Error(tar.stderr);
+  cachedArchiveSha256 = sha256(cachedArchive);
+});
+
+afterAll(() => {
+  rmSync(cachedRoot, { recursive: true, force: true });
+});
+
+function fixture(label: string, homeName = 'home'): Fixture {
+  const root = temporaryDirectory(label);
+  const home = join(root, homeName);
+  const archive = join(root, 'runtime.tar.gz');
+  const manifest = join(root, 'runtime-manifest.json');
+  const uname = join(root, 'uname');
+  const log = join(root, 'cli.log');
+  mkdirSync(home);
+  cpSync(cachedArchive, archive);
   write(
     manifest,
     `${JSON.stringify(
@@ -99,7 +116,7 @@ printf '{"version": "1.1.3", "nodePath": "%s"}\n' "$runtime_node" > "$HOME/.pimp
         targets: {
           'linux-x64': {
             url: 'https://github.com/r-bart/pimpampum/releases/download/v1.1.3/pimpampum-runtime-1.1.3-linux-x64.tar.gz',
-            sha256: sha256(archive),
+            sha256: cachedArchiveSha256,
             maximumBytes: readFileSync(archive).length + 1024,
           },
         },
@@ -137,6 +154,45 @@ function run(state: Fixture, overrides: NodeJS.ProcessEnv = {}) {
   });
 }
 
+function expectSuccessfulInstall(state: Fixture, result: ReturnType<typeof run>): void {
+  const finalDirectory = join(state.home, '.local/share/pimpampum/runtime/1.1.3/linux-x64');
+
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({
+    schemaVersion: 1,
+    installed: true,
+    version: '1.1.3',
+    target: 'linux-x64',
+  });
+  expect(readFileSync(state.log, 'utf8')).toContain(
+    `${join(finalDirectory, 'dist/cli.js')} install\n`,
+  );
+  expect(existsSync(join(finalDirectory, 'bin/node'))).toBe(true);
+  expect(readFileSync(join(state.home, '.pimpampum/install-receipt.json'), 'utf8')).toContain(
+    join(finalDirectory, 'bin/node'),
+  );
+  const runtimeReceiptPath = join(state.home, '.pimpampum/runtime-install-receipt.json');
+  const runtimeReceipt = JSON.parse(readFileSync(runtimeReceiptPath, 'utf8')) as {
+    controlLauncherPath: string;
+    controlLauncherSha256: string;
+    mcpLauncherPath: string;
+    mcpLauncherSha256: string;
+  };
+  expect(runtimeReceipt.controlLauncherPath).toBe(
+    join(state.home, '.local/share/pimpampum/bin/pimpampum-control'),
+  );
+  expect(runtimeReceipt.mcpLauncherPath).toBe(
+    join(state.home, '.local/share/pimpampum/bin/pimpampum-mcp'),
+  );
+  expect(sha256(runtimeReceipt.controlLauncherPath)).toBe(runtimeReceipt.controlLauncherSha256);
+  expect(sha256(runtimeReceipt.mcpLauncherPath)).toBe(runtimeReceipt.mcpLauncherSha256);
+  expect(
+    readdirSync(join(state.home, '.local/share/pimpampum/runtime/1.1.3')).some((name) =>
+      name.startsWith('.bootstrap'),
+    ),
+  ).toBe(false);
+}
+
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
@@ -146,46 +202,42 @@ afterEach(() => {
 describe('Omarchy no-Node bootstrap', () => {
   it('verifies, stages and transfers the exact runtime to the receipt-owned CLI', () => {
     const state = fixture('success');
-    const result = run(state);
-    const finalDirectory = join(state.home, '.local/share/pimpampum/runtime/1.1.3/linux-x64');
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      schemaVersion: 1,
-      installed: true,
-      version: '1.1.3',
-      target: 'linux-x64',
-    });
-    expect(readFileSync(state.log, 'utf8')).toContain(
-      `${join(finalDirectory, 'dist/cli.js')} install\n`,
-    );
-    expect(existsSync(join(finalDirectory, 'bin/node'))).toBe(true);
-    expect(readFileSync(join(state.home, '.pimpampum/install-receipt.json'), 'utf8')).toContain(
-      join(finalDirectory, 'bin/node'),
-    );
-    const runtimeReceiptPath = join(state.home, '.pimpampum/runtime-install-receipt.json');
-    const runtimeReceipt = JSON.parse(readFileSync(runtimeReceiptPath, 'utf8')) as {
-      controlLauncherPath: string;
-      controlLauncherSha256: string;
-      mcpLauncherPath: string;
-      mcpLauncherSha256: string;
-    };
-    expect(runtimeReceipt.controlLauncherPath).toBe(
-      join(state.home, '.local/share/pimpampum/bin/pimpampum-control'),
-    );
-    expect(runtimeReceipt.mcpLauncherPath).toBe(
-      join(state.home, '.local/share/pimpampum/bin/pimpampum-mcp'),
-    );
-    expect(sha256(runtimeReceipt.controlLauncherPath)).toBe(runtimeReceipt.controlLauncherSha256);
-    expect(sha256(runtimeReceipt.mcpLauncherPath)).toBe(runtimeReceipt.mcpLauncherSha256);
-    expect(
-      readdirSync(join(state.home, '.local/share/pimpampum/runtime/1.1.3')).some((name) =>
-        name.startsWith('.bootstrap'),
-      ),
-    ).toBe(false);
+    expectSuccessfulInstall(state, run(state));
 
     expect(run(state).status).toBe(0);
     expect(readFileSync(state.log, 'utf8').trim().split('\n')).toHaveLength(3);
+  });
+
+  it('installs into a HOME with spaces and non-ASCII letters and its launchers still execute', () => {
+    // L-34: the launchers embed the runtime path in single quotes and the receipt embeds it in
+    // JSON; neither quoting had a test with a path that needs it.
+    const state = fixture('home-unicode', 'Home With Spaces ü ñ');
+    expectSuccessfulInstall(state, run(state));
+    const controlLauncher = join(state.home, '.local/share/pimpampum/bin/pimpampum-control');
+    const launched = spawnSync('/bin/sh', [controlLauncher, 'status', '--json'], {
+      encoding: 'utf8',
+      env: { PATH: '/usr/bin:/bin', HOME: state.home, PIMPAMPUM_TEST_LOG: state.log },
+    });
+    expect(launched.status, launched.stderr).toBe(0);
+    expect(readFileSync(state.log, 'utf8')).toContain(
+      `${join(state.home, '.local/share/pimpampum/runtime/1.1.3/linux-x64/dist/cli.js')} status --json\n`,
+    );
+  });
+
+  it('rejects a HOME the launchers or receipts could not carry before touching the disk', () => {
+    for (const [label, homeName] of [
+      ['single-quote', "Home 'quoted'"],
+      ['double-quote', 'Home "quoted"'],
+      ['backslash', 'Home\\slash'],
+      ['control', 'Home\tbroken'],
+    ] as const) {
+      const state = fixture(`home-${label}`, homeName);
+      const result = run(state);
+      expect(result.status, label).toBe(73);
+      expect(result.stderr).toMatch(/HOME contains/u);
+      expect(existsSync(join(state.home, '.local'))).toBe(false);
+      expect(existsSync(state.log)).toBe(false);
+    }
   });
 
   it('rejects wrong architecture, hash and oversize without activating a runtime', () => {
@@ -235,13 +287,23 @@ describe('Omarchy no-Node bootstrap', () => {
   it('reports offline and read-only roots actionably without partial activation', () => {
     const offline = fixture('offline');
     const fakeCurl = join(offline.root, 'curl');
-    write(fakeCurl, '#!/bin/sh\nexit 7\n', 0o755);
+    write(
+      fakeCurl,
+      '#!/bin/sh\nprintf \'%s\\n\' "$*" > "$PIMPAMPUM_TEST_CURL_LOG"\nexit 7\n',
+      0o755,
+    );
+    const curlLog = join(offline.root, 'curl.log');
     const offlineResult = run(offline, {
       PIMPAMPUM_BOOTSTRAP_ARCHIVE: '',
       PIMPAMPUM_BOOTSTRAP_CURL: fakeCurl,
+      PIMPAMPUM_TEST_CURL_LOG: curlLog,
     });
     expect(offlineResult.status).toBe(69);
     expect(offlineResult.stderr).toMatch(/download failed|network/iu);
+    // L-28: a redirect must not downgrade the pinned HTTPS download.
+    expect(readFileSync(curlLog, 'utf8')).toContain(
+      '--proto =https --proto-redir =https --tlsv1.2',
+    );
 
     const readOnly = fixture('read-only');
     const homeFile = join(readOnly.root, 'not-a-directory');

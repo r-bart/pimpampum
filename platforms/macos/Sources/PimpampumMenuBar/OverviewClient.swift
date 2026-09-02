@@ -54,10 +54,7 @@ struct OverviewClient: OverviewReading {
   static let supportedSchemaVersion = 2
   static let maximumItems = 500
 
-  private let receiptURL: URL
-  private let tokenURL: URL
-  private let fileReader: any OverviewFileReading
-  private let transport: any OverviewTransport
+  private let client: DaemonClient
 
   init(
     receiptURL: URL,
@@ -65,28 +62,26 @@ struct OverviewClient: OverviewReading {
     fileReader: any OverviewFileReading = LocalOverviewFileReader(),
     transport: any OverviewTransport = URLSessionOverviewTransport()
   ) {
-    self.receiptURL = receiptURL
-    self.tokenURL = tokenURL
-    self.fileReader = fileReader
-    self.transport = transport
+    client = DaemonClient(
+      receiptURL: receiptURL,
+      tokenURL: tokenURL,
+      fileReader: fileReader,
+      transport: transport
+    )
   }
 
   func fetchOverview() async throws -> Overview {
-    let configuration = try loadConfiguration()
-    var request = URLRequest(url: configuration.overviewURL)
-    request.httpMethod = "GET"
-    request.setValue("Bearer \(configuration.token)", forHTTPHeaderField: "Authorization")
-    request.setValue("application/json", forHTTPHeaderField: "Accept")
-
-    let (data, response) = try await transport.data(for: request)
-    guard response.statusCode != 401 else { throw OverviewClientError.unauthorized }
-    guard response.statusCode == 200 else {
-      throw OverviewClientError.serverStatus(response.statusCode)
+    let response: DaemonResponse
+    do {
+      response = try await client.send(method: "GET", path: "api/v1/overview")
+    } catch let failure as DaemonClientFailure {
+      throw Self.map(failure)
     }
+    let data = response.data
 
     let metadata: MetadataEnvelope
     do {
-      metadata = try Self.decoder().decode(MetadataEnvelope.self, from: data)
+      metadata = try DaemonClient.decoder().decode(MetadataEnvelope.self, from: data)
     } catch {
       throw OverviewClientError.invalidPayload
     }
@@ -96,7 +91,7 @@ struct OverviewClient: OverviewReading {
 
     let envelope: OverviewEnvelope
     do {
-      envelope = try Self.decoder().decode(OverviewEnvelope.self, from: data)
+      envelope = try DaemonClient.decoder().decode(OverviewEnvelope.self, from: data)
     } catch {
       throw OverviewClientError.invalidPayload
     }
@@ -104,31 +99,20 @@ struct OverviewClient: OverviewReading {
     return envelope.data
   }
 
-  private func loadConfiguration() throws -> ClientConfiguration {
-    do {
-      let configuration = try AuthenticatedDaemonConfigurationLoader(
-        receiptURL: receiptURL,
-        tokenURL: tokenURL,
-        fileReader: fileReader
-      ).load()
-      return ClientConfiguration(
-        overviewURL: configuration.baseURL.appending(path: "api/v1/overview"),
-        token: configuration.token
-      )
-    } catch let error as AuthenticatedDaemonConfigurationError {
-      throw Self.mapConfigurationError(error)
-    }
-  }
-
-  private static func mapConfigurationError(_ error: AuthenticatedDaemonConfigurationError)
-    -> OverviewClientError
-  {
-    switch error {
-    case .unreadableReceipt: .unreadableReceipt
-    case .incompatibleReceiptSchema(let version): .incompatibleReceiptSchema(version)
-    case .invalidBaseURL: .invalidBaseURL
-    case .unreadableToken: .unreadableToken
-    case .invalidToken: .invalidToken
+  /// The overview poll is the one caller that rethrows a transport failure unchanged: `OverviewStore`
+  /// separates "the daemon is not answering" from a typed client error, and it needs the original.
+  /// A refused status keeps only its code, because the popover's offline copy names the repair.
+  private static func map(_ failure: DaemonClientFailure) -> any Error {
+    switch failure {
+    case .configuration(.unreadableReceipt): OverviewClientError.unreadableReceipt
+    case .configuration(.incompatibleReceiptSchema(let version)):
+      OverviewClientError.incompatibleReceiptSchema(version)
+    case .configuration(.invalidBaseURL): OverviewClientError.invalidBaseURL
+    case .configuration(.unreadableToken): OverviewClientError.unreadableToken
+    case .configuration(.invalidToken): OverviewClientError.invalidToken
+    case .transport(let error): error
+    case .unauthorized: OverviewClientError.unauthorized
+    case .serverStatus(let status, _): OverviewClientError.serverStatus(status)
     }
   }
 
@@ -170,32 +154,8 @@ struct OverviewClient: OverviewReading {
     else { return false }
     return true
   }
-
-  private static func decoder() -> JSONDecoder {
-    let decoder = JSONDecoder()
-    decoder.dateDecodingStrategy = .custom { decoder in
-      let container = try decoder.singleValueContainer()
-      let value = try container.decode(String.self)
-      let fractional = ISO8601DateFormatter()
-      fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-      if let date = fractional.date(from: value) { return date }
-      let standard = ISO8601DateFormatter()
-      standard.formatOptions = [.withInternetDateTime]
-      if let date = standard.date(from: value) { return date }
-      throw DecodingError.dataCorruptedError(
-        in: container,
-        debugDescription: "Expected an ISO 8601 timestamp"
-      )
-    }
-    return decoder
-  }
 }
 
 private struct MetadataEnvelope: Decodable {
   let meta: OverviewMetadata
-}
-
-private struct ClientConfiguration {
-  let overviewURL: URL
-  let token: String
 }

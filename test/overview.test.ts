@@ -245,4 +245,19 @@ describe('overview v2', () => {
     expect(overview.counts).toMatchObject({ completedProjects: 1, cancelledProjects: 1 });
     expect(overview.projects.every((item) => item.status === 'complete')).toBe(true);
   });
+
+  it('ranks more than 500 Projects in SQL and truncates after the precedence order', () => {
+    const oldest = project();
+    for (let index = 0; index < 500; index += 1) project();
+    // The oldest row would fall off a recency-only cut; precedence keeps it first.
+    ready(oldest);
+    const result = store.getOverview();
+    expect(result.counts.projects).toBe(501);
+    expect(result.projects).toHaveLength(500);
+    expect(result.projectsTruncated).toBe(true);
+    expect(result.projects[0]).toMatchObject({ id: oldest.id, status: 'available' });
+    expect(result.projects.slice(1).every((item) => item.status === 'draft')).toBe(true);
+    const updatedAts = result.projects.slice(1).map((item) => item.updatedAt);
+    expect([...updatedAts].sort().reverse()).toEqual(updatedAts);
+  });
 });

@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import Testing
 
 @testable import PimpampumMenuBar
@@ -29,6 +31,18 @@ struct HelpDialogTests {
   @Test
   func composesTheNativeDialog() {
     _ = HelpDialog(onDone: {}).body
+  }
+
+  @Test
+  func fitsInsideThePopoverWidth() {
+    // The dialog was 440 pt wide inside a 360 pt popover, a leftover from the sheet era, so its
+    // sides were clipped. It now takes the width it is given.
+    let controller = NSHostingController(rootView: HelpDialog(onDone: {}))
+    let size = controller.sizeThatFits(
+      in: NSSize(width: StatusPopover.containerWidth, height: 0))
+    #expect(size.width <= StatusPopover.containerWidth)
+    #expect(size.width > 0)
+    #expect(size.height > 200)
   }
 
   @Test

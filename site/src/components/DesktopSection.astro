@@ -24,21 +24,21 @@ const platforms = [
     id: 'macos',
     label: 'macOS',
     where: 'in the menu bar',
-    body: 'The mark shows up next to the clock with the number of active claims beside it. Click it and you get the popover: what is being worked on right now, which projects still have work, and what finished. Settings holds backup and sync. Nothing else.',
+    body: 'The mark shows up next to the clock with the number of active claims beside it. Click it and you get the popover: what is being worked on right now, which projects still have work, and what finished. Settings holds agents, updates, sync, and backup. Nothing else.',
     facts: [
       'Signed, notarised, and started at login.',
       'macOS 13 or newer, Apple Silicon.',
-      'Download it from GitHub Releases, or install the service with npm.',
+      'Download it from GitHub Releases. Guided setup installs the service and connects your agents.',
     ],
   },
   {
     id: 'omarchy',
     label: 'Omarchy',
     where: 'in the Quattro bar',
-    body: 'The same mark, as a Quickshell widget — horizontal or vertical, whichever way your bar runs. Click it and you get the popout: the same information in the same order, plus the backup section. It follows your Quattro theme instead of fighting it.',
+    body: 'The same mark, as a Quickshell widget — horizontal or vertical, whichever way your bar runs. Click it and you get the popout: the same information in the same order, plus a settings page for agents, updates, sync, backup, and the service itself. It follows your Quattro theme instead of fighting it.',
     facts: [
       'Installs with the plugin, and uninstalls with it too.',
-      'Inherits bar.foreground, bar.background, and your theme.',
+      'Inherits your Quattro theme, and paints from bar.barForeground.',
       'Horizontal and vertical bars, with the count capped at 99+.',
     ],
   },
@@ -107,8 +107,10 @@ const platforms = [
           <div class="surface-frame">
             {platform.id === 'macos' ? <MacPopover /> : <QuattroPopout />}
             <p class="surface-note">
-              Live, not a screenshot. Open <span class="note-em">Completed</span>
-              {platform.id === 'omarchy' ? ' and Backup' : ''}.
+              Live, not a screenshot. Open <span class="note-em">Completed</span>.
+              {platform.id === 'omarchy'
+                ? ' The real popout adds a settings page and a help page behind this one.'
+                : ''}
             </p>
           </div>
         </div>

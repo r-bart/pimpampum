@@ -222,6 +222,56 @@ struct BackupSettingsClientTests {
   }
 
   @Test
+  func acceptsTheUnreadableSettingsShapeAndOnlyThatOneWithoutADestination() async throws {
+    // M-C6: `AutomaticBackupController` starts in `error` when its settings file is corrupt, so
+    // the daemon answers `enabled: false, state: "error"` with a message and no destination.
+    var root = rootPayload(.disabled)
+    var data = root["data"] as! [String: Any]
+    data["state"] = "error"
+    data["error"] = "Backup settings file is corrupt; choose a folder to write it again."
+    root["data"] = data
+    let settings = try await makeClient(data: json(root)).fetchBackupSettings()
+    #expect(settings.state == .error)
+    #expect(!settings.enabled)
+    #expect(settings.directory == nil)
+    #expect(
+      settings.unreadableSettingsMessage
+        == "Backup settings file is corrupt; choose a folder to write it again.")
+    // The other shapes keep the message out of the attention line.
+    let healthy = try await makeClient(data: payload(.healthy)).fetchBackupSettings()
+    #expect(healthy.unreadableSettingsMessage == nil)
+    let configuredError = try await makeClient(data: payload(.error)).fetchBackupSettings()
+    #expect(configuredError.unreadableSettingsMessage == nil)
+
+    // Without a destination, only `disabled` (no error) and `error` (with one) are consistent.
+    let mutations: [(inout [String: Any]) -> Void] = [
+      { $0["error"] = NSNull() },
+      { $0["state"] = "pending" },
+      { $0["state"] = "healthy" },
+      { $0["state"] = "healthy"; $0["error"] = NSNull() },
+      { $0["directory"] = "/Users/example/Backup" },
+      { $0["snapshotPath"] = "/Users/example/Backup/pimpampum-latest.sqlite" },
+    ]
+    for mutation in mutations {
+      var rejectedRoot = root
+      var rejected = rejectedRoot["data"] as! [String: Any]
+      mutation(&rejected)
+      rejectedRoot["data"] = rejected
+      await #expect(throws: BackupSettingsClientError.invalidPayload) {
+        try await makeClient(data: json(rejectedRoot)).fetchBackupSettings()
+      }
+    }
+    // Enabled with a destination but `disabled` as state stays inconsistent.
+    var enabledDisabled = rootPayload(.healthy)
+    var enabledData = enabledDisabled["data"] as! [String: Any]
+    enabledData["state"] = "disabled"
+    enabledDisabled["data"] = enabledData
+    await #expect(throws: BackupSettingsClientError.invalidPayload) {
+      try await makeClient(data: json(enabledDisabled)).fetchBackupSettings()
+    }
+  }
+
+  @Test
   func rejectsSemanticallyUnsafePayloads() async {
     let mutations: [(inout [String: Any]) -> Void] = [
       { $0["enabled"] = false },

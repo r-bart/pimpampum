@@ -38,19 +38,15 @@ struct WorkspaceOpener: WorkspaceOpening {
   }
 
   func openWorkspace(at path: String) throws {
-    guard !path.isEmpty,
-      !path.contains("\0"),
-      NSString(string: path).isAbsolutePath
-    else {
-      throw WorkspaceOpenError.invalidPath
-    }
-
-    let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
-    guard validateDirectory(url.path) else {
-      throw WorkspaceOpenError.unavailable(path: url.path)
-    }
-    guard openDirectory(url) else {
-      throw WorkspaceOpenError.openFailed(path: url.path)
+    switch DirectoryOpener.open(
+      at: path,
+      validateDirectory: validateDirectory,
+      openDirectory: openDirectory
+    ) {
+    case .opened: return
+    case .invalidPath: throw WorkspaceOpenError.invalidPath
+    case .unavailable(let path): throw WorkspaceOpenError.unavailable(path: path)
+    case .openFailed(let path): throw WorkspaceOpenError.openFailed(path: path)
     }
   }
 }

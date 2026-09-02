@@ -46,10 +46,18 @@ async function boundedResponseBytes(response: Response): Promise<Uint8Array> {
   return bytes;
 }
 
-export async function verifyServiceHealth(input: VerifyServiceHealthInput): Promise<void> {
-  // A cold, hardened Node runtime can spend well over ten seconds in launchd and Gatekeeper on
-  // its first start. Keep each request tightly bounded while allowing the signed service a
-  // realistic thirty-second readiness window when connection attempts are refused immediately.
+interface HealthTiming {
+  attempts: number;
+  requestTimeoutMilliseconds: number;
+  retryIntervalMilliseconds: number;
+}
+
+/**
+ * Keeps the readiness window bounded on both ends. A cold, hardened Node runtime can spend well
+ * over ten seconds in launchd and Gatekeeper on its first start, so each request stays tightly
+ * bounded while the signed service gets a realistic thirty-second window.
+ */
+function resolveHealthTiming(input: VerifyServiceHealthInput): HealthTiming {
   const attempts = input.attempts ?? 300;
   const requestTimeoutMilliseconds = input.requestTimeoutMilliseconds ?? 500;
   const retryIntervalMilliseconds = input.retryIntervalMilliseconds ?? 100;
@@ -66,7 +74,12 @@ export async function verifyServiceHealth(input: VerifyServiceHealthInput): Prom
   ) {
     throw new Error('Service health timing bounds are invalid');
   }
-  const endpoint = new URL('/health', input.baseUrl);
+  return { attempts, requestTimeoutMilliseconds, retryIntervalMilliseconds };
+}
+
+/** The probe only ever talks plain HTTP to a loopback host, and never carries credentials. */
+function loopbackHealthEndpoint(baseUrl: string): URL {
+  const endpoint = new URL('/health', baseUrl);
   if (
     endpoint.protocol !== 'http:' ||
     endpoint.username !== '' ||
@@ -75,6 +88,30 @@ export async function verifyServiceHealth(input: VerifyServiceHealthInput): Prom
   ) {
     throw new Error('Service health endpoint must use loopback HTTP');
   }
+  return endpoint;
+}
+
+/**
+ * Accepts the body only when it is a JSON object reporting `ok` for the exact installed version,
+ * so a stale daemon from another release never passes as healthy.
+ */
+function assertHealthyPayload(bytes: Uint8Array, version: string): void {
+  const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    (value as Record<string, unknown>).status !== 'ok' ||
+    (value as Record<string, unknown>).version !== version
+  ) {
+    throw new Error('Service health response did not match the installed version');
+  }
+}
+
+export async function verifyServiceHealth(input: VerifyServiceHealthInput): Promise<void> {
+  const { attempts, requestTimeoutMilliseconds, retryIntervalMilliseconds } =
+    resolveHealthTiming(input);
+  const endpoint = loopbackHealthEndpoint(input.baseUrl);
   const fetchImplementation = input.fetchImplementation ?? globalThis.fetch;
   const sleep =
     input.sleep ??
@@ -89,17 +126,7 @@ export async function verifyServiceHealth(input: VerifyServiceHealthInput): Prom
         signal: AbortSignal.timeout(requestTimeoutMilliseconds),
       });
       if (!response.ok) throw new Error(`Service health returned HTTP ${String(response.status)}`);
-      const bytes = await boundedResponseBytes(response);
-      const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
-      if (
-        typeof value !== 'object' ||
-        value === null ||
-        Array.isArray(value) ||
-        (value as Record<string, unknown>).status !== 'ok' ||
-        (value as Record<string, unknown>).version !== input.version
-      ) {
-        throw new Error('Service health response did not match the installed version');
-      }
+      assertHealthyPayload(await boundedResponseBytes(response), input.version);
       return;
     } catch (error) {
       lastError = error;

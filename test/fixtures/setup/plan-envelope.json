@@ -5,19 +5,26 @@
     "changes": [
       {
         "kind": "runtime",
-        "summary": "Install the private Pimpampum runtime."
+        "summary": "Install everything Pimpampum needs to run.",
+        "path": "/Users/example/Library/Application Support/Pimpampum/Runtime"
       },
       {
         "kind": "service",
-        "summary": "Install and verify the local Pimpampum service."
+        "summary": "Run Pimpampum in the background.",
+        "path": "/Users/example/Library/LaunchAgents/dev.pimpampum.daemon.plist"
+      },
+      {
+        "kind": "data",
+        "summary": "Keep your work on this Mac.",
+        "path": "/Users/example/.pimpampum"
       },
       {
         "kind": "login-item",
-        "summary": "Register supported background startup."
+        "summary": "Start when you sign in."
       }
     ],
     "conflicts": [],
     "requiresConfirmation": true,
-    "revision": "8e429eff9d0fd336f3fcf7bef4d489dbef173be2f3e21921817602348bcdf861"
+    "revision": "aa927709c801ccb9629745d2111bd288cf959a5f199d9c5248b39a86191a57ed"
   }
 }

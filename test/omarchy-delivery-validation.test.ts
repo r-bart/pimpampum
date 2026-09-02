@@ -120,6 +120,7 @@ describe('cross-platform Omarchy delivery validation', () => {
       'install.sh',
       'pimpampum-backup',
       'pimpampum-bootstrap',
+      'pimpampum-common.sh',
       'pimpampum-connections',
       'pimpampum-control-route',
       'pimpampum-folder-picker',
@@ -134,6 +135,8 @@ describe('cross-platform Omarchy delivery validation', () => {
     expect(result.qmlLaunchedHelpers).toEqual([
       'pimpampum-backup',
       'pimpampum-connections',
+      // The popout's "Add a workspace" button dispatches through the hash-verified route directly.
+      'pimpampum-control-route',
       'pimpampum-folder-picker',
       'pimpampum-overview',
       'pimpampum-service',

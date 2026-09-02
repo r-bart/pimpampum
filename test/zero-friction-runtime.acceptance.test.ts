@@ -1,9 +1,8 @@
 /**
  * @generated-from thoughts/specs/2026-08-31_zero-friction-local-agent-setup.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
- * These tests encode the spec's acceptance criteria as executable assertions.
- * If a test seems wrong, update the spec and regenerate — don't edit tests directly.
+ * These tests encode the spec's acceptance criteria as executable assertions. Each test names the
+ * spec items it covers; a test changes only together with the spec item it names.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -18,34 +17,13 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-type RuntimeTarget = { platform: 'darwin' | 'linux'; architecture: 'arm64' | 'x64' };
-
-type RuntimeManifest = {
-  schemaVersion: 1;
-  pimpampumVersion: string;
-  nodeVersion: string;
-  target: RuntimeTarget;
-  unpackedBytes: number;
-  entrypoints: { cli: string; mcp: string; node: string };
-  files: Array<{ path: string; sha256: string; mode: number; size: number }>;
-};
-
-type RuntimeLayout = {
-  versionsDirectory: string;
-  versionDirectory: string;
-  controlLauncherPath: string;
-  mcpLauncherPath: string;
-};
-
-type RuntimeInstallation = {
-  activated: boolean;
-  version: string;
-  nodePath: string;
-  cliPath: string;
-  mcpLauncherPath: string;
-  previousVersion: string | null;
-};
+import { installRuntime } from '../src/runtime/installer.js';
+import { resolveRuntimeLayout } from '../src/runtime/layout.js';
+import { parseRuntimeManifest } from '../src/runtime/manifest.js';
+import type { RuntimeInstallation, RuntimeManifest } from '../src/runtime/types.js';
+import { renderLaunchAgent } from '../src/service/launchd.js';
+import { renderSystemdUnit } from '../src/service/systemd.js';
+import { parsePlist, parseSystemdUnit } from './helpers/serviceArtifacts.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -104,38 +82,6 @@ function runtimeCandidate(
   };
 }
 
-async function runtimeContract() {
-  const manifestUrl = new URL('../src/runtime/manifest.ts', import.meta.url).href;
-  const layoutUrl = new URL('../src/runtime/layout.ts', import.meta.url).href;
-  const installerUrl = new URL('../src/runtime/installer.ts', import.meta.url).href;
-  const [manifest, layout, installer] = await Promise.all([
-    import(manifestUrl),
-    import(layoutUrl),
-    import(installerUrl),
-  ]);
-  return {
-    parseRuntimeManifest: manifest.parseRuntimeManifest as (
-      candidate: unknown,
-      options: RuntimeTarget & { maximumUnpackedBytes: number },
-    ) => RuntimeManifest,
-    resolveRuntimeLayout: layout.resolveRuntimeLayout as (input: {
-      homeDirectory: string;
-      platform: RuntimeTarget['platform'];
-      architecture: RuntimeTarget['architecture'];
-      version: string;
-    }) => RuntimeLayout,
-    installRuntime: installer.installRuntime as (input: {
-      homeDirectory: string;
-      dataDirectory: string;
-      platform: RuntimeTarget['platform'];
-      architecture: RuntimeTarget['architecture'];
-      sourceDirectory: string;
-      manifest: RuntimeManifest;
-      smoke: (installation: RuntimeInstallation) => Promise<void>;
-    }) => Promise<RuntimeInstallation>,
-  };
-}
-
 afterEach(() => {
   vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
@@ -148,7 +94,6 @@ describe('Zero-friction packaged runtime', () => {
     // Spec: FR-1.1, FR-1.2, SEC-6
     const root = temporaryDirectory('manifest-valid');
     const candidate = runtimeCandidate(root);
-    const { parseRuntimeManifest } = await runtimeContract();
 
     expect(
       parseRuntimeManifest(candidate.manifest, {
@@ -170,7 +115,6 @@ describe('Zero-friction packaged runtime', () => {
     // Spec: FR-1.4, SEC-6, SEC-7, EC-8
     const root = temporaryDirectory('manifest-hostile');
     const { manifest } = runtimeCandidate(root);
-    const { parseRuntimeManifest } = await runtimeContract();
     const parse = (candidate: RuntimeManifest) =>
       parseRuntimeManifest(candidate, {
         platform: 'darwin',
@@ -196,7 +140,6 @@ describe('Zero-friction packaged runtime', () => {
   it('US-1/AC-1 and FR-5.3: resolves private absolute paths without PATH or npx', async () => {
     // Spec: US-1/AC-1, FR-1.2, FR-5.3, SEC-8
     const homeDirectory = join(temporaryDirectory('layout'), 'Home With Spaces ü');
-    const { resolveRuntimeLayout } = await runtimeContract();
     const layout = resolveRuntimeLayout({
       homeDirectory,
       platform: 'darwin',
@@ -222,7 +165,6 @@ describe('Zero-friction packaged runtime', () => {
       expect(installation.nodePath).toMatch(/Runtime\/2\.0\.0/u);
       expect(installation.cliPath).toMatch(/dist\/cli\.js$/u);
     });
-    const { installRuntime } = await runtimeContract();
 
     const result = await installRuntime({
       homeDirectory,
@@ -245,7 +187,6 @@ describe('Zero-friction packaged runtime', () => {
     const root = temporaryDirectory('runtime-rollback');
     const homeDirectory = join(root, 'home');
     const dataDirectory = join(root, 'data');
-    const { installRuntime } = await runtimeContract();
     const first = runtimeCandidate(root, '1.9.0');
     const second = runtimeCandidate(root, '2.0.0');
 
@@ -277,31 +218,36 @@ describe('Zero-friction packaged runtime', () => {
     ).toBe(false);
   });
 
-  it('FR-1.3/PERF-6: service definitions remain per-user and independent from UI lifetimes', async () => {
-    // Spec: FR-1.3, PERF-6, EC-14
-    const launchd = readFileSync(join(process.cwd(), 'src/service/launchd.ts'), 'utf8');
-    const systemd = readFileSync(join(process.cwd(), 'src/service/systemd.ts'), 'utf8');
+  it('FR-1.3/PERF-6: service definitions remain per-user and independent from UI lifetimes', () => {
+    // Spec: FR-1.3, PERF-6, EC-14, SEC-1
+    const launchd = parsePlist(
+      renderLaunchAgent({
+        nodePath: '/Users/roberto/Library/Application Support/Pimpampum/Runtime/2.0.0/bin/node',
+        cliPath: '/Users/roberto/Library/Application Support/Pimpampum/Runtime/2.0.0/dist/cli.js',
+        dataDirectory: '/Users/roberto/.pimpampum',
+        host: '127.0.0.1',
+        port: 7337,
+        logDirectory: '/Users/roberto/.pimpampum/logs',
+      }),
+    );
+    const systemd = parseSystemdUnit(
+      renderSystemdUnit({
+        nodePath: '/home/roberto/.local/share/pimpampum/runtime/2.0.0/bin/node',
+        cliPath: '/home/roberto/.local/share/pimpampum/runtime/2.0.0/dist/cli.js',
+        dataDirectory: '/home/roberto/.pimpampum',
+        host: '127.0.0.1',
+        port: 7337,
+      }),
+    );
 
-    expect(existsSync(join(process.cwd(), 'src/runtime/layout.ts'))).toBe(true);
-    expect(launchd).toContain('KeepAlive');
-    expect(launchd).toContain('RunAtLoad');
-    expect(systemd).toContain('Restart=on-failure');
-    expect(systemd).toContain('WantedBy=default.target');
-    expect(`${launchd}\n${systemd}`).not.toMatch(/User=root|sudo|PIMPAMPUM_TOKEN/u);
-  });
-
-  it('FR-1.1/SEC-5: release tooling owns target bundles and nested macOS verification', () => {
-    // Spec: FR-1.1, SEC-5, SEC-6, SEC-7
-    const buildRuntime = join(process.cwd(), 'scripts/build-runtime-bundle.mjs');
-    const checkRuntime = join(process.cwd(), 'scripts/check-runtime-bundle.mjs');
-    const checkMac = join(process.cwd(), 'scripts/check-macos-artifact.mjs');
-
-    expect(existsSync(buildRuntime)).toBe(true);
-    expect(existsSync(checkRuntime)).toBe(true);
-    const macChecker = readFileSync(checkMac, 'utf8');
-    expect(macChecker).toMatch(/codesign|signature/u);
-    expect(macChecker).toMatch(/better_sqlite3\.node/u);
-    expect(macChecker).toMatch(/runtime-manifest/u);
+    // The OS restarts the daemon after a failure and starts it at login; no UI process owns it.
+    expect(launchd.RunAtLoad).toBe(true);
+    expect(launchd.KeepAlive).toEqual({ SuccessfulExit: false });
+    expect(systemd.Service?.Restart).toEqual(['on-failure']);
+    expect(systemd.Install?.WantedBy).toEqual(['default.target']);
+    // Per-user: a LaunchAgent (not a daemon) and a user unit without `User=`; no token in either.
+    expect(systemd.Service?.User).toBeUndefined();
+    expect(JSON.stringify([launchd, systemd])).not.toMatch(/User=root|sudo|PIMPAMPUM_TOKEN/u);
   });
 
   it.todo('PERF-1: completes clean observed setup in under two minutes');

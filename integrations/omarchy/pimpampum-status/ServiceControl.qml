@@ -47,6 +47,10 @@ Item {
     id: serviceProcess
     command: [root.helperPath, "status"]
     stdout: StdioCollector { onStreamFinished: root.processOutput = text }
-    onExited: function(exitCode) { root.accept(exitCode) }
+    // Deferred like the sibling services: the collector publishes its text on the same turn the
+    // process exits, so reading it synchronously here could observe an empty buffer.
+    onExited: function(exitCode) {
+      Qt.callLater(function() { root.accept(exitCode) })
+    }
   }
 }

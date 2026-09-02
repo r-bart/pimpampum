@@ -10,15 +10,6 @@ enum SetupOnboardingStep: Int, CaseIterable, Sendable {
   /// The step a fresh onboarding opens on. Naming it keeps the view's initial state from drifting
   /// away from the first case whenever a step is added ahead of the others.
   static let first = SetupOnboardingStep.welcome
-
-  var marker: String {
-    switch self {
-    case .welcome: "1 OF 4"
-    case .explain: "2 OF 4"
-    case .agents: "3 OF 4"
-    case .progress: "4 OF 4"
-    }
-  }
 }
 
 struct SetupTrustPoint: Identifiable, Equatable {
@@ -82,23 +73,20 @@ struct SetupOnboardingView: View {
   /// Tall enough to hold the welcome and the explanation without either of them resizing the
   /// popover. Taller steps grow past it; the point is that the short ones do not shrink.
   static let stepMinimumHeight: CGFloat = 320
+  /// Wide enough for four readable segments, narrow enough to stay a header ornament
+  /// rather than a full-width bar competing with the title under it.
+  static let stepProgressMaximumWidth: CGFloat = 132
 
-  @StateObject private var store: SetupStore
-  let onFinished: () -> Void
+  /// Owned by the app. This view is one rendering of a session that outlives it.
+  @ObservedObject var session: SetupSession
+  /// The folder dialog behind "Add a workspace"; the session turns its answer into a request.
+  var workspaceFolderPicker: any WorkspaceFolderPicking = WorkspaceFolderPicker()
 
   @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
-  @State private var step: SetupOnboardingStep = SetupOnboardingStep.first
   @State private var isChangesHelpPresented = false
 
-  init(store: SetupStore, onFinished: @escaping () -> Void) {
-    _store = StateObject(wrappedValue: store)
-    self.onFinished = onFinished
-  }
-
-  init(assistant _: SetupAssistant, onCheckAgain: @escaping () -> Void) {
-    _store = StateObject(wrappedValue: SetupStore.bundled())
-    onFinished = onCheckAgain
-  }
+  private var store: SetupStore { session.store }
+  private var step: SetupOnboardingStep { session.step }
 
   var body: some View {
     ScrollView {
@@ -127,40 +115,40 @@ struct SetupOnboardingView: View {
     }
     .frame(maxHeight: 480)
     .fixedSize(horizontal: false, vertical: true)
-    .onAppear {
-      store.start()
-      showDurableProgressIfNeeded()
-    }
-    .onChange(of: store.activity) { _ in showDurableProgressIfNeeded() }
-    .onChange(of: store.completion) { _ in showDurableProgressIfNeeded() }
+    .onAppear { session.begin() }
     .animation(accessibilityReduceMotion ? nil : .easeInOut(duration: 0.18), value: step)
+  }
+
+  /// Four segments that fill as the setup advances, in place of the old "1 OF 4" label. The bar
+  /// reads at a glance where a counter had to be parsed, and it inherits the container's
+  /// `.animation`, which is already `nil` under Reduce Motion.
+  private var stepProgress: some View {
+    HStack(spacing: 4) {
+      ForEach(SetupOnboardingStep.allCases, id: \.rawValue) { segment in
+        Capsule(style: .continuous)
+          .fill(
+            Color.primary.opacity(
+              SetupOnboardingPresentation.isSegmentFilled(segment, at: step) ? 0.8 : 0.16))
+          .frame(height: 3)
+      }
+    }
+    .frame(maxWidth: Self.stepProgressMaximumWidth)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(SetupOnboardingPresentation.progressLabel(for: step))
   }
 
   private var stepHeader: some View {
     VStack(alignment: .leading, spacing: 7) {
-      Text(step.marker)
-        .font(.caption2.weight(.semibold))
-        .tracking(0.8)
-        .foregroundStyle(.secondary)
-        .accessibilityLabel("Step \(step.rawValue) of \(SetupOnboardingStep.allCases.count)")
+      stepProgress
 
       // The welcome step carries its own centered lockup, so it must not repeat a leading title.
-      if let stepTitle {
+      if let stepTitle = SetupOnboardingPresentation.stepTitle(for: step) {
         Text(stepTitle)
           .font(.title2.weight(.semibold))
           .foregroundStyle(.primary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityAddTraits(.isHeader)
       }
-    }
-  }
-
-  private var stepTitle: String? {
-    switch step {
-    case .welcome: nil
-    case .explain: SetupOnboardingCopy.title
-    case .agents: SetupOnboardingCopy.agentsTitle
-    case .progress: SetupOnboardingCopy.progressTitle
     }
   }
 
@@ -187,7 +175,7 @@ struct SetupOnboardingView: View {
           .fixedSize(horizontal: false, vertical: true)
       }
 
-      Button(SetupOnboardingCopy.getStartedButton) { move(to: .explain) }
+      Button(SetupOnboardingCopy.getStartedButton) { session.move(to: .explain) }
         .buttonStyle(GuidedPrimaryButtonStyle())
         .keyboardShortcut(.defaultAction)
         .accessibilityLabel("Get started with guided setup")
@@ -213,7 +201,7 @@ struct SetupOnboardingView: View {
         }
       }
 
-      Button(SetupOnboardingCopy.continueButton) { move(to: .agents) }
+      Button(SetupOnboardingCopy.continueButton) { session.move(to: .agents) }
         .buttonStyle(GuidedPrimaryButtonStyle())
         .keyboardShortcut(.defaultAction)
         .accessibilityLabel("Continue to detected agents")
@@ -269,25 +257,21 @@ struct SetupOnboardingView: View {
         }
       }
 
-      exactChangesLink
-      // Planning is a read. Doing it here means the user confirms the operation they were shown,
-      // instead of one computed after the button was already pressed.
-      .task(id: store.selectedAgents) { await store.review() }
-
-      if let errorMessage = store.errorMessage {
-        inlineError(errorMessage)
-      }
+      planRow
+        // Planning is a read. Doing it here means the user confirms the operation they were shown,
+        // instead of one computed after the button was already pressed.
+        .task(id: store.selectedAgents) { await store.review() }
 
       HStack(spacing: 10) {
-        Button("Back") { move(to: .explain) }
+        Button("Back") { session.move(to: .explain) }
           .buttonStyle(GuidedSecondaryButtonStyle())
           .keyboardShortcut(.cancelAction)
           .accessibilityLabel("Back to what Pimpampum does")
 
-        Button("Review & set up") { reviewAndSetUp() }
+        Button("Review & set up") { Task { await session.reviewAndSetUp() } }
           .buttonStyle(GuidedPrimaryButtonStyle())
           .keyboardShortcut(.defaultAction)
-          .disabled(!store.canReview)
+          .disabled(!store.canConfirm)
           .accessibilityLabel("Review and set up selected agents")
       }
     }
@@ -300,14 +284,18 @@ struct SetupOnboardingView: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
-      // The background service is machinery, not something the user chose, so it stays hidden while
-      // it behaves. It still appears when it needs attention, and when no agent was selected, because
-      // otherwise this step would report nothing at all.
-      if store.service.state.needsAttention || store.agentResults.isEmpty {
+      if SetupOnboardingPresentation.showsStillRunning(activity: store.activity) {
+        stillRunningNotice
+      }
+
+      if SetupOnboardingPresentation.showsServiceRow(
+        service: store.service,
+        agentResults: store.agentResults
+      ) {
         progressRow(
           title: SetupOnboardingCopy.serviceRowTitle,
           state: store.service.state,
-          symbol: store.service.state.needsAttention ? "exclamationmark.triangle" : "gearshape"
+          symbol: SetupOnboardingPresentation.serviceRowSymbol(store.service)
         )
       }
 
@@ -323,7 +311,7 @@ struct SetupOnboardingView: View {
         conflictRecovery
       }
 
-      if store.needsLoginItemApproval {
+      if SetupOnboardingPresentation.showsLoginItemApproval(completion: store.completion) {
         VStack(alignment: .leading, spacing: 8) {
           Text("Allow start at sign-in")
             .font(.subheadline.weight(.semibold))
@@ -336,27 +324,74 @@ struct SetupOnboardingView: View {
         }
       }
 
-      if store.completion?.nextAction == .newSession {
+      if SetupOnboardingPresentation.showsNewSessionAdvice(completion: store.completion) {
         Text(GuidedSetupRecoveryCopy.newSession)
           .font(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
 
-      if store.completion?.status == .complete {
+      if SetupOnboardingPresentation.showsAddWorkspace(completion: store.completion) {
+        addWorkspace
+      }
+
+      if SetupOnboardingPresentation.showsDone(completion: store.completion) {
         Button(SetupOnboardingCopy.finishButton) {
-          Task {
-            // Hand the popover back before relaunching: on a copy started from Downloads that call
-            // terminates this process.
-            onFinished()
-            await store.relaunchInstalledApplicationIfNeeded()
-          }
+          Task { await session.finish() }
         }
         .buttonStyle(GuidedPrimaryButtonStyle())
         .keyboardShortcut(.defaultAction)
         .accessibilityLabel("Finish setup")
       }
+
+      if SetupOnboardingPresentation.showsStartOver(
+        activity: store.activity,
+        completion: store.completion
+      ) {
+        Button(SetupOnboardingPresentation.startOverButton) { session.startOver() }
+          .buttonStyle(GuidedSecondaryButtonStyle())
+          .accessibilityLabel(SetupOnboardingPresentation.startOverAccessibilityLabel)
+      }
     }
+  }
+
+  /// The first workspace, registered here so the overview has something to show after Done. The
+  /// folder dialog is a real window; the popover survives it the same way it survives the backup
+  /// folder dialog, because nothing here presents a sheet.
+  private var addWorkspace: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(WorkspaceRegistrationCopy.onboardingDetail)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      Button(WorkspaceRegistrationCopy.button) {
+        Task { await session.addWorkspace(using: workspaceFolderPicker) }
+      }
+      .buttonStyle(GuidedSecondaryButtonStyle())
+      .disabled(session.workspaceRegistration.isRegistering)
+      .accessibilityLabel(WorkspaceRegistrationCopy.buttonAccessibilityLabel)
+      if let notice = session.workspaceRegistration.notice {
+        WorkspaceRegistrationNoticeRow(notice: notice)
+      }
+    }
+  }
+
+  /// Another process owns the running setup; this one follows its journal until it ends.
+  private var stillRunningNotice: some View {
+    HStack(alignment: .top, spacing: 10) {
+      ProgressView().controlSize(.small)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(SetupOnboardingPresentation.stillRunningTitle)
+          .font(.subheadline.weight(.semibold))
+        Text(SetupOnboardingPresentation.stillRunningDetail)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .frame(minHeight: 44)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(SetupOnboardingPresentation.stillRunningTitle)
   }
 
   private func agentProgressRow(_ agent: SetupAgentPresentation) -> some View {
@@ -368,7 +403,7 @@ struct SetupOnboardingView: View {
       )
       // No detail line: `progressRow` already states the row's state, and "Not configured" showed
       // up while the agent was mid-connection, contradicting the row right above it.
-      if agent.state == .needsRepair {
+      if SetupOnboardingPresentation.showsAgentRetry(agent) {
         Button(GuidedSetupRecoveryCopy.retry) {
           Task { await store.retry(agent.id) }
         }
@@ -377,7 +412,7 @@ struct SetupOnboardingView: View {
         .accessibilityLabel("Try \(agent.id.displayName) again")
       }
 
-      if agent.state == .connected || agent.state == .newSessionRequired {
+      if SetupOnboardingPresentation.showsOpenAgent(agent) {
         Button("Open \(agent.id.displayName)") { openAgent(agent.id) }
           .buttonStyle(GuidedSecondaryButtonStyle())
           .accessibilityLabel("Open \(agent.id.displayName)")
@@ -418,13 +453,10 @@ struct SetupOnboardingView: View {
         }
       }
 
-      Button("Cancel") {
-        store.cancelConflict()
-        move(to: .agents)
-      }
-      .buttonStyle(GuidedSecondaryButtonStyle())
-      .keyboardShortcut(.cancelAction)
-      .accessibilityLabel("Cancel setup without replacing configuration")
+      Button("Cancel") { session.cancelConflictRecovery() }
+        .buttonStyle(GuidedSecondaryButtonStyle())
+        .keyboardShortcut(.cancelAction)
+        .accessibilityLabel("Cancel setup without replacing configuration")
     }
     .padding(12)
     .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -432,10 +464,15 @@ struct SetupOnboardingView: View {
 
   /// The plan the user is about to authorize stays one line. The spec still requires that the
   /// changes and their paths be inspectable before confirming, so the full list lives one click
-  /// away rather than filling the step with something the user already chose above.
-  private var exactChangesLink: some View {
+  /// away rather than filling the step with something the user already chose above. A failed plan
+  /// says so here, with a way to try again, instead of spinning under a disabled button.
+  private var planRow: some View {
     Group {
-      if let changes = store.plan?.changes, !changes.isEmpty {
+      switch SetupOnboardingPresentation.planRow(
+        plan: store.plan,
+        errorMessage: store.errorMessage
+      ) {
+      case .ready:
         Button {
           isChangesHelpPresented = true
         } label: {
@@ -451,7 +488,17 @@ struct SetupOnboardingView: View {
         .contentShape(Rectangle())
         .accessibilityLabel(SetupChangesHelpCopy.buttonTitle)
         .help(SetupChangesHelpCopy.buttonTitle)
-      } else {
+      case .failed(let message):
+        VStack(alignment: .leading, spacing: 8) {
+          inlineError(message)
+          Button(SetupOnboardingPresentation.planRetryButton) {
+            Task { await store.review() }
+          }
+          .buttonStyle(GuidedSecondaryButtonStyle())
+          .disabled(store.busy)
+          .accessibilityLabel(SetupOnboardingPresentation.planRetryAccessibilityLabel)
+        }
+      case .pending:
         HStack(spacing: 8) {
           ProgressView().controlSize(.small)
           Text(SetupOnboardingCopy.changesPending)
@@ -516,64 +563,44 @@ struct SetupOnboardingView: View {
       .accessibilityLabel("Setup issue. \(message)")
   }
 
-  private func reviewAndSetUp() {
-    Task {
-      // The plan is already on screen; re-planning here would apply a different operation than the
-      // one the user reviewed.
-      guard store.plan != nil, store.errorMessage == nil else { return }
-      move(to: .progress)
-      guard store.plan?.conflicts.isEmpty == true else { return }
-      await store.apply()
-      // The step reports the outcome and offers its own Done button. Closing setup is the user's
-      // call: doing it here meant the result flashed past and the popover jumped to its normal
-      // state before anyone could read what had happened.
-    }
-  }
-
   private func openAgent(_ id: SetupAgentID) {
-    let candidates: [URL]
-    switch id {
-    case .codex:
-      candidates = [
-        URL(fileURLWithPath: "/Applications/Codex.app"),
-        FileManager.default.homeDirectoryForCurrentUser
-          .appendingPathComponent("Applications/Codex.app"),
-      ]
-    case .claudeCode:
-      candidates = [
-        URL(fileURLWithPath: "/Applications/Claude.app"),
-        FileManager.default.homeDirectoryForCurrentUser
-          .appendingPathComponent("Applications/Claude.app"),
-      ]
-    }
     guard
-      let application = candidates.first(where: { candidate in
-        guard
-          let values = try? candidate.resourceValues(forKeys: [
-            .isDirectoryKey, .isSymbolicLinkKey,
-          ])
-        else { return false }
-        return values.isDirectory == true && values.isSymbolicLink != true
-      })
+      let application = SetupOnboardingPresentation.installedApplication(
+        among: SetupOnboardingPresentation.agentApplicationCandidates(
+          for: id,
+          homeDirectory: FileManager.default.homeDirectoryForCurrentUser
+        )
+      )
     else { return }
     let configuration = NSWorkspace.OpenConfiguration()
     configuration.activates = true
     configuration.createsNewApplicationInstance = false
     NSWorkspace.shared.openApplication(at: application, configuration: configuration)
   }
+}
 
-  private func showDurableProgressIfNeeded() {
-    if store.activity.hasBegunMutation || !store.progress.isEmpty || store.completion != nil {
-      move(to: .progress)
-    }
-  }
+/// One row for the workspace registration outcome, shared by the final step and the overview.
+@MainActor
+struct WorkspaceRegistrationNoticeRow: View {
+  let notice: WorkspaceRegistrationNotice
 
-  private func move(to next: SetupOnboardingStep) {
-    if accessibilityReduceMotion {
-      step = next
-    } else {
-      withAnimation(.easeInOut(duration: 0.18)) { step = next }
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      if notice.inProgress {
+        ProgressView().controlSize(.small)
+      } else {
+        Image(systemName: notice.symbol)
+          .foregroundStyle(notice.isFailure ? Color.red : Color.secondary)
+          .accessibilityHidden(true)
+      }
+      Text(notice.text)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
+    .frame(minHeight: 24, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(notice.text)
   }
 }
 
@@ -589,7 +616,7 @@ struct GuidedPrimaryButtonStyle: ButtonStyle {
   }
 }
 
-private struct GuidedSecondaryButtonStyle: ButtonStyle {
+struct GuidedSecondaryButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .font(.body.weight(.medium))

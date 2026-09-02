@@ -341,6 +341,46 @@ struct OverviewStoreTests {
   }
 
   @Test
+  func pausedPollingStopsAndResumesWithAnImmediateRefresh() async {
+    // While the guided setup installs the daemon, a poll reports a half-installed service. The
+    // session pauses polling for the mutation and the store refreshes at once when it ends.
+    let reader = SequenceOverviewReader(Array(repeating: .success(testOverview()), count: 6))
+    let clock = RecordingOverviewClock(date: Date())
+    let store = OverviewStore(reader: reader, clock: clock)
+
+    store.setPollingPaused(true)
+    store.setPollingPaused(true)
+    #expect(store.isPollingPaused)
+    store.start()
+    try? await Task.sleep(for: .milliseconds(10))
+    #expect(await reader.callCount == 0)
+    // Opening the popover while paused does not start a poll either.
+    store.setPopoverOpen(true)
+    try? await Task.sleep(for: .milliseconds(10))
+    #expect(await reader.callCount == 0)
+
+    store.setPollingPaused(false)
+    #expect(await eventually { await reader.callCount == 1 })
+    #expect(await eventually { await clock.sleeps == [5] })
+
+    store.setPollingPaused(true)
+    let countWhilePaused = await reader.callCount
+    try? await Task.sleep(for: .milliseconds(10))
+    #expect(await reader.callCount == countWhilePaused)
+    store.setPollingPaused(false)
+    #expect(await eventually { await reader.callCount == countWhilePaused + 1 })
+    store.stop()
+  }
+
+  @Test
+  func pausingBeforeStartHasNoTaskToCancel() {
+    let store = OverviewStore(reader: SequenceOverviewReader([]))
+    store.setPollingPaused(true)
+    store.setPollingPaused(false)
+    #expect(!store.isPollingPaused)
+  }
+
+  @Test
   func aStoreMayDeallocateBeforeItsPollingTaskBegins() async {
     var store: OverviewStore? = OverviewStore(reader: SequenceOverviewReader([]))
     store?.start()

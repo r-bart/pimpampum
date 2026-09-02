@@ -13,12 +13,7 @@ import {
   sanitizedHostEnvironment,
 } from '../src/connectors/process.js';
 import { classifyConnectorOwnership, fingerprintCommand } from '../src/connectors/receipt.js';
-import { planDisconnect } from '../src/connectors/registry.js';
-import {
-  redactConnectorDiagnostics,
-  type ConnectionReceipt,
-  type HostEntry,
-} from '../src/connectors/types.js';
+import type { ConnectionReceipt, HostEntry } from '../src/connectors/types.js';
 import { verifyMcpRoute } from '../src/connectors/verifier.js';
 
 const temporaryDirectories: string[] = [];
@@ -122,7 +117,7 @@ describe('hostile connector process and filesystem boundaries', () => {
         timeoutMilliseconds: 10,
         run: async () => ({ exitCode: 0, stdout: 'unexpected' }),
       }),
-    ).resolves.toEqual({ executable: null, supported: false });
+    ).resolves.toEqual({ executable: null, supported: false, versionOutput: null });
     await expect(
       detectExecutable({
         id: 'codex',
@@ -132,7 +127,7 @@ describe('hostile connector process and filesystem boundaries', () => {
         timeoutMilliseconds: 10,
         run: async () => ({ exitCode: 1, stdout: 'version' }),
       }),
-    ).resolves.toEqual({ executable, supported: false });
+    ).resolves.toEqual({ executable, supported: false, versionOutput: null });
     await expect(
       detectExecutable({
         id: 'codex',
@@ -144,7 +139,7 @@ describe('hostile connector process and filesystem boundaries', () => {
           throw new Error('synthetic probe failure');
         },
       }),
-    ).resolves.toEqual({ executable, supported: false });
+    ).resolves.toEqual({ executable, supported: false, versionOutput: null });
     await expect(
       detectExecutable({
         id: 'codex',
@@ -154,7 +149,7 @@ describe('hostile connector process and filesystem boundaries', () => {
         timeoutMilliseconds: 5,
         run: async () => new Promise(() => undefined),
       }),
-    ).resolves.toEqual({ executable, supported: false });
+    ).resolves.toEqual({ executable, supported: false, versionOutput: null });
   });
 
   it('rejects directories, FIFO, symlink, malformed, oversized, and invalid-bound reads', () => {
@@ -227,7 +222,7 @@ describe('hostile connector process and filesystem boundaries', () => {
         path: missing,
         expectedRevision: null,
         mode: 0o600,
-        update: () => ({ value: 'x'.repeat(1_000_001) }),
+        update: () => ({ value: 'x'.repeat(16 * 1024 * 1024 + 1) }),
       }),
     ).rejects.toThrow(/bounded size/iu);
 
@@ -431,7 +426,7 @@ describe('hostile MCP protocol and diagnostic boundaries', () => {
   });
 });
 
-describe('receipt, ownership, disconnect, and diagnostic edge contracts', () => {
+describe('receipt and ownership edge contracts', () => {
   const expected: HostEntry = {
     command: '/synthetic/runtime/bin/pimpampum-mcp',
     arguments: [],
@@ -475,77 +470,5 @@ describe('receipt, ownership, disconnect, and diagnostic edge contracts', () => 
     expect(fingerprintCommand({ ...expected, arguments: ['--different'] })).not.toBe(
       proof.commandFingerprint,
     );
-  });
-
-  it('keeps daemon/data and only plans removal for exact or validated opaque ownership', () => {
-    const neutralCases: Array<{
-      connectorId: string;
-      entry: HostEntry | null;
-      receipt: ConnectionReceipt | null;
-    }> = [
-      { connectorId: 'unknown', entry: expected, receipt: proof },
-      { connectorId: 'codex', entry: null, receipt: proof },
-      { connectorId: 'codex', entry: expected, receipt: null },
-      { connectorId: 'codex', entry: expected, receipt: { ...proof, connectorId: 'claude-code' } },
-      { connectorId: 'codex', entry: expected, receipt: { ...proof, scope: 'user' } },
-      { connectorId: 'codex', entry: expected, receipt: { ...proof, commandFingerprint: '' } },
-      {
-        connectorId: 'codex',
-        entry: expected,
-        receipt: { ...proof, commandFingerprint: '0'.repeat(64) },
-      },
-    ];
-    for (const candidate of neutralCases) {
-      expect(
-        planDisconnect({
-          ...candidate,
-          daemonRunning: true,
-          dataDirectory: '/synthetic/data',
-        }).mutations,
-      ).toEqual([]);
-    }
-    expect(
-      planDisconnect({
-        connectorId: 'claude-code',
-        entry: { ...expected, scope: 'user' },
-        receipt: {
-          ...proof,
-          connectorId: 'claude-code',
-          scope: 'user',
-          commandFingerprint: 'validated-opaque-marker',
-        },
-        daemonRunning: false,
-        dataDirectory: '/synthetic/data',
-      }),
-    ).toEqual({
-      mutations: [
-        {
-          executable: 'claude',
-          arguments: ['mcp', 'remove', '--scope', 'user', 'pimpampum'],
-        },
-      ],
-      preserveDaemon: true,
-      preserveData: true,
-    });
-  });
-
-  it('bounds empty and unknown-host diagnostics without exposing credentials or homes', () => {
-    expect(
-      redactConnectorDiagnostics({
-        connectorId: 'claude-code',
-        executablePath: '/synthetic/claude',
-        token: '',
-        stderr: '',
-      }).message,
-    ).toBe('Claude Code could not connect.');
-    const diagnostic = redactConnectorDiagnostics({
-      connectorId: 'unknown',
-      executablePath: '/synthetic/agent',
-      token: 'synthetic-token-value',
-      stderr: `/home/synthetic/cache secret=synthetic-secret ${'x'.repeat(500)}`,
-    });
-    expect(diagnostic.message).toMatch(/^The agent could not connect:/u);
-    expect(diagnostic.message.length).toBeLessThan(360);
-    expect(JSON.stringify(diagnostic)).not.toMatch(/home\/synthetic|synthetic-token-value/iu);
   });
 });

@@ -1,48 +1,61 @@
 {
-  "fixtureVersion": 1,
+  "fixtureVersion": 2,
   "synthetic": true,
+  "observedCliVersion": "2.1.257 (Claude Code)",
+  "launcherPath": "/Users/example/.local/share/pimpampum/bin/pimpampum-mcp",
   "scenarios": {
     "missingHost": {
-      "expectedState": "notInstalled",
-      "processFixture": "../shared/missing-host.json"
-    },
-    "unsupportedFlags": {
-      "expectedCapability": "jsonInspectionUnavailable",
-      "stderrFixture": "unsupported-json-flag.txt"
+      "processFixture": "../shared/missing-host.json",
+      "expectedState": "notInstalled"
     },
     "absentEntry": {
-      "expectedState": "notConnected",
-      "listFixture": "list-absent.txt",
-      "getFixture": "get-absent.txt"
+      "targetEntryFixture": null,
+      "receipt": "none",
+      "expectedState": "notConnected"
     },
     "exactOwnedEntry": {
-      "expectedState": "ownedCurrent",
-      "getFixture": "get-owned-current.txt",
-      "targetEntryFixture": "entry-owned-current.json"
+      "targetEntryFixture": "entry-owned-current.json",
+      "receipt": "matching",
+      "expectedState": "ownedCurrent"
+    },
+    "equivalentUnowned": {
+      "targetEntryFixture": "entry-owned-current.json",
+      "receipt": "none",
+      "expectedState": "equivalentUnowned"
     },
     "legacyNpmEntry": {
-      "expectedStateWithMatchingReceipt": "ownedStale",
-      "targetEntryFixture": "entry-legacy-npm.json"
+      "targetEntryFixture": "entry-legacy-npm.json",
+      "receipt": "matching",
+      "expectedState": "ownedStale"
     },
     "unknownConflict": {
-      "expectedState": "conflict",
-      "targetEntryFixture": "entry-unknown-conflict.json"
+      "targetEntryFixture": "entry-unknown-conflict.json",
+      "receipt": "none",
+      "expectedState": "conflict"
     },
     "higherPrecedenceConflict": {
-      "expectedState": "conflict",
-      "scopeFixture": "scope-collision.json"
+      "targetEntryFixture": null,
+      "receipt": "none",
+      "scopeFixture": "scope-collision.json",
+      "expectedState": "conflict"
     },
     "readOnlyConfig": {
-      "expectedState": "unavailable",
-      "processFixture": "../shared/read-only-config.json"
-    },
-    "concurrentRevision": {
-      "expectedState": "unavailable",
-      "revisionFixture": "../shared/concurrent-revision.json"
+      "targetEntryFixture": null,
+      "receipt": "none",
+      "mutationFailure": "../shared/read-only-config.json",
+      "expectedError": "unavailable"
     },
     "hostCliFailure": {
-      "expectedState": "unavailable",
-      "processFixture": "../shared/host-cli-failure.json"
+      "targetEntryFixture": null,
+      "receipt": "none",
+      "mutationFailure": "../shared/host-cli-failure.json",
+      "expectedError": "unavailable"
+    },
+    "concurrentRevision": {
+      "targetEntryFixture": null,
+      "receipt": "none",
+      "revisionFixture": "../shared/concurrent-revision.json",
+      "expectedError": "conflict"
     }
   }
 }

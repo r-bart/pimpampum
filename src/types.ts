@@ -4,6 +4,13 @@ export type TaskState = 'open' | 'done' | 'cancelled';
 export type TargetType = 'spec' | 'task';
 export type ContextOwnerType = 'workspace' | 'project';
 
+/** `/health` body. `ready` is false and the HTTP status 503 when the SQLite probe fails. */
+export interface HealthStatus {
+  status: 'ok' | 'degraded';
+  version: string;
+  ready: boolean;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -36,6 +43,7 @@ export interface Project {
   completionSummary: string | null;
   artifacts: ArtifactReference[];
   completedAt: string | null;
+  cancelledAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -60,6 +68,7 @@ export interface Spec {
   completionSummary: string | null;
   artifacts: ArtifactReference[];
   completedAt: string | null;
+  cancelledAt: string | null;
   createdAt: string;
   updatedAt: string;
   claim: Claim | null;
@@ -103,6 +112,7 @@ export interface Task {
   completionSummary: string | null;
   artifacts: ArtifactReference[];
   completedAt: string | null;
+  cancelledAt: string | null;
   createdAt: string;
   updatedAt: string;
   claim: Claim | null;
@@ -430,6 +440,8 @@ type SynchronousGateway<T> = {
 };
 
 export type PimpampumHttpGateway = SynchronousGateway<PimpampumGateway> & {
+  /** Readiness probe: true when `SELECT 1` succeeds against the live database. */
+  ping(): boolean;
   getOverview(): OverviewSnapshot;
   registerWorkspace(input: {
     id: string;

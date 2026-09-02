@@ -222,8 +222,13 @@ func testProject(
   )
 }
 
+/// Waits up to five seconds for a condition, polling every 2ms. The bound was 400ms until
+/// 2026-09-02, when `SetupStoreCoverageTests.aRunningJournalShowsItsAgentsConnectingUntilItEnds`
+/// failed on a loaded machine with the other 322 tests green: 400ms is not enough for a concurrent
+/// task to reach its first sleep when the host is busy, and the macOS CI job runs this suite. A
+/// generous bound costs nothing, because the helper returns as soon as the condition holds.
 func eventually(_ condition: @escaping @Sendable () async -> Bool) async -> Bool {
-  for _ in 0..<200 {
+  for _ in 0..<2500 {
     if await condition() { return true }
     try? await Task.sleep(for: .milliseconds(2))
   }

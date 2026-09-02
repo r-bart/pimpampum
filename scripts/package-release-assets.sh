@@ -107,6 +107,43 @@ npm pack --pack-destination "$output_root" >/dev/null
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
   "$app_root" "$output_root/Pimpampum-$version-macos-arm64.zip"
 
+# The unsigned update-channel manifest: one entry per packaged target, each naming the exact
+# versioned asset above. `scripts/sign-release-manifest.mjs` adds `issuedAt` and the signatures.
+OUTPUT_ROOT="$output_root" RELEASE_VERSION="$version" node --input-type=module <<'NODE'
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const outputRoot = process.env.OUTPUT_ROOT;
+const version = process.env.RELEASE_VERSION;
+const downloads = `https://github.com/r-bart/pimpampum/releases/download/v${version}`;
+const targets = {};
+const app = readFileSync(join(outputRoot, `Pimpampum-${version}-macos-arm64.zip`));
+targets['darwin-arm64'] = {
+  url: `${downloads}/Pimpampum-${version}-macos-arm64.zip`,
+  sha256: createHash('sha256').update(app).digest('hex'),
+  size: app.byteLength,
+};
+for (const target of ['linux-arm64', 'linux-x64']) {
+  const descriptor = JSON.parse(
+    readFileSync(
+      join(outputRoot, `pimpampum-runtime-${version}-${target}.archive-sha256.json`),
+      'utf8',
+    ),
+  );
+  targets[target] = {
+    url: `${downloads}/${descriptor.file}`,
+    sha256: descriptor.sha256,
+    size: descriptor.size,
+  };
+}
+writeFileSync(
+  join(outputRoot, 'release-manifest.unsigned.json'),
+  `${JSON.stringify({ schemaVersion: 1, channel: 'stable', version, targets }, null, 2)}\n`,
+  { flag: 'wx', mode: 0o644 },
+);
+NODE
+
 (
   cd "$output_root"
   shasum -a 256 \

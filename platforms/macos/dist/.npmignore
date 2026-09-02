@@ -1,0 +1,5 @@
+# Second guard behind package.json#files: the macOS app and its private runtime ship only as the
+# GitHub Release zip, never inside the npm package.
+**/PimpampumRuntime/**
+Pimpampum.app/**
+PimpampumMenuBar.artifact.json

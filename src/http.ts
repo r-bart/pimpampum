@@ -10,17 +10,23 @@ import { MCP_HTTP_BODY_LIMIT } from './limits.js';
 import { createPimpampumMcpHandler } from './mcp.js';
 import { openApiDocument } from './openapi.js';
 import {
-  absolutePathSchema,
-  artifactSchema,
-  cancelSchema,
-  claimSchema,
-  completeSchema,
+  cancelInputSchema,
+  claimInputSchema,
+  completeProjectInputSchema,
+  completeWorkInputSchema,
   createProjectSchema,
   createSpecSchema,
   createTaskSchema,
+  directoryInputSchema,
+  idSchema,
+  limitQuerySchema,
+  markdownPageQuerySchema,
+  paginationQuerySchema,
   projectStateSchema,
   putContextSchema,
   registerWorkspaceSchema,
+  releaseInputSchema,
+  resolveWorkspaceInputSchema,
   slugSchema,
   specStateSchema,
   targetTypeSchema,
@@ -28,8 +34,13 @@ import {
   updateSpecSchema,
   updateTaskSchema,
 } from './schemas.js';
+import {
+  resolveSyncConflictInputSchema,
+  syncConfigurationInputSchema,
+  syncConflictIdSchema,
+} from './syncSchemas.js';
 import type { PimpampumHttpGateway } from './types.js';
-import { syncDeviceIdSchema, type SyncGateway } from './syncContract.js';
+import type { SyncGateway } from './syncContract.js';
 import { PIMPAMPUM_VERSION } from './version.js';
 
 const DAEMON_VERSION = PIMPAMPUM_VERSION;
@@ -52,8 +63,21 @@ function responseData(response: Response, data: unknown, status = 200, schemaVer
   response.status(status).json({ data, meta: { schemaVersion } });
 }
 
-function pageData<T>(items: T[], limit: number, offset: number) {
-  return { items, limit, offset, hasMore: items.length === limit };
+/** Loads one item beyond the page so `hasMore` is exact on an exact last page. */
+function pageData<T>(load: (fetchLimit: number) => T[], limit: number, offset: number) {
+  const items = load(limit + 1);
+  return { items: items.slice(0, limit), limit, offset, hasMore: items.length > limit };
+}
+
+function errorBody(error: AppError) {
+  return {
+    error: {
+      code: error.code,
+      message: error.message,
+      retryable: error.retryable,
+      details: error.details,
+    },
+  };
 }
 
 function normalizeHttpError(error: unknown): AppError {
@@ -86,28 +110,14 @@ function bearerAuth(expectedToken: string): RequestHandler {
       candidate.length !== expected.length ||
       !timingSafeEqual(candidate, expected)
     ) {
-      response.status(401).json({
-        error: {
-          code: 'unauthorized',
-          message: 'A valid bearer token is required',
-          retryable: false,
-        },
-      });
+      response
+        .status(401)
+        .json(errorBody(new AppError('unauthorized', 'A valid bearer token is required', 401)));
       return;
     }
     next();
   };
 }
-
-const paginationSchema = z.object({
-  limit: z.coerce.number().int().min(1).max(200).default(50),
-  offset: z.coerce.number().int().min(0).default(0),
-});
-
-const markdownPageSchema = z.object({
-  offsetCodeUnits: z.coerce.number().int().min(0).default(0),
-  limitCodeUnits: z.coerce.number().int().min(1).max(100_000).default(20_000),
-});
 
 export function createHttpApp(
   store: PimpampumHttpGateway,
@@ -121,14 +131,21 @@ export function createHttpApp(
     throw new AppError('bad_request', 'Pimpampum HTTP must bind to a loopback host', 400);
   }
   const app = createMcpExpressApp({ host: config.host, jsonLimit: MCP_HTTP_BODY_LIMIT });
+  app.disable('x-powered-by');
   const requireAuth = bearerAuth(config.token);
-  const mcpHandler = createPimpampumMcpHandler(store, sync);
+  const mcpHandler = createPimpampumMcpHandler(store, sync, logger);
   const nodeMcpHandler = toNodeHandler(mcpHandler);
   const startedAtMilliseconds = clock();
   const startedAt = new Date(startedAtMilliseconds).toISOString();
 
+  // Liveness and readiness in one probe: the process answers, and `ready` says whether
+  // SQLite does. A daemon whose database stopped answering reports 503 so installers and
+  // status commands that poll this route wait instead of declaring success.
   app.get('/health', (_request, response) => {
-    response.json({ status: 'ok', version: DAEMON_VERSION });
+    const ready = store.ping();
+    response
+      .status(ready ? 200 : 503)
+      .json({ status: ready ? 'ok' : 'degraded', version: DAEMON_VERSION, ready });
   });
 
   app.get('/openapi.json', (_request, response) => {
@@ -166,7 +183,7 @@ export function createHttpApp(
     });
 
     app.put('/api/v1/settings/backup', async (request, response) => {
-      const input = parse(z.object({ directory: absolutePathSchema }).strict(), request.body);
+      const input = parse(directoryInputSchema, request.body);
       responseData(response, await automaticBackup.configure(input.directory));
     });
 
@@ -184,10 +201,7 @@ export function createHttpApp(
       responseData(response, sync.getStatus());
     });
     app.put('/api/v1/settings/sync', async (request, response) => {
-      const input = parse(
-        z.strictObject({ directory: absolutePathSchema, deviceId: syncDeviceIdSchema }),
-        request.body,
-      );
+      const input = parse(syncConfigurationInputSchema, request.body);
       responseData(response, await sync.configure(input.directory, input.deviceId));
     });
     app.post('/api/v1/settings/sync/reconcile', async (_request, response) => {
@@ -203,7 +217,7 @@ export function createHttpApp(
       responseData(response, await sync.forget());
     });
     app.get('/api/v1/settings/sync/conflicts', async (request, response) => {
-      const page = parse(paginationSchema, request.query);
+      const page = parse(paginationQuerySchema, request.query);
       const conflicts = await sync.listConflicts({ limit: page.limit + 1, offset: page.offset });
       const hasMore = conflicts.length > page.limit;
       responseData(response, {
@@ -219,8 +233,9 @@ export function createHttpApp(
       });
     });
     app.post('/api/v1/settings/sync/conflicts/:conflictId/resolve', async (request, response) => {
-      const input = parse(z.strictObject({ choice: z.enum(['local', 'remote']) }), request.body);
-      responseData(response, await sync.resolveConflict(request.params.conflictId, input.choice));
+      const conflictId = parse(syncConflictIdSchema, routeParam(request, 'conflictId'));
+      const input = parse(resolveSyncConflictInputSchema, request.body);
+      responseData(response, await sync.resolveConflict(conflictId, input.choice));
     });
   }
 
@@ -234,12 +249,12 @@ export function createHttpApp(
   });
 
   app.post('/api/v1/workspaces/resolve', (request, response) => {
-    const input = parse(z.strictObject({ path: absolutePathSchema }), request.body);
+    const input = parse(resolveWorkspaceInputSchema, request.body);
     responseData(response, store.resolveWorkspace(input.path));
   });
 
   app.get('/api/v1/projects', (request, response) => {
-    const page = parse(paginationSchema, request.query);
+    const page = parse(paginationQuerySchema, request.query);
     const filters = parse(
       z.object({
         workspaceId: slugSchema.optional(),
@@ -247,21 +262,24 @@ export function createHttpApp(
       }),
       request.query,
     );
-    const items = store.listProjectManifests({
-      workspaceId: filters.workspaceId ?? null,
-      state: filters.state ?? null,
-      limit: page.limit,
-      offset: page.offset,
-    });
-    responseData(response, pageData(items, page.limit, page.offset));
+    responseData(
+      response,
+      pageData(
+        (limit) =>
+          store.listProjectManifests({
+            workspaceId: filters.workspaceId ?? null,
+            state: filters.state ?? null,
+            limit,
+            offset: page.offset,
+          }),
+        page.limit,
+        page.offset,
+      ),
+    );
   });
 
   app.post('/api/v1/projects', (request, response) => {
     responseData(response, store.createProject(parse(createProjectSchema, request.body)), 201);
-  });
-
-  app.get('/api/v1/projects/:projectId', (request, response) => {
-    responseData(response, store.getProjectManifest(routeParam(request, 'projectId')));
   });
 
   app.get('/api/v1/projects/:projectId/manifest', (request, response) => {
@@ -281,15 +299,7 @@ export function createHttpApp(
   });
 
   app.post('/api/v1/projects/:projectId/complete', (request, response) => {
-    const input = parse(
-      z.strictObject({
-        expectedRevision: z.number().int().positive(),
-        summary: z.string().trim().min(1).max(4_000),
-        artifacts: z.array(artifactSchema).max(20).default([]),
-        actor: z.string().min(1).max(200).nullable().default(null),
-      }),
-      request.body,
-    );
+    const input = parse(completeProjectInputSchema, request.body);
     responseData(
       response,
       store.completeProject({ projectId: routeParam(request, 'projectId'), ...input }),
@@ -297,7 +307,7 @@ export function createHttpApp(
   });
 
   app.post('/api/v1/projects/:projectId/cancel', (request, response) => {
-    const input = parse(cancelSchema, request.body);
+    const input = parse(cancelInputSchema, request.body);
     responseData(
       response,
       store.cancelProject({ projectId: routeParam(request, 'projectId'), ...input }),
@@ -305,14 +315,22 @@ export function createHttpApp(
   });
 
   app.get('/api/v1/projects/:projectId/specs', (request, response) => {
-    const page = parse(paginationSchema, request.query);
+    const page = parse(paginationQuerySchema, request.query);
     const { state } = parse(z.object({ state: specStateSchema.optional() }), request.query);
-    const items = store.listSpecManifests({
-      projectId: routeParam(request, 'projectId'),
-      state: state ?? null,
-      ...page,
-    });
-    responseData(response, pageData(items, page.limit, page.offset));
+    responseData(
+      response,
+      pageData(
+        (limit) =>
+          store.listSpecManifests({
+            projectId: routeParam(request, 'projectId'),
+            state: state ?? null,
+            limit,
+            offset: page.offset,
+          }),
+        page.limit,
+        page.offset,
+      ),
+    );
   });
 
   app.post('/api/v1/projects/:projectId/specs', (request, response) => {
@@ -324,16 +342,12 @@ export function createHttpApp(
     );
   });
 
-  app.get('/api/v1/specs/:specId', (request, response) => {
-    responseData(response, store.getSpecManifest(routeParam(request, 'specId')));
-  });
-
   app.get('/api/v1/specs/:specId/manifest', (request, response) => {
     responseData(response, store.getSpecManifest(routeParam(request, 'specId')));
   });
 
   app.get('/api/v1/specs/:specId/body', (request, response) => {
-    const page = parse(markdownPageSchema, request.query);
+    const page = parse(markdownPageQuerySchema, request.query);
     responseData(
       response,
       store.readSpecBody(routeParam(request, 'specId'), page.offsetCodeUnits, page.limitCodeUnits),
@@ -350,112 +364,90 @@ export function createHttpApp(
   });
 
   app.post('/api/v1/specs/:specId/cancel', (request, response) => {
-    const input = parse(cancelSchema, request.body);
+    const input = parse(cancelInputSchema, request.body);
     responseData(response, store.cancelSpec({ specId: routeParam(request, 'specId'), ...input }));
   });
 
-  app.get('/api/v1/projects/:projectId/context', (request, response) => {
-    const page = parse(paginationSchema, request.query);
-    const items = store.listContextManifests({
-      ownerType: 'project',
-      ownerId: routeParam(request, 'projectId'),
-      ...page,
+  const contextRoutes = (
+    ownerType: 'workspace' | 'project',
+    prefix: string,
+    ownerParameter: string,
+  ) => {
+    app.get(`${prefix}/context`, (request, response) => {
+      const page = parse(paginationQuerySchema, request.query);
+      responseData(
+        response,
+        pageData(
+          (limit) =>
+            store.listContextManifests({
+              ownerType,
+              ownerId: routeParam(request, ownerParameter),
+              limit,
+              offset: page.offset,
+            }),
+          page.limit,
+          page.offset,
+        ),
+      );
     });
-    responseData(response, pageData(items, page.limit, page.offset));
-  });
 
-  app.get('/api/v1/projects/:projectId/context/:name', (request, response) => {
-    responseData(
-      response,
-      store.getContextManifest(
-        'project',
-        routeParam(request, 'projectId'),
-        routeParam(request, 'name'),
-      ),
-    );
-  });
-
-  app.get('/api/v1/projects/:projectId/context/:name/body', (request, response) => {
-    const page = parse(markdownPageSchema, request.query);
-    responseData(
-      response,
-      store.readContextPage(
-        'project',
-        routeParam(request, 'projectId'),
-        routeParam(request, 'name'),
-        page.offsetCodeUnits,
-        page.limitCodeUnits,
-      ),
-    );
-  });
-
-  app.put('/api/v1/projects/:projectId/context/:name', (request, response) => {
-    const input = parse(putContextSchema, request.body);
-    const name = parse(slugSchema, routeParam(request, 'name'));
-    responseData(
-      response,
-      store.putContext({
-        ownerType: 'project',
-        ownerId: routeParam(request, 'projectId'),
-        name,
-        ...input,
-      }),
-    );
-  });
-
-  app.get('/api/v1/workspaces/:workspaceId/context', (request, response) => {
-    const page = parse(paginationSchema, request.query);
-    const items = store.listContextManifests({
-      ownerType: 'workspace',
-      ownerId: routeParam(request, 'workspaceId'),
-      ...page,
+    app.get(`${prefix}/context/:name`, (request, response) => {
+      responseData(
+        response,
+        store.getContextManifest(
+          ownerType,
+          routeParam(request, ownerParameter),
+          routeParam(request, 'name'),
+        ),
+      );
     });
-    responseData(response, pageData(items, page.limit, page.offset));
-  });
 
-  app.get('/api/v1/workspaces/:workspaceId/context/:name', (request, response) => {
-    responseData(
-      response,
-      store.getContextManifest(
-        'workspace',
-        routeParam(request, 'workspaceId'),
-        routeParam(request, 'name'),
-      ),
-    );
-  });
+    app.get(`${prefix}/context/:name/body`, (request, response) => {
+      const page = parse(markdownPageQuerySchema, request.query);
+      responseData(
+        response,
+        store.readContextPage(
+          ownerType,
+          routeParam(request, ownerParameter),
+          routeParam(request, 'name'),
+          page.offsetCodeUnits,
+          page.limitCodeUnits,
+        ),
+      );
+    });
 
-  app.get('/api/v1/workspaces/:workspaceId/context/:name/body', (request, response) => {
-    const page = parse(markdownPageSchema, request.query);
-    responseData(
-      response,
-      store.readContextPage(
-        'workspace',
-        routeParam(request, 'workspaceId'),
-        routeParam(request, 'name'),
-        page.offsetCodeUnits,
-        page.limitCodeUnits,
-      ),
-    );
-  });
-
-  app.put('/api/v1/workspaces/:workspaceId/context/:name', (request, response) => {
-    const input = parse(putContextSchema, request.body);
-    const name = parse(slugSchema, routeParam(request, 'name'));
-    responseData(
-      response,
-      store.putContext({
-        ownerType: 'workspace',
-        ownerId: routeParam(request, 'workspaceId'),
-        name,
-        ...input,
-      }),
-    );
-  });
+    app.put(`${prefix}/context/:name`, (request, response) => {
+      const input = parse(putContextSchema, request.body);
+      const name = parse(slugSchema, routeParam(request, 'name'));
+      responseData(
+        response,
+        store.putContext({
+          ownerType,
+          ownerId: routeParam(request, ownerParameter),
+          name,
+          ...input,
+        }),
+      );
+    });
+  };
+  contextRoutes('project', '/api/v1/projects/:projectId', 'projectId');
+  contextRoutes('workspace', '/api/v1/workspaces/:workspaceId', 'workspaceId');
 
   app.get('/api/v1/specs/:specId/tasks', (request, response) => {
-    const page = parse(paginationSchema, request.query);
-    const items = store.listTaskManifests({ specId: routeParam(request, 'specId'), ...page });
-    responseData(response, pageData(items, page.limit, page.offset));
+    const page = parse(paginationQuerySchema, request.query);
+    responseData(
+      response,
+      pageData(
+        (limit) =>
+          store.listTaskManifests({
+            specId: routeParam(request, 'specId'),
+            limit,
+            offset: page.offset,
+          }),
+        page.limit,
+        page.offset,
+      ),
+    );
   });
 
   app.post('/api/v1/specs/:specId/tasks', (request, response) => {
@@ -467,16 +459,12 @@ export function createHttpApp(
     );
   });
 
-  app.get('/api/v1/tasks/:taskId', (request, response) => {
-    responseData(response, store.getTaskManifest(routeParam(request, 'taskId')));
-  });
-
   app.get('/api/v1/tasks/:taskId/manifest', (request, response) => {
     responseData(response, store.getTaskManifest(routeParam(request, 'taskId')));
   });
 
   app.get('/api/v1/tasks/:taskId/body', (request, response) => {
-    const page = parse(markdownPageSchema, request.query);
+    const page = parse(markdownPageQuerySchema, request.query);
     responseData(
       response,
       store.readTaskBody(routeParam(request, 'taskId'), page.offsetCodeUnits, page.limitCodeUnits),
@@ -503,34 +491,34 @@ export function createHttpApp(
   });
 
   app.post('/api/v1/tasks/:taskId/cancel', (request, response) => {
-    const input = parse(cancelSchema, request.body);
+    const input = parse(cancelInputSchema, request.body);
     responseData(response, store.cancelTask({ taskId: routeParam(request, 'taskId'), ...input }));
   });
 
   app.get('/api/v1/work', (request, response) => {
-    const input = parse(
+    const filters = parse(
       z.object({
         workspaceId: slugSchema.optional(),
-        projectId: z.string().uuid().optional(),
-        specId: z.string().uuid().optional(),
-        limit: z.coerce.number().int().min(1).max(200).default(50),
+        projectId: idSchema.optional(),
+        specId: idSchema.optional(),
       }),
       request.query,
     );
+    const { limit } = parse(limitQuerySchema, request.query);
     responseData(
       response,
       store.listWork({
-        workspaceId: input.workspaceId ?? null,
-        projectId: input.projectId ?? null,
-        specId: input.specId ?? null,
-        limit: input.limit,
+        workspaceId: filters.workspaceId ?? null,
+        projectId: filters.projectId ?? null,
+        specId: filters.specId ?? null,
+        limit,
       }),
     );
   });
 
   app.put('/api/v1/work/:targetType/:targetId/claim', (request, response) => {
     const targetType = parse(targetTypeSchema, routeParam(request, 'targetType'));
-    const input = parse(claimSchema, request.body);
+    const input = parse(claimInputSchema, request.body);
     responseData(
       response,
       store.startWork({ targetType, targetId: routeParam(request, 'targetId'), ...input }),
@@ -539,7 +527,7 @@ export function createHttpApp(
 
   app.patch('/api/v1/work/:targetType/:targetId/claim', (request, response) => {
     const targetType = parse(targetTypeSchema, routeParam(request, 'targetType'));
-    const input = parse(claimSchema, request.body);
+    const input = parse(claimInputSchema, request.body);
     responseData(
       response,
       store.renewWork({ targetType, targetId: routeParam(request, 'targetId'), ...input }),
@@ -548,20 +536,14 @@ export function createHttpApp(
 
   app.delete('/api/v1/work/:targetType/:targetId/claim', (request, response) => {
     const targetType = parse(targetTypeSchema, routeParam(request, 'targetType'));
-    const input = parse(
-      z.strictObject({
-        agentId: z.string().min(1).max(200),
-        note: z.string().max(500).nullable().default(null),
-      }),
-      request.body,
-    );
+    const input = parse(releaseInputSchema, request.body);
     store.releaseWork({ targetType, targetId: routeParam(request, 'targetId'), ...input });
     responseData(response, { released: true });
   });
 
   app.post('/api/v1/work/:targetType/:targetId/complete', (request, response) => {
     const targetType = parse(targetTypeSchema, routeParam(request, 'targetType'));
-    const input = parse(completeSchema, request.body);
+    const input = parse(completeWorkInputSchema, request.body);
     responseData(
       response,
       store.completeWork({ targetType, targetId: routeParam(request, 'targetId'), ...input }),
@@ -569,20 +551,17 @@ export function createHttpApp(
   });
 
   app.get('/api/v1/projects/:projectId/activity', (request, response) => {
-    const input = parse(
-      z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }),
-      request.query,
-    );
-    responseData(response, store.listActivity(routeParam(request, 'projectId'), input.limit));
+    const { limit } = parse(limitQuerySchema, request.query);
+    responseData(response, store.listActivity(routeParam(request, 'projectId'), limit));
   });
 
   app.post('/api/v1/admin/backup', async (request, response) => {
-    const input = parse(z.strictObject({ directory: absolutePathSchema }), request.body);
+    const input = parse(directoryInputSchema, request.body);
     responseData(response, { path: await store.backup(input.directory) }, 201);
   });
 
   app.post('/api/v1/admin/export', (request, response) => {
-    const input = parse(z.strictObject({ directory: absolutePathSchema }), request.body);
+    const input = parse(directoryInputSchema, request.body);
     responseData(response, { path: store.exportPortable(input.directory) }, 201);
   });
 
@@ -590,28 +569,25 @@ export function createHttpApp(
     void nodeMcpHandler(request, response, request.body).catch(next);
   });
 
-  app.use('/api/v1', (_request, response) => {
-    response.status(404).json({
-      error: {
-        code: 'not_found',
-        message: 'API route was not found',
-        retryable: false,
-        details: {},
-      },
-    });
+  // The MCP SDK client opens a GET stream after `initialize` and treats only 405 as "no
+  // stream"; any other method on the endpoint gets the same answer instead of an HTML 404.
+  app.use('/mcp', (_request, response) => {
+    response
+      .status(405)
+      .set('Allow', 'POST')
+      .json(
+        errorBody(new AppError('bad_request', 'The MCP endpoint accepts POST requests only', 405)),
+      );
+  });
+
+  app.use((_request, response) => {
+    response.status(404).json(errorBody(new AppError('not_found', 'API route was not found', 404)));
   });
 
   app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
     const appError = normalizeHttpError(error);
     if (appError.status >= 500) logger.error('Pimpampum request failed', error);
-    response.status(appError.status).json({
-      error: {
-        code: appError.code,
-        message: appError.message,
-        retryable: appError.retryable,
-        details: appError.details,
-      },
-    });
+    response.status(appError.status).json(errorBody(appError));
   });
 
   return { app, close: () => mcpHandler.close() };

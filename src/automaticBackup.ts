@@ -62,8 +62,17 @@ export class AutomaticBackupController {
     this.settingsPath = options.settingsPath;
     this.snapshotter = options.snapshotter;
     this.clock = options.clock ?? (() => new Date());
-    this.directory = this.readDirectory();
-    this.state = this.directory ? 'pending' : 'disabled';
+    const settings = this.readDirectory();
+    if (settings.ok) {
+      this.directory = settings.directory;
+      this.state = this.directory ? 'pending' : 'disabled';
+    } else {
+      // A corrupt settings file must not keep the daemon down: start without a
+      // destination, report the failure, and let configure() or disable() rewrite it.
+      this.directory = null;
+      this.state = 'error';
+      this.error = settings.error;
+    }
   }
 
   getStatus(): AutomaticBackupStatus {
@@ -163,14 +172,14 @@ export class AutomaticBackupController {
     return candidate;
   }
 
-  private readDirectory(): string | null {
-    if (!existsSync(this.settingsPath)) return null;
+  private readDirectory(): { ok: true; directory: string | null } | { ok: false; error: string } {
+    if (!existsSync(this.settingsPath)) return { ok: true, directory: null };
     try {
       const parsed = settingsSchema.parse(JSON.parse(readFileSync(this.settingsPath, 'utf8')));
       if (parsed.backupDirectory !== null && !isAbsolute(parsed.backupDirectory)) throw new Error();
-      return parsed.backupDirectory;
+      return { ok: true, directory: parsed.backupDirectory };
     } catch {
-      throw new AppError('internal_error', 'Pimpampum backup settings are invalid', 500);
+      return { ok: false, error: `Pimpampum backup settings are invalid: ${this.settingsPath}` };
     }
   }
 

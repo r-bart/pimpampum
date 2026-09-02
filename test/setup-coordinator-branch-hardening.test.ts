@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  SetupError,
   createInstallationLifecycle,
   createSetupCoordinator,
   type InstallationLifecycleDependencies,
@@ -144,10 +145,11 @@ describe('setup coordinator reachable boundary alternatives', () => {
     ).rejects.toThrow(/missing|stale|changed/iu);
   });
 
-  it('redacts non-Error failures and omits an empty connector diagnostic', async () => {
+  it('redacts non-Error failures into the journal and omits an empty connector diagnostic', async () => {
     const serviceInput = setupDependencies(temporaryDirectory('non-error'));
+    const serviceStore = createSetupStateStore(serviceInput.dataDirectory);
     vi.mocked(serviceInput.service.verify).mockRejectedValueOnce('service failed');
-    const serviceSetup = createSetupCoordinator(serviceInput);
+    const serviceSetup = createSetupCoordinator({ ...serviceInput, stateStore: serviceStore });
     const servicePlan = await serviceSetup.plan({ selectedConnectors: [] });
     await expect(
       serviceSetup.apply({
@@ -156,10 +158,25 @@ describe('setup coordinator reachable boundary alternatives', () => {
         confirmed: true,
       }),
     ).rejects.toBe('service failed');
+    // The raw primitive never reaches the durable journal: the diagnostic is the redacted
+    // placeholder, the failed phase is named, and the base markers were rolled back.
+    expect(serviceStore.read()).toMatchObject({
+      operationId: servicePlan.operationId,
+      status: 'failed',
+      phase: 'service.verify',
+      diagnostics: ['The operation failed'],
+      completedPhases: [],
+      service: { installed: false, running: false, verified: false },
+    });
+    expect(JSON.stringify(serviceStore.read())).not.toContain('service failed');
 
     const connectorInput = setupDependencies(temporaryDirectory('empty-diagnostic'));
+    const connectorStore = createSetupStateStore(connectorInput.dataDirectory);
     vi.mocked(connectorInput.connectors.codex.connect).mockRejectedValueOnce(new Error(''));
-    const connectorSetup = createSetupCoordinator(connectorInput);
+    const connectorSetup = createSetupCoordinator({
+      ...connectorInput,
+      stateStore: connectorStore,
+    });
     const connectorPlan = await connectorSetup.plan({ selectedConnectors: ['codex'] });
     const result = await connectorSetup.apply({
       operationId: connectorPlan.operationId,
@@ -171,33 +188,72 @@ describe('setup coordinator reachable boundary alternatives', () => {
       connectors: [{ id: 'codex', state: 'needsRepair' }],
     });
     expect(result.connectors[0]).not.toHaveProperty('error');
+    // An empty message adds no diagnostic line and the journal records the same partial outcome.
+    expect(connectorStore.read()).toMatchObject({
+      status: 'partial',
+      diagnostics: [],
+      connectors: [{ id: 'codex', configured: false, available: false, state: 'needsRepair' }],
+    });
   });
 
-  it('forwards a reviewed fingerprint and handles unsupported replacement without one', async () => {
-    const reviewedInput = setupDependencies(temporaryDirectory('reviewed-fingerprint'));
-    vi.mocked(reviewedInput.connectors.codex.inspect).mockResolvedValue({
-      state: 'conflict',
-      revision: 'a'.repeat(64),
+  it('records the reviewed fingerprint in the plan and journal and reports an unsupported replacement', async () => {
+    const reviewedRoot = temporaryDirectory('reviewed-fingerprint');
+    const reviewedInput = setupDependencies(reviewedRoot);
+    const reviewedStore = createSetupStateStore(reviewedInput.dataDirectory);
+    const reviewedPlanStore = createSetupPlanStore(reviewedInput.dataDirectory);
+    let hostEntry: { command: string } = { command: '/opt/acme/private-memory' };
+    vi.mocked(reviewedInput.connectors.codex.inspect).mockImplementation(async () =>
+      hostEntry.command === '/opt/acme/private-memory'
+        ? { state: 'conflict', revision: 'a'.repeat(64) }
+        : { state: 'ownedCurrent' },
+    );
+    vi.mocked(reviewedInput.connectors.codex.connect).mockImplementation(async () => {
+      hostEntry = { command: '/synthetic/pimpampum-mcp' };
     });
-    const reviewedSetup = createSetupCoordinator(reviewedInput);
+    const reviewedSetup = createSetupCoordinator({
+      ...reviewedInput,
+      stateStore: reviewedStore,
+      planStore: reviewedPlanStore,
+    });
     const reviewedPlan = await reviewedSetup.plan({ selectedConnectors: ['codex'] });
-    await reviewedSetup.apply({
+    // The plan the user confirms carries the fingerprint of the entry they reviewed.
+    expect(reviewedPlanStore.read()).toMatchObject({
+      operationId: reviewedPlan.operationId,
+      conflicts: [{ connectorId: 'codex', entryFingerprint: 'a'.repeat(64) }],
+    });
+    const result = await reviewedSetup.apply({
       operationId: reviewedPlan.operationId,
       expectedRevision: reviewedPlan.revision,
       confirmed: true,
       conflictDecisions: { codex: 'replace' },
     });
-    expect(reviewedInput.connectors.codex.connect).toHaveBeenCalledWith({
-      conflictDecision: 'replace',
-      reviewedEntryFingerprint: 'a'.repeat(64),
+    expect(result).toMatchObject({
+      status: 'complete',
+      connectors: [{ id: 'codex', configured: true, available: true, state: 'connected' }],
     });
+    // The journal pins the decision and the reviewed fingerprint the connector acted on, and the
+    // host entry the fake tracks is the replaced one.
+    expect(reviewedStore.read()).toMatchObject({
+      status: 'complete',
+      conflictDecisions: { codex: 'replace' },
+      reviewedConflictFingerprints: { codex: 'a'.repeat(64) },
+      completedPhases: expect.arrayContaining([
+        'connector:codex.connect',
+        'connector:codex.verify',
+      ]),
+    });
+    expect(hostEntry).toEqual({ command: '/synthetic/pimpampum-mcp' });
 
     const unsupportedInput = setupDependencies(temporaryDirectory('unsupported-no-revision'));
+    const unsupportedStore = createSetupStateStore(unsupportedInput.dataDirectory);
     vi.mocked(unsupportedInput.connectors.codex.inspect).mockResolvedValue({
       state: 'conflict',
       replacementSupported: false,
     });
-    const unsupportedSetup = createSetupCoordinator(unsupportedInput);
+    const unsupportedSetup = createSetupCoordinator({
+      ...unsupportedInput,
+      stateStore: unsupportedStore,
+    });
     const unsupportedPlan = await unsupportedSetup.plan({ selectedConnectors: ['codex'] });
     await expect(
       unsupportedSetup.apply({
@@ -206,7 +262,10 @@ describe('setup coordinator reachable boundary alternatives', () => {
         confirmed: true,
         conflictDecisions: { codex: 'replace' },
       }),
-    ).resolves.toMatchObject({ status: 'conflict' });
+    ).resolves.toMatchObject({ status: 'conflict', nextAction: 'resolve-conflict' });
+    // A pre-flight conflict is answered before any journal exists: nothing was installed and
+    // there is no durable state to resume.
+    expect(unsupportedStore.read()).toBeNull();
   });
 
   it('keeps a concurrent observer registered until its serialized apply starts', async () => {
@@ -280,7 +339,16 @@ describe('setup coordinator reachable boundary alternatives', () => {
     const setup = createSetupCoordinator({ ...input, stateStore: store });
     await expect(setup.retryConnector('codex')).resolves.toMatchObject({ status: 'partial' });
     await expect(setup.resume()).resolves.toMatchObject({ status: 'complete' });
-    expect(input.connectors.codex.verify).not.toHaveBeenCalled();
+    // Both completed connector phases stayed in the journal, so the connector was not re-verified
+    // and the connected row is unchanged.
+    expect(store.read()).toMatchObject({
+      status: 'complete',
+      completedPhases: expect.arrayContaining([
+        'connector:codex.connect',
+        'connector:codex.verify',
+      ]),
+      connectors: [{ id: 'codex', configured: true, available: true, state: 'connected' }],
+    });
   });
 
   it('repairs inconsistent durable connector phases and remains partial after a failed retry', async () => {
@@ -312,7 +380,16 @@ describe('setup coordinator reachable boundary alternatives', () => {
     await createSetupCoordinator({ ...reconnectInput, stateStore: reconnectStore }).retryConnector(
       'codex',
     );
-    expect(reconnectInput.connectors.codex.connect).toHaveBeenCalledOnce();
+    // `configured: false` wins over the stale completion marker: the connector was reconnected and
+    // the journal now records both phases and a connected row.
+    expect(reconnectStore.read()).toMatchObject({
+      status: 'complete',
+      completedPhases: expect.arrayContaining([
+        'connector:codex.connect',
+        'connector:codex.verify',
+      ]),
+      connectors: [{ id: 'codex', configured: true, available: true, state: 'connected' }],
+    });
 
     const partialRoot = temporaryDirectory('partial-retry');
     const partialInput = setupDependencies(partialRoot);
@@ -353,6 +430,20 @@ describe('setup coordinator reachable boundary alternatives', () => {
     await expect(
       createSetupCoordinator({ ...partialInput, stateStore: partialStore }).retryConnector('codex'),
     ).resolves.toMatchObject({ status: 'partial' });
+    expect(partialStore.read()).toMatchObject({
+      status: 'partial',
+      diagnostics: ['The connector route is unavailable'],
+      connectors: [
+        { id: 'claude-code', state: 'keptExisting' },
+        {
+          id: 'codex',
+          configured: true,
+          available: false,
+          state: 'needsRepair',
+          error: 'The connector route is unavailable',
+        },
+      ],
+    });
   });
 
   it('clears every impossible base completion marker after a resumed base failure', async () => {
@@ -369,7 +460,14 @@ describe('setup coordinator reachable boundary alternatives', () => {
     await expect(createSetupCoordinator({ ...input, stateStore: store }).resume()).rejects.toThrow(
       'runtime failed',
     );
-    expect(store.read()?.completedPhases).toEqual([]);
+    expect(store.read()).toMatchObject({
+      status: 'failed',
+      phase: 'runtime.install',
+      completedPhases: [],
+      diagnostics: ['runtime failed'],
+      loginItem: 'pending',
+      service: { installed: false, running: false, verified: false },
+    });
   });
 
   it('round-trips a durable conflict without an optional fingerprint', () => {
@@ -444,5 +542,175 @@ describe('installation lifecycle non-Error rollback diagnostics', () => {
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(AggregateError);
     expect(String(error)).toMatch(/installation removal failed/iu);
+  });
+});
+
+describe('base-phase preconditions for retry and resume', () => {
+  const basePhases = [
+    'runtime.install',
+    'service.install',
+    'service.verify',
+    'login-item.register',
+  ];
+
+  it('refuses a connector retry while the base phases never completed', async () => {
+    const root = temporaryDirectory('retry-precondition');
+    const input = setupDependencies(root);
+    const store = createSetupStateStore(input.dataDirectory);
+    store.write(
+      journal('stranded-operation', {
+        selectedConnectors: ['codex'],
+        completedPhases: ['runtime.install', 'service.install'],
+        status: 'failed',
+      }),
+    );
+    await expect(
+      createSetupCoordinator({ ...input, stateStore: store }).retryConnector('codex'),
+    ).rejects.toThrow(/service phases have not completed.*setup resume/iu);
+    expect(input.connectors.codex.connect).not.toHaveBeenCalled();
+    expect(store.read()).toMatchObject({ status: 'failed', connectors: [] });
+  });
+
+  it('re-runs incomplete base phases when a partial journal is resumed', async () => {
+    const root = temporaryDirectory('resume-partial-base');
+    const input = setupDependencies(root);
+    const store = createSetupStateStore(input.dataDirectory);
+    // An older retry could leave a `partial` journal whose service never verified.
+    store.write(
+      journal('partial-without-base', {
+        selectedConnectors: ['codex'],
+        completedPhases: ['connector:codex.connect', 'connector:codex.verify'],
+        connectors: [
+          {
+            id: 'codex',
+            configured: true,
+            available: true,
+            newSessionRequired: false,
+            state: 'connected',
+          },
+        ],
+        status: 'partial',
+      }),
+    );
+    await expect(
+      createSetupCoordinator({ ...input, stateStore: store }).resume(),
+    ).resolves.toMatchObject({
+      status: 'complete',
+      service: { installed: true, running: true, verified: true },
+    });
+    // The journal gained every base phase, kept the connector phases, and the connector row it
+    // already had; nothing about the connector was redone.
+    expect(store.read()).toMatchObject({
+      status: 'complete',
+      completedPhases: ['connector:codex.connect', 'connector:codex.verify', ...basePhases],
+      service: { installed: true, running: true, verified: true },
+      loginItem: 'enabled',
+      connectors: [{ id: 'codex', configured: true, available: true, state: 'connected' }],
+    });
+    expect(input.connectors.codex.connect).not.toHaveBeenCalled();
+  });
+
+  it('returns finished and conflicting journals without touching the base owners', async () => {
+    const root = temporaryDirectory('resume-finished');
+    const input = setupDependencies(root);
+    const store = createSetupStateStore(input.dataDirectory);
+    store.write(
+      journal('finished-operation', {
+        completedPhases: basePhases,
+        service: { installed: true, running: true, verified: true },
+        loginItem: 'enabled',
+        status: 'complete',
+      }),
+    );
+    const coordinator = createSetupCoordinator({ ...input, stateStore: store });
+    await expect(coordinator.resume()).resolves.toMatchObject({ status: 'complete' });
+    store.write(
+      journal('conflict-operation', {
+        selectedConnectors: ['codex'],
+        completedPhases: [],
+        phase: 'conflict',
+        status: 'conflict',
+      }),
+    );
+    await expect(coordinator.resume()).resolves.toMatchObject({
+      status: 'conflict',
+      nextAction: 'resolve-conflict',
+    });
+    // Neither resume touched the journal: the finished and conflicting entries read back as
+    // written, with no new phase, diagnostic or service state.
+    expect(store.read()).toEqual(
+      journal('conflict-operation', {
+        selectedConnectors: ['codex'],
+        completedPhases: [],
+        phase: 'conflict',
+        status: 'conflict',
+      }),
+    );
+  });
+});
+
+describe('stable setup error codes', () => {
+  it('attaches the code the CLI maps for every coordinator refusal', async () => {
+    const root = temporaryDirectory('setup-error-codes');
+    const input = setupDependencies(root);
+    const store = createSetupStateStore(input.dataDirectory);
+    const coordinator = createSetupCoordinator({ ...input, stateStore: store });
+    const codeOf = async (operation: () => Promise<unknown>): Promise<unknown> => {
+      const error = await operation().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(SetupError);
+      return (error as SetupError).code;
+    };
+
+    await expect(
+      codeOf(() => coordinator.plan({ selectedConnectors: ['unknown' as 'codex'] })),
+    ).resolves.toBe('SETUP_UNSUPPORTED_CONNECTOR');
+    await expect(codeOf(() => coordinator.retryConnector('unknown' as 'codex'))).resolves.toBe(
+      'SETUP_UNSUPPORTED_CONNECTOR',
+    );
+    await expect(codeOf(() => coordinator.resume())).resolves.toBe('SETUP_NOTHING_TO_RESUME');
+    await expect(codeOf(() => coordinator.retryConnector('codex'))).resolves.toBe(
+      'SETUP_CONNECTOR_NOT_SELECTED',
+    );
+
+    const plan = await coordinator.plan({ selectedConnectors: [] });
+    await expect(
+      codeOf(() =>
+        coordinator.apply({
+          operationId: plan.operationId,
+          expectedRevision: 'stale',
+          confirmed: true,
+        }),
+      ),
+    ).resolves.toBe('SETUP_PLAN_STALE');
+    await expect(
+      codeOf(() =>
+        coordinator.apply({
+          operationId: plan.operationId,
+          expectedRevision: plan.revision,
+          confirmed: false,
+        }),
+      ),
+    ).resolves.toBe('SETUP_CONFIRMATION_REQUIRED');
+
+    store.write(journal('another-operation'));
+    await expect(
+      codeOf(() =>
+        coordinator.apply({
+          operationId: plan.operationId,
+          expectedRevision: plan.revision,
+          confirmed: true,
+        }),
+      ),
+    ).resolves.toBe('SETUP_OPERATION_IN_PROGRESS');
+    store.write(journal(plan.operationId, { revision: 'a'.repeat(64) }));
+    await expect(
+      codeOf(() =>
+        coordinator.apply({
+          operationId: plan.operationId,
+          expectedRevision: plan.revision,
+          confirmed: true,
+        }),
+      ),
+    ).resolves.toBe('SETUP_JOURNAL_REVISION_MISMATCH');
   });
 });

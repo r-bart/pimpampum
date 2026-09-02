@@ -1,7 +1,7 @@
 # Implementation Plan: Desktop Design Handoff Integration
 
 **Date**: 2026-08-26
-**Status**: Implemented and verified locally; external Quattro live gate pending
+**Status**: Complete — released as `v1.0.0`; the Quattro live gate was retired on 2026-08-28 (`../notes/2026-08-28_quattro-gate-removed.md`)
 **Source design specification**: [../design/spec.md](../design/spec.md)
 **Source handoff**: [../design/handoff-pimpampum-escritorio/LEEME.md](../design/handoff-pimpampum-escritorio/LEEME.md)
 **Related product specifications**:

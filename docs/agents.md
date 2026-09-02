@@ -78,15 +78,17 @@ claimable. `doing` is derived from a live Claim and is never persisted.
 
 ## Errors
 
-| Code                | Meaning                           | Next action                                           |
-| ------------------- | --------------------------------- | ----------------------------------------------------- |
-| `unavailable`       | The local service did not answer. | Ask the operator to check Pimpampum's service status. |
-| `unauthorized`      | The local route was rejected.     | Ask the operator to repair the agent connection.      |
-| `revision_conflict` | Someone else wrote first.         | Reread and retry only if the change still applies.    |
-| `conflict`          | A Claim blocks the operation.     | Inspect the current Claim; do not take it over.       |
-| `invalid_state`     | A lifecycle rule refused.         | Inspect the Project, Spec, and Task states.           |
-| `not_found`         | The resource is unknown.          | Resolve the Workspace again.                          |
-| `bad_request`       | Input does not match the tool.    | Read the tool schema and correct the request.         |
+| Code                | Meaning                           | Next action                                                                                                                                    |
+| ------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unavailable`       | The local service did not answer. | Ask the operator to check Pimpampum's service status. Do not run `pimpampum install` yourself; the CLI suggestion is written for the operator. |
+| `unauthorized`      | The local route was rejected.     | Ask the operator to repair the agent connection.                                                                                               |
+| `revision_conflict` | Someone else wrote first.         | Reread and retry only if the change still applies.                                                                                             |
+| `conflict`          | A Claim blocks the operation.     | Inspect the current Claim; do not take it over.                                                                                                |
+| `invalid_state`     | A lifecycle rule refused.         | Inspect the Project, Spec, and Task states.                                                                                                    |
+| `not_found`         | The resource is unknown.          | Resolve the Workspace again.                                                                                                                   |
+| `bad_request`       | Input does not match the tool.    | Read the tool schema and correct the request.                                                                                                  |
+| `payload_too_large` | The request body exceeds a bound. | Shorten the body or split the write; do not retry as is.                                                                                       |
+| `internal_error`    | The daemon failed unexpectedly.   | Stop and report it to the operator; retry only if `retryable` is true.                                                                         |
 
 ## Reference
 

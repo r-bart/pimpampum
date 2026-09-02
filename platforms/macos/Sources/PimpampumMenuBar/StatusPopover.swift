@@ -43,11 +43,13 @@ struct StatusIndicator: View {
 @MainActor
 struct StatusPopover: View {
   @ObservedObject var store: OverviewStore
+  @ObservedObject var setupSession: SetupSession
   let workspaceOpener: any WorkspaceOpening
   let loginItemState: LoginItemRegistrationState
   let openLoginSettings: () -> Void
   let settingsWindowOpener: any SettingsWindowOpening
   let setupAssistant: SetupAssistant
+  let workspaceFolderPicker: any WorkspaceFolderPicking
   let quitApplication: () -> Void
 
   @State private var isCompletedExpanded = false
@@ -60,6 +62,7 @@ struct StatusPopover: View {
 
   init(
     store: OverviewStore,
+    setupSession: SetupSession? = nil,
     workspaceOpener: any WorkspaceOpening = WorkspaceOpener(),
     loginItemState: LoginItemRegistrationState = MainAppLoginItemService().state,
     openLoginSettings: @escaping () -> Void = {
@@ -67,14 +70,17 @@ struct StatusPopover: View {
     },
     settingsWindowOpener: any SettingsWindowOpening = SettingsWindowOpener(),
     setupAssistant: SetupAssistant = SetupAssistant(),
+    workspaceFolderPicker: any WorkspaceFolderPicking = WorkspaceFolderPicker(),
     quitApplication: @escaping () -> Void = { NSApplication.shared.terminate(nil) }
   ) {
     self.store = store
+    self.setupSession = setupSession ?? SetupSession.bundled(overviewStore: store)
     self.workspaceOpener = workspaceOpener
     self.loginItemState = loginItemState
     self.openLoginSettings = openLoginSettings
     self.settingsWindowOpener = settingsWindowOpener
     self.setupAssistant = setupAssistant
+    self.workspaceFolderPicker = workspaceFolderPicker
     self.quitApplication = quitApplication
   }
 
@@ -85,23 +91,20 @@ struct StatusPopover: View {
 
       Divider()
 
-      if isHelpPresented {
+      switch content {
+      case .help:
         // Rendered inside the popover, never in a sheet. A sheet is a real window and the menu-bar
         // popover closes the moment it loses key focus, taking the popover down with it.
         ScrollView {
           HelpDialog { isHelpPresented = false }
             .padding(20)
         }
-      } else if isSetupRequired {
-        SetupOnboardingView(
-          assistant: setupAssistant,
-          onCheckAgain: {
-            setupAssistant.prepareApp()
-            Task { await store.refresh() }
-          }
-        )
-        .padding(20)
-      } else {
+      case .guidedSetup:
+        // The session, not this branch, owns the setup store and the current step, so a poll or
+        // the help button re-entering here finds the setup where it was.
+        SetupOnboardingView(session: setupSession)
+          .padding(20)
+      case .overview:
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 16) {
             connectionNotice
@@ -136,7 +139,7 @@ struct StatusPopover: View {
         Button(PimpampumBrand.quitTitle, action: quitApplication)
           .buttonStyle(.plain)
         Spacer()
-        if isSetupRequired {
+        if !Self.showsSettingsButton(content: content) {
           Text(PimpampumBrand.versionText())
             .foregroundStyle(.secondary)
         } else {
@@ -188,9 +191,12 @@ struct StatusPopover: View {
     Self.shouldShowOverview(connectionState: store.connectionState, overview: store.overview)
   }
 
-  private var isSetupRequired: Bool {
-    if case .setupRequired = store.connectionState { return true }
-    return false
+  private var content: StatusPopoverContent {
+    Self.content(
+      isHelpPresented: isHelpPresented,
+      setupSessionActive: setupSession.isActive,
+      connectionState: store.connectionState
+    )
   }
 
   private var visibleActiveCount: Int {
@@ -218,17 +224,19 @@ struct StatusPopover: View {
 
       Spacer(minLength: 8)
 
-      Button {
-        isHelpPresented = true
-      } label: {
-        Image(systemName: "questionmark.circle")
+      if Self.showsHelpButton(setupSessionActive: setupSession.isActive) {
+        Button {
+          isHelpPresented = true
+        } label: {
+          Image(systemName: "questionmark.circle")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .frame(width: 24, height: 24)
+        .contentShape(Rectangle())
+        .accessibilityLabel(HelpDialogCopy.buttonTitle)
+        .help(HelpDialogCopy.buttonTitle)
       }
-      .buttonStyle(.borderless)
-      .controlSize(.small)
-      .frame(width: 24, height: 24)
-      .contentShape(Rectangle())
-      .accessibilityLabel(HelpDialogCopy.buttonTitle)
-      .help(HelpDialogCopy.buttonTitle)
     }
   }
 
@@ -310,9 +318,7 @@ struct StatusPopover: View {
           if store.incompleteProjects.isEmpty, store.completedProjects.isEmpty,
             store.cancelledProjects.isEmpty
           {
-            Text("No projects yet")
-              .font(.subheadline)
-              .foregroundStyle(.secondary)
+            emptyProjects(overview: overview)
           } else {
             ForEach(store.incompleteProjects) { project in
               projectButton(project)
@@ -440,7 +446,7 @@ struct StatusPopover: View {
   }
 
   private func projectButton(_ project: OverviewProject) -> some View {
-    ProjectRowButton(project: project) {
+    OverviewRowButton(content: Self.projectRow(project)) {
       do {
         try workspaceOpener.openWorkspace(at: project.workspace.rootPath)
         revealError = nil
@@ -454,7 +460,7 @@ struct StatusPopover: View {
   }
 
   private func specButton(_ spec: OverviewSpec) -> some View {
-    SpecRowButton(spec: spec) {
+    OverviewRowButton(content: Self.specRow(spec)) {
       do {
         try workspaceOpener.openWorkspace(at: spec.workspace.rootPath)
         revealError = nil
@@ -463,6 +469,32 @@ struct StatusPopover: View {
           spec,
           description: error.localizedDescription
         )
+      }
+    }
+  }
+
+  /// A first run is not an error: one line says why the list is empty and, with no workspace at
+  /// all, the folder dialog registers the first one. The dialog is a real window the popover
+  /// survives, exactly like the backup folder dialog.
+  private func emptyProjects(overview: Overview) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("No projects yet")
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+      Text(Self.emptyProjectsDetail(overview: overview))
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      if Self.showsAddWorkspace(overview: overview) {
+        Button(WorkspaceRegistrationCopy.button) {
+          Task { await setupSession.addWorkspace(using: workspaceFolderPicker) }
+        }
+        .buttonStyle(GuidedSecondaryButtonStyle())
+        .disabled(setupSession.workspaceRegistration.isRegistering)
+        .accessibilityLabel(WorkspaceRegistrationCopy.buttonAccessibilityLabel)
+      }
+      if let notice = setupSession.workspaceRegistration.notice {
+        WorkspaceRegistrationNoticeRow(notice: notice)
       }
     }
   }
@@ -561,9 +593,12 @@ struct StatusPopover: View {
 
 }
 
+/// One selectable portfolio row, for a project and for a spec alike. Every word, including the
+/// accessibility ones, arrives in `OverviewRowContent`; this view only lays it out and carries the
+/// hover treatment the two rows shared.
 @MainActor
-private struct ProjectRowButton: View {
-  let project: OverviewProject
+private struct OverviewRowButton: View {
+  let content: OverviewRowContent
   let action: () -> Void
 
   @State private var isHovering = false
@@ -572,19 +607,21 @@ private struct ProjectRowButton: View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 10) {
         VStack(alignment: .leading, spacing: 3) {
-          Text(project.title)
+          Text(content.title)
             .font(.subheadline.weight(.medium))
             .lineLimit(StatusPopover.contentTitleLineLimit)
 
-          Text(StatusPopover.projectMetadataText(project))
+          Text(content.metadata)
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(StatusPopover.metadataLineLimit)
             .truncationMode(.tail)
 
-          Text(StatusPopover.projectCountsText(project))
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+          if let counts = content.counts {
+            Text(counts)
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+          }
         }
 
         Spacer(minLength: 4)
@@ -602,51 +639,8 @@ private struct ProjectRowButton: View {
     .buttonStyle(.plain)
     .frame(maxWidth: .infinity, alignment: .leading)
     .onHover { isHovering = $0 }
-    .accessibilityLabel(StatusPopover.projectOpenAccessibilityLabel(project))
-    .accessibilityValue(StatusPopover.projectAccessibilityValue(project))
-    .accessibilityHint(StatusPopover.projectOpenAccessibilityHint(project))
-  }
-}
-
-@MainActor
-private struct SpecRowButton: View {
-  let spec: OverviewSpec
-  let action: () -> Void
-
-  @State private var isHovering = false
-
-  var body: some View {
-    Button(action: action) {
-      HStack(alignment: .top, spacing: 10) {
-        VStack(alignment: .leading, spacing: 3) {
-          Text(spec.title)
-            .font(.subheadline.weight(.medium))
-            .lineLimit(StatusPopover.contentTitleLineLimit)
-
-          Text(StatusPopover.specMetadataText(spec))
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(StatusPopover.metadataLineLimit)
-            .truncationMode(.tail)
-        }
-
-        Spacer(minLength: 4)
-
-      }
-      .padding(.horizontal, 6)
-      .padding(.vertical, 5)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .contentShape(Rectangle())
-      .background(
-        isHovering ? Color.primary.opacity(0.06) : Color.clear,
-        in: RoundedRectangle(cornerRadius: 6)
-      )
-    }
-    .buttonStyle(.plain)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .onHover { isHovering = $0 }
-    .accessibilityLabel(StatusPopover.specOpenAccessibilityLabel(spec))
-    .accessibilityValue(StatusPopover.specAccessibilityValue(spec))
-    .accessibilityHint(StatusPopover.specOpenAccessibilityHint(spec))
+    .accessibilityLabel(content.accessibilityLabel)
+    .accessibilityValue(content.accessibilityValue)
+    .accessibilityHint(content.accessibilityHint)
   }
 }

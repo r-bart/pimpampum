@@ -5,8 +5,10 @@
 
 node_modules/
 dist/
+# platforms/macos/dist/ is a build output; the app ships as a GitHub Release asset, not in Git.
 !platforms/macos/dist/
-!platforms/macos/dist/**
+platforms/macos/dist/*
+!platforms/macos/dist/.npmignore
 coverage/
 platforms/macos/.build/
 .project-master/

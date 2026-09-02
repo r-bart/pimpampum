@@ -1,56 +1,20 @@
 /**
  * @generated-from thoughts/specs/2026-08-31_zero-friction-local-agent-setup.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
- * These tests encode the spec's acceptance criteria as executable assertions.
- * If a test seems wrong, update the spec and regenerate — don't edit tests directly.
+ * These tests encode the spec's acceptance criteria as executable assertions. Each test names the
+ * spec items it covers; a test changes only together with the spec item it names.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-type ConnectorState =
-  | 'notInstalled'
-  | 'unsupportedVersion'
-  | 'notConnected'
-  | 'ownedCurrent'
-  | 'ownedStale'
-  | 'equivalentUnowned'
-  | 'conflict'
-  | 'unavailable';
-
-type CommandInvocation = {
-  executable: string;
-  arguments: string[];
-  environment?: NodeJS.ProcessEnv;
-};
-
-type HostEntry = {
-  command: string;
-  arguments: string[];
-  scope: 'user' | 'project' | 'local' | 'global';
-};
-
-type ConnectionReceipt = {
-  schemaVersion: 1;
-  connectorId: 'codex' | 'claude-code';
-  scope: 'user' | 'global';
-  commandFingerprint: string;
-  configuredAt: string;
-  lastVerifiedAt: string | null;
-};
-
-type ConnectionPlan = {
-  connectorId: 'codex' | 'claude-code';
-  state: ConnectorState;
-  selectedByDefault: boolean;
-  mutations: CommandInvocation[];
-  requiresConflictDecision: boolean;
-  newSessionRequired: boolean;
-  approvalPolicy: 'hostDefault' | 'promptForWrites';
-  summary: string;
-};
+import { planClaudeCodeConnection } from '../src/connectors/claudeCode.js';
+import { createCodexConnector, planCodexConnection } from '../src/connectors/codex.js';
+import { detectExecutable } from '../src/connectors/process.js';
+import { classifyConnectorOwnership, fingerprintCommand } from '../src/connectors/receipt.js';
+import { createConnectorRegistry } from '../src/connectors/registry.js';
+import type { CommandInvocation, ConnectionReceipt, HostEntry } from '../src/connectors/types.js';
+import { verifyMcpRoute } from '../src/connectors/verifier.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -58,62 +22,6 @@ function temporaryDirectory(label: string): string {
   const directory = mkdtempSync(join(tmpdir(), `pimpampum-connectors-${label}-`));
   temporaryDirectories.push(directory);
   return directory;
-}
-
-async function connectorContract() {
-  const receiptUrl = new URL('../src/connectors/receipt.ts', import.meta.url).href;
-  const codexUrl = new URL('../src/connectors/codex.ts', import.meta.url).href;
-  const claudeUrl = new URL('../src/connectors/claudeCode.ts', import.meta.url).href;
-  const registryUrl = new URL('../src/connectors/registry.ts', import.meta.url).href;
-  const verifierUrl = new URL('../src/connectors/verifier.ts', import.meta.url).href;
-  const [receipt, codex, claude, registry, verifier] = await Promise.all([
-    import(receiptUrl),
-    import(codexUrl),
-    import(claudeUrl),
-    import(registryUrl),
-    import(verifierUrl),
-  ]);
-  return {
-    fingerprintCommand: receipt.fingerprintCommand as (entry: HostEntry) => string,
-    classifyConnectorOwnership: receipt.classifyConnectorOwnership as (input: {
-      entry: HostEntry | null;
-      receipt: ConnectionReceipt | null;
-      expected: HostEntry;
-      recognizedLegacyEntries: HostEntry[];
-    }) => ConnectorState,
-    planCodexConnection: codex.planCodexConnection as (input: {
-      executable: string | null;
-      supported: boolean;
-      launcherPath: string;
-      inspection: HostEntry | null;
-      receipt: ConnectionReceipt | null;
-    }) => ConnectionPlan,
-    planClaudeCodeConnection: claude.planClaudeCodeConnection as (input: {
-      executable: string | null;
-      supported: boolean;
-      launcherPath: string;
-      inspection: HostEntry | null;
-      higherPrecedenceEntry: HostEntry | null;
-      receipt: ConnectionReceipt | null;
-    }) => ConnectionPlan,
-    createConnectorRegistry: registry.createConnectorRegistry as () => Array<{
-      id: string;
-      displayName: string;
-    }>,
-    verifyMcpRoute: verifier.verifyMcpRoute as (input: {
-      command: string;
-      arguments: string[];
-      timeoutMilliseconds: number;
-      requiredTools: string[];
-      expectedServerName: string;
-      spawn: (command: string, arguments_: string[]) => unknown;
-    }) => Promise<{
-      available: boolean;
-      serverName: string;
-      tools: string[];
-      diagnostics: string[];
-    }>,
-  };
 }
 
 afterEach(() => {
@@ -126,7 +34,6 @@ afterEach(() => {
 describe('Codex and Claude Code connector contract', () => {
   it('US-1/AC-2/AC-3: registry exposes both initial connectors in deterministic order', async () => {
     // Spec: US-1/AC-2, US-1/AC-3, FR-2.1, FR-2.10, FR-3.2
-    const { createConnectorRegistry } = await connectorContract();
 
     expect(createConnectorRegistry()).toEqual([
       { id: 'codex', displayName: 'Codex' },
@@ -140,20 +47,9 @@ describe('Codex and Claude Code connector contract', () => {
     const bin = join(root, 'bin');
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(bin, 'codex'), '#!/bin/sh\necho codex-cli 0.151.0\n', { mode: 0o755 });
-    const processUrl = new URL('../src/connectors/process.ts', import.meta.url).href;
-    const processContract = (await import(processUrl)) as {
-      detectExecutable(input: {
-        id: string;
-        names: string[];
-        boundedLocations: string[];
-        path: string;
-        timeoutMilliseconds: number;
-        run: (invocation: CommandInvocation) => Promise<unknown>;
-      }): Promise<{ executable: string | null; supported: boolean }>;
-    };
     const run = vi.fn(async () => ({ exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' }));
 
-    const result = await processContract.detectExecutable({
+    const result = await detectExecutable({
       id: 'codex',
       names: ['codex'],
       boundedLocations: [bin],
@@ -162,7 +58,11 @@ describe('Codex and Claude Code connector contract', () => {
       run,
     });
 
-    expect(result).toEqual({ executable: join(bin, 'codex'), supported: true });
+    expect(result).toEqual({
+      executable: join(bin, 'codex'),
+      supported: true,
+      versionOutput: 'codex-cli 0.151.0',
+    });
     expect(run).toHaveBeenCalledWith(
       expect.objectContaining({ executable: join(bin, 'codex'), arguments: ['--version'] }),
     );
@@ -171,7 +71,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('FR-5.3/FR-5.4: Codex plan uses its official CLI and an absolute tokenless stdio launcher', async () => {
     // Spec: US-1/AC-4, FR-2.3, FR-2.4, FR-5.1, FR-5.3, FR-5.4
-    const { planCodexConnection } = await connectorContract();
     const plan = planCodexConnection({
       executable: '/Applications/Codex.app/Contents/Resources/codex',
       supported: true,
@@ -205,7 +104,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('FR-5.1: Claude Code plan uses the official CLI at user scope', async () => {
     // Spec: US-1/AC-4, FR-2.3, FR-5.1, FR-5.3, FR-9.1
-    const { planClaudeCodeConnection } = await connectorContract();
     const plan = planClaudeCodeConnection({
       executable: '/Users/roberto/.local/bin/claude',
       supported: true,
@@ -234,7 +132,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('US-3/AC-3: exact owned entries are idempotent and recognized stale entries are repairable', async () => {
     // Spec: US-3/AC-3, FR-2.4, FR-2.7, FR-2.8, EC-6
-    const { classifyConnectorOwnership, fingerprintCommand } = await connectorContract();
     const expected: HostEntry = {
       command: '/Users/roberto/.local/share/pimpampum/bin/pimpampum-mcp',
       arguments: [],
@@ -282,7 +179,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('US-3/AC-4: unknown and higher-precedence entries are conflicts with zero implicit mutation', async () => {
     // Spec: US-3/AC-4, FR-2.3, FR-5.6, FR-7.2, EC-7, EC-12
-    const { planClaudeCodeConnection } = await connectorContract();
     const unknown: HostEntry = {
       command: '/opt/acme/private-memory-server',
       arguments: ['--workspace', 'critical-client'],
@@ -306,53 +202,104 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('US-4/AC-1/AC-2: disconnect is allowed only for receipt-proven ownership', async () => {
     // Spec: US-4/AC-1, US-4/AC-2, FR-2.8, FR-8.3, FR-8.4, EC-15
-    const disconnectUrl = new URL('../src/connectors/registry.ts', import.meta.url).href;
-    const { planDisconnect } = (await import(disconnectUrl)) as {
-      planDisconnect(input: {
-        connectorId: string;
-        entry: HostEntry | null;
-        receipt: ConnectionReceipt | null;
-        daemonRunning: boolean;
-        dataDirectory: string;
-      }): { mutations: CommandInvocation[]; preserveDaemon: boolean; preserveData: boolean };
-    };
+    const root = temporaryDirectory('disconnect');
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     const entry: HostEntry = {
       command: '/Users/roberto/.local/share/pimpampum/bin/pimpampum-mcp',
       arguments: [],
       scope: 'global',
     };
-    const receipt: ConnectionReceipt = {
+    const connectorFor = (receipt: ConnectionReceipt | null) => {
+      let stored = receipt;
+      let current: HostEntry | null = entry;
+      const run = vi.fn(async (invocation: CommandInvocation) => {
+        const args = invocation.arguments;
+        if (args[0] === '--version') {
+          return { exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' };
+        }
+        if (args.at(-1) === '--help') {
+          return { exitCode: 0, stdout: args[1] === 'get' ? '--json' : 'Usage', stderr: '' };
+        }
+        if (args[1] === 'get') {
+          return current === null
+            ? { exitCode: 1, stdout: '', stderr: "No MCP server named 'pimpampum' found." }
+            : {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  name: 'pimpampum',
+                  transport: { type: 'stdio', command: current.command, args: current.arguments },
+                }),
+                stderr: '',
+              };
+        }
+        if (args[1] === 'remove') current = null;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      });
+      const connector = createCodexConnector({
+        launcherPath: entry.command,
+        boundedLocations: [bin],
+        path: bin,
+        requiredTools: [],
+        run,
+        verify: async () => ({
+          available: true,
+          serverName: 'pimpampum',
+          tools: [],
+          diagnostics: [],
+        }),
+        receipt: {
+          read: async () => stored,
+          write: async (value: ConnectionReceipt) => {
+            stored = value;
+          },
+          remove: async () => {
+            stored = null;
+          },
+        },
+      });
+      return { connector, run, current: () => current, stored: () => stored };
+    };
+    const mutations = (run: ReturnType<typeof vi.fn>) =>
+      run.mock.calls.filter(
+        ([invocation]) =>
+          (invocation as CommandInvocation).arguments[0] === 'mcp' &&
+          (invocation as CommandInvocation).arguments.at(-1) !== '--help' &&
+          (invocation as CommandInvocation).arguments[1] !== 'get',
+      );
+
+    const unknown = connectorFor(null);
+    await expect(unknown.connector.disconnect()).resolves.toMatchObject({
+      state: 'equivalentUnowned',
+      changed: false,
+    });
+    expect(unknown.current()).toEqual(entry);
+    expect(mutations(unknown.run)).toEqual([]);
+
+    const owned = connectorFor({
       schemaVersion: 1,
       connectorId: 'codex',
       scope: 'global',
-      commandFingerprint: 'matching-fingerprint',
+      commandFingerprint: fingerprintCommand(entry),
       configuredAt: '2026-08-31T08:00:00.000Z',
       lastVerifiedAt: null,
-    };
-
-    const unknown = planDisconnect({
-      connectorId: 'codex',
-      entry,
-      receipt: null,
-      daemonRunning: true,
-      dataDirectory: '/Users/roberto/.pimpampum',
     });
-    expect(unknown.mutations).toEqual([]);
-
-    const owned = planDisconnect({
-      connectorId: 'codex',
-      entry,
-      receipt,
-      daemonRunning: true,
-      dataDirectory: '/Users/roberto/.pimpampum',
+    await expect(owned.connector.disconnect()).resolves.toMatchObject({
+      state: 'notConnected',
+      changed: true,
     });
-    expect(owned).toMatchObject({ preserveDaemon: true, preserveData: true });
-    expect(owned.mutations).toHaveLength(1);
+    expect(owned.current()).toBeNull();
+    expect(owned.stored()).toBeNull();
+    expect(mutations(owned.run)).toEqual([
+      [{ executable: join(bin, 'codex'), arguments: ['mcp', 'remove', 'pimpampum'] }],
+    ]);
+    // The daemon and the data directory are never part of a connector removal.
+    expect(JSON.stringify(owned.run.mock.calls)).not.toMatch(/launchctl|systemctl|sqlite|rm /u);
   });
 
   it('US-4/AC-3: missing or unsupported clients stay neutral and never install third-party software', async () => {
     // Spec: US-4/AC-3, FR-3.4, FR-3.5, EC-1, EC-2
-    const { planCodexConnection } = await connectorContract();
     const missing = planCodexConnection({
       executable: null,
       supported: false,
@@ -383,7 +330,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('US-2/AC-3: verification requires identity, initialization and the bounded tool catalog', async () => {
     // Spec: US-2/AC-1, US-2/AC-3, FR-2.5, FR-6.1, FR-6.2, FR-6.3
-    const { verifyMcpRoute } = await connectorContract();
     const child = {
       initialize: vi.fn(async () => ({ serverInfo: { name: 'pimpampum', version: '2.0.0' } })),
       listTools: vi.fn(async () => ({ tools: [{ name: 'project_list' }, { name: 'work_claim' }] })),
@@ -411,7 +357,6 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('FR-6.3/FR-6.4: wrong identity, timeout or secrets fail closed and always reap the bridge', async () => {
     // Spec: FR-6.3, FR-6.4, SEC-4, EC-9
-    const { verifyMcpRoute } = await connectorContract();
     const token = 'pimpampum-private-token-never-report';
     const child = {
       initialize: vi.fn(async () => ({ serverInfo: { name: 'another-server', version: '1.0.0' } })),
@@ -435,26 +380,52 @@ describe('Codex and Claude Code connector contract', () => {
 
   it('FR-2.9/US-4/AC-4: diagnostics and manual instructions are useful but redacted', async () => {
     // Spec: US-4/AC-4, FR-2.9, FR-6.5, FR-9.1, SEC-4
-    const typesUrl = new URL('../src/connectors/types.ts', import.meta.url).href;
-    const { redactConnectorDiagnostics } = (await import(typesUrl)) as {
-      redactConnectorDiagnostics(input: {
-        connectorId: string;
-        executablePath: string;
-        token: string;
-        stderr: string;
-      }): { message: string; instructions: string[] };
-    };
+    const root = temporaryDirectory('diagnostics');
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     const token = 'private-bearer-token-000000000000';
-    const result = redactConnectorDiagnostics({
-      connectorId: 'codex',
-      executablePath: '/Users/roberto/.local/bin/codex',
-      token,
-      stderr: `Could not connect with Bearer ${token}`,
+    const run = async (invocation: CommandInvocation) => {
+      const args = invocation.arguments;
+      if (args[0] === '--version') return { exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' };
+      if (args.at(-1) === '--help') {
+        return { exitCode: 0, stdout: args[1] === 'get' ? '--json' : 'Usage', stderr: '' };
+      }
+      if (args[1] === 'get') {
+        return { exitCode: 1, stdout: '', stderr: "No MCP server named 'pimpampum' found." };
+      }
+      return {
+        exitCode: 7,
+        stdout: '',
+        stderr: `Could not connect with Bearer ${token} from /Users/roberto/private\n${'x'.repeat(2_000)}`,
+      };
+    };
+    const connector = createCodexConnector({
+      launcherPath: '/Users/roberto/.local/share/pimpampum/bin/pimpampum-mcp',
+      boundedLocations: [bin],
+      path: bin,
+      requiredTools: [],
+      run,
+      receipt: {
+        read: async () => null,
+        write: async () => undefined,
+        remove: async () => undefined,
+      },
     });
 
-    expect(result.message).toMatch(/Codex|connect/iu);
-    expect(result.instructions.length).toBeGreaterThan(0);
-    expect(JSON.stringify(result)).not.toContain(token);
-    expect(JSON.stringify(result)).not.toMatch(/Bearer\s+\S+/iu);
+    const error = await connector
+      .connect(await connector.plan())
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: 'unavailable',
+      status: 503,
+      details: { connectorId: 'codex' },
+    });
+    const message = (error as Error).message;
+    expect(message).toMatch(/^Codex could not update the Pimpampum MCP entry: /u);
+    expect(message.length).toBeLessThan(400);
+    expect(message).not.toContain(token);
+    expect(message).not.toMatch(/Bearer\s+\S+/iu);
+    expect(message).not.toContain('/Users/roberto');
   });
 });

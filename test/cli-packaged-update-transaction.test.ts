@@ -1,11 +1,25 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createConcretePackagedProvider } from '../src/cliMain.js';
+import {
+  createCliUpdateManager,
+  createConcretePackagedProvider,
+  createPackagedUpdatePhases,
+  resolveCandidateActivation,
+  type CliUpdateManagerInput,
+} from '../src/cliComposition/packagedUpdateProvider.js';
 import { installRuntime } from '../src/runtime/installer.js';
 import {
   installReceiptPath,
@@ -14,6 +28,7 @@ import {
 } from '../src/service/receipt.js';
 import type { RuntimeManifest } from '../src/runtime/types.js';
 import type { PackagedRuntimeMetadata, ServiceManager } from '../src/service/types.js';
+import type { InstallationSnapshot } from '../src/setup/types.js';
 
 const roots: string[] = [];
 
@@ -196,6 +211,7 @@ describe('packaged update transaction', () => {
         runCommand: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
         currentServiceManager: value.currentServiceManager,
         createCandidateServiceManager,
+        environment: {},
       });
 
       const operation = provider.reconcile({
@@ -240,4 +256,256 @@ describe('packaged update transaction', () => {
       }
     },
   );
+});
+
+/**
+ * The phases the reconcile drives, built directly so each guard can be reached out of order. The
+ * lifecycle engine never runs them this way; these are the refusals that keep it honest when it
+ * does.
+ */
+describe('packaged update guards', () => {
+  function managerInput(
+    value: Awaited<ReturnType<typeof fixture>>,
+    overrides: Partial<CliUpdateManagerInput> = {},
+  ): CliUpdateManagerInput {
+    return {
+      currentVersion: '1.1.3',
+      dataDirectory: value.dataDirectory,
+      homeDirectory: value.homeDirectory,
+      target: 'darwin-arm64',
+      nodePath: value.previousInstallation.nodePath,
+      npmPath: null,
+      runCommand: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      currentServiceManager: value.currentServiceManager,
+      createCandidateServiceManager: () => candidateManager,
+      environment: {},
+      ...overrides,
+    };
+  }
+
+  const candidateManager: ServiceManager = {
+    install: async () => ({ installed: true as const, reconciled: true, receiptPath: '' }),
+    status: async () => ({
+      installed: true,
+      running: true,
+      adapter: 'launchd-macos-app',
+      version: '1.1.3',
+    }),
+    uninstall: async () => ({ uninstalled: true, dataPreserved: true as const }),
+  };
+
+  async function guards(overrides: Partial<CliUpdateManagerInput> = {}) {
+    const value = await fixture();
+    const input = managerInput(value, overrides);
+    const candidate = resolveCandidateActivation(input, '2.0.0', value.candidatePath);
+    return { value, input, candidate, ...createPackagedUpdatePhases(input, candidate) };
+  }
+
+  it('refuses to install over anything but a regular application directory', async () => {
+    const { value, phases } = await guards();
+    await expect(phases.service.install({ nodePath: '/n', cliPath: '/c' })).rejects.toThrow(
+      /backup was not staged/u,
+    );
+    rmSync(value.installedApp, { recursive: true });
+    writeFileSync(value.installedApp, 'not a bundle');
+    await expect(phases.service.install({ nodePath: '/n', cliPath: '/c' })).rejects.toThrow(
+      /must be a regular directory/u,
+    );
+  });
+
+  it('refuses a rollback with no receipt snapshot, with a lost backup, and over an unsafe path', async () => {
+    const { value, phases, state } = await guards();
+    const previous: InstallationSnapshot = {
+      runtimeVersion: '1.1.3',
+      serviceCommand: [value.previousInstallation.nodePath, value.previousInstallation.cliPath],
+      connectorEntries: {},
+    };
+    // Nothing was moved yet: the previous bundle is removed and the receipt snapshot is missing.
+    await expect(phases.service.restore(previous)).rejects.toThrow(
+      /receipt rollback snapshot is missing/u,
+    );
+    expect(existsSync(value.installedApp)).toBe(false);
+    // The same call with the bundle already gone takes the other side of the existence check.
+    await expect(phases.service.restore(previous)).rejects.toThrow(
+      /receipt rollback snapshot is missing/u,
+    );
+
+    state.appBackedUp = true;
+    state.backupApp = null;
+    await expect(phases.service.restore(previous)).rejects.toThrow(/rollback snapshot is missing/u);
+
+    symlinkSync(value.root, value.installedApp);
+    await expect(phases.service.restore(previous)).rejects.toThrow(/unsafe to roll back/u);
+  });
+
+  it('refuses a candidate service that does not answer with the updated version', async () => {
+    const { phases } = await guards();
+    await expect(phases.service.verify()).rejects.toThrow(/failed health verification/u);
+  });
+
+  it('refuses to read a missing receipt and to commit one that did not land', async () => {
+    const { value, phases, candidate } = await guards();
+    const receiptPath = installReceiptPath(value.dataDirectory);
+    const previous = readFileSync(receiptPath);
+    rmSync(receiptPath);
+    await expect(phases.receipt.read()).rejects.toThrow(/requires an installation receipt/u);
+    writeFileSync(receiptPath, previous, { mode: 0o600 });
+
+    await expect(
+      phases.receipt.commit({
+        runtimeVersion: '0.0.1',
+        serviceCommand: ['/nowhere/node', '/nowhere/cli.js'],
+        connectorEntries: {},
+      }),
+    ).rejects.toThrow(/was not restored exactly/u);
+
+    // The updated receipt is on disk, but no runtime transaction was ever opened to commit.
+    writeInstallReceipt(
+      receiptPath,
+      {
+        schemaVersion: 1,
+        adapter: 'launchd-macos-app',
+        platform: 'darwin',
+        version: '2.0.0',
+        installationKey: 'b'.repeat(64),
+        installedAt: '2026-08-31T11:00:00.000Z',
+        nodePath: candidate.nodePath,
+        cliPath: candidate.cliPath,
+        dataDirectory: value.dataDirectory,
+        baseUrl: 'http://127.0.0.1:7337',
+        logDirectory: join(value.dataDirectory, 'logs'),
+        artifacts: [],
+        updateProvider: 'packaged-release',
+        packagedRuntime: {
+          version: '2.0.0',
+          target: 'darwin-arm64',
+          runtimeDirectory: candidate.runtimeDirectory,
+        },
+      },
+      value.dataDirectory,
+    );
+    await expect(
+      phases.receipt.commit({
+        runtimeVersion: '2.0.0',
+        serviceCommand: [candidate.nodePath, candidate.cliPath],
+        connectorEntries: {},
+      }),
+    ).rejects.toThrow(/committed before its runtime was activated/u);
+  });
+});
+
+describe('packaged update reconcile', () => {
+  function provider(
+    value: Awaited<ReturnType<typeof fixture>>,
+    createCandidateServiceManager: CliUpdateManagerInput['createCandidateServiceManager'],
+  ) {
+    return createConcretePackagedProvider({
+      currentVersion: '1.1.3',
+      dataDirectory: value.dataDirectory,
+      homeDirectory: value.homeDirectory,
+      target: 'darwin-arm64',
+      nodePath: value.previousInstallation.nodePath,
+      npmPath: null,
+      runCommand: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      currentServiceManager: value.currentServiceManager,
+      createCandidateServiceManager,
+      environment: {},
+    });
+  }
+
+  it('refuses a Linux activation with the plugin remedy and leaves a foreign path alone', async () => {
+    const value = await fixture();
+    const outside = join(value.root, 'outside-candidate');
+    mkdirSync(outside, { recursive: true });
+    await expect(
+      provider(value, () => value.currentServiceManager).reconcile({
+        version: '2.0.0',
+        candidatePath: outside,
+        target: 'linux-x64',
+        sha256: 'c'.repeat(64),
+        signature: 'signature',
+      }),
+    ).rejects.toMatchObject({ code: 'unavailable', details: { remedy: 'pimpampum-bootstrap' } });
+    expect(existsSync(outside)).toBe(true);
+  });
+
+  it('clears the staging root when the update fails before the application moves', async () => {
+    const value = await fixture();
+    rmSync(installReceiptPath(value.dataDirectory));
+    await expect(
+      provider(value, () => value.currentServiceManager).reconcile({
+        version: '2.0.0',
+        candidatePath: value.candidatePath,
+        target: 'darwin-arm64',
+        sha256: 'c'.repeat(64),
+        signature: 'signature',
+      }),
+    ).rejects.toThrow(/requires an installation receipt/u);
+    expect(existsSync(value.candidatePath)).toBe(false);
+    expect(readFileSync(join(value.installedApp, 'old-bytes'), 'utf8')).toBe(
+      'old-application-bytes',
+    );
+  });
+
+  it('restores the previous application when the lifecycle rollback could not', async () => {
+    const value = await fixture();
+    const symlinkTarget = join(value.root, 'decoy');
+    mkdirSync(symlinkTarget);
+    await expect(
+      provider(value, () => ({
+        // Puts a symlink where the bundle belongs, which no rollback may follow.
+        install: async () => {
+          symlinkSync(symlinkTarget, value.installedApp);
+          return { installed: true as const, reconciled: true, receiptPath: '' };
+        },
+        status: async () => ({
+          installed: true,
+          running: true,
+          adapter: 'launchd-macos-app',
+          version: '2.0.0',
+        }),
+        uninstall: async () => ({ uninstalled: true, dataPreserved: true as const }),
+      })).reconcile({
+        version: '2.0.0',
+        candidatePath: value.candidatePath,
+        target: 'darwin-arm64',
+        sha256: 'c'.repeat(64),
+        signature: 'signature',
+      }),
+    ).rejects.toThrow(/unsafe to roll back/u);
+  });
+
+  it('refuses to build a provider for an unsupported target', async () => {
+    const value = await fixture();
+    expect(() =>
+      createConcretePackagedProvider({
+        currentVersion: '1.1.3',
+        dataDirectory: value.dataDirectory,
+        homeDirectory: value.homeDirectory,
+        target: null,
+        nodePath: value.previousInstallation.nodePath,
+        npmPath: null,
+        runCommand: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        currentServiceManager: value.currentServiceManager,
+        createCandidateServiceManager: () => value.currentServiceManager,
+        environment: {},
+      }),
+    ).toThrow(/target is unsupported/u);
+  });
+
+  it('derives npm from the running Node when no path is injected', async () => {
+    const value = await fixture();
+    const manager = createCliUpdateManager({
+      currentVersion: '1.1.3',
+      dataDirectory: value.dataDirectory,
+      homeDirectory: value.homeDirectory,
+      target: null,
+      nodePath: value.previousInstallation.nodePath,
+      runCommand: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      currentServiceManager: value.currentServiceManager,
+      createCandidateServiceManager: () => value.currentServiceManager,
+      environment: {},
+    });
+    expect(manager.check).toBeTypeOf('function');
+  });
 });

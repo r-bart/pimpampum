@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  inspectInstalledRuntime,
   installRuntime,
   prepareOwnedRuntimeRemoval,
   pruneOwnedRuntimeVersions,
@@ -169,10 +170,17 @@ describe('atomic runtime installer', () => {
       version: '2.0.0',
       previousVersion: '2.0.0',
     });
-    expect(repeatedSmoke).toHaveBeenCalledOnce();
+    // Identity is decided from the receipt and the on-disk tree before staging, so a no-op
+    // reinstall neither copies the payload again nor smoke-tests a fresh copy.
+    expect(repeatedSmoke).not.toHaveBeenCalled();
+    expect(
+      readdirSync(dirname(layout.versionDirectory)).filter((name) =>
+        name.startsWith('.pimpampum-stage-'),
+      ),
+    ).toEqual([]);
   });
 
-  it('rejects extra files and symlinks before invoking smoke', async () => {
+  it('rejects extra files and symlinks before invoking smoke (shared tree walk says "symbolic links")', async () => {
     const root = temporaryDirectory('hostile');
     const extra = installInput(root, '2.0.0');
     writeFileSync(join(extra.sourceDirectory, 'extra'), 'unexpected');
@@ -182,7 +190,7 @@ describe('atomic runtime installer', () => {
 
     const linked = installInput(root, '2.1.0');
     symlinkSync('/tmp', join(linked.sourceDirectory, 'unsafe-link'));
-    await expect(installRuntime({ ...linked, smoke })).rejects.toThrow(/symlink/iu);
+    await expect(installRuntime({ ...linked, smoke })).rejects.toThrow(/symbolic link/iu);
     expect(smoke).not.toHaveBeenCalled();
 
     const danglingLauncher = installInput(root, '2.2.0');
@@ -313,12 +321,12 @@ describe('atomic runtime installer', () => {
     );
   });
 
-  it('rejects missing, non-directory, and special-file runtime sources', async () => {
+  it('rejects missing, non-directory, and special-file runtime sources (shared guard wording)', async () => {
     const missingRoot = temporaryDirectory('missing-source');
     const missing = installInput(missingRoot, '2.0.0');
     rmSync(missing.sourceDirectory, { recursive: true });
     await expect(installRuntime({ ...missing, smoke: async () => undefined })).rejects.toThrow(
-      /existing absolute directory/iu,
+      /existing directory/iu,
     );
 
     const fileRoot = temporaryDirectory('file-source');
@@ -333,7 +341,7 @@ describe('atomic runtime installer', () => {
     const fifo = installInput(fifoRoot, '2.0.0');
     execFileSync('/usr/bin/mkfifo', [join(fifo.sourceDirectory, 'named-pipe')]);
     await expect(installRuntime({ ...fifo, smoke: async () => undefined })).rejects.toThrow(
-      /device or special file/iu,
+      /only regular files and directories/iu,
     );
   });
 
@@ -526,6 +534,51 @@ describe('atomic runtime installer', () => {
     ).resolves.toMatchObject({ activated: false });
   });
 
+  it('recovers a prepared activation whose created destination never appeared', async () => {
+    // A crash between the journal write and the payload rename leaves `createdFinal: true` with
+    // nothing at the destination. Recovery must only drop the journal and let the install proceed.
+    const root = temporaryDirectory('activation-recovery-no-final');
+    const previousInput = installInput(root, '1.0.0');
+    await installRuntime({ ...previousInput, smoke: async () => undefined });
+    const previousLayout = resolveRuntimeLayout({
+      homeDirectory: previousInput.homeDirectory,
+      platform: previousInput.platform,
+      architecture: previousInput.architecture,
+      version: '1.0.0',
+    });
+    const nextInput = installInput(root, '2.0.0');
+    const nextLayout = resolveRuntimeLayout({
+      homeDirectory: nextInput.homeDirectory,
+      platform: nextInput.platform,
+      architecture: nextInput.architecture,
+      version: '2.0.0',
+    });
+    const journalPath = join(nextInput.dataDirectory, 'runtime-install-journal.json');
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        phase: 'prepared',
+        targetId: nextLayout.targetId,
+        candidateVersion: '2.0.0',
+        finalDirectory: nextLayout.versionDirectory,
+        createdFinal: true,
+        replacedFinal: null,
+        controlLauncher: fileSnapshot(previousLayout.controlLauncherPath),
+        mcpLauncher: fileSnapshot(previousLayout.mcpLauncherPath),
+        receipt: fileSnapshot(join(nextInput.dataDirectory, 'runtime-install-receipt.json')),
+      })}\n`,
+      { mode: 0o600 },
+    );
+    expect(existsSync(nextLayout.versionDirectory)).toBe(false);
+
+    await expect(
+      installRuntime({ ...nextInput, smoke: async () => undefined }),
+    ).resolves.toMatchObject({ activated: true, version: '2.0.0', previousVersion: '1.0.0' });
+    expect(existsSync(journalPath)).toBe(false);
+    expect(inspectInstalledRuntime(nextInput)).toMatchObject({ version: '2.0.0' });
+  });
+
   it('restores absent activation snapshots and rejects invalid or public snapshots', async () => {
     for (const variant of ['absent', 'invalid-snapshot', 'public'] as const) {
       const root = temporaryDirectory(`activation-${variant}`);
@@ -583,6 +636,334 @@ describe('atomic runtime installer', () => {
     await expect(installRuntime({ ...stagingInput, smoke: async () => undefined })).rejects.toThrow(
       /staging path is unsafe/iu,
     );
+  });
+
+  it('repairs a receipt-owned version whose bytes drifted instead of refusing the reinstall', async () => {
+    const root = temporaryDirectory('repair-current');
+    const input = installInput(root, '2.0.0');
+    const installed = await installRuntime({ ...input, smoke: async () => undefined });
+    const layout = resolveRuntimeLayout({
+      homeDirectory: input.homeDirectory,
+      platform: input.platform,
+      architecture: input.architecture,
+      version: '2.0.0',
+    });
+    const addonPath = join(
+      layout.versionDirectory,
+      'node_modules/better-sqlite3/build/Release/better_sqlite3.node',
+    );
+    writeFileSync(installed.cliPath, 'truncated');
+    writeFileSync(addonPath, 'native-addon-x64!!');
+    await expect(() => inspectInstalledRuntime(input)).not.toThrow();
+
+    const smoke = vi.fn(async () => undefined);
+    const repaired = await installRuntime({ ...input, smoke });
+
+    expect(repaired).toMatchObject({ activated: true, version: '2.0.0', previousVersion: '2.0.0' });
+    expect(smoke).toHaveBeenCalledOnce();
+    expect(readFileSync(installed.cliPath, 'utf8')).toBe('export const version = "2.0.0";\n');
+    expect(readFileSync(addonPath, 'utf8')).toBe('native-addon-arm64');
+    expect(
+      readdirSync(layout.versionsDirectory).filter((name) => name.startsWith('.pimpampum-')),
+    ).toEqual([]);
+    expect(existsSync(join(input.dataDirectory, 'runtime-install-journal.json'))).toBe(false);
+    expect(
+      JSON.parse(readFileSync(join(input.dataDirectory, 'runtime-install-receipt.json'), 'utf8')),
+    ).toMatchObject({
+      currentVersion: '2.0.0',
+      ownedVersions: [{ version: '2.0.0', directory: layout.versionDirectory }],
+    });
+    expect(inspectInstalledRuntime(input)).toMatchObject({ version: '2.0.0' });
+  });
+
+  it('repairs a drifted inactive owned version while reactivating it', async () => {
+    const root = temporaryDirectory('repair-inactive');
+    const first = installInput(root, '1.0.0');
+    const firstInstalled = await installRuntime({ ...first, smoke: async () => undefined });
+    const second = installInput(root, '2.0.0');
+    const secondInstalled = await installRuntime({ ...second, smoke: async () => undefined });
+    writeFileSync(firstInstalled.nodePath, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+
+    const reactivated = await installRuntime({ ...first, smoke: async () => undefined });
+
+    expect(reactivated).toMatchObject({
+      activated: true,
+      version: '1.0.0',
+      previousVersion: '2.0.0',
+    });
+    expect(readFileSync(firstInstalled.nodePath, 'utf8')).toBe('#!/bin/sh\nexit 0\n');
+    expect(readFileSync(secondInstalled.cliPath, 'utf8')).toBe('export const version = "2.0.0";\n');
+    expect(inspectInstalledRuntime(first)).toMatchObject({ version: '1.0.0' });
+  });
+
+  it('restores the quarantined copy of an interrupted repair and discards a committed one', async () => {
+    const root = temporaryDirectory('repair-recovery');
+    const input = installInput(root, '2.0.0');
+    const installed = await installRuntime({ ...input, smoke: async () => undefined });
+    const layout = resolveRuntimeLayout({
+      homeDirectory: input.homeDirectory,
+      platform: input.platform,
+      architecture: input.architecture,
+      version: '2.0.0',
+    });
+    const journalPath = join(input.dataDirectory, 'runtime-install-journal.json');
+    const receiptPath = join(input.dataDirectory, 'runtime-install-receipt.json');
+    const originalBytes = readFileSync(installed.cliPath);
+    const journal = (replacedFinal: string, phase: 'prepared' | 'committed' = 'prepared') => ({
+      schemaVersion: 1,
+      phase,
+      targetId: layout.targetId,
+      candidateVersion: '2.0.0',
+      finalDirectory: layout.versionDirectory,
+      createdFinal: true,
+      replacedFinal,
+      controlLauncher: fileSnapshot(layout.controlLauncherPath),
+      mcpLauncher: fileSnapshot(layout.mcpLauncherPath),
+      receipt: fileSnapshot(receiptPath),
+    });
+
+    // Interrupted after the staged payload replaced the quarantined copy: the receipt still names
+    // the old bytes, so recovery removes the half-activated payload and renames the copy back.
+    const quarantineRoot = join(
+      layout.versionsDirectory,
+      '.pimpampum-remove-12345678-1234-1234-1234-123456789abc',
+    );
+    mkdirSync(quarantineRoot, { recursive: true });
+    renameSync(layout.versionDirectory, join(quarantineRoot, 'replaced'));
+    mkdirSync(layout.versionDirectory, { recursive: true });
+    writeFileSync(join(layout.versionDirectory, 'partial'), 'partial');
+    writeFileSync(journalPath, `${JSON.stringify(journal(join(quarantineRoot, 'replaced')))}\n`, {
+      mode: 0o600,
+    });
+
+    await expect(installRuntime({ ...input, smoke: async () => undefined })).resolves.toMatchObject(
+      { activated: false, version: '2.0.0' },
+    );
+    expect(readFileSync(installed.cliPath)).toEqual(originalBytes);
+    expect(existsSync(join(layout.versionDirectory, 'partial'))).toBe(false);
+    expect(existsSync(quarantineRoot)).toBe(false);
+    expect(existsSync(journalPath)).toBe(false);
+
+    // Interrupted between the quarantine rename and the payload rename: the destination is gone
+    // and the quarantined copy is the only one; recovery renames it back.
+    mkdirSync(quarantineRoot, { recursive: true });
+    renameSync(layout.versionDirectory, join(quarantineRoot, 'replaced'));
+    writeFileSync(journalPath, `${JSON.stringify(journal(join(quarantineRoot, 'replaced')))}\n`, {
+      mode: 0o600,
+    });
+    await expect(installRuntime({ ...input, smoke: async () => undefined })).resolves.toMatchObject(
+      { activated: false },
+    );
+    expect(readFileSync(installed.cliPath)).toEqual(originalBytes);
+    expect(existsSync(quarantineRoot)).toBe(false);
+    expect(existsSync(journalPath)).toBe(false);
+
+    // Interrupted before the quarantine rename: the destination still holds the original bytes
+    // and must survive; only the empty quarantine root goes.
+    mkdirSync(quarantineRoot, { recursive: true });
+    writeFileSync(journalPath, `${JSON.stringify(journal(join(quarantineRoot, 'replaced')))}\n`, {
+      mode: 0o600,
+    });
+    await expect(installRuntime({ ...input, smoke: async () => undefined })).resolves.toMatchObject(
+      { activated: false },
+    );
+    expect(readFileSync(installed.cliPath)).toEqual(originalBytes);
+    expect(existsSync(quarantineRoot)).toBe(false);
+
+    // Committed: the receipt already names the repaired bytes, so the quarantine is garbage. The
+    // receipt cannot tell a same-version repair apart from its predecessor, so the phase decides.
+    mkdirSync(join(quarantineRoot, 'replaced'), { recursive: true });
+    writeFileSync(join(quarantineRoot, 'replaced', 'stale'), 'stale');
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify(journal(join(quarantineRoot, 'replaced'), 'committed'))}\n`,
+      { mode: 0o600 },
+    );
+    await expect(installRuntime({ ...input, smoke: async () => undefined })).resolves.toMatchObject(
+      { activated: false },
+    );
+    expect(readFileSync(installed.cliPath)).toEqual(originalBytes);
+    expect(existsSync(quarantineRoot)).toBe(false);
+    expect(existsSync(journalPath)).toBe(false);
+
+    // Committed without a receipt is a hand-edited state: fail closed, but drop the quarantine and
+    // the journal so the failure does not repeat on every later lifecycle call.
+    mkdirSync(join(quarantineRoot, 'replaced'), { recursive: true });
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify(journal(join(quarantineRoot, 'replaced'), 'committed'))}\n`,
+      { mode: 0o600 },
+    );
+    const receiptBytes = readFileSync(receiptPath);
+    rmSync(receiptPath);
+    await expect(installRuntime({ ...input, smoke: async () => undefined })).rejects.toThrow(
+      /committed without a receipt/iu,
+    );
+    expect(existsSync(quarantineRoot)).toBe(false);
+    expect(existsSync(journalPath)).toBe(false);
+    writeFileSync(receiptPath, receiptBytes, { mode: 0o600 });
+    expect(inspectInstalledRuntime(input)).toMatchObject({ version: '2.0.0' });
+  });
+
+  it('rejects a repair journal whose quarantine escapes the owned layout', async () => {
+    const root = temporaryDirectory('repair-hostile');
+    const input = installInput(root, '2.0.0');
+    await installRuntime({ ...input, smoke: async () => undefined });
+    const layout = resolveRuntimeLayout({
+      homeDirectory: input.homeDirectory,
+      platform: input.platform,
+      architecture: input.architecture,
+      version: '2.0.0',
+    });
+    const journalPath = join(input.dataDirectory, 'runtime-install-journal.json');
+    for (const [replacedFinal, expected] of [
+      ['/tmp/.pimpampum-remove-12345678-1234-1234-1234-123456789abc/replaced', /escapes/iu],
+      [join(layout.versionsDirectory, 'not-a-quarantine', 'replaced'), /escapes/iu],
+      [
+        join(layout.versionsDirectory, '.pimpampum-remove-12345678-1234-1234-1234-123456789abc'),
+        /escapes/iu,
+      ],
+      [42, /schema is invalid/iu],
+    ] as const) {
+      writeFileSync(
+        journalPath,
+        `${JSON.stringify({
+          schemaVersion: 1,
+          phase: 'prepared',
+          targetId: layout.targetId,
+          candidateVersion: '2.0.0',
+          finalDirectory: layout.versionDirectory,
+          createdFinal: true,
+          replacedFinal,
+          controlLauncher: null,
+          mcpLauncher: null,
+          receipt: null,
+        })}\n`,
+        { mode: 0o600 },
+      );
+      await expect(installRuntime({ ...input, smoke: async () => undefined })).rejects.toThrow(
+        expected,
+      );
+      expect(existsSync(journalPath)).toBe(true);
+      rmSync(journalPath);
+    }
+
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        phase: 'deleting',
+        targetId: layout.targetId,
+        candidateVersion: '2.0.0',
+        finalDirectory: layout.versionDirectory,
+        createdFinal: false,
+        replacedFinal: null,
+        controlLauncher: null,
+        mcpLauncher: null,
+        receipt: null,
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await expect(installRuntime({ ...input, smoke: async () => undefined })).rejects.toThrow(
+      /schema is invalid/iu,
+    );
+  });
+
+  it('repairs drifted launchers behind a committed journal and never keeps the journal', async () => {
+    const root = temporaryDirectory('committed-launcher-drift');
+    const input = installInput(root, '2.0.0');
+    const installed = await installRuntime({ ...input, smoke: async () => undefined });
+    const layout = resolveRuntimeLayout({
+      homeDirectory: input.homeDirectory,
+      platform: input.platform,
+      architecture: input.architecture,
+      version: '2.0.0',
+    });
+    const journalPath = join(input.dataDirectory, 'runtime-install-journal.json');
+    const receiptPath = join(input.dataDirectory, 'runtime-install-receipt.json');
+    const committedJournal = `${JSON.stringify({
+      schemaVersion: 1,
+      phase: 'committed',
+      targetId: layout.targetId,
+      candidateVersion: '2.0.0',
+      finalDirectory: layout.versionDirectory,
+      createdFinal: false,
+      controlLauncher: null,
+      mcpLauncher: null,
+      receipt: null,
+    })}\n`;
+    const launcherBytes = readFileSync(installed.mcpLauncherPath);
+
+    writeFileSync(installed.mcpLauncherPath, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    writeFileSync(journalPath, committedJournal, { mode: 0o600 });
+    await expect(installRuntime({ ...input, smoke: async () => undefined })).resolves.toMatchObject(
+      { activated: false },
+    );
+    expect(readFileSync(installed.mcpLauncherPath)).toEqual(launcherBytes);
+    expect(existsSync(journalPath)).toBe(false);
+
+    // A receipt that pins a hash no regenerated launcher can produce is a real tamper: the
+    // install fails closed, but the journal still goes so the failure cannot become permanent.
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as Record<string, unknown>;
+    writeFileSync(
+      receiptPath,
+      `${JSON.stringify({ ...receipt, mcpLauncherSha256: 'f'.repeat(64) })}\n`,
+      { mode: 0o600 },
+    );
+    writeFileSync(journalPath, committedJournal, { mode: 0o600 });
+    await expect(installRuntime({ ...input, smoke: async () => undefined })).rejects.toThrow(
+      /launcher drift/iu,
+    );
+    expect(existsSync(journalPath)).toBe(false);
+  });
+
+  it('inspects the active runtime without recovering pending journals', async () => {
+    const root = temporaryDirectory('inspect-read-only');
+    const input = installInput(root, '1.0.0');
+    const installed = await installRuntime({ ...input, smoke: async () => undefined });
+    const layout = resolveRuntimeLayout({
+      homeDirectory: input.homeDirectory,
+      platform: input.platform,
+      architecture: input.architecture,
+      version: '1.0.0',
+    });
+    const journalPath = join(input.dataDirectory, 'runtime-install-journal.json');
+
+    // Mid-activation shape: launchers already point at the candidate, receipt still names the
+    // previous version. A poll must report the transient state, not undo the installer's work.
+    const launcherBytes = readFileSync(installed.mcpLauncherPath);
+    const drifted = '#!/bin/sh\nexec /elsewhere/node /elsewhere/dist/mcpStdio.js "$@"\n';
+    writeFileSync(installed.mcpLauncherPath, drifted, { mode: 0o755 });
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        targetId: layout.targetId,
+        candidateVersion: '1.0.0',
+        finalDirectory: layout.versionDirectory,
+        createdFinal: false,
+        controlLauncher: null,
+        mcpLauncher: null,
+        receipt: null,
+      })}\n`,
+      { mode: 0o600 },
+    );
+    expect(() => inspectInstalledRuntime(input)).toThrow(/in progress or was interrupted/iu);
+    expect(readFileSync(installed.mcpLauncherPath, 'utf8')).toBe(drifted);
+    expect(existsSync(journalPath)).toBe(true);
+    rmSync(journalPath);
+    expect(() => inspectInstalledRuntime(input)).toThrow(/launcher drift/iu);
+    writeFileSync(installed.mcpLauncherPath, launcherBytes, { mode: 0o755 });
+
+    // Mid-removal shape: the receipt is gone and the bytes sit in quarantine. Inspection sees no
+    // runtime and leaves the removal journal for the locked entry points to recover.
+    const restored = await installRuntime({ ...input, smoke: async () => undefined });
+    prepareOwnedRuntimeRemoval(input);
+    expect(inspectInstalledRuntime(input)).toBeNull();
+    expect(existsSync(join(input.dataDirectory, 'runtime-removal-journal.json'))).toBe(true);
+    expect(existsSync(restored.nodePath)).toBe(false);
+    expect(recoverInterruptedRuntimeRemoval(input)).toBe('rolled-back');
+    expect(existsSync(restored.nodePath)).toBe(true);
   });
 });
 
@@ -738,6 +1119,10 @@ describe('reversible owned runtime removal', () => {
         ...journal,
         controlLauncher: { content: 1, mode: 0o755 },
       }),
+    ],
+    [
+      'non-object launcher snapshot',
+      (journal: Record<string, unknown>) => ({ ...journal, controlLauncher: 'not-a-snapshot' }),
     ],
   ] as const)('rejects a hostile durable removal journal: %s', async (_label, mutate) => {
     const root = temporaryDirectory('remove-hostile-journal');
@@ -911,12 +1296,12 @@ describe('reversible owned runtime removal', () => {
     expect(() => prepared.rollback()).toThrow(/destination already exists/iu);
   });
 
-  it('cleans quarantine when a hostile journal target blocks preparation', async () => {
+  it('cleans quarantine when a hostile journal target blocks preparation (shared guard says "symbolic link")', async () => {
     const root = temporaryDirectory('remove-journal-symlink');
     const input = installInput(root, '2.0.0');
     await installRuntime({ ...input, smoke: async () => undefined });
     symlinkSync('/dev/null', join(input.dataDirectory, 'runtime-removal-journal.json'));
-    expect(() => prepareOwnedRuntimeRemoval(input)).toThrow(/regular file|symlink/iu);
+    expect(() => prepareOwnedRuntimeRemoval(input)).toThrow(/regular file|symbolic link/iu);
     const layout = resolveRuntimeLayout({
       homeDirectory: input.homeDirectory,
       platform: input.platform,

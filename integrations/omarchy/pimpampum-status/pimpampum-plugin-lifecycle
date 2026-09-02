@@ -5,29 +5,10 @@ umask 077
 PATH=/usr/bin:/bin
 export PATH
 
-fail() {
-  code=$1
-  shift
-  printf '%s\n' "pimpampum-plugin-lifecycle: $*" >&2
-  exit "$code"
-}
-
-require_absolute() {
-  case $1 in
-    /*) ;;
-    *) fail 64 "$2 must be absolute" ;;
-  esac
-}
-
-sha256_file() {
-  if [ -x /usr/bin/sha256sum ]; then
-    /usr/bin/sha256sum "$1" | /usr/bin/awk '{print $1}'
-  elif [ -x /usr/bin/shasum ]; then
-    /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'
-  else
-    fail 69 'sha256sum or shasum is required for receipt ownership checks'
-  fi
-}
+helper_name=pimpampum-plugin-lifecycle
+plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 70
+[ -f "$plugin_root/pimpampum-common.sh" ] && [ ! -L "$plugin_root/pimpampum-common.sh" ] || exit 70
+. "$plugin_root/pimpampum-common.sh"
 
 action=${1:-}
 case $action in
@@ -38,13 +19,7 @@ case $action in
 esac
 [ "$#" -eq 1 ] || fail 64 'invalid arguments'
 
-plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || fail 70 'cannot resolve plugin root'
-home_directory=${HOME:-}
-require_absolute "$home_directory" HOME
-[ "$home_directory" != / ] || fail 73 'HOME must not be the filesystem root'
-case $home_directory in *'"'* | *\\*) fail 73 'HOME contains unsafe receipt characters' ;; esac
-[ -d "$home_directory" ] && [ ! -L "$home_directory" ] ||
-  fail 73 'HOME must be a regular directory and not a symlink'
+validate_home 73
 data_directory="$home_directory/.pimpampum"
 [ ! -L "$data_directory" ] || fail 73 'private data path is unsafe'
 /bin/mkdir -p -m 700 "$data_directory" || fail 73 'cannot create private data directory'
@@ -102,32 +77,8 @@ case $($uname_command -m) in
   *) fail 65 'unsupported CPU architecture' ;;
 esac
 
-manifest_value() {
-  key=$1
-  /usr/bin/awk -v target_key="\"$target\"" -v wanted="\"$key\"" '
-    index($0, target_key ":") { selected = 1; next }
-    selected && index($0, wanted ":") {
-      value = $0
-      sub(/^[^:]+:[[:space:]]*/, "", value)
-      sub(/,[[:space:]]*$/, "", value)
-      gsub(/^"|"$/, "", value)
-      print value
-      exit
-    }
-    selected && $0 ~ /^    }/ { exit }
-  ' "$manifest"
-}
-
-version=$(/usr/bin/awk '
-  /"version"[[:space:]]*:/ {
-    value = $0
-    sub(/^[^:]+:[[:space:]]*"/, "", value)
-    sub(/"[[:space:]]*,?[[:space:]]*$/, "", value)
-    print value
-    exit
-  }
-' "$manifest")
-sha256=$(manifest_value sha256)
+version=$(manifest_version "$manifest")
+sha256=$(manifest_value "$manifest" "$target" sha256)
 printf '%s\n' "$version" | /usr/bin/grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z._-]+)?$' ||
   fail 64 'runtime manifest version is invalid'
 printf '%s\n' "$sha256" | /usr/bin/grep -Eq '^[a-f0-9]{64}$' ||
@@ -332,6 +283,30 @@ if ! /bin/rm -f -- "$runtime_receipt" "$lifecycle_receipt"; then
   rollback_runtime
   fail 70 'receipt commit failed; prior installation was restored'
 fi
+
+# Past the point of no return: drop the earlier payloads the snapshotted receipt still owns under
+# `ownedVersions`, then the version directories they leave empty. Only receipt-owned target
+# directories directly under the private runtime root qualify; anything else stays untouched.
+runtime_root="$home_directory/.local/share/pimpampum/runtime"
+/usr/bin/awk -F'"' '{ for (i = 1; i < NF; i += 1) if ($i == "directory") print $(i + 2) }' \
+  "$removal_staging/runtime-install-receipt.json" |
+  while IFS= read -r owned_directory; do
+    case $owned_directory in
+      "$runtime_root"/*/*) ;;
+      *) continue ;;
+    esac
+    case $owned_directory in
+      *..* | *[[:cntrl:]]* | *\\*) continue ;;
+    esac
+    case ${owned_directory##*/} in
+      linux-x64 | linux-arm64) ;;
+      *) continue ;;
+    esac
+    [ -d "$owned_directory" ] && [ ! -L "$owned_directory" ] || continue
+    /bin/rm -rf -- "$owned_directory" 2>/dev/null || true
+    /bin/rmdir -- "${owned_directory%/*}" 2>/dev/null || true
+  done
+/bin/rmdir -- "${runtime_directory%/*}" 2>/dev/null || true
 /bin/rm -rf -- "$removal_staging"
 if [ -n "$manual" ]; then
   printf '%s\n' 'Some connector entries were not proven receipt-owned and were left unchanged.' >&2

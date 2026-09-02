@@ -12,7 +12,7 @@ async function bootstrap(): Promise<void> {
 }
 
 const startupSuggestion =
-  'Pimpampum could not load. The installation is incomplete or corrupt: reinstall with `npm install --global pimpampum`, then run `pimpampum status`.';
+  'Pimpampum could not load because the installation is incomplete or corrupt: reinstall Pimpampum (`npm install --global pimpampum` for npm installs; reopen the app or run `pimpampum-bootstrap` for packaged installs), then run `pimpampum status`.';
 
 async function reportStartupFailure(error: unknown): Promise<void> {
   // Reuse the shared envelope when it is loadable, because it carries the cause chain, but always

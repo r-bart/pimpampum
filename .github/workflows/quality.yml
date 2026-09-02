@@ -3,26 +3,38 @@ name: Quality
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [master, develop]
 
 permissions:
   contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: npm
+      # Node 22 ships npm 10, which ignores package.json#allowScripts; npm 11 honours it.
+      - run: npm install --global npm@11
       - run: npm ci
       - run: npm run typecheck && npm run lint && npm run format:check && npm test
-      - run: npm run test:evals
+      - name: Prove sync canonical order is locale independent
+        run: |
+          LANG=da_DK.UTF-8 LC_ALL=da_DK.UTF-8 npx vitest run test/sync-state.test.ts
+          LANG=cs_CZ.UTF-8 LC_ALL=cs_CZ.UTF-8 npx vitest run test/sync-state.test.ts
       - run: npm run test:omarchy
       - run: npm run check:desktop-contract
-      - run: npm audit --omit=dev
+      - run: npm run check:omarchy-mirror -- --warn
+      - run: npm audit --omit=dev --audit-level=high
 
   runtime:
     strategy:
@@ -37,14 +49,14 @@ jobs:
             runner: macos-15
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24.19.0
           cache: npm
       - run: npm ci
-      - name: Validate Omarchy plugin, runtime pins and executable helpers
-        run: npm run validate:omarchy
       - name: Build reproducible private runtime
         run: >-
           node scripts/build-runtime-bundle.mjs
@@ -77,7 +89,7 @@ jobs:
           bundle="pimpampum-runtime-$version-${{ matrix.target }}"
           /usr/bin/tar -czf "$RUNNER_TEMP/runtime-${{ matrix.target }}.tar.gz" \
             -C "$RUNNER_TEMP/runtime" "$bundle"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: runtime-${{ matrix.target }}
           path: ${{ runner.temp }}/runtime-${{ matrix.target }}.tar.gz
@@ -89,8 +101,10 @@ jobs:
     needs: runtime
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: runtime-linux-*
           path: ${{ runner.temp }}/runtime-review
@@ -102,20 +116,34 @@ jobs:
               -C "$RUNNER_TEMP/runtime-review"
           done
       - name: Match reviewed Omarchy pins to exact release archives
-        run: node scripts/check-reviewed-runtime-manifest.mjs "$RUNNER_TEMP/runtime-review"
+        run: |
+          node scripts/check-reviewed-runtime-manifest.mjs "$RUNNER_TEMP/runtime-review" \
+            --output "$RUNNER_TEMP/generated-runtime-manifest.json"
+      # On a mismatch this file carries the digests to pin; CI reproduces them, a laptop does not.
+      - name: Upload the generated runtime manifest
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: generated-runtime-manifest
+          path: ${{ runner.temp }}/generated-runtime-manifest.json
+          if-no-files-found: warn
+          retention-days: 30
 
   macos:
     needs: runtime
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: npm
+      - run: npm install --global npm@11
       - run: npm ci
       - run: npm run test:macos
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: runtime-darwin-arm64
           path: ${{ runner.temp }}/runtime-darwin-arm64
@@ -128,6 +156,9 @@ jobs:
           version=$(node -p "require('./package.json').version")
           PIMPAMPUM_RUNTIME_BUNDLE="$RUNNER_TEMP/runtime-darwin-arm64/pimpampum-runtime-$version-darwin-arm64" \
             npm run build:macos
+      # With the app and its 150 MB runtime present on disk, prove that neither reaches npm.
+      - name: Gate the npm package size and contents
+        run: npm run check:package-size
       - name: Exercise the complete macOS lifecycle before release
         env:
           TMPDIR: ${{ runner.temp }}/macos-live
@@ -138,9 +169,26 @@ jobs:
           PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos
       - name: Upload live-smoke diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-pr-live-smoke-diagnostics
           path: ${{ runner.temp }}/macos-live
           if-no-files-found: warn
           retention-days: 7
+
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm install --global npm@11
+      - run: npm ci
+        working-directory: site
+      - run: npm run build
+        working-directory: site

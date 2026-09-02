@@ -497,3 +497,25 @@ No external mockups were provided. The integrations should use the existing Pimp
 - [Apple Service Management and SMAppService](https://developer.apple.com/documentation/servicemanagement/smappservice)
 - [Omarchy Quattro shell and plugin model](https://github.com/basecamp/omarchy/blob/quattro/docs/omarchy-shell.md)
 - [Omarchy Quattro top bar model](https://github.com/basecamp/omarchy/blob/quattro/manual/05-the-top-bar.md)
+
+## Amendment 2026-09-01: packaging of the macOS app
+
+The deep review of 2026-09-01 (finding H-12) found that `pimpampum@1.2.11` on npm weighed
+157 MB because `platforms/macos/dist` shipped with its embedded runtime. FR-3 is amended: the
+signed macOS app is distributed only as a GitHub Release asset and through the packaged
+update channel. The npm package ships the daemon, the CLI, the docs and the Omarchy plugin.
+`test/desktop-status.acceptance.test.ts` asserts the new `files` list.
+
+## Amendment 2026-09-02: signing and notarization
+
+The Executive Summary, the Non-Goals, FR-3, the Packaging section, the macOS testing item, Slice 3,
+and the Risks table describe an unsigned application. That was true of the first local builds only.
+Since `v1.0.0` (2026-08-28) every published macOS app is signed with a Developer ID certificate,
+notarized, and stapled in the `publish` job of `.github/workflows/release.yml`.
+`scripts/check-macos-artifact.mjs --approve --require-signature --require-notarization` approves the
+exact artifact that the live smoke exercised, and the same bytes are uploaded as
+`Pimpampum-<version>-macos-arm64.zip`. The unsigned-app launch flow is no longer documented for
+users; only a source-built development app is unsigned, and the README says so. Signed distribution
+is therefore a goal, not a non-goal, and the Gatekeeper risk is closed. The packaging amendment of
+2026-09-01 above stands: the signed app ships as a GitHub Release asset and through the signed
+update channel, not in the npm package.

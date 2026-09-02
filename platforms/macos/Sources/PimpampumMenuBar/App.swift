@@ -1,58 +1,55 @@
 import AppKit
 import SwiftUI
 
-/// What a launching instance needs to know about the copies already running, so the decision can be
-/// tested without an NSRunningApplication.
-protocol RunningInstance {
-  var processIdentifier: pid_t { get }
-  var launchDate: Date? { get }
-}
-
 extension NSRunningApplication: RunningInstance {}
+
+extension ApplicationLaunchCoordinator {
+  /// The real launch sequence. Every decision lives in the covered coordinator; this only names
+  /// the system calls it makes.
+  static var live: ApplicationLaunchCoordinator {
+    ApplicationLaunchCoordinator(
+      runSmokeHarness: { arguments, dataDirectory in
+        await DesktopSmokeHarness.run(arguments: arguments, dataDirectory: dataDirectory)
+      },
+      handleLoginRegistration: { arguments, dataDirectory in
+        await LoginRegistrationCoordinator().handle(
+          arguments: arguments,
+          dataDirectory: dataDirectory
+        )
+      },
+      currentInstance: { NSRunningApplication.current },
+      bundleURL: Bundle.main.bundleURL,
+      runningPeers: {
+        NSRunningApplication.runningApplications(
+          withBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
+        )
+      },
+      isProcessRunning: { processIdentifier in
+        NSRunningApplication(processIdentifier: processIdentifier).map { !$0.isTerminated }
+          ?? false
+      },
+      sleep: { seconds in
+        try? await Task.sleep(for: .seconds(seconds))
+      }
+    )
+  }
+}
 
 @MainActor
 final class PimpampumApplicationDelegate: NSObject, NSApplicationDelegate {
-  /// True when an older copy of this bundle is already running. Ties and unknown launch dates keep
-  /// the newcomer alive rather than risk leaving the menu bar with no app at all.
-  static func shouldStandDown(current: any RunningInstance, peers: [any RunningInstance]) -> Bool {
-    guard let launchedAt = current.launchDate else { return false }
-    return peers.contains { peer in
-      guard peer.processIdentifier != current.processIdentifier,
-        let peerLaunchedAt = peer.launchDate
-      else { return false }
-      return peerLaunchedAt < launchedAt
-    }
-  }
-
   func applicationDidFinishLaunching(_ notification: Notification) {
     let dataDirectory = ApplicationConfiguration.dataDirectory()
     Task { @MainActor in
       let arguments = Array(ProcessInfo.processInfo.arguments.dropFirst())
-      let smokeHandled = await DesktopSmokeHarness.run(
+      let outcome = await ApplicationLaunchCoordinator.live.launch(
         arguments: arguments,
         dataDirectory: dataDirectory
       )
-      let loginHandled =
-        smokeHandled
-        ? false
-        : await LoginRegistrationCoordinator().handle(
-          arguments: arguments,
-          dataDirectory: dataDirectory
-        )
-      if smokeHandled || loginHandled {
-        NSApplication.shared.terminate(nil)
-        return
-      }
       // Registering the login item makes macOS start the app, and once setup adopts a copy the user
       // already placed in an Applications folder that is the very bundle already running. A
       // menu-bar app has no reason to run twice, so the newcomer stands down and the user keeps the
       // window they were using.
-      if Self.shouldStandDown(
-        current: NSRunningApplication.current,
-        peers: NSRunningApplication.runningApplications(
-          withBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
-        )
-      ) {
+      if outcome != .running {
         NSApplication.shared.terminate(nil)
       }
     }
@@ -64,6 +61,7 @@ final class PimpampumApplicationDelegate: NSObject, NSApplicationDelegate {
 struct PimpampumMenuBarApp: App {
   @NSApplicationDelegateAdaptor(PimpampumApplicationDelegate.self) private var appDelegate
   @StateObject private var store: OverviewStore
+  @StateObject private var setupSession: SetupSession
   @StateObject private var settingsWindowController: SyncSettingsWindowController
   private let workspaceOpener = WorkspaceOpener()
 
@@ -87,7 +85,13 @@ struct PimpampumMenuBarApp: App {
       receiptURL: dataDirectory.appendingPathComponent("install-receipt.json")
     )
     let agentSettingsStore = AgentSettingsStore.bundled()
-    _store = StateObject(wrappedValue: OverviewStore(reader: client))
+    let overviewStore = OverviewStore(reader: client)
+    _store = StateObject(wrappedValue: overviewStore)
+    // The setup session belongs to the app, not to the popover branch that shows it, so a setup in
+    // progress survives every poll and every help button.
+    _setupSession = StateObject(
+      wrappedValue: SetupSession.bundled(overviewStore: overviewStore)
+    )
     _settingsWindowController = StateObject(
       wrappedValue: SyncSettingsWindowController(
         syncStore: syncSettingsStore,
@@ -102,6 +106,7 @@ struct PimpampumMenuBarApp: App {
     MenuBarExtra {
       NativeSettingsStatusPopover(
         store: store,
+        setupSession: setupSession,
         workspaceOpener: workspaceOpener,
         settingsWindowOpener: settingsWindowController,
         quitApplication: { NSApplication.shared.terminate(nil) }

@@ -93,6 +93,8 @@ struct HelpDialog: View {
       }
     }
     .padding(24)
-    .frame(width: 440)
+    // The dialog renders inside the 360 pt popover, so it takes the width it is given. A fixed
+    // 440 pt was a leftover from the sheet era and clipped both sides.
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }

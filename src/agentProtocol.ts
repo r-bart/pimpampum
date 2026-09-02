@@ -1,5 +1,6 @@
 import type { CallToolResult } from '@modelcontextprotocol/server';
-import { AppError, asAppError, type ErrorCode } from './errors.js';
+import { AppError, asAppError, isErrorCode, type ErrorCode } from './errors.js';
+import { isRecord } from './objects.js';
 
 export interface AgentError {
   code: ErrorCode;
@@ -98,27 +99,9 @@ function invalidEnvelope(): never {
   throw new AppError('internal_error', 'MCP tool returned an invalid Pimpampum envelope', 500);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   const keys = Object.keys(value);
   return keys.length === expected.length && expected.every((key) => keys.includes(key));
-}
-
-function isErrorCode(value: unknown): value is ErrorCode {
-  return (
-    value === 'bad_request' ||
-    value === 'not_found' ||
-    value === 'conflict' ||
-    value === 'revision_conflict' ||
-    value === 'invalid_state' ||
-    value === 'unauthorized' ||
-    value === 'payload_too_large' ||
-    value === 'unavailable' ||
-    value === 'internal_error'
-  );
 }
 
 function isAgentError(value: unknown): value is AgentError {

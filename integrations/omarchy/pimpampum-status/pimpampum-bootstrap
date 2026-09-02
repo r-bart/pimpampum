@@ -5,19 +5,12 @@ umask 077
 PATH=/usr/bin:/bin
 export PATH
 
-fail() {
-  code=$1
-  shift
-  printf '%s\n' "pimpampum-bootstrap: $*" >&2
-  exit "$code"
-}
-
-require_absolute() {
-  case $1 in
-    /*) ;;
-    *) fail 64 "$2 must be an absolute path" ;;
-  esac
-}
+# pimpampum-common.sh provides fail, require_absolute, sha256_file (sha256sum or shasum), the
+# manifest readers and the HOME check shared with the other helpers.
+helper_name=pimpampum-bootstrap
+plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 70
+[ -f "$plugin_root/pimpampum-common.sh" ] && [ ! -L "$plugin_root/pimpampum-common.sh" ] || exit 70
+. "$plugin_root/pimpampum-common.sh"
 
 ensure_directory() {
   directory=$1
@@ -33,22 +26,10 @@ ensure_directory() {
     fail 73 "private runtime path is not a regular directory: $directory"
 }
 
-sha256_file() {
-  if [ -x /usr/bin/sha256sum ]; then
-    /usr/bin/sha256sum "$1" | /usr/bin/awk '{print $1}'
-  elif [ -x /usr/bin/shasum ]; then
-    /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'
-  else
-    fail 69 'sha256sum or shasum is required to verify runtime files'
-  fi
-}
-
 receipt_value() {
   /usr/bin/awk -F'"' -v wanted="$1" '$2 == wanted { print $4; exit }' "$2"
 }
 
-plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) ||
-  fail 70 'cannot resolve the plugin directory'
 manifest_path=${PIMPAMPUM_BOOTSTRAP_MANIFEST:-"$plugin_root/runtime-manifest.json"}
 require_absolute "$manifest_path" 'runtime manifest'
 [ -f "$manifest_path" ] && [ ! -L "$manifest_path" ] ||
@@ -64,34 +45,10 @@ case $($uname_command -m) in
   *) fail 65 'unsupported CPU architecture; expected x86_64 or aarch64' ;;
 esac
 
-manifest_value() {
-  manifest_key=$1
-  /usr/bin/awk -v target="\"$runtime_target\"" -v key="\"$manifest_key\"" '
-    index($0, target ":") { selected = 1; next }
-    selected && index($0, key ":") {
-      value = $0
-      sub(/^[^:]+:[[:space:]]*/, "", value)
-      sub(/,[[:space:]]*$/, "", value)
-      gsub(/^"|"$/, "", value)
-      print value
-      exit
-    }
-    selected && $0 ~ /^    }/ { exit }
-  ' "$manifest_path"
-}
-
-version=$(/usr/bin/awk '
-  /"version"[[:space:]]*:/ {
-    value = $0
-    sub(/^[^:]+:[[:space:]]*"/, "", value)
-    sub(/"[[:space:]]*,?[[:space:]]*$/, "", value)
-    print value
-    exit
-  }
-' "$manifest_path")
-url=$(manifest_value url)
-expected_sha256=$(manifest_value sha256)
-maximumBytes=$(manifest_value maximumBytes)
+version=$(manifest_version "$manifest_path")
+url=$(manifest_value "$manifest_path" "$runtime_target" url)
+expected_sha256=$(manifest_value "$manifest_path" "$runtime_target" sha256)
+maximumBytes=$(manifest_value "$manifest_path" "$runtime_target" maximumBytes)
 
 printf '%s\n' "$version" | /usr/bin/grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z._-]+)?$' ||
   fail 64 'runtime manifest has an invalid exact version'
@@ -108,14 +65,7 @@ esac
 [ "$maximumBytes" -gt 0 ] && [ "$maximumBytes" -le 100663296 ] ||
   fail 64 'runtime manifest maximumBytes exceeds the bootstrap limit'
 
-home_directory=${HOME:-}
-require_absolute "$home_directory" 'HOME'
-[ "$home_directory" != / ] || fail 73 'HOME must not be the filesystem root'
-case $home_directory in
-  *"'"* | *'"'* | *\\*) fail 73 'HOME contains characters unsafe for launchers or receipts' ;;
-esac
-[ -d "$home_directory" ] && [ ! -L "$home_directory" ] ||
-  fail 73 'HOME must be a regular directory and not a symlink'
+validate_home 73
 runtime_root="$home_directory/.local/share/pimpampum/runtime"
 versions_root="$runtime_root/$version"
 final_directory="$versions_root/$runtime_target"
@@ -220,7 +170,7 @@ else
   require_absolute "$curl_command" 'curl command'
   [ -x "$curl_command" ] || fail 69 'curl is unavailable; install curl and retry'
   if ! "$curl_command" \
-    --fail --location --proto '=https' --tlsv1.2 \
+    --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
     --connect-timeout 10 --max-time 120 --retry 2 --retry-connrefused \
     --max-filesize "$maximumBytes" --output "$archive" "$url"; then
     fail 69 'download failed or timed out; check the network and retry'

@@ -9,14 +9,16 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { backupDatabase, exportPortable } from '../src/backup.js';
 import { PimpampumHttpClient, createHttpClient } from '../src/client.js';
 import { loadConfig } from '../src/config.js';
 import { openDatabase } from '../src/db.js';
+import { LATEST_SCHEMA_VERSION } from '../src/migrations.js';
 import { AppError, asAppError } from '../src/errors.js';
+import { openApiDocument } from '../src/openapi.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -26,13 +28,19 @@ function temporaryDirectory(): string {
   return directory;
 }
 
+/** Every `PIMPAMPUM_*` variable the developer shell exports would change a `loadConfig` result. */
+function clearPimpampumEnvironment(): void {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('PIMPAMPUM_')) delete process.env[key];
+  }
+}
+
+beforeEach(clearPimpampumEnvironment);
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  delete process.env.PIMPAMPUM_DATA_DIR;
-  delete process.env.PIMPAMPUM_HOST;
-  delete process.env.PIMPAMPUM_PORT;
-  delete process.env.PIMPAMPUM_TOKEN;
+  clearPimpampumEnvironment();
   for (const directory of temporaryDirectories.splice(0)) {
     chmodSync(directory, 0o700);
     rmSync(directory, { recursive: true, force: true });
@@ -97,7 +105,7 @@ describe('configuration and infrastructure', () => {
   it('opens, migrates and reopens file and memory databases', () => {
     const databasePath = join(temporaryDirectory(), 'nested', 'project.sqlite');
     const first = openDatabase(databasePath);
-    expect(first.pragma('user_version', { simple: true })).toBe(2);
+    expect(first.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     first.close();
     const second = openDatabase(databasePath);
     expect(second.pragma('journal_mode', { simple: true })).toBe('wal');
@@ -108,7 +116,7 @@ describe('configuration and infrastructure', () => {
 
     const futurePath = join(temporaryDirectory(), 'future.sqlite');
     const future = new Database(futurePath);
-    future.pragma('user_version = 3');
+    future.pragma(`user_version = ${LATEST_SCHEMA_VERSION + 1}`);
     future.close();
     expect(() => openDatabase(futurePath)).toThrow(/newer than supported/);
   });
@@ -125,6 +133,42 @@ describe('configuration and infrastructure', () => {
       code: 'internal_error',
       message: 'An internal error occurred',
     });
+  });
+
+  it('stages the verified backup copy inside the private database directory, never in tmpdir', async () => {
+    const dataDirectory = temporaryDirectory();
+    chmodSync(dataDirectory, 0o700);
+    const destination = temporaryDirectory();
+    const database = openDatabase(join(dataDirectory, 'pimpampum.sqlite'));
+    database.exec('CREATE TABLE sample (id INTEGER)');
+    const staged: { path: string; mode: number; size: number }[] = [];
+    const originalBackup = Database.prototype.backup;
+    vi.spyOn(Database.prototype, 'backup').mockImplementation(function (
+      this: Database.Database,
+      destinationFile,
+      options,
+    ) {
+      const metadata = statSync(destinationFile as string);
+      staged.push({
+        path: destinationFile as string,
+        mode: metadata.mode & 0o777,
+        size: metadata.size,
+      });
+      return originalBackup.call(this, destinationFile, options);
+    });
+
+    const finalPath = await backupDatabase(database, destination);
+    expect(staged).toHaveLength(1);
+    expect(dirname(staged[0]!.path)).toBe(dataDirectory);
+    expect(basename(staged[0]!.path)).toMatch(
+      /^\.pimpampum-backup-[0-9a-f-]{36}\.sqlite\.partial$/u,
+    );
+    expect(staged[0]).toMatchObject({ mode: 0o600, size: 0 });
+    expect(existsSync(staged[0]!.path)).toBe(false);
+    expect(readdirSync(dataDirectory).filter((name) => name.includes('.partial'))).toEqual([]);
+    expect(existsSync(finalPath)).toBe(true);
+    expect(statSync(finalPath).mode & 0o777).toBe(0o600);
+    database.close();
   });
 
   it('removes partial backup files when integrity validation fails', async () => {
@@ -197,6 +241,7 @@ describe('configuration and infrastructure', () => {
       completionSummary: null,
       artifacts: [],
       completedAt: null,
+      cancelledAt: null,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     };
@@ -404,7 +449,7 @@ describe('HTTP client adapter', () => {
           },
         });
       }
-      if (url.endsWith('/api/v1/projects/project-1') && init.method === 'GET') {
+      if (url.endsWith('/api/v1/projects/project-1/manifest') && init.method === 'GET') {
         return Response.json({ data: { id: 'project-1' } });
       }
       return Response.json({ data: { ok: true } });
@@ -469,7 +514,8 @@ describe('HTTP client adapter', () => {
       artifacts: [],
     });
     expect(await client.getProject('project-1')).toMatchObject({ id: 'project-1' });
-    await client.getProjectManifest('project-1');
+    expect(await client.getProjectManifest('project-1')).toMatchObject({ id: 'project-1' });
+    expect(calls.filter(({ url }) => url.endsWith('/api/v1/projects/project-1'))).toEqual([]);
     await client.getProjectCompletion('project-1');
     await client.listProjectManifests({ workspaceId: 'ws', state: 'open', limit: 10, offset: 2 });
     await client.listProjectManifests({ workspaceId: null, state: null, limit: 10, offset: 0 });
@@ -582,10 +628,41 @@ describe('HTTP client adapter', () => {
     await client.backup('/tmp/backups');
     await client.exportPortable('/tmp/exports');
 
-    expect(calls).toHaveLength(57);
+    // Every request the client can build must land on an operation the OpenAPI document declares:
+    // the same method on a path template whose `{parameters}` cover the caller-supplied segments.
+    const documentedOperations = Object.entries(openApiDocument.paths).flatMap(([path, item]) =>
+      Object.keys(item as object)
+        .filter((method) => ['get', 'post', 'put', 'patch', 'delete'].includes(method))
+        .map((method) => ({
+          method: method.toUpperCase(),
+          path,
+          pattern: new RegExp(
+            `^${path.replace(/[.*+?^$()|[\]\\]/gu, '\\$&').replace(/\{[^}]+\}/gu, '[^/]+')}$`,
+            'u',
+          ),
+        })),
+    );
+    const resolveOperation = (method: string, url: string): string | null => {
+      const pathname = new URL(url).pathname;
+      const operation = documentedOperations.find(
+        (candidate) => candidate.method === method && candidate.pattern.test(pathname),
+      );
+      return operation === undefined ? null : `${operation.method} ${operation.path}`;
+    };
+    const unresolved = calls
+      .map(({ url, init }) => ({ method: init.method ?? 'GET', url }))
+      .filter(({ method, url }) => resolveOperation(method, url) === null);
+    expect(unresolved).toEqual([]);
+    // The client exercised most of the documented surface, not one route many times.
+    const exercised = new Set(
+      calls.map(({ url, init }) => resolveOperation(init.method ?? 'GET', url)),
+    );
+    expect(exercised.size).toBeGreaterThanOrEqual(45);
+
     expect(new Headers(calls[0]?.init.headers).has('authorization')).toBe(false);
     expect(new Headers(calls[1]?.init.headers).get('authorization')).toBe('Bearer secret');
     expect(calls[1]?.url).toBe('http://127.0.0.1:7337/api/v1/overview');
+    // Query strings carry the bounded list parameters exactly as the caller passed them.
     expect(calls.some(({ url }) => url.endsWith('/work?limit=4'))).toBe(true);
     expect(
       calls.some(({ url }) =>
@@ -597,13 +674,7 @@ describe('HTTP client adapter', () => {
         url.endsWith('/projects?limit=10&offset=2&workspaceId=ws&state=open'),
       ),
     ).toBe(true);
-    expect(calls.some(({ url }) => url.includes('/projects/project-1/specs?'))).toBe(true);
-    expect(calls.some(({ url }) => url.includes('/specs/spec-1/body?'))).toBe(true);
-    expect(calls.some(({ url }) => url.includes('/specs/spec-1/tasks?'))).toBe(true);
-    expect(calls.some(({ url }) => url.includes('/projects/project-1/context?'))).toBe(true);
-    expect(
-      calls.some(({ url }) => url.includes('/workspaces/ws/context/shared%20architecture')),
-    ).toBe(true);
+    // Heavy bodies never travel on the manifest route and the PRD route no longer exists.
     expect(calls.every(({ url }) => !url.includes('/prd'))).toBe(true);
     expect(
       calls.some(
@@ -613,8 +684,35 @@ describe('HTTP client adapter', () => {
           !String(init.body).includes('prd'),
       ),
     ).toBe(true);
-    expect(calls.some(({ url }) => url.includes('architecture%20notes'))).toBe(true);
+    expect(
+      calls.some(({ url }) => url.includes('/workspaces/ws/context/shared%20architecture')),
+    ).toBe(true);
     expect(calls.some(({ init }) => init.body !== undefined)).toBe(true);
+
+    // Every caller-supplied segment is encoded; an id can never rewrite the route.
+    calls.length = 0;
+    await client.getSpec('../workspaces/x');
+    await client.getTask('a/b');
+    await client.listContextManifests({
+      ownerType: 'workspace',
+      ownerId: '../projects',
+      limit: 1,
+      offset: 0,
+    });
+    await client.startWork({
+      targetType: 'spec',
+      targetId: 'id?x=1',
+      agentId: 'agent',
+      leaseSeconds: 60,
+    });
+    await client.listActivity('p/q', 5);
+    expect(calls.map(({ url }) => new URL(url).pathname)).toEqual([
+      '/api/v1/specs/..%2Fworkspaces%2Fx/manifest',
+      '/api/v1/tasks/a%2Fb/manifest',
+      '/api/v1/workspaces/..%2Fprojects/context',
+      '/api/v1/work/spec/id%3Fx%3D1/claim',
+      '/api/v1/projects/p%2Fq/activity',
+    ]);
   });
 
   it('preserves typed API errors and safely defaults malformed errors', async () => {
@@ -697,10 +795,18 @@ describe('HTTP client adapter', () => {
       Response.json(null),
       Response.json({ status: 1, version: '1.0.0' }),
       Response.json({ status: 'ok', version: 1 }),
+      Response.json({ status: 'ok', version: '1.0.0', ready: 'yes' }),
     ];
     vi.stubGlobal('fetch', async () => invalidHealthResponses.shift() as Response);
-    for (let index = 0; index < 4; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       await expect(client.health()).rejects.toMatchObject({ status: 502 });
     }
+
+    // A degraded daemon answers 503 with the same body; the report is returned, not thrown.
+    const degraded = { status: 'degraded', version: '1.0.0', ready: false };
+    vi.stubGlobal('fetch', async () => Response.json(degraded, { status: 503 }));
+    await expect(client.health()).resolves.toEqual(degraded);
+    vi.stubGlobal('fetch', async () => Response.json({ error: { code: 'x' } }, { status: 500 }));
+    await expect(client.health()).rejects.toMatchObject({ code: 'internal_error' });
   });
 });

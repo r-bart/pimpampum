@@ -82,6 +82,54 @@ verifies it, and installs the `systemd --user` service without a separate Node.j
 installation. Start a new agent session whenever the completed card requests one. Do not copy the
 plugin directory or edit Quickshell configuration by hand.
 
+### Register your first workspace
+
+A Workspace is a folder your agents work in. Both native surfaces register one without Terminal:
+
+- On macOS, the last step of Guided setup and the empty overview show **Add a workspace**. Choose
+  a folder. Pimpampum derives the identifier from the folder name and runs `workspace:add` through
+  the packaged CLI.
+- On Omarchy, the empty popout shows **Add a workspace** and opens the same GTK folder dialog the
+  Backup and Synchronization cards use. The bounded route accepts one absolute folder and an
+  optional name.
+
+Every native installation also contains the packaged CLI. Nothing places it on `PATH`; call it by
+its absolute path:
+
+| Platform       | Packaged CLI                                                    |
+| -------------- | --------------------------------------------------------------- |
+| macOS          | `~/Library/Application Support/Pimpampum/bin/pimpampum-control` |
+| Omarchy, Linux | `~/.local/share/pimpampum/bin/pimpampum-control`                |
+
+```bash
+~/.local/share/pimpampum/bin/pimpampum-control workspace:add storefront "Storefront" /absolute/path/to/storefront
+```
+
+`pimpampum-control` accepts every verb in the [CLI reference](#cli-reference). The npm package
+installs the same CLI as `pimpampum` on `PATH`; see
+[Advanced installation and development](#advanced-installation-and-development).
+
+### What gets installed where
+
+Everything lives in your home directory. No path needs root.
+
+| Path                                                        | Platform | Contents                                                                                     | Removed by uninstall |
+| ----------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------- | -------------------- |
+| `~/.pimpampum/`                                             | Both     | `pimpampum.sqlite`, `token`, `logs/`, the setup journal and the update trust state           | No                   |
+| `~/Applications/Pimpampum.app`                              | macOS    | The managed copy of the app. An app you placed in an Applications folder yourself is adopted | Managed copy only    |
+| `~/Library/Application Support/Pimpampum/Runtime/`          | macOS    | The packaged runtime, one directory per version and target                                   | Yes                  |
+| `~/Library/Application Support/Pimpampum/bin/`              | macOS    | `pimpampum-control` and `pimpampum-mcp`, the stable launchers                                | Yes                  |
+| `~/Library/Application Support/Pimpampum/installation.json` | macOS    | The installation marker. It lives outside the bundle so the code signature stays intact      | Yes                  |
+| `~/Library/LaunchAgents/dev.pimpampum.daemon.plist`         | macOS    | The `launchd` agent that starts the daemon at login                                          | Yes                  |
+| `~/.local/share/pimpampum/runtime/`                         | Omarchy  | The packaged runtime, one directory per version and target                                   | Yes                  |
+| `~/.local/share/pimpampum/bin/`                             | Omarchy  | `pimpampum-control` and `pimpampum-mcp`, the stable launchers                                | Yes                  |
+| `~/.config/systemd/user/pimpampum.service`                  | Omarchy  | The `systemd --user` unit                                                                    | Yes                  |
+| `~/.config/omarchy/plugins/dev.pimpampum.status/`           | Omarchy  | The Quickshell plugin, installed and removed by `omarchy plugin`                             | By `omarchy plugin`  |
+| Codex and Claude Code MCP configuration                     | Both     | One `pimpampum` entry that names the absolute `pimpampum-mcp` launcher and carries no token  | Proven entries only  |
+
+Backups, exports, and synchronization snapshots stay where you put them. Uninstall never touches
+them.
+
 ### Manage agent connections
 
 On macOS, open **Settings… → Agents**. On Omarchy, open **Settings → Agents** in the Pimpampum
@@ -101,8 +149,18 @@ separate decision and applies only to the reviewed entry. A partial failure leav
 connected and offers **Try again** for the one that failed.
 
 Updates are available under **Settings… → Updates** on macOS and **Settings → Updates** on
-Omarchy. **Check for updates** is read-only; **Install update** verifies and reconciles the packaged
-runtime, service, and managed connections while preserving local data. See
+Omarchy. Both read one signed manifest, `release-manifest.json`, from the rolling GitHub release
+`update-channel-stable`. Every published version signs that manifest with an Ed25519 key whose
+public half is embedded in the CLI, so no file on disk can replace the trust root; each target
+entry carries the exact versioned asset URL, its SHA-256, its size, and the manifest's `issuedAt`.
+**Check for updates** is read-only on every platform. On macOS, **Install update** downloads the
+signed app, verifies hash, size, archive, and inventory, then reconciles the packaged runtime,
+service, and managed connections while preserving local data. On Linux, **Install update** answers
+with a typed `unavailable` error: the Omarchy plugin owns the pinned runtime, so update the
+Pimpampum Status plugin and run `pimpampum-bootstrap` from the plugin directory (decision of
+2026-09-01; the Linux activation is not implemented in the CLI). A macOS `pimpampum install` from
+an npm installation fetches the app of its own version through the same signed manifest; the npm
+package no longer contains the app. See
 [Advanced lifecycle commands](#advanced-lifecycle-commands) for non-graphical repair, update, and
 removal.
 
@@ -175,7 +233,10 @@ pimpampum workspace:add storefront "Storefront" /absolute/path/to/storefront
 pimpampum workspace:list
 ```
 
-Nested directories resolve to the most specific registered Workspace.
+The native surfaces do the same with **Add a workspace**; a native installation without the npm
+package calls `pimpampum-control` by its absolute path instead of `pimpampum` (see
+[Register your first workspace](#register-your-first-workspace)). Nested directories resolve to the
+most specific registered Workspace.
 
 ### 2. Create the initiative and its first Spec
 
@@ -440,7 +501,8 @@ GET http://127.0.0.1:7337/openapi.json
 
 It documents all Workspace, Project, Spec, Task, scoped Context, work, activity, portfolio
 overview, synchronization, backup, and export operations. `/health` and `/openapi.json` are the
-only unauthenticated routes. Ordinary success envelopes use HTTP schema version 1; the
+only unauthenticated routes. `/health` answers 200 with `ready: true`, or 503 with `ready: false`
+when the daemon runs but its SQLite probe fails. Ordinary success envelopes use HTTP schema version 1; the
 independently versioned portfolio overview uses schema version 2 because the macOS and Omarchy
 clients validate it strictly.
 
@@ -472,13 +534,14 @@ Generated by `pimpampum help`. `pimpampum commands` returns the same catalog as 
 per-argument descriptions and effect annotations.
 
 ```text
-Pimpampum 1.2.11
+Pimpampum 1.3.0
 
 Every command writes one {"data": ...} envelope to stdout and exits 0, or one
-{"error": ...} envelope to stderr and exits non-zero. The only
-exceptions are `help`, which prints this text, and `mcp`, whose stdout carries
-the MCP protocol. Run `pimpampum commands` for the same catalog as JSON, and
-`pimpampum tools` for the domain tool schemas.
+{"error": ...} envelope to stderr and exits non-zero. The exceptions are
+`help`, which prints this text, `mcp`, whose stdout carries the MCP protocol,
+and `--events`, whose stdout carries schema-versioned NDJSON setup events, one
+per line, ending with the result. Run `pimpampum commands` for the same catalog
+as JSON, and `pimpampum tools` for the domain tool schemas.
 
 Use `--` to end option parsing when a value itself begins with two dashes.
 
@@ -496,8 +559,8 @@ Usage:
   pimpampum setup status
   pimpampum setup resume
   pimpampum connections
-  pimpampum connect [codex|claude-code] [--yes] [--replace] [--instructions]
-  pimpampum repair <codex|claude-code> --yes [--replace]
+  pimpampum connect [codex|claude-code] [--yes] [--replace [revision]] [--instructions]
+  pimpampum repair <codex|claude-code> --yes [--replace [revision]]
   pimpampum disconnect <codex|claude-code> --yes
   pimpampum update:check
   pimpampum update
@@ -542,6 +605,11 @@ Usage:
   pimpampum sync resolve <conflict-id> <local|remote> [--json]
   pimpampum sync forget [--json]
   pimpampum export <directory>
+
+Native desktop mode, driven by the Pimpampum app (`native` in `commands`):
+  pimpampum setup apply <operation-id> <revision> --yes [--replace <codex|claude-code>]... [--events] [--keep <codex|claude-code>]...
+  pimpampum setup resume [--events]
+  pimpampum setup retry <codex|claude-code> --events
 ```
 
 Named commands cover common human operations. `tools` and `call` expose the complete MCP contract
@@ -562,13 +630,18 @@ The published app is signed and notarized; a locally built development app is no
 Dock icon. It knows its place.
 
 On **Omarchy Quattro**, the enabled plugin bootstraps a dedicated Quickshell widget and systemd
-user service. The bar shows the same portfolio state and Claim count. Its popout lists current work
-and Projects, opens Workspaces with `xdg-open`, and exposes agent, update, synchronization, backup,
-and service controls.
+user service. The bar shows the same portfolio state and Claim count. The popout opens one card
+with three pages: Portfolio, Settings, and Help. Portfolio lists current work and Projects and
+opens Workspaces with `xdg-open`. Settings holds the Agents, Updates, Synchronization, Backup, and
+service cards. The footer opens Help on the left and stops or starts the daemon on the right.
 
 Portfolio content remains read-only in both native clients. Their bounded writes are explicit
-agent connection, update, synchronization, backup, and service lifecycle actions; project work
-still goes through the domain tools.
+workspace registration (**Add a workspace**), agent connection, update installation,
+synchronization, backup, and service lifecycle; project work still goes through the domain tools.
+Two of those writes exist on one platform only. Service start, stop, and restart are Omarchy
+controls; on macOS the app installs and repairs the service through Guided setup, and **Quit**
+never stops it. **Install update** installs on macOS and answers `unavailable` on Linux, where the
+plugin owns the pinned runtime.
 
 ## Persistence, backup, and export
 
@@ -588,7 +661,16 @@ After configuration, import runs at startup, on polling, and with `sync now`; ex
 after committed changes. The Settings toggle pauses/resumes an existing configuration. It is off
 until the user chooses a folder, and automatic thereafter. If the provider is offline, local work
 continues and is exported after recovery. Concurrent edits to unrelated entities merge; divergent
-edits to the same base are preserved as visible conflicts without a timestamp winner.
+edits to the same base are preserved as visible conflicts without a timestamp winner. Snapshot
+ordering and hashing compare code units instead of locale collation, so two computers with
+different system languages produce the same canonical form and the same hash.
+
+A Workspace that arrives from another computer does not need a local folder here. It appears with
+an empty `rootPath` and takes part in the portfolio, but `workspace_resolve` matches only
+Workspaces with a local root. Register the same Workspace ID with **Add a workspace** or
+`workspace:add` to attach this computer's folder; the registration attaches the root instead of
+creating a second Workspace. Registering a folder already used by another Workspace returns a
+typed `conflict`.
 
 Resolve one explicitly with `pimpampum sync resolve <id> local` to keep this machine's candidate,
 or `remote` to keep the other candidate. The decision is published to every device. MCP agents may
@@ -646,18 +728,25 @@ pimpampum-export-<timestamp>-<id>/
         tasks.json
 ```
 
+A backup taken by `1.3.0` is a schema v3 database. A `1.2.11` daemon refuses to open it and names
+both schema versions in the error, so keep a snapshot from before the upgrade if you may want to
+go back.
+
 To restore a SQLite backup: stop the daemon, preserve the token, move the failed database aside,
 copy the selected snapshot to the configured `pimpampum.sqlite`, remove no unrelated files, avoid
 stale `-wal` or `-shm` companions, restart, and verify `/health` plus a representative read.
 
 ## Configuration
 
-| Variable             | Default                 | Purpose                |
-| -------------------- | ----------------------- | ---------------------- |
-| `PIMPAMPUM_DATA_DIR` | `~/.pimpampum`          | Private data directory |
-| `PIMPAMPUM_HOST`     | `127.0.0.1`             | Loopback host          |
-| `PIMPAMPUM_PORT`     | `7337`                  | Daemon port            |
-| `PIMPAMPUM_TOKEN`    | Generated automatically | Local bearer token     |
+| Variable                            | Default                                                       | Purpose                                                                                                                   |
+| ----------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `PIMPAMPUM_DATA_DIR`                | `~/.pimpampum`                                                | Private data directory                                                                                                    |
+| `PIMPAMPUM_HOST`                    | `127.0.0.1`                                                   | Loopback host                                                                                                             |
+| `PIMPAMPUM_PORT`                    | `7337`                                                        | Daemon port                                                                                                               |
+| `PIMPAMPUM_TOKEN`                   | Generated automatically                                       | Local bearer token                                                                                                        |
+| `PIMPAMPUM_RELEASE_MANIFEST_URL`    | The `update-channel-stable` release's `release-manifest.json` | HTTPS URL of the signed update manifest; integrity still comes from the embedded key                                      |
+| `PIMPAMPUM_DEV_RELEASE_KEY`         | unset                                                         | Set to `1` to enable the two development seams below; never set it on an installation you rely on                         |
+| `PIMPAMPUM_RELEASE_PUBLIC_KEY_PATH` | unset                                                         | With the flag above: an Ed25519 public key PEM that replaces the embedded key; plain-HTTP loopback URLs are also accepted |
 
 The host must be loopback. A manually configured token must contain at least 32 printable ASCII
 characters without spaces. One instance lock prevents two daemons from owning the same data
@@ -674,9 +763,15 @@ npm install --global pimpampum
 pimpampum install
 ```
 
-`pimpampum install` installs the per-user service without root access. `pimpampum status` verifies
-it. On macOS, `pimpampum install --service-only` deliberately leaves the separately downloaded app
-in place.
+`pimpampum install` installs the per-user service without root access. On macOS it also downloads
+the signed app of the same version from the release channel, verifies it with the embedded release
+key, and places it in `~/Applications`; `pimpampum install --service-only` skips the app.
+`pimpampum status` verifies the service.
+
+The package is the CLI, the MCP bridge, and the Omarchy plugin sources: 2.4 MB unpacked, against a
+10 MB budget that `npm run check:package-size` enforces before a tag. Neither the macOS app nor a
+private Node runtime is inside it any more; `pimpampum install` fetches the app it needs from the
+signed release channel. Version `1.2.11` shipped 157 MB.
 
 To run a development checkout:
 
@@ -703,7 +798,7 @@ Pimpampum does not include the following, and nobody forgot to add them:
 - Configurable workflows or arbitrary Task dependencies.
 - More than one level of Subtasks.
 - Cloud synchronization of the live database.
-- A web interface in the first version.
+- A web interface, so far.
 
 These omissions keep the contract small enough for an agent to understand and a human to trust.
 Excellent larger tools already exist for the rest; Pimpampum would like to remain comprehensible
@@ -716,15 +811,31 @@ npm run typecheck
 npm run lint
 npm run format:check
 npm test
+npm run test:macos
+npm run test:omarchy
 npm run test:evals
 npm run build
 ```
 
 `npm test` builds from a clean `dist/`, enforces 100% statement, branch, function, and line
-coverage, and runs the six compiled E2E scenarios. `npm run test:evals` runs only that deterministic
-E2E gate: four product workflows plus two synthetic Git development sessions that test handoff,
-restart, repository tests, commits, and artifact verification. It does not launch or evaluate an
-LLM. The exact boundaries and rubric live in [docs/evals.md](docs/evals.md).
+coverage, and runs the thirteen compiled E2E scenarios. The 100% applies to the files
+`vitest.config.ts` measures. It excludes four files: the entrypoints `src/cli.ts`,
+`src/daemon.ts`, and `src/mcpStdio.ts`, and the type-only `src/types.ts`. The install, uninstall,
+update, and setup orchestration is measured with everything else, because `src/cliMain.ts` is now
+77 lines of composition over `src/cliComposition/*` and `src/service/packagedLifecycle.ts`.
+`npm run test:evals` is an alias of
+the E2E gate kept for the evals documentation: seven product scenarios, two synthetic Git
+development sessions that test handoff, restart, repository tests, commits, and artifact
+verification, two update-channel scenarios, and one two-machine synchronization scenario. CI runs
+`npm test`, which already contains it, so
+the alias is not part of any workflow. It does not launch or evaluate an LLM. The exact boundaries
+and rubric live in [docs/evals.md](docs/evals.md).
+
+`npm run test:macos` and `npm run test:omarchy` cover the native surfaces without a desktop. Both
+first run `npm run check:state-vocabulary`, which regenerates the shared state names for QML and
+Swift and fails when a generated file drifts from its source. `test:macos` then requires 100%
+coverage on the Swift files listed in `scripts/check-swift-coverage.sh`; `test:omarchy` validates
+the plugin surface and runs the Quickshell and service tests.
 
 Native live validation remains separate and explicitly opt-in because it depends on the target
 desktop and may touch the current user's installed integration:
@@ -759,9 +870,13 @@ block a tag (decision of 2026-08-28).
 
 ## Status
 
-The current release is `1.2.11`: functional, local-first, and deliberately small. Every
-future feature has one admission test: does it improve coordination more than it increases surface
-area? If not, it can enjoy a fulfilling life in another product.
+The current release is `1.3.0`: functional, local-first, and deliberately small. It signs the
+update channel with a trust root embedded in the CLI, moves the database to schema v3, makes
+synchronized ordering independent of the system language, and reduces the npm package from 157 MB
+to 2.4 MB. The migration to schema v3 runs once at the first start and is one-way: a `1.2.11`
+daemon refuses the migrated database afterwards, so take a backup before you upgrade. Every future feature has one admission test:
+does it improve coordination more than it increases surface area? If not, it can enjoy a
+fulfilling life in another product.
 
 ## License
 

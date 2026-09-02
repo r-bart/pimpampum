@@ -25,9 +25,11 @@ struct OverviewClientTests {
         == [.active, .available, .draft, .paused, .complete, .complete]
     )
     #expect(overview.projects.last?.lifecycleState == .cancelled)
-    #expect(overview.specs.map(\.title) == [
-      "Widget V1", "Cross-device synchronization", "First-run onboarding",
-    ])
+    #expect(
+      overview.specs.map(\.title) == [
+        "Widget V1", "Cross-device synchronization", "Release integration", "Paused rollout",
+        "First-run onboarding",
+      ])
     #expect(overview.specs.first?.completedTaskCount == 2)
     #expect(overview.specs.first?.activeClaimCount == 2)
     #expect(overview.specs.last?.lifecycleState == .done)
@@ -155,6 +157,30 @@ struct OverviewClientTests {
         try await client.fetchOverview()
       }
     }
+  }
+
+  /// The overview poll is the one caller that must see the transport's own error: `OverviewStore`
+  /// separates a cancelled refresh from a daemon that stopped answering, and a wrapped error would
+  /// erase that difference. A cancellation stays a cancellation for the same reason.
+  @Test
+  func rethrowsTheTransportsOwnFailureInsteadOfATypedClientError() async throws {
+    let failing = configuredClient(
+      receipt: receipt(),
+      tokenData: Data("\(token)\n".utf8),
+      transport: StubOverviewTransport(recorder: RequestRecorder()) { _ in
+        throw TestFailure.expected
+      }
+    )
+    await #expect(throws: TestFailure.expected) { try await failing.fetchOverview() }
+
+    let cancelled = configuredClient(
+      receipt: receipt(),
+      tokenData: Data("\(token)\n".utf8),
+      transport: StubOverviewTransport(recorder: RequestRecorder()) { _ in
+        throw CancellationError()
+      }
+    )
+    await #expect(throws: CancellationError.self) { try await cancelled.fetchOverview() }
   }
 
   @Test
@@ -355,8 +381,9 @@ struct OverviewClientTests {
     mutations.append { root in
       var data = root["data"] as! [String: Any]
       var work = data["activeWork"] as! [[String: Any]]
-      work[1]["taskId"] = "unexpected-task"
-      work[1]["taskTitle"] = "Unexpected task"
+      // The last entry is the spec-level claim; task fields on it are a contradiction.
+      work[work.count - 1]["taskId"] = "unexpected-task"
+      work[work.count - 1]["taskTitle"] = "Unexpected task"
       data["activeWork"] = work
       root["data"] = data
     }

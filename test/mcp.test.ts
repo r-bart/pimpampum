@@ -2,46 +2,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openDatabase } from '../src/db.js';
 import { createPimpampumMcpHandler } from '../src/mcp.js';
+import { AppError } from '../src/errors.js';
 import { PimpampumStore } from '../src/store.js';
 import { SyncController } from '../src/syncController.js';
-
-const canonicalTools = [
-  'workspace_list',
-  'workspace_resolve',
-  'project_list',
-  'project_get',
-  'project_create',
-  'project_update',
-  'project_complete',
-  'project_cancel',
-  'project_completion_get',
-  'spec_list',
-  'spec_get',
-  'spec_read',
-  'spec_create',
-  'spec_update',
-  'spec_completion_get',
-  'spec_cancel',
-  'task_list',
-  'task_get',
-  'task_read',
-  'task_create',
-  'task_update',
-  'task_completion_get',
-  'task_cancel',
-  'context_list',
-  'context_read',
-  'context_put',
-  'activity_list',
-  'work_list',
-  'work_start',
-  'work_renew',
-  'work_release',
-  'work_complete',
-] as const;
+import type { PimpampumGateway } from '../src/types.js';
+import { canonicalTools } from './helpers/canonicalTools.js';
 
 describe('MCP endpoint v2', () => {
   let store: PimpampumStore;
@@ -130,7 +98,7 @@ describe('MCP endpoint v2', () => {
       const emptyConflicts = await client.callTool({ name: 'sync_conflict_list', arguments: {} });
       expect(emptyConflicts.isError).not.toBe(true);
       (sync as unknown as { settings: { conflicts: unknown[] } }).settings.conflicts.push({
-        id: 'known',
+        id: 'a'.repeat(64),
         entityType: 'project',
         entityId: 'project',
         local: {},
@@ -141,7 +109,7 @@ describe('MCP endpoint v2', () => {
       expect(JSON.stringify(manifests.content)).not.toContain('"local"');
       const known = await client.callTool({
         name: 'sync_conflict_read',
-        arguments: { conflictId: 'known' },
+        arguments: { conflictId: 'a'.repeat(64) },
       });
       expect(known.isError).not.toBe(true);
       expect(JSON.stringify(known.content)).toContain('hasMore');
@@ -149,15 +117,22 @@ describe('MCP endpoint v2', () => {
         (
           await client.callTool({
             name: 'sync_conflict_read',
-            arguments: { conflictId: 'known', limitCodeUnits: 1, offsetCodeUnits: 0 },
+            arguments: { conflictId: 'a'.repeat(64), limitCodeUnits: 1, offsetCodeUnits: 0 },
           })
         ).isError,
       ).not.toBe(true);
       const missing = await client.callTool({
         name: 'sync_conflict_read',
-        arguments: { conflictId: 'missing' },
+        arguments: { conflictId: 'b'.repeat(64) },
       });
       expect(missing.isError).toBe(true);
+      expect(JSON.stringify(missing.content)).toContain('not_found');
+      const malformed = await client.callTool({
+        name: 'sync_conflict_read',
+        arguments: { conflictId: 'known' },
+      });
+      expect(malformed.isError).toBe(true);
+      expect(JSON.stringify(malformed.content)).not.toContain('not_found');
     } finally {
       await client.close();
       await sync.close();
@@ -572,6 +547,147 @@ describe('MCP endpoint v2', () => {
           }),
         ).state,
       ).toBe('cancelled');
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('rejects updates that change nothing without bumping the revision or logging an event', async () => {
+    const handler = createPimpampumMcpHandler(store);
+    const client = new Client(
+      { name: 'pimpampum-noop', version: '0.2.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+    const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {
+      fetch: (url, init) => handler.fetch(new Request(url, init)),
+    });
+    await client.connect(transport);
+    const call = (name: string, args: Record<string, unknown>) =>
+      client.callTool({ name, arguments: args });
+    const data = <T>(result: Awaited<ReturnType<typeof call>>): T => {
+      const block = result.content[0];
+      if (!block || block.type !== 'text') throw new Error('Expected an MCP text result');
+      return (JSON.parse(block.text) as { data: T }).data;
+    };
+    const failure = (result: Awaited<ReturnType<typeof call>>) => {
+      expect(result.isError).toBe(true);
+      const block = result.content[0];
+      if (!block || block.type !== 'text') throw new Error('Expected an MCP text error');
+      return (JSON.parse(block.text) as { error: { code: string; message: string } }).error;
+    };
+    try {
+      const project = data<{ id: string; revision: number }>(
+        await call('project_create', { workspaceId: 'vcomp', slug: 'noop', title: 'Noop' }),
+      );
+      const spec = data<{ id: string; revision: number }>(
+        await call('spec_create', { projectId: project.id, slug: 'noop', title: 'Noop' }),
+      );
+      const task = data<{ id: string; revision: number }>(
+        await call('task_create', { specId: spec.id, title: 'Noop' }),
+      );
+      const mutationsBefore = store.mutationCount;
+      expect(
+        failure(
+          await call('project_update', {
+            projectId: project.id,
+            expectedRevision: project.revision,
+          }),
+        ),
+      ).toMatchObject({ code: 'bad_request', message: /title and\/or state/u });
+      expect(
+        failure(await call('spec_update', { specId: spec.id, expectedRevision: spec.revision })),
+      ).toMatchObject({ code: 'bad_request', message: /title, body, and\/or state/u });
+      expect(
+        failure(await call('task_update', { taskId: task.id, expectedRevision: task.revision })),
+      ).toMatchObject({ code: 'bad_request', message: /title and\/or body/u });
+      expect(store.mutationCount).toBe(mutationsBefore);
+      expect(
+        data<{ revision: number }>(await call('project_get', { projectId: project.id })).revision,
+      ).toBe(project.revision);
+      const events = data<Array<{ eventType: string }>>(
+        await call('activity_list', { projectId: project.id, limit: 50 }),
+      ).map((event) => event.eventType);
+      expect(events).not.toContain('project.updated');
+      expect(events).not.toContain('spec.updated');
+      expect(events).not.toContain('task.updated');
+      const completed = data<{ id: string; state: string }>(
+        await (async () => {
+          await call('spec_update', {
+            specId: spec.id,
+            body: '# Ready',
+            state: 'ready',
+            expectedRevision: spec.revision,
+          });
+          await call('project_update', {
+            projectId: project.id,
+            state: 'open',
+            expectedRevision: project.revision,
+          });
+          await call('work_start', { targetType: 'task', targetId: task.id, agentId: 'noop' });
+          return call('work_complete', {
+            targetType: 'task',
+            targetId: task.id,
+            agentId: 'noop',
+            expectedRevision: task.revision,
+            summary: 'Done',
+          });
+        })(),
+      );
+      expect(completed).toMatchObject({ id: task.id, state: 'done' });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('logs unexpected tool failures and transport rejections through the injected logger', async () => {
+    const logger = { error: vi.fn() };
+    const gateway = {
+      listWorkspaces: () => {
+        throw new Error('disk on fire');
+      },
+      getProjectManifest: () => {
+        throw new AppError('not_found', 'Project missing', 404);
+      },
+    } as unknown as PimpampumGateway;
+    const handler = createPimpampumMcpHandler(gateway, undefined, logger);
+    const client = new Client(
+      { name: 'pimpampum-logger', version: '0.2.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+    const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {
+      fetch: (url, init) => handler.fetch(new Request(url, init)),
+    });
+    await client.connect(transport);
+    try {
+      const unexpected = await client.callTool({ name: 'workspace_list', arguments: {} });
+      expect(unexpected.isError).toBe(true);
+      expect(JSON.stringify(unexpected.content)).toContain('internal_error');
+      expect(JSON.stringify(unexpected.content)).not.toContain('disk on fire');
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(logger.error.mock.calls[0]?.[1]).toMatchObject({ message: 'disk on fire' });
+
+      const typed = await client.callTool({
+        name: 'project_get',
+        arguments: { projectId: '00000000-0000-4000-8000-000000000001' },
+      });
+      expect(typed.isError).toBe(true);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+
+      // A well-formed JSON body that is not JSON-RPC is rejected out of band; the
+      // handler reports it through `onerror`, which lands in the same daemon log.
+      const rejected = await handler.fetch(
+        new Request('http://test.local/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+          },
+          body: JSON.stringify({ hello: 'world' }),
+        }),
+      );
+      expect(rejected.status).toBe(400);
+      expect(logger.error).toHaveBeenCalledTimes(2);
+      expect(logger.error.mock.calls[1]?.[0]).toBe('Pimpampum MCP transport failed');
     } finally {
       await client.close();
     }

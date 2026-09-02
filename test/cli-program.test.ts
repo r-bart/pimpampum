@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PimpampumHttpClient } from '../src/client.js';
-import { MAX_AGENT_INPUT_BYTES, runCli, type CliRuntime } from '../src/cliProgram.js';
+import {
+  createLazyGateway,
+  MAX_AGENT_INPUT_BYTES,
+  MAX_BODY_FILE_BYTES,
+  runCli,
+  type CliRuntime,
+} from '../src/cliProgram.js';
 import { AppError } from '../src/errors.js';
 
 function fixture() {
@@ -133,107 +139,393 @@ function fixture() {
 }
 
 describe('CLI program', () => {
-  it('maps every command through the injected runtime', async () => {
-    const state = fixture();
-    const commands: string[][] = [
-      ['health'],
-      ['overview'],
-      ['install'],
-      ['status'],
-      ['update:check'],
-      ['update'],
-      ['uninstall'],
-      ['workspace:list'],
+  // One row per CLI verb: the argv, the exact gateway method it must reach, and the exact
+  // arguments that method receives. Swapping a state literal, a default lease or a resolved path
+  // in `src/cliProgram.ts` fails the row that names it.
+  type ClientMethod = keyof ReturnType<typeof fixture>['client'];
+  type ManagerMethod =
+    | 'serviceManager.install'
+    | 'serviceManager.status'
+    | 'serviceManager.uninstall'
+    | 'updateManager.check'
+    | 'updateManager.update';
+  const conflictId = 'a'.repeat(64);
+  const commandTable: Array<[string[], ClientMethod | ManagerMethod, unknown[]]> = [
+    [['health'], 'health', []],
+    [['overview'], 'getOverview', []],
+    [['install'], 'serviceManager.install', []],
+    [['status'], 'serviceManager.status', []],
+    [['update:check'], 'updateManager.check', []],
+    [['update'], 'updateManager.update', []],
+    [['uninstall'], 'serviceManager.uninstall', []],
+    [['workspace:list'], 'listWorkspaces', []],
+    [
       ['workspace:add', 'ws', 'Workspace', 'root'],
-      ['work:list'],
+      'registerWorkspace',
+      [{ id: 'ws', name: 'Workspace', rootPath: '/resolved/root' }],
+    ],
+    [['work:list'], 'listWork', [{ workspaceId: null, projectId: null, specId: null, limit: 50 }]],
+    [
       ['work:list', 'ws'],
-      ['work:list', 'ws', 'project-id', 'spec-id'],
+      'listWork',
+      [{ workspaceId: 'ws', projectId: null, specId: null, limit: 50 }],
+    ],
+    [
+      ['work:list', 'ws', 'project-id', 'spec-id', '--limit', '7'],
+      'listWork',
+      [{ workspaceId: 'ws', projectId: 'project-id', specId: 'spec-id', limit: 7 }],
+    ],
+    [
       ['work:start', 'spec', 'spec-id', 'agent'],
-      ['work:start', 'task', 'task-id', 'agent'],
+      'startWork',
+      [{ targetType: 'spec', targetId: 'spec-id', agentId: 'agent', leaseSeconds: 1_800 }],
+    ],
+    [
+      ['work:start', 'task', 'task-id', 'agent', '--lease-seconds', '60'],
+      'startWork',
+      [{ targetType: 'task', targetId: 'task-id', agentId: 'agent', leaseSeconds: 60 }],
+    ],
+    [
       ['work:renew', 'spec', 'spec-id', 'agent'],
+      'renewWork',
+      [{ targetType: 'spec', targetId: 'spec-id', agentId: 'agent', leaseSeconds: 1_800 }],
+    ],
+    [
       ['work:release', 'spec', 'spec-id', 'agent'],
+      'releaseWork',
+      [{ targetType: 'spec', targetId: 'spec-id', agentId: 'agent', note: null }],
+    ],
+    [
       ['work:release', 'task', 'task-id', 'agent', 'handoff'],
+      'releaseWork',
+      [{ targetType: 'task', targetId: 'task-id', agentId: 'agent', note: 'handoff' }],
+    ],
+    [
       ['work:complete', 'task', 'task-id', 'agent', '2', 'done'],
+      'completeWork',
+      [
+        {
+          targetType: 'task',
+          targetId: 'task-id',
+          agentId: 'agent',
+          expectedRevision: 2,
+          summary: 'done',
+          artifacts: [],
+        },
+      ],
+    ],
+    [
+      ['work:complete', 'spec', 'spec-id', 'agent', '3', 'shipped', '--artifact', 'git:abc'],
+      'completeWork',
+      [
+        {
+          targetType: 'spec',
+          targetId: 'spec-id',
+          agentId: 'agent',
+          expectedRevision: 3,
+          summary: 'shipped',
+          artifacts: [{ label: null, uri: 'git:abc' }],
+        },
+      ],
+    ],
+    [
       ['project:create', 'ws', 'slug', 'Title'],
-      ['project:get', 'project-id'],
+      'createProject',
+      [{ workspaceId: 'ws', slug: 'slug', title: 'Title', actor: 'cli' }],
+    ],
+    [
+      ['project:create', 'ws', 'slug', 'Title', '--actor', 'codex'],
+      'createProject',
+      [{ workspaceId: 'ws', slug: 'slug', title: 'Title', actor: 'codex' }],
+    ],
+    [['project:get', 'project-id'], 'getProject', ['project-id']],
+    [
       ['project:draft', 'project-id', '2'],
+      'updateProject',
+      [{ projectId: 'project-id', title: null, state: 'draft', expectedRevision: 2, actor: 'cli' }],
+    ],
+    [
       ['project:open', 'project-id', '3'],
+      'updateProject',
+      [{ projectId: 'project-id', title: null, state: 'open', expectedRevision: 3, actor: 'cli' }],
+    ],
+    [
       ['project:pause', 'project-id', '4'],
+      'updateProject',
+      [
+        {
+          projectId: 'project-id',
+          title: null,
+          state: 'paused',
+          expectedRevision: 4,
+          actor: 'cli',
+        },
+      ],
+    ],
+    [
       ['project:complete', 'project-id', '5', 'Outcome shipped'],
+      'completeProject',
+      [
+        {
+          projectId: 'project-id',
+          expectedRevision: 5,
+          summary: 'Outcome shipped',
+          artifacts: [],
+          actor: 'cli',
+        },
+      ],
+    ],
+    [
       ['project:cancel', 'project-id', '5', 'Outcome abandoned'],
+      'cancelProject',
+      [{ projectId: 'project-id', expectedRevision: 5, reason: 'Outcome abandoned', actor: 'cli' }],
+    ],
+    [
       ['spec:create', 'project-id', 'feature', 'Feature'],
+      'createSpec',
+      [{ projectId: 'project-id', slug: 'feature', title: 'Feature', body: '', actor: 'cli' }],
+    ],
+    [
       ['spec:create', 'project-id', 'feature-with-body', 'Feature with body', 'spec.md'],
-      ['spec:get', 'spec-id'],
+      'createSpec',
+      [
+        {
+          projectId: 'project-id',
+          slug: 'feature-with-body',
+          title: 'Feature with body',
+          body: '# Spec',
+          actor: 'cli',
+        },
+      ],
+    ],
+    [['spec:get', 'spec-id'], 'getSpec', ['spec-id']],
+    [
       ['spec:draft', 'spec-id', '2'],
+      'updateSpec',
+      [
+        {
+          specId: 'spec-id',
+          title: null,
+          body: null,
+          state: 'draft',
+          expectedRevision: 2,
+          actor: 'cli',
+        },
+      ],
+    ],
+    [
       ['spec:ready', 'spec-id', '3'],
+      'updateSpec',
+      [
+        {
+          specId: 'spec-id',
+          title: null,
+          body: null,
+          state: 'ready',
+          expectedRevision: 3,
+          actor: 'cli',
+        },
+      ],
+    ],
+    [
       ['spec:cancel', 'spec-id', '4', 'No longer required'],
+      'cancelSpec',
+      [{ specId: 'spec-id', expectedRevision: 4, reason: 'No longer required', actor: 'cli' }],
+    ],
+    [
       ['task:create', 'spec-id', 'Task'],
+      'createTask',
+      [{ specId: 'spec-id', title: 'Task', parentId: null, body: null, actor: 'cli' }],
+    ],
+    [
       ['task:create', 'spec-id', 'Subtask', 'parent-id'],
-      ['task:get', 'task-id'],
+      'createTask',
+      [{ specId: 'spec-id', title: 'Subtask', parentId: 'parent-id', body: null, actor: 'cli' }],
+    ],
+    [['task:get', 'task-id'], 'getTask', ['task-id']],
+    [
       ['task:cancel', 'task-id', '2', 'Superseded'],
-      ['backup', 'backups'],
-      ['backup', 'status', '--json'],
+      'cancelTask',
+      [{ taskId: 'task-id', expectedRevision: 2, reason: 'Superseded', actor: 'cli' }],
+    ],
+    [['backup', 'backups'], 'backup', ['/resolved/backups']],
+    [['backup', 'status', '--json'], 'getAutomaticBackupStatus', []],
+    [
       ['backup', 'configure', 'cloud backup', '--json'],
-      ['backup', 'retry', '--json'],
-      ['backup', 'disable', '--json'],
-      ['sync', 'status', '--json'],
+      'configureAutomaticBackup',
+      ['/resolved/cloud backup'],
+    ],
+    [['backup', 'retry', '--json'], 'retryAutomaticBackup', []],
+    [['backup', 'disable', '--json'], 'disableAutomaticBackup', []],
+    [['sync', 'status', '--json'], 'getSyncStatus', []],
+    [
       ['sync', 'configure', 'shared folder', '--device', 'linux-test', '--json'],
-      ['sync', 'now', '--json'],
-      ['sync', 'pause', '--json'],
-      ['sync', 'resume', '--json'],
-      ['sync', 'conflicts', '--json'],
-      ['sync', 'resolve', 'a'.repeat(64), 'local', '--json'],
-      ['sync', 'forget', '--json'],
-      ['export', 'exports'],
-    ];
-    for (const command of commands) await runCli(command, state.runtime);
+      'configureSync',
+      ['/resolved/shared folder', 'linux-test'],
+    ],
+    [['sync', 'now', '--json'], 'reconcileSync', []],
+    [['sync', 'pause', '--json'], 'pauseSync', []],
+    [['sync', 'resume', '--json'], 'resumeSync', []],
+    [['sync', 'conflicts', '--json'], 'listSyncConflicts', []],
+    [
+      ['sync', 'resolve', conflictId, 'local', '--json'],
+      'resolveSyncConflict',
+      [conflictId, 'local'],
+    ],
+    [['sync', 'forget', '--json'], 'forgetSync', []],
+    [['export', 'exports'], 'exportPortable', ['/resolved/exports']],
+  ];
 
-    expect(state.output).toHaveLength(commands.length);
-    expect(state.client.listWork).toHaveBeenCalledWith({
-      workspaceId: 'ws',
-      projectId: 'project-id',
-      specId: 'spec-id',
-      limit: 50,
-    });
-    expect(state.client.renewWork).toHaveBeenCalledWith(
-      expect.objectContaining({ targetType: 'spec', leaseSeconds: 1_800 }),
+  function resolveMethod(state: ReturnType<typeof fixture>, method: ClientMethod | ManagerMethod) {
+    if (method.startsWith('serviceManager.') || method.startsWith('updateManager.')) {
+      const [owner, name] = method.split('.') as ['serviceManager' | 'updateManager', string];
+      return (state.runtime[owner] as unknown as Record<string, ReturnType<typeof vi.fn>>)[name]!;
+    }
+    return state.client[method as ClientMethod] as unknown as ReturnType<typeof vi.fn>;
+  }
+
+  it.each(commandTable)(
+    '%j reaches %s with the exact arguments',
+    async (argv, method, expectedArguments) => {
+      const state = fixture();
+      await runCli(argv, state.runtime);
+
+      expect(state.errors).toEqual([]);
+      expect(state.runtime.exit).not.toHaveBeenCalled();
+      const target = resolveMethod(state, method);
+      expect(target).toHaveBeenCalledTimes(1);
+      expect(target.mock.calls[0]).toEqual(expectedArguments);
+      // Exactly one gateway method ran; no verb fans out to a second call behind the caller's back.
+      const clientCalls = Object.entries(state.client as unknown as Record<string, unknown>)
+        .filter(([, value]) => vi.isMockFunction(value) && value.mock.calls.length > 0)
+        .map(([name]) => name);
+      expect(clientCalls).toEqual(method.includes('.') ? [] : [method]);
+      // Success is printed once, through the `{data}` envelope the desktop adapters parse.
+      expect(state.output).toHaveLength(1);
+      expect(Object.keys(JSON.parse(state.output[0] ?? ''))).toEqual(['data']);
+    },
+  );
+
+  it('covers every catalogued daemon and service verb in the mapping table', () => {
+    const verbs = new Set(
+      commandTable.map(([argv]) =>
+        argv.slice(0, argv[0] === 'backup' || argv[0] === 'sync' ? 2 : 1).join(' '),
+      ),
     );
-    expect(state.client.createProject).toHaveBeenCalledWith(
-      expect.not.objectContaining({ prd: expect.anything() }),
-    );
-    expect(state.client.createSpec).toHaveBeenCalledWith(
-      expect.objectContaining({ body: '# Spec' }),
-    );
-    expect(state.client.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({ parentId: 'parent-id' }),
-    );
+    // `backup <directory>` is the bare verb; its subcommands are rows of their own.
+    verbs.add('backup');
+    for (const verb of [
+      'health',
+      'overview',
+      'install',
+      'status',
+      'update:check',
+      'update',
+      'uninstall',
+      'workspace:list',
+      'workspace:add',
+      'work:list',
+      'work:start',
+      'work:renew',
+      'work:release',
+      'work:complete',
+      'project:create',
+      'project:get',
+      'project:draft',
+      'project:open',
+      'project:pause',
+      'project:complete',
+      'project:cancel',
+      'spec:create',
+      'spec:get',
+      'spec:draft',
+      'spec:ready',
+      'spec:cancel',
+      'task:create',
+      'task:get',
+      'task:cancel',
+      'backup',
+      'backup status',
+      'backup configure',
+      'backup retry',
+      'backup disable',
+      'sync status',
+      'sync configure',
+      'sync now',
+      'sync pause',
+      'sync resume',
+      'sync conflicts',
+      'sync resolve',
+      'sync forget',
+      'export',
+    ]) {
+      expect(verbs, `missing table row for ${verb}`).toContain(verb);
+    }
   });
 
-  it('returns a non-zero agent error when automatic backup retry reports failure', async () => {
+  // A retry that ends in `state: 'error'` is a successful report: the daemon answered 200 and the
+  // payload carries the failure. The desktop cards read `state` and `error` from the data; exit 1
+  // would replace that data with a generic envelope.
+  it('returns the automatic backup status as data even when the retry reports an error', async () => {
     const state = fixture();
     state.client.retryAutomaticBackup = vi.fn(async () => ({
       state: 'error',
       enabled: true,
       error: 'cloud volume unavailable',
     })) as never;
-    state.runtime.exit = vi.fn((code: number) => {
+
+    await runCli(['backup', 'retry', '--json'], state.runtime);
+
+    expect(state.errors).toEqual([]);
+    expect(state.runtime.exit).not.toHaveBeenCalled();
+    expect(JSON.parse(state.output[0] ?? '')).toEqual({
+      data: { state: 'error', enabled: true, error: 'cloud volume unavailable' },
+    });
+  });
+
+  it('reads --body-file through the bounded reader and names an unreadable path', async () => {
+    const state = fixture();
+    await runCli(
+      ['spec:create', 'project-id', 'feature', 'Feature', '--body-file', 'spec.md'],
+      state.runtime,
+    );
+    await runCli(['task:create', 'spec-id', 'Task', '--body-file', 'task.md'], state.runtime);
+    expect(state.runtime.readFile).toHaveBeenCalledWith('/resolved/spec.md', MAX_BODY_FILE_BYTES);
+    expect(state.runtime.readFile).toHaveBeenCalledWith('/resolved/task.md', MAX_BODY_FILE_BYTES);
+    expect(MAX_BODY_FILE_BYTES).toBe(1_000_000);
+
+    const unreadable = fixture();
+    unreadable.runtime.exit = vi.fn((code: number) => {
       throw new Error(`exit:${code}`);
     });
+    vi.spyOn(unreadable.runtime, 'readFile').mockImplementationOnce(() => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    await expect(
+      runCli(['task:create', 'spec-id', 'Task', '--body-file', 'missing.md'], unreadable.runtime),
+    ).rejects.toThrow('exit:1');
+    expect(JSON.parse(unreadable.errors[0] ?? '')).toMatchObject({
+      error: {
+        code: 'bad_request',
+        message: 'Could not read body file: /resolved/missing.md',
+        details: { path: '/resolved/missing.md' },
+      },
+    });
+    expect(unreadable.client.createTask).not.toHaveBeenCalled();
 
-    await expect(runCli(['backup', 'retry', '--json'], state.runtime)).rejects.toThrow('exit:1');
-    expect(state.errors.join('\n')).toContain('cloud volume unavailable');
-
-    const withoutMessage = fixture();
-    withoutMessage.client.retryAutomaticBackup = vi.fn(async () => ({
-      state: 'error',
-      enabled: true,
-      error: null,
-    })) as never;
-    withoutMessage.runtime.exit = vi.fn((code: number) => {
+    const bounded = fixture();
+    bounded.runtime.exit = vi.fn((code: number) => {
       throw new Error(`exit:${code}`);
     });
-    await expect(runCli(['backup', 'retry'], withoutMessage.runtime)).rejects.toThrow('exit:1');
-    expect(withoutMessage.errors.join('\n')).toContain('Automatic backup retry failed');
+    vi.spyOn(bounded.runtime, 'readFile').mockImplementationOnce(() => {
+      throw new AppError('payload_too_large', 'File exceeds 1000000 UTF-8 bytes', 413);
+    });
+    await expect(
+      runCli(['spec:create', 'project-id', 'feature', 'Feature', 'huge.md'], bounded.runtime),
+    ).rejects.toThrow('exit:1');
+    expect(JSON.parse(bounded.errors[0] ?? '')).toMatchObject({
+      error: { code: 'payload_too_large' },
+    });
   });
 
   it('routes the macOS onboarding install flag to the service-only manager', async () => {
@@ -325,10 +617,16 @@ describe('CLI program', () => {
     await expect(
       runCli(['install', '--service-only', '--service-only'], state.runtime),
     ).rejects.toThrow('exit:1');
+    await expect(runCli(['install', 'extra'], state.runtime)).rejects.toThrow('exit:1');
 
     expect(state.runtime.serviceManager.install).not.toHaveBeenCalled();
     expect(state.runtime.serviceOnlyManager?.install).not.toHaveBeenCalled();
-    expect(state.errors.join('\n')).toContain('optional --service-only flag');
+    const messages = state.errors.map((entry) => JSON.parse(entry).error.message as string);
+    expect(messages).toEqual([
+      'Unknown option for install: --unknown',
+      'Repeated option: --service-only',
+      'install accepts at most 0 positional arguments',
+    ]);
   });
 
   it('rejects ambiguous automatic backup subcommand arguments before transport', async () => {
@@ -346,10 +644,22 @@ describe('CLI program', () => {
     await expect(
       runCli(['backup', 'configure', '/backup', '--pretty'], state.runtime),
     ).rejects.toThrow('exit:1');
+    await expect(runCli(['backup', 'configure'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(runCli(['backup'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(runCli(['backup', '--json'], state.runtime)).rejects.toThrow('exit:1');
     expect(state.client.getAutomaticBackupStatus).not.toHaveBeenCalled();
     expect(state.client.configureAutomaticBackup).not.toHaveBeenCalled();
     expect(state.client.disableAutomaticBackup).not.toHaveBeenCalled();
-    expect(state.errors.join('\n')).toContain('Only the optional --json flag is accepted');
+    expect(state.client.backup).not.toHaveBeenCalled();
+    const messages = state.errors.map((entry) => JSON.parse(entry).error.message as string);
+    expect(messages).toEqual([
+      'backup status accepts at most 0 positional arguments',
+      'Repeated option: --json',
+      'Unknown option for backup configure: --pretty',
+      'Missing backup directory',
+      'Missing backup directory',
+      'Unknown option for backup: --json',
+    ]);
   });
 
   it('rejects malformed and unknown synchronization commands before transport', async () => {
@@ -358,13 +668,55 @@ describe('CLI program', () => {
       throw new Error(`exit:${code}`);
     });
     await expect(runCli(['sync', 'configure', '/shared'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(runCli(['sync', 'configure', '--device', 'x'], state.runtime)).rejects.toThrow(
+      'exit:1',
+    );
     await expect(runCli(['sync', 'resolve', 'conflict', 'either'], state.runtime)).rejects.toThrow(
       'exit:1',
     );
+    await expect(runCli(['sync', 'resolve', 'conflict'], state.runtime)).rejects.toThrow('exit:1');
     await expect(runCli(['sync', 'wat'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(runCli(['sync'], state.runtime)).rejects.toThrow('exit:1');
+    await expect(runCli(['sync', 'now', 'extra'], state.runtime)).rejects.toThrow('exit:1');
     expect(state.client.configureSync).not.toHaveBeenCalled();
-    expect(state.errors.join('\n')).toContain('sync configure');
-    expect(state.errors.join('\n')).toContain('Unknown sync action');
+    expect(state.client.resolveSyncConflict).not.toHaveBeenCalled();
+    expect(state.client.reconcileSync).not.toHaveBeenCalled();
+    const failures = state.errors.map(
+      (entry) => JSON.parse(entry).error as { message: string; details: { usage?: string } },
+    );
+    expect(failures.map((failure) => failure.message)).toEqual([
+      'sync configure requires --device <id>',
+      'Missing shared folder',
+      'Conflict choice must be local or remote',
+      'Missing conflict choice',
+      'Unknown sync action: wat',
+      'Missing sync action',
+      'sync now accepts at most 0 positional arguments',
+    ]);
+    expect(failures[0]?.details.usage).toBe(
+      'pimpampum sync configure <directory> --device <id> [--json]',
+    );
+    expect(failures[4]?.details.usage).toContain('Usage:');
+  });
+
+  it('accepts the declared backup and sync options in any order', async () => {
+    const state = fixture();
+    await runCli(['sync', 'configure', '--json', '/shared', '--device', 'laptop'], state.runtime);
+    await runCli(['backup', 'configure', '--json', '/backup'], state.runtime);
+    expect(state.client.configureSync).toHaveBeenCalledWith('/resolved//shared', 'laptop');
+    expect(state.client.configureAutomaticBackup).toHaveBeenCalledWith('/resolved//backup');
+    expect(state.errors).toEqual([]);
+  });
+
+  it('rejects a declared multi-token name passed as one token', async () => {
+    const state = fixture();
+    state.runtime.exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    });
+    await expect(runCli(['setup plan'], state.runtime)).rejects.toThrow('exit:1');
+    expect(JSON.parse(state.errors[0] ?? '')).toMatchObject({
+      error: { code: 'bad_request', message: 'Unknown command: setup plan' },
+    });
   });
 
   it('starts the server and closes it through either signal', async () => {
@@ -455,5 +807,36 @@ describe('CLI program', () => {
     ).rejects.toThrow('exit:1');
     expect(oversized.errors.join('\n')).toContain('payload_too_large');
     expect(oversized.runtime.createAgentClient).not.toHaveBeenCalled();
+  });
+
+  // The stdio bridge can outlive the daemon's first start, so its gateway resolves the real client
+  // on every call: a missing token fails typed inside the handler, and the token that appears
+  // later is adopted without restarting the host.
+  it('resolves the gateway on every call so a late daemon token is adopted', async () => {
+    const first = { health: vi.fn(async () => ({ status: 'ok', version: '1' })) };
+    const second = { health: vi.fn(async () => ({ status: 'ok', version: '2' })) };
+    let target: typeof first | null = null;
+    const gateway = createLazyGateway<typeof first>(() => {
+      if (target === null) throw new AppError('unavailable', 'No daemon token at /data/token', 503);
+      return target;
+    });
+
+    // The resolver throws synchronously inside the call; the MCP `execute` boundary runs every
+    // handler inside its `try`, so the throw becomes that tool's typed failure envelope.
+    expect(() => gateway.health()).toThrow(
+      expect.objectContaining({ code: 'unavailable', message: 'No daemon token at /data/token' }),
+    );
+    target = first;
+    await expect(gateway.health()).resolves.toEqual({ status: 'ok', version: '1' });
+    target = second;
+    await expect(gateway.health()).resolves.toEqual({ status: 'ok', version: '2' });
+    expect(first.health).toHaveBeenCalledOnce();
+    expect(second.health).toHaveBeenCalledOnce();
+    expect(second.health.mock.contexts[0]).toBe(second);
+
+    expect((gateway as unknown as { then?: unknown }).then).toBeUndefined();
+    expect((gateway as unknown as Record<symbol, unknown>)[Symbol.toPrimitive]).toBeUndefined();
+    const missing = gateway as unknown as { absent(): unknown };
+    expect(() => missing.absent()).toThrow(/Gateway has no method absent/u);
   });
 });

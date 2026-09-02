@@ -2,7 +2,9 @@
 User-agent: *
 Allow: /
 
-# A machine-readable summary of the product, its install command, its MCP
-# configuration and the rules an agent must respect.
-# https://llmstxt.org
+Sitemap: https://pimpampum.dev/sitemap-index.xml
 
+# A machine-readable summary of the product, how the operator installs it, how
+# agents connect over MCP and the rules an agent must respect.
+# https://llmstxt.org
+# https://pimpampum.dev/llms.txt

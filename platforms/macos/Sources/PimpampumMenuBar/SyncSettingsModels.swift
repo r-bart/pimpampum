@@ -1,21 +1,13 @@
 import Foundation
 
-enum SyncHealthState: String, Codable, Sendable {
-  case disabled, paused, pending, importing, exporting, healthy, unavailable, error, conflict
+// `SyncHealthState` and its `label` are generated into `StateVocabulary.swift` from the one table
+// the Omarchy plugin shares.
 
-  var label: String {
-    switch self {
-    case .disabled: "Not configured"
-    case .paused: "Synchronization paused"
-    case .pending: "Changes pending"
-    case .importing: "Importing changes…"
-    case .exporting: "Exporting changes…"
-    case .healthy: "Up to date"
-    case .unavailable: "Shared folder unavailable"
-    case .error: "Synchronization needs attention"
-    case .conflict: "Conflict requires attention"
-    }
-  }
+/// A shared snapshot file the daemon refused. `path` is relative to the shared folder, so the
+/// status names the file without repeating the absolute folder.
+struct SyncBlockedSnapshot: Codable, Equatable, Sendable {
+  let path: String
+  let reason: String
 }
 
 struct SyncSettings: Codable, Equatable, Sendable {
@@ -30,6 +22,17 @@ struct SyncSettings: Codable, Equatable, Sendable {
   let pendingSnapshotCount: Int
   let conflictCount: Int
   let error: String?
+  let blockedSnapshot: SyncBlockedSnapshot?
+}
+
+/// Copy decisions for the synchronization panel, kept out of the SwiftUI body so the gate
+/// measures them.
+enum SyncSettingsPresentation {
+  /// One line naming the refused file and why, or nothing when every snapshot was accepted.
+  static func blockedSnapshotLine(_ settings: SyncSettings) -> String? {
+    guard let blocked = settings.blockedSnapshot else { return nil }
+    return "Blocked snapshot \(blocked.path): \(blocked.reason)"
+  }
 }
 
 protocol SyncSettingsReading: Sendable {

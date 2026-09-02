@@ -1,5 +1,16 @@
 import SwiftUI
 
+/// One portfolio row's words, decided before any view exists. `counts` is the optional third line;
+/// only project rows carry it.
+struct OverviewRowContent: Equatable, Sendable {
+  let title: String
+  let metadata: String
+  let counts: String?
+  let accessibilityLabel: String
+  let accessibilityValue: String
+  let accessibilityHint: String
+}
+
 enum StatusBadgeKind: Equatable {
   case loadingRing
   case activeDot
@@ -231,6 +242,31 @@ extension StatusPopover {
     "\(project.title): \(description)"
   }
 
+  /// Everything one portfolio row renders. `OverviewRowButton` lays this out and decides nothing:
+  /// a project row carries a third line of counts, a spec row does not, and both name themselves
+  /// to VoiceOver from here rather than from a SwiftUI body.
+  static func projectRow(_ project: OverviewProject) -> OverviewRowContent {
+    OverviewRowContent(
+      title: project.title,
+      metadata: projectMetadataText(project),
+      counts: projectCountsText(project),
+      accessibilityLabel: projectOpenAccessibilityLabel(project),
+      accessibilityValue: projectAccessibilityValue(project),
+      accessibilityHint: projectOpenAccessibilityHint(project)
+    )
+  }
+
+  static func specRow(_ spec: OverviewSpec) -> OverviewRowContent {
+    OverviewRowContent(
+      title: spec.title,
+      metadata: specMetadataText(spec),
+      counts: nil,
+      accessibilityLabel: specOpenAccessibilityLabel(spec),
+      accessibilityValue: specAccessibilityValue(spec),
+      accessibilityHint: specOpenAccessibilityHint(spec)
+    )
+  }
+
   private static func visualState(for overview: Overview) -> StatusVisualState {
     if overview.status == .complete, overview.counts.cancelledProjects > 0 {
       return .cancelled
@@ -243,5 +279,55 @@ extension StatusPopover {
     case .paused: .paused
     case .empty: .empty
     }
+  }
+}
+
+/// Which of the three bodies the popover renders below its header.
+enum StatusPopoverContent: Equatable, Sendable {
+  case help
+  case guidedSetup
+  case overview
+}
+
+extension StatusPopover {
+  /// The guided setup keeps the popover while its session is active, whatever the daemon reports.
+  /// Before that, a missing receipt is what opens it.
+  static func content(
+    isHelpPresented: Bool,
+    setupSessionActive: Bool,
+    connectionState: OverviewConnectionState
+  ) -> StatusPopoverContent {
+    if isHelpPresented { return .help }
+    if setupSessionActive || isSetupRequired(connectionState) { return .guidedSetup }
+    return .overview
+  }
+
+  static func isSetupRequired(_ connectionState: OverviewConnectionState) -> Bool {
+    if case .setupRequired = connectionState { return true }
+    return false
+  }
+
+  /// Help swaps the body. During a setup session that swap must not happen from the header, or the
+  /// screen the user is working in disappears under them.
+  static func showsHelpButton(setupSessionActive: Bool) -> Bool {
+    !setupSessionActive
+  }
+
+  /// Settings need an installed daemon; the guided setup shows the version instead.
+  static func showsSettingsButton(content: StatusPopoverContent) -> Bool {
+    content != .guidedSetup
+  }
+
+  /// A portfolio with no workspace can never fill itself: nothing an agent does lands anywhere.
+  /// That is the one overview state that offers the workspace action.
+  static func showsAddWorkspace(overview: Overview?) -> Bool {
+    overview.map { $0.counts.workspaces == 0 } ?? false
+  }
+
+  /// Why the project list is empty, in the words the Omarchy popout uses for the same two cases.
+  static func emptyProjectsDetail(overview: Overview) -> String {
+    overview.counts.workspaces == 0
+      ? WorkspaceRegistrationCopy.emptyWorkspacesDetail
+      : WorkspaceRegistrationCopy.emptyProjectsDetail
   }
 }

@@ -82,6 +82,7 @@ struct EmbeddedRuntimeBootstrapTests {
     let bootstrap = try EmbeddedSetupBootstrap.bundled(
       resourceURL: resources,
       sourceApplicationURL: URL(fileURLWithPath: "/Volumes/Download/Pimpampum.app"),
+      dataDirectory: URL(fileURLWithPath: "/Users/example/.pimpampum"),
       homeDirectory: URL(fileURLWithPath: "/Users/example")
     )
     let runtime = bootstrap.runtime
@@ -94,13 +95,15 @@ struct EmbeddedRuntimeBootstrapTests {
         == [runtime.cliURL.path, "setup", "apply", "operation", "revision", "--yes"]
     )
     #expect(bootstrap.requiresInstalledApplicationRelaunch)
+    // No record yet: the managed location is what the CLI will use.
     #expect(
       bootstrap.installedApplicationURL.path == "/Users/example/Applications/Pimpampum.app")
+    #expect(bootstrap.installedApplication.managed)
   }
 
   @MainActor
-  @Test("launches the stable app path before terminating a transient source copy")
-  func relaunchesStableApplication() async throws {
+  @Test("launches the recorded app before terminating a transient source copy")
+  func relaunchesInstalledApplication() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("pimpampum-relaunch-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -109,31 +112,26 @@ struct EmbeddedRuntimeBootstrapTests {
     let installed = home.appendingPathComponent("Applications/Pimpampum.app")
     try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
-    let runtime = EmbeddedControlRuntime(
-      rootURL: root,
-      executableURL: root.appendingPathComponent("bin/node"),
-      cliURL: root.appendingPathComponent("dist/cli.js")
-    )
     let bootstrap = EmbeddedSetupBootstrap(
-      runtime: runtime,
+      runtime: Self.runtime(root),
       sourceApplicationURL: source,
+      dataDirectory: home.appendingPathComponent(".pimpampum"),
       homeDirectory: home
     )
-    var launched: URL?
-    var createsNewInstance = false
-    var terminated = false
-    let relaunched = try await InstalledApplicationRelauncher().relaunchIfNeeded(
-      bootstrap: bootstrap,
-      launchApplication: { url, configuration in
-        launched = url
-        createsNewInstance = configuration.createsNewApplicationInstance
-      },
-      terminateCurrentApplication: { terminated = true }
-    )
+    let recorder = RelaunchRecorder()
+    let relaunched = try await InstalledApplicationRelauncher(adapters: recorder.adapters())
+      .relaunchIfNeeded(bootstrap: bootstrap)
     #expect(relaunched)
-    #expect(launched == installed.standardizedFileURL)
-    #expect(createsNewInstance)
-    #expect(terminated)
+    #expect(
+      recorder.launches == [
+        ApplicationLaunchRequest(
+          url: installed.standardizedFileURL,
+          createsNewInstance: true,
+          // The newcomer waits for this pid before judging its peers.
+          arguments: ["--relaunched-from", "77"]
+        )
+      ])
+    #expect(recorder.terminations == 1)
   }
 
   @Test("ends this process without starting a second copy when one already runs")
@@ -151,28 +149,21 @@ struct EmbeddedRuntimeBootstrapTests {
     try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
     let bootstrap = EmbeddedSetupBootstrap(
-      runtime: EmbeddedControlRuntime(
-        rootURL: root,
-        executableURL: root.appendingPathComponent("bin/node"),
-        cliURL: root.appendingPathComponent("dist/cli.js")
-      ),
+      runtime: Self.runtime(root),
       sourceApplicationURL: source,
+      dataDirectory: home.appendingPathComponent(".pimpampum"),
       homeDirectory: home
     )
 
-    var launched = false
-    var terminated = false
-    let relaunched = try await InstalledApplicationRelauncher().relaunchIfNeeded(
-      bootstrap: bootstrap,
-      launchApplication: { _, _ in launched = true },
-      terminateCurrentApplication: { terminated = true },
-      installedCopyIsRunning: { _ in true }
-    )
+    let recorder = RelaunchRecorder()
+    recorder.running = true
+    let relaunched = try await InstalledApplicationRelauncher(adapters: recorder.adapters())
+      .relaunchIfNeeded(bootstrap: bootstrap)
 
     #expect(relaunched)
-    #expect(!launched)
+    #expect(recorder.launches.isEmpty)
     // The installed copy holds the menu bar, so this one must go.
-    #expect(terminated)
+    #expect(recorder.terminations == 1)
   }
 
   @Test("a copy already running from the installed path is left alone")
@@ -185,28 +176,40 @@ struct EmbeddedRuntimeBootstrapTests {
     let installed = home.appendingPathComponent("Applications/Pimpampum.app")
     try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
     let bootstrap = EmbeddedSetupBootstrap(
-      runtime: EmbeddedControlRuntime(
-        rootURL: root,
-        executableURL: root.appendingPathComponent("bin/node"),
-        cliURL: root.appendingPathComponent("dist/cli.js")
-      ),
+      runtime: Self.runtime(root),
       sourceApplicationURL: installed,
+      dataDirectory: home.appendingPathComponent(".pimpampum"),
       homeDirectory: home
     )
     #expect(!bootstrap.requiresInstalledApplicationRelaunch)
 
-    var terminated = false
-    let relaunched = try await InstalledApplicationRelauncher().relaunchIfNeeded(
-      bootstrap: bootstrap,
-      launchApplication: { _, _ in },
-      terminateCurrentApplication: { terminated = true },
-      installedCopyIsRunning: { _ in true }
-    )
+    let recorder = RelaunchRecorder()
+    recorder.running = true
+    let relaunched = try await InstalledApplicationRelauncher(adapters: recorder.adapters())
+      .relaunchIfNeeded(bootstrap: bootstrap)
     #expect(!relaunched)
-    #expect(!terminated)
+    #expect(recorder.terminations == 0)
+
+    // The same decision reaches the store through the command runner.
+    let runner = SetupCommandRunner(bootstrap: bootstrap, relaunchAdapters: recorder.adapters())
+    #expect(try await runner.relaunchInstalledApplicationIfNeeded() == false)
+    #expect(runner.runsFromInstalledApplication())
   }
 
-  @Test("does not trust a symlink at the stable application path")
+  @Test("a copy outside its recorded location may not register the login item")
+  @MainActor
+  func transientCopyDoesNotRegisterLoginItem() {
+    let home = URL(fileURLWithPath: "/Users/example")
+    let bootstrap = EmbeddedSetupBootstrap(
+      runtime: Self.runtime(home),
+      sourceApplicationURL: home.appendingPathComponent("Downloads/Pimpampum.app"),
+      dataDirectory: home.appendingPathComponent(".pimpampum"),
+      homeDirectory: home
+    )
+    #expect(!SetupCommandRunner(bootstrap: bootstrap).runsFromInstalledApplication())
+  }
+
+  @Test("does not trust a symlink at the installed application path")
   func rejectsSymlinkedInstalledApplication() throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("pimpampum-relaunch-link-\(UUID().uuidString)")
@@ -219,14 +222,88 @@ struct EmbeddedRuntimeBootstrapTests {
       at: installed.deletingLastPathComponent(), withIntermediateDirectories: true)
     try FileManager.default.createSymbolicLink(at: installed, withDestinationURL: outside)
     let bootstrap = EmbeddedSetupBootstrap(
-      runtime: EmbeddedControlRuntime(
-        rootURL: root,
-        executableURL: root.appendingPathComponent("bin/node"),
-        cliURL: root.appendingPathComponent("dist/cli.js")
-      ),
+      runtime: Self.runtime(root),
       sourceApplicationURL: root.appendingPathComponent("Downloads/Pimpampum.app"),
+      dataDirectory: home.appendingPathComponent(".pimpampum"),
       homeDirectory: home
     )
     #expect(!bootstrap.installedApplicationExists())
+    // A regular file is not an application either.
+    let asFile = root.appendingPathComponent("file-home")
+    let fileApp = asFile.appendingPathComponent("Applications/Pimpampum.app")
+    try FileManager.default.createDirectory(
+      at: fileApp.deletingLastPathComponent(), withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: fileApp.path, contents: Data())
+    #expect(
+      !EmbeddedSetupBootstrap(
+        runtime: Self.runtime(root),
+        sourceApplicationURL: root.appendingPathComponent("Downloads/Pimpampum.app"),
+        dataDirectory: asFile.appendingPathComponent(".pimpampum"),
+        homeDirectory: asFile
+      ).installedApplicationExists())
+  }
+
+  @Test("relaunches the bundle the CLI recorded, not a hardcoded managed path")
+  func followsTheRecordedApplicationPath() throws {
+    // With an adopted bundle in /Applications and a stale copy under ~/Applications, Done used to
+    // launch the stale copy and terminate the adopted one.
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("pimpampum-record-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let home = root.appendingPathComponent("home")
+    let dataDirectory = home.appendingPathComponent(".pimpampum")
+    try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+    let adopted = root.appendingPathComponent("Applications/Pimpampum.app")
+    try FileManager.default.createDirectory(at: adopted, withIntermediateDirectories: true)
+    let record: [String: Any] = ["schemaVersion": 2, "path": adopted.path, "managed": false]
+    try JSONSerialization.data(withJSONObject: record).write(
+      to: dataDirectory.appendingPathComponent("application-path.json"))
+
+    let fromAdopted = EmbeddedSetupBootstrap(
+      runtime: Self.runtime(root),
+      sourceApplicationURL: adopted,
+      dataDirectory: dataDirectory,
+      homeDirectory: home
+    )
+    #expect(!fromAdopted.requiresInstalledApplicationRelaunch)
+    #expect(!fromAdopted.installedApplication.managed)
+
+    let fromDownloads = EmbeddedSetupBootstrap(
+      runtime: Self.runtime(root),
+      sourceApplicationURL: root.appendingPathComponent("Downloads/Pimpampum.app"),
+      dataDirectory: dataDirectory,
+      homeDirectory: home
+    )
+    #expect(fromDownloads.requiresInstalledApplicationRelaunch)
+    #expect(fromDownloads.installedApplicationURL.path == adopted.standardizedFileURL.path)
+    #expect(fromDownloads.installedApplicationExists())
+
+    // A record pointing at a bundle that no longer exists means nothing to relaunch.
+    try FileManager.default.removeItem(at: adopted)
+    #expect(!fromDownloads.installedApplicationExists())
+  }
+
+  private static func runtime(_ root: URL) -> EmbeddedControlRuntime {
+    EmbeddedControlRuntime(
+      rootURL: root,
+      executableURL: root.appendingPathComponent("bin/node"),
+      cliURL: root.appendingPathComponent("dist/cli.js")
+    )
+  }
+}
+
+@MainActor
+final class RelaunchRecorder {
+  var launches: [ApplicationLaunchRequest] = []
+  var terminations = 0
+  var running = false
+
+  func adapters() -> ApplicationRelaunchAdapters {
+    ApplicationRelaunchAdapters(
+      processIdentifier: 77,
+      launch: { request in self.launches.append(request) },
+      terminateCurrentApplication: { self.terminations += 1 },
+      isApplicationRunning: { _ in self.running }
+    )
   }
 }

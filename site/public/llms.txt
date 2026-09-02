@@ -9,39 +9,63 @@ Pimpampum is for one person and the agents working for them. It has no sprints,
 no estimates, no status columns and no meetings to keep them honest. It is MIT
 licensed and the source is public.
 
-## Install
+## If you are an agent reading this
 
-No prompts, no root, no interactive steps. Safe for an agent to run unattended.
+Pimpampum is installed and connected by its operator, through the macOS app or
+the Omarchy plugin. If the Pimpampum tools are missing from your session, stop
+and ask the operator to open Pimpampum's Agents settings, connect or repair this
+agent, and start a new agent session. Do not request a token, edit MCP
+configuration, install packages, run `pimpampum install`, or open the local
+database yourself. The rest of this file is the contract you follow once the
+tools are present.
+
+## How the operator installs it
+
+macOS 13 or newer on Apple Silicon: download `Pimpampum-<version>-macos-arm64.zip`
+from GitHub Releases, open Pimpampum, and follow the guided setup. It detects
+Codex and Claude Code, shows the exact changes, and installs the background
+service and the agent connections after one confirmation. The last step offers
+"Add a workspace".
+
+Omarchy Quattro: one command, then the widget.
+
+```
+omarchy plugin add https://github.com/r-bart/pimpampum-omarchy.git --enable --yes
+```
+
+Advanced, for automation or another Linux desktop, with Node.js 22 or newer:
 
 ```
 npm install --global pimpampum
 pimpampum install
 ```
 
-This creates one per-user background service and starts the local daemon at
-login. Verify with `pimpampum status`. Requires Node.js 22 or newer.
-
-On macOS 13 or newer with Apple Silicon there is also a signed menu-bar app in
-GitHub Releases. On Omarchy there is a Quickshell widget that installs with the
-plugin.
+Both native installations keep the packaged CLI at a fixed path that is not on
+`PATH`: `~/Library/Application Support/Pimpampum/bin/pimpampum-control` on macOS
+and `~/.local/share/pimpampum/bin/pimpampum-control` on Linux.
 
 ## Connect over MCP
 
-The stdio bridge resolves its own credentials from the local data directory, so
-an agent never handles a token.
+Guided setup registers a tokenless local route for Codex and Claude Code and
+verifies its tool catalog. For another stdio host, the operator uses the stable
+absolute launcher shown under Settings → Agents → Advanced. Its shape is:
 
 ```json
 {
   "mcpServers": {
-    "pimpampum": {
-      "command": "pimpampum-mcp"
-    }
+    "pimpampum": { "command": "/absolute/path/to/pimpampum-mcp", "args": [] }
   }
 }
 ```
 
-`pimpampum mcp` starts the same bridge through the main binary. MCP registry clients use that
-route as `npx pimpampum mcp`, because `npx pimpampum` alone resolves to the CLI.
+Prefer that absolute launcher over `npx pimpampum mcp` or a `pimpampum-mcp` found
+on `PATH`; the launcher resolves the receipt-selected runtime and its own
+credentials, so the agent never handles a token.
+
+A connected session sees 32 domain tools. Over streamable HTTP the daemon adds
+four synchronization tools, `sync_status`, `sync_now`, `sync_conflict_list` and
+`sync_conflict_read`, so a live `tools/list` returns 36 over HTTP and 32 through
+the stdio bridge. Read the live `tools/list`; it is the authoritative catalog.
 
 Hosts that speak streamable HTTP: `POST http://127.0.0.1:7337/mcp` with
 `Authorization: Bearer <local-token>`. The token lives at
@@ -65,9 +89,14 @@ with every verb, its arguments, its options and its effect annotations. `--help`
 
 Tool input comes from exactly one of `--input`, `--stdin` or `--input-file`.
 
+`pimpampum` is on `PATH` only when the operator installed the npm package. On a
+macOS-app or Omarchy-plugin installation, run the absolute launcher instead:
+`~/Library/Application Support/Pimpampum/bin/pimpampum-control` or
+`~/.local/share/pimpampum/bin/pimpampum-control`. It accepts the same verbs.
+
 Errors carry a stable code, a `retryable` boolean and a `suggestion`. When the
-daemon does not answer, the code is `unavailable` and the suggestion names the
-recovery command, so an agent never confuses a stopped service with a fault.
+daemon does not answer, the code is `unavailable`; report it to the operator
+rather than repairing the installation yourself.
 
 The named verbs (`work:start`, `work:complete`, `project:create`) wrap the same
 tools and accept flags for everything the tools accept: `--lease-seconds`,
@@ -95,6 +124,12 @@ A ready Spec with no open Tasks is claimable directly; once open Tasks exist,
 only leaf Tasks are claimable. `doing` is derived from a live Claim and is never
 persisted.
 
+A Workspace that arrived through synchronization may have no local root on this
+machine. Its `rootPath` is the empty string, and `workspace_resolve` matches only
+Workspaces with a local root. If `workspace_resolve` answers `not_found` for a
+path you are working in, say so and ask the operator to add that folder; do not
+guess another Workspace ID.
+
 ## Rules an agent must respect
 
 - Claim before editing. A claim is an expiring lease, not a status field.
@@ -104,6 +139,8 @@ persisted.
 - Never add subtasks while the parent task is claimed.
 - Sync conflicts are preserved as visible conflicts. Explain the candidates;
   never resolve one autonomously.
+- Never read or modify Pimpampum's SQLite database, token, receipts, snapshots,
+  or host configuration directly.
 - Errors carry stable codes. Do not flatten them.
 
 ## Sync between machines
@@ -119,8 +156,8 @@ pimpampum sync configure ~/Dropbox/Pimpampum --device laptop
 
 ## Docs
 
-- Agent guide: https://github.com/r-bart/pimpampum/blob/main/docs/agents.md
-- Tool catalog with schemas: https://github.com/r-bart/pimpampum/blob/main/docs/mcp-tools.md
+- Agent guide: https://github.com/r-bart/pimpampum/blob/master/docs/agents.md
+- Tool catalog with schemas: https://github.com/r-bart/pimpampum/blob/master/docs/mcp-tools.md
 - Full documentation: https://github.com/r-bart/pimpampum#readme
 - Source: https://github.com/r-bart/pimpampum
 - Package: https://www.npmjs.com/package/pimpampum

@@ -1,13 +1,13 @@
 /**
  * @generated-from thoughts/specs/2026-08-25_desktop-status-integrations.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
  * Supplemental safety contract generated before implementation after the strict Phase 0 review.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import { openDatabase } from '../src/db.js';
 import { PimpampumStore } from '../src/store.js';
@@ -226,68 +226,111 @@ describe('Frozen desktop-status safety contract', () => {
   });
 
   it('sorts by semantic precedence, recency, and stable id rather than title', async () => {
-    const { sortOverviewProjects } = (await import(
+    const { overviewProjectOrderSql, statusPrecedence } = (await import(
       new URL('../src/overview.ts', import.meta.url).href
     )) as {
-      sortOverviewProjects(
-        left: { id: string; title: string; status: string; updatedAt: string },
-        right: { id: string; title: string; status: string; updatedAt: string },
-      ): number;
+      overviewProjectOrderSql(columns: {
+        activeClaimCount: string;
+        availableWorkCount: string;
+        state: string;
+        updatedAt: string;
+        id: string;
+      }): string;
+      statusPrecedence: Record<string, number>;
     };
+    expect(statusPrecedence).toEqual({ active: 0, available: 1, draft: 2, paused: 3, complete: 4 });
     const projects = [
       {
         id: 'complete',
         title: 'Duplicate',
-        status: 'complete',
+        state: 'done',
+        active: 0,
+        available: 0,
         updatedAt: '2026-08-26T20:04:00.000Z',
       },
       {
         id: 'available-older',
         title: 'Duplicate',
-        status: 'available',
+        state: 'open',
+        active: 0,
+        available: 1,
         updatedAt: '2026-08-26T20:01:00.000Z',
       },
       {
         id: 'active',
         title: 'Duplicate',
-        status: 'active',
+        state: 'open',
+        active: 1,
+        available: 0,
         updatedAt: '2026-08-26T20:00:00.000Z',
       },
       {
         id: 'draft',
         title: 'Duplicate',
-        status: 'draft',
+        state: 'draft',
+        active: 0,
+        available: 0,
         updatedAt: '2026-08-26T20:03:00.000Z',
       },
       {
         id: 'paused',
         title: 'Duplicate',
-        status: 'paused',
+        state: 'paused',
+        active: 0,
+        available: 0,
         updatedAt: '2026-08-26T20:05:00.000Z',
       },
       {
         id: 'available-newer-b',
         title: 'Duplicate',
-        status: 'available',
+        state: 'open',
+        active: 0,
+        available: 1,
         updatedAt: '2026-08-26T20:02:00.000Z',
       },
       {
         id: 'available-newer-a',
         title: 'Duplicate',
-        status: 'available',
+        state: 'open',
+        active: 0,
+        available: 1,
         updatedAt: '2026-08-26T20:02:00.000Z',
       },
     ];
-
-    expect([...projects].sort(sortOverviewProjects).map(({ id }) => id)).toEqual([
-      'active',
-      'available-newer-a',
-      'available-newer-b',
-      'available-older',
-      'draft',
-      'paused',
-      'complete',
-    ]);
+    // The same ORDER BY the store binds; run it against a scratch table so the SQL is the
+    // artefact under test rather than a JavaScript twin of it.
+    const database = new Database(':memory:');
+    try {
+      database.exec(
+        'CREATE TABLE rows (id TEXT, title TEXT, state TEXT, active INTEGER, available INTEGER, updated_at TEXT)',
+      );
+      const insert = database.prepare('INSERT INTO rows VALUES (?,?,?,?,?,?)');
+      for (const row of projects) {
+        insert.run(row.id, row.title, row.state, row.active, row.available, row.updatedAt);
+      }
+      const ordered = database
+        .prepare(
+          `SELECT id FROM rows ORDER BY ${overviewProjectOrderSql({
+            activeClaimCount: 'active',
+            availableWorkCount: 'available',
+            state: 'state',
+            updatedAt: 'updated_at',
+            id: 'id',
+          })}`,
+        )
+        .all() as Array<{ id: string }>;
+      expect(ordered.map(({ id }) => id)).toEqual([
+        'active',
+        'available-newer-a',
+        'available-newer-b',
+        'available-older',
+        'draft',
+        'paused',
+        'complete',
+      ]);
+    } finally {
+      database.close();
+    }
   });
 
   it('caps the real store response while retaining total project counts', () => {
@@ -611,16 +654,29 @@ describe('Frozen desktop-status safety contract', () => {
   });
 
   it('passes Linux workspace paths as a separate xdg-open argument', () => {
-    const qml = readFileSync(
-      join(process.cwd(), 'integrations/omarchy/pimpampum-status/StatusPopout.qml'),
-      'utf8',
-    );
-    expect(qml).toMatch(/(?:command|arguments)\s*:\s*\[\s*["']xdg-open["']\s*,/);
-    expect(qml).not.toMatch(/shellQuote|sh\s+-c|bash\s+-c|xdg-open\s+\$\{|xdg-open.*\+/);
-    expect(qml).toMatch(/onClicked\s*:\s*openWorkspace\([^)]*rootPath[^)]*\)/);
-    expect(qml).toMatch(
+    // StatusPopout.qml was split in wave 4 (Task 9.6): PopoutController.qml owns the launcher call
+    // and PortfolioPage.qml wires the row to it. The property is unchanged — a workspace path is
+    // always a separate argument of the command list, never interpolated into a shell string.
+    const pluginDirectory = join(process.cwd(), 'integrations/omarchy/pimpampum-status');
+    const readQml = (name: string): string => readFileSync(join(pluginDirectory, name), 'utf8');
+    // Two surfaces launch the opener: the popout opens a workspace, the folder services open a
+    // managed folder. Both build the command as a list, so both are pinned.
+    expect(readQml('PopoutController.qml')).toMatch(
       /function\s+openWorkspace\([^)]*\)\s*\{[^}]*arguments\s*=\s*\[\s*["']xdg-open["']\s*,/s,
     );
+    expect(readQml('ManagedFolderService.qml')).toMatch(
+      /arguments\s*=\s*\[\s*["']xdg-open["']\s*,/,
+    );
+    expect(readQml('PortfolioPage.qml')).toMatch(
+      /onActivated\s*:\s*controller\.openWorkspace\([^)]*rootPath[^)]*\)/,
+    );
+    // The negative half holds for every QML file the plugin ships, not only the one that opens a
+    // workspace: no surface may reach a shell or build the command by concatenation.
+    for (const name of readdirSync(pluginDirectory).filter((entry) => entry.endsWith('.qml'))) {
+      expect(readQml(name), name).not.toMatch(
+        /shellQuote|sh\s+-c|bash\s+-c|xdg-open\s+\$\{|xdg-open.*\+/,
+      );
+    }
   });
 
   it('exposes only overview reads and validated reveal actions to native status views', () => {

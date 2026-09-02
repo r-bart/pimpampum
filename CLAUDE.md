@@ -87,14 +87,14 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER hardcode a version string, tests included; import `PIMPAMPUM_VERSION` from `src/version.ts`, which reads `package.json`. A release bump breaks any test that spelled the old one.
 - NEVER map a transport failure to `internal_error`; use `unavailable`, whose suggestion names `pimpampum status` and `pimpampum install`.
 - ALWAYS keep the Omarchy QML readers tolerant of both the bare payload and the `{data}` envelope, so an installed plugin survives a CLI upgrade.
-- ALWAYS amend the spec first and then refresh the digest in `scripts/check-desktop-status-contract.mjs` when a frozen acceptance test must change.
+- ALWAYS amend the spec first and then refresh the digest in `scripts/check-desktop-status-contract.mjs` when one of the four `test/fixtures/overview/*.json` fixtures must change; those fixtures are the only frozen artifacts (decision of 2026-09-01, H-14), and acceptance test files are edited like any other test together with the spec item they name.
 - NEVER import application modules at module scope in `src/cli.ts`; it is a bootstrap that loads `src/cliMain.ts` dynamically so startup failures still emit a JSON envelope.
 - ALWAYS pass the entry module URL into `runCliEntrypoint`; deriving it from `cliMain.ts` would point launchd and systemd at the wrong file.
 - NEVER give CLI failures distinct exit codes; the Omarchy helpers `exec` the CLI and already reserve 64 and 127, and every consumer branches on non-zero then parses the envelope.
 - ALWAYS sweep `scripts/` as well as `integrations/` and `platforms/` when changing CLI output; the live runners and the evidence validator parse it too.
 - ALWAYS sweep `scripts/test-macos-live.mjs` when changing the guided setup's first screen or its accessibility labels; the live smoke asserts one exact label and only the release job runs it, so a green local suite still fails the tag.
 - ALWAYS re-read `scripts/test-macos-live.mjs` when changing how `OverviewStore` reports a state; each snapshot launches a fresh app, so anything that delays a state — like the cold-start grace before reporting offline — must be waited for instead of read from the first frame.
-- NEVER pin Omarchy runtime hashes from a bundle built on macOS; `build-runtime-bundle.mjs` is deterministic per host, not across hosts, so a macOS build yields a different digest than the Linux runner and the release fails at `Build release assets`. Build in a Linux container, or take the digests CI printed and re-tag: CI reproduces them exactly across runs.
+- NEVER pin Omarchy runtime hashes from a bundle built on macOS; `build-runtime-bundle.mjs` is deterministic per host, not across hosts, so a macOS build yields a different digest than the Linux runner and the release fails at `Build release assets`. Build each target in a matching-platform `node:24.19.0-bookworm` container instead; verified on 2026-09-02 to reproduce the CI digest byte for byte, so no re-tag is needed. Recipe in `thoughts/notes/2026-09-02_reproducing-runtime-digests.md`.
 - NEVER pick a desktop asset or color from `bar.background`; on a transparent bar Omarchy resolves it to the foreground via `omarchy-bar-text-color`, so paint from `bar.barForeground`.
 - NEVER paint popout content from `bar.barForeground`; the popout draws on Omarchy's popup card, so read `Color.popups.text` and `Color.popups.background` or the labels vanish into the card on a light wallpaper.
 - NEVER tint a bar icon through a `MultiEffect` over a `layer.enabled` source; the cached texture keeps its first color and survives a wallpaper change. Draw it with `Shape`/`ShapePath` and `fillColor`.
@@ -106,7 +106,7 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER send a `Process` stream to `FileHandle.nullDevice` just to dodge the pipe-buffer deadlock; you throw away the diagnosis. Drain it concurrently instead.
 - NEVER collapse a failed `npm` invocation to `"<operation> failed"`; quote a bounded line from its stderr, or a registry policy, a permission error, and an offline machine become one message.
 - ALWAYS put macOS copy decisions in a covered presentation type, never in a SwiftUI body; `scripts/check-swift-coverage.sh` demands 100% and its manifest cannot include a view.
-- ALWAYS commit macOS build inputs before `npm run approve:macos`; the gate records `sourceGitCommit` and refuses a dirty tree.
+- NEVER approve a macOS artifact locally to ship it; approval happens in the `publish` job of `.github/workflows/release.yml`, where `check-macos-artifact.mjs --approve --require-signature --require-notarization` records `sourceGitCommit` from the tagged checkout. It runs **before** the live smoke, not after: the smoke's `readReleaseArtifact()` reads the `platforms/macos/dist/PimpampumMenuBar.artifact.json` that approval writes, and without it the run dies with `ENOENT` after every scenario has already passed. `npm run approve:macos` writes it locally and its output is ignored by Git.
 - NEVER derive a test fixture path from `process.cwd()`'s parent; it silently binds the test to the checkout directory name. Build a temporary directory instead.
 - ALWAYS mirror a new `HelpDialogCopy.items` entry in `HelpDialogTests`; that list is frozen copy and the macOS CI job runs `npm run test:macos`.
 - ALWAYS regenerate the README `CLI reference` block from `pimpampum help` when you touch `src/cliCommands.ts`; `test/cli-agent-surface.test.ts` compares the whole block and a new verb otherwise ships undocumented.
@@ -118,17 +118,50 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER set a `SetupStore` activity that reports `hasBegunMutation` before confirming a journal is running; `SetupOnboardingView` jumps to the final step on that flag and never moves back.
 - ALWAYS derive the onboarding's initial `@State` from `SetupOnboardingStep.first`; a literal case silently hides any step inserted ahead of it.
 - NEVER plan artifacts from the app bundle in a read-only or uninstall path; an installed CLI runs from the packaged runtime with no build tree, so gate it behind `canPlanArtifacts` and verify the receipt against disk instead.
-- ALWAYS trust `check-swift-coverage.sh` only for the files in its `covered_sources` manifest; `SetupStore.swift` (56%) and `SetupCommandRunner.swift` (64%) still sit outside it, so 100% says nothing about them. `SetupModels.swift` was added on 2026-09-01; widen the manifest when you cover another file rather than reporting a number that excludes the code you changed.
+- ALWAYS trust `check-swift-coverage.sh` only for the files in its `covered_sources` manifest. Since 2026-09-02 it covers the setup lifecycle: `SetupStore`, `SetupSession`, `SetupCommandRunner`, `EmbeddedSetupBootstrap`, `ApplicationLaunchCoordinator`, `ApplicationLocationRecord`, `SetupOnboardingPresentation`, and `WorkspaceRegistration`. `App.swift`, the SwiftUI bodies, `EmbeddedSetupSystemAdapters.swift`, and `WorkspaceFolderPicker.swift` stay outside; widen the manifest when you cover another file rather than reporting a number that excludes the code you changed.
 - NEVER present a `.sheet` from a menu-bar popover; the sheet is a real window, the popover closes as soon as it loses key focus, and the whole surface disappears. Render the content inside the popover and close it with a callback the presenting view owns, never `@Environment(\.dismiss)`.
 - NEVER set `createsNewApplicationInstance = true` unconditionally when relaunching; login-item registration completes several phases earlier and may already have started the installed copy, leaving two menu-bar apps fighting over one popover.
 - ALWAYS leave the progress step something to report; hiding the background service while it behaves blanks the whole screen when the user selected no agents.
-- NEVER commit `platforms/macos/dist/` binaries rebuilt during local iteration; `.gitignore` un-ignores that tree, a bare `git add -A` would add the 149 MB `PimpampumRuntime/`, and a rebuilt binary invalidates `check-macos-artifact.mjs` until `npm run approve:macos` re-approves it on a clean tree.
+- NEVER add `platforms/macos/dist/` to a commit; `.gitignore` ignores that tree except `.npmignore`, a local `npm run build:macos` produces an unsigned artifact, and only the release `publish` job approves the signed one. The copy still tracked from earlier releases is removed with `git rm --cached` in remediation wave 4 (L-38).
+- NEVER write inside the app bundle after signing; `Contents/Resources/installation.json` broke the code seal of the Developer ID copy (L-21). Markers live under `~/Library/Application Support/Pimpampum/`.
+- ALWAYS name the launcher by absolute path in native copy (`~/Library/Application Support/Pimpampum/bin/pimpampum-control`, `~/.local/share/pimpampum/bin/pimpampum-control`); nothing puts it on `PATH`, so a bare `pimpampum` in a popover or popout is a command the user cannot run.
+- NEVER `await task.value` from a store method that a SwiftUI `.task` drives; cancelling the view task leaves the store waiting forever. Use a continuation resumed on completion and in `onCancel`.
+- ALWAYS run `npx vitest run test/sync-state.test.ts` under `LANG=da_DK.UTF-8 LC_ALL=da_DK.UTF-8` and `LANG=cs_CZ.UTF-8 LC_ALL=cs_CZ.UTF-8` when touching `src/syncState.ts`; the canonical order must not depend on the daemon locale (H-04), and `quality.yml` runs both.
 - NEVER reinstall the same version with different bytes; the runtime installer verifies sizes against its inventory and fails with `size drift`. Remove `~/Library/Application Support/Pimpampum/{Runtime,bin}` first when iterating locally.
 - ALWAYS verify a macOS fix from an installed copy outside the checkout; running from `platforms/macos/dist/` hides every defect that depends on the build tree being absent, and a bundle under `~/Desktop` also triggers a TCC prompt that closes the popover.
 - NEVER gate the guided setup confirmation on a non-empty agent selection; the success metrics require a setup with no supported agents to complete, and `canReview` demanding one made the service uninstallable on a Mac where nothing was detected.
 - NEVER reject symlinks when detecting an agent; Codex and Claude Code install as links into `~/.local/bin`, so resolve with `resolvingSymlinksInPath()`. Detection reads presence only and executes nothing.
 - ALWAYS render the confirmation screen from `SetupPlan.changes`, never from a Swift constant; the plan carries the real `path` for every target and a hand-written summary silently drifts from the installer.
 - ALWAYS request the setup plan before the confirmation button, not inside its handler; otherwise the user authorizes an operation id and revision that did not exist when they agreed.
+- NEVER expect `require('typescript')` to give you the compiler API; TypeScript 7 ships only `tsc.js` and `version.cjs`, so `ts.createSourceFile` is undefined. Measure structure with `npx oxlint src -c <config>` enabling `complexity` and `max-lines-per-function`.
+- NEVER report a structural limit as met when no command evaluates it; Gate 9's "100 lines or cyclomatic 25" went unchecked because `.oxlintrc.json` did not exist. It does now, and `npm run lint` enforces both rules on `src/**`, with nine declarative factories exempted from the length rule by name and reason. Widen that list only for a registration block, never to excuse a procedure.
+- NEVER hand-edit the version in `platforms/macos/Resources/Info.plist`; it carries `__PIMPAMPUM_VERSION__` and `scripts/build-macos-app.sh` substitutes `package.json`'s version, failing if the placeholder is gone. It was bumped by hand up to v1.2.11, outside `check-release-versions.mjs`, so a forgotten bump surfaced late as "The packaged app must use the package release version". That checker now rejects a literal there.
+- NEVER read the macOS app out of the installed npm package; H-12 removed it from `package.json#files` and `platforms/macos/dist/.npmignore` guards it again, so `node_modules/pimpampum/platforms/macos/dist` does not exist. The live smoke stages `platforms/macos/dist/Pimpampum.app` with `/usr/bin/ditto`, which preserves the signed Mach-O and its modes.
+- NEVER let a coverage line depend on an unref'd timer firing before a test ends; `runServiceCommand`'s SIGKILL escalation passed the 100% gate by luck and failed it on a loaded machine with every test green. Assert the effect instead: wait until `process.kill(pid, 0)` throws.
+- NEVER expect `npm run check:macos-evidence` to pass locally after a commit; it requires `evidence.gitCommit` to equal `HEAD`, and the smoke stamps the commit it ran at, so committing the regenerated evidence makes it stale by exactly one commit. It passes only in the release `publish` job, where approve, smoke and check all run on the tagged checkout. This has failed on `master` for several releases and is not a regression.
+- ALWAYS run `npm run format` after a successful live smoke; it rewrites the tracked `thoughts/evidence/macos-live.json` with `JSON.stringify(value, null, 2)`, which expands short arrays that Prettier collapses, so `format:check` fails on an otherwise clean tree.
+- NEVER let the live smoke's guided-setup budget span a scenario that is not guided setup; `verifyLegacyMigration` sat inside the window by the order of `main` and cost 88s of the 120s while the setup itself cost 44.7s. Exclude a new scenario by adding its span to `budgetExcludedMilliseconds`, or by placing it after the snapshot in `verifyConnectorLifecycle`.
+- NEVER kill `swift-test` mid-run and then re-run `npm run test:macos`; the orphaned `*.profraw` files leave `swift test --enable-code-coverage` hanging at 0% CPU while the plain `swift test` still passes in under a second. Delete `platforms/macos/.build/**/codecov` and every `*.profraw` first.
+
+## Release checklist
+
+Before the tag:
+
+1. Update the public surfaces to the release: `README.md`, `site/src/pages/index.astro`,
+   `site/public/llms.txt`, `integrations/omarchy/pimpampum-status/README.md`, and `CHANGELOG.md`.
+2. Set the `Status` of every plan the release closes to `Complete — released as vX.Y.Z`; amend a spec
+   the product diverged from with a dated section.
+3. Run `node scripts/check-release-versions.mjs vX.Y.Z`, `npm run check:omarchy-mirror`, and
+   `npm run check:package-size`.
+4. Approve the local build first, then run the smoke, on a Mac with no user installation:
+   `npm run approve:macos && PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos`. Approval needs a
+   committed tree, because `approvedSourceCommit()` refuses uncommitted build inputs. Never pipe
+   the smoke through `tail`: the pipeline then reports `tail`'s exit code and a crash reads as a
+   pass.
+
+Once per repository, not per release: `gh secret set RELEASE_MANIFEST_SIGNING_KEY` (the Ed25519
+private key that signs `release-manifest.json`) and `gh secret set OMARCHY_MIRROR_DEPLOY_KEY` (the
+deploy key that pushes `integrations/omarchy/pimpampum-status` to `r-bart/pimpampum-omarchy`).
 
 ## Self-Improvement
 

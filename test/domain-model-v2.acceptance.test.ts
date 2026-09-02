@@ -1,9 +1,8 @@
 /**
  * @generated-from thoughts/specs/2026-08-26_domain-model-v2.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
- * These tests encode the spec's acceptance criteria as executable assertions.
- * If a test seems wrong, update the spec and regenerate — don't edit tests directly.
+ * These tests encode the spec's acceptance criteria as executable assertions. Amend the spec
+ * item they cite together with the test (decision of 2026-09-01, review H-14).
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -137,7 +136,7 @@ describe('Domain Model v2 acceptance', () => {
     ]);
 
     const projectPayload = await request(app)
-      .get(`/api/v1/projects/${project.id}`)
+      .get(`/api/v1/projects/${project.id}/manifest`)
       .set(authorization)
       .expect(200);
     expect(projectPayload.body.data).not.toHaveProperty('prd');
@@ -338,7 +337,7 @@ describe('Domain Model v2 acceptance', () => {
     expect(cancelledResponse.body.data.state).toBe('cancelled');
 
     const cancelledTask = await request(app)
-      .get(`/api/v1/tasks/${task.id}`)
+      .get(`/api/v1/tasks/${task.id}/manifest`)
       .set(authorization)
       .expect(200);
     expect(cancelledTask.body.data.state).toBe('cancelled');

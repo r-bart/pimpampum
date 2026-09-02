@@ -9,6 +9,11 @@
  * one rule to both surfaces: `readOnlyHint` means the command changes nothing, `destructiveHint`
  * means it can remove or overwrite state, `idempotentHint` means repeating it is safe, and
  * `requiresDaemon` means the command fails with `unavailable` when the daemon is not answering.
+ *
+ * `native: true` marks an entry the Pimpampum desktop app drives. Those entries are declared like
+ * every other, so the parser rejects a typo and `commands` lists them, but the banner keeps them in
+ * their own section: `--events` replaces the one envelope with an NDJSON event stream, which an
+ * agent following the envelope contract must not pick by accident.
  */
 
 export interface CliArgument {
@@ -27,6 +32,16 @@ export interface CliOption {
   repeatable?: boolean;
   default?: string;
   deprecated?: string;
+  /**
+   * The value may be omitted: `--flag` alone is a boolean, `--flag <value>` carries the value. The
+   * next token is taken as the value only when it matches `valuePattern`, so a positional that
+   * follows a bare flag is never swallowed.
+   */
+  valueOptional?: true;
+  /** Regular expression source the value must match; required with `valueOptional`. */
+  valuePattern?: string;
+  /** Driven by the desktop app; listed in the native section of the banner. */
+  native?: true;
 }
 
 export interface CliAnnotations {
@@ -43,6 +58,8 @@ export interface CliCommand {
   arguments: readonly CliArgument[];
   options: readonly CliOption[];
   annotations: CliAnnotations;
+  /** The whole verb exists for the desktop app; listed only in the native section of the banner. */
+  native?: true;
 }
 
 const read: CliAnnotations = {
@@ -111,6 +128,39 @@ const leaseOption: CliOption = {
   value: 'n',
   description: 'Lease duration in seconds.',
   default: '1800',
+};
+
+/**
+ * The third exception to the one-envelope contract. stdout carries schema-versioned NDJSON: one
+ * `{"schemaVersion":1,"event":"progress","data":...}` line per phase, then one `"result"` line.
+ */
+const eventsOption: CliOption = {
+  flag: '--events',
+  value: null,
+  description:
+    'Stream schema-versioned NDJSON progress events on stdout, one per line, ending with the result, instead of one envelope.',
+  native: true,
+};
+
+/**
+ * `--replace` alone authorizes replacing whichever conflicting entry is on disk. With the revision
+ * `connections` reported, the replacement proceeds only while that exact entry is still there, the
+ * same guarantee the guided setup gives through its reviewed plan.
+ */
+const replaceReviewedOption: CliOption = {
+  flag: '--replace',
+  value: 'revision',
+  valueOptional: true,
+  valuePattern: '^[0-9a-f]{64}$',
+  description:
+    'Separately authorize replacement of the reported conflicting entry. Pass the revision from `connections` to replace only that exact entry.',
+};
+
+const connectorIdArgument: CliArgument = {
+  name: 'connector-id',
+  required: true,
+  description: 'Supported connector.',
+  values: ['codex', 'claude-code'],
 };
 
 export const CLI_COMMANDS: readonly CliCommand[] = [
@@ -220,6 +270,15 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
         repeatable: true,
         description: 'Explicitly authorize replacement for one reported connector conflict.',
       },
+      eventsOption,
+      {
+        flag: '--keep',
+        value: 'codex|claude-code',
+        repeatable: true,
+        description:
+          'Keep the existing entry for one reported connector conflict. Requires --events.',
+        native: true,
+      },
     ],
     annotations: { ...idempotentWrite, requiresDaemon: false },
   },
@@ -235,8 +294,17 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
     summary:
       'Resume a previously confirmed durable setup operation without repeating completed phases.',
     arguments: [],
-    options: [],
+    options: [eventsOption],
     annotations: { ...idempotentWrite, requiresDaemon: false },
+  },
+  {
+    name: 'setup retry',
+    summary:
+      'Retry one connector of the current durable setup operation after its verification failed.',
+    arguments: [connectorIdArgument],
+    options: [{ ...eventsOption, required: true }],
+    annotations: { ...idempotentWrite, requiresDaemon: false },
+    native: true,
   },
   {
     name: 'connections',
@@ -260,11 +328,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
     ],
     options: [
       { flag: '--yes', value: null, description: 'Confirm the selected connector mutation.' },
-      {
-        flag: '--replace',
-        value: null,
-        description: 'Separately authorize replacement of the reported conflicting entry.',
-      },
+      replaceReviewedOption,
       {
         flag: '--instructions',
         value: null,
@@ -276,21 +340,10 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
   {
     name: 'repair',
     summary: 'Repair and independently verify one receipt-owned connector entry.',
-    arguments: [
-      {
-        name: 'connector-id',
-        required: true,
-        description: 'Supported connector.',
-        values: ['codex', 'claude-code'],
-      },
-    ],
+    arguments: [connectorIdArgument],
     options: [
       { flag: '--yes', value: null, required: true, description: 'Confirm the repair.' },
-      {
-        flag: '--replace',
-        value: null,
-        description: 'Separately authorize replacement of the reported conflicting entry.',
-      },
+      replaceReviewedOption,
     ],
     annotations: { ...idempotentWrite, requiresDaemon: false },
   },
@@ -298,14 +351,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
     name: 'disconnect',
     summary:
       'Remove only a receipt-proven connector entry while preserving the daemon and all private data.',
-    arguments: [
-      {
-        name: 'connector-id',
-        required: true,
-        description: 'Supported connector.',
-        values: ['codex', 'claude-code'],
-      },
-    ],
+    arguments: [connectorIdArgument],
     options: [
       {
         flag: '--yes',
@@ -739,19 +785,35 @@ function renderArgument(argument: CliArgument): string {
 }
 
 function renderOption(option: CliOption): string {
-  const body = option.value === null ? option.flag : `${option.flag} <${option.value}>`;
+  const body =
+    option.value === null
+      ? option.flag
+      : option.valueOptional === true
+        ? `${option.flag} [${option.value}]`
+        : `${option.flag} <${option.value}>`;
   if (option.required === true) return body;
   return option.repeatable === true ? `[${body}]...` : `[${body}]`;
 }
 
-/** The single invocation line for one command, derived so it cannot drift from the catalog. */
-export function renderUsageLine(command: CliCommand): string {
+/**
+ * The single invocation line for one command, derived so it cannot drift from the catalog. The
+ * banner's main list passes `native: false` so a desktop-only option stays in the native section.
+ */
+export function renderUsageLine(command: CliCommand, options: { native?: boolean } = {}): string {
+  const visible =
+    options.native === false
+      ? command.options.filter((option) => option.native !== true)
+      : command.options;
   return [
     'pimpampum',
     command.name,
     ...command.arguments.map(renderArgument),
-    ...command.options.map(renderOption),
+    ...visible.map(renderOption),
   ].join(' ');
+}
+
+function isNativeEntry(command: CliCommand): boolean {
+  return command.native === true || command.options.some((option) => option.native === true);
 }
 
 /** The catalog `pimpampum commands` returns, with the usage line resolved for each entry. */
@@ -767,18 +829,27 @@ export function describeCommands(version: string): {
 
 /** The text banner `pimpampum help` prints, rendered from the same catalog. */
 export function renderUsage(version: string): string {
-  const lines = CLI_COMMANDS.map((command) => `  ${renderUsageLine(command)}`);
+  const lines = CLI_COMMANDS.filter((command) => command.native !== true).map(
+    (command) => `  ${renderUsageLine(command, { native: false })}`,
+  );
+  const native = CLI_COMMANDS.filter(isNativeEntry).map(
+    (command) => `  ${renderUsageLine(command)}`,
+  );
   return `Pimpampum ${version}
 
 Every command writes one {"data": ...} envelope to stdout and exits 0, or one
-{"error": ...} envelope to stderr and exits non-zero. The only
-exceptions are \`help\`, which prints this text, and \`mcp\`, whose stdout carries
-the MCP protocol. Run \`pimpampum commands\` for the same catalog as JSON, and
-\`pimpampum tools\` for the domain tool schemas.
+{"error": ...} envelope to stderr and exits non-zero. The exceptions are
+\`help\`, which prints this text, \`mcp\`, whose stdout carries the MCP protocol,
+and \`--events\`, whose stdout carries schema-versioned NDJSON setup events, one
+per line, ending with the result. Run \`pimpampum commands\` for the same catalog
+as JSON, and \`pimpampum tools\` for the domain tool schemas.
 
 Use \`--\` to end option parsing when a value itself begins with two dashes.
 
 Usage:
 ${lines.join('\n')}
+
+Native desktop mode, driven by the Pimpampum app (\`native\` in \`commands\`):
+${native.join('\n')}
 `;
 }

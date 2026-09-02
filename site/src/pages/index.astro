@@ -2,6 +2,11 @@
 import '../styles/tokens.css';
 import Mark from '../components/Mark.astro';
 import DesktopSection from '../components/DesktopSection.astro';
+// The repository manifest, resolved at build time from this source file: the one version the site
+// shows is the one the release tag verifies, and a literal here would rot.
+import rootPackage from '../../../package.json';
+
+const { version } = rootPackage as { version: string };
 
 const beats = [
   {
@@ -46,10 +51,11 @@ const model = [
 
 const omissions = [
   'Sprints, milestones, roadmaps, priorities, estimates, points, labels.',
-  'Users, teams, roles, comments, chat, notifications, activity feeds.',
+  'Users, teams, roles, comments, chat, notifications, social feeds.',
   'Configurable workflows and arbitrary task dependencies.',
   'More than one level of subtasks.',
   'Cloud sync of the live database.',
+  'A web interface, so far.',
 ];
 
 const links = [
@@ -72,6 +78,10 @@ const links = [
 
 const description =
   'An absurdly simple, local, agent-first project manager for solopreneurs. Three calls are the whole workflow. Everything is Markdown you can open by hand.';
+const title = 'pimpampum — project management for people who are already the whole company';
+// `site` in astro.config.mjs is the one place the origin is spelled.
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
+const socialImage = new URL('/og.png', Astro.site).href;
 ---
 
 <html lang="en">
@@ -80,8 +90,20 @@ const description =
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#f5f3ed" />
     <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Pimpampum" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={socialImage} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={socialImage} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>pimpampum — project management for people who are already the whole company</title>
+    <title>{title}</title>
   </head>
   <body>
     <script is:inline>
@@ -116,7 +138,7 @@ const description =
             >pim<span aria-hidden="true">·</span>pam<span aria-hidden="true">·</span>pum</span
           >
         </span>
-        <span class="masthead-meta">version 1.2.11 · mit</span>
+        <span class="masthead-meta">version {version} · mit</span>
       </header>
 
       <section class="opening" aria-labelledby="opening-title">
@@ -244,27 +266,22 @@ const description =
           <div>
             <p class="statement">Built for agents. Readable by you.</p>
             <p class="prose">
-              Agents connect over MCP and get 32 tools with strict schemas, bounded reads, and a
-              claim that expires on its own. You hand an agent four sentences and it knows how to
-              work. There is a JSON-first CLI and a documented local API for everything else.
+              Agents connect over MCP and get 32 domain tools with strict schemas, bounded reads,
+              and a claim that expires on its own. Over HTTP the daemon adds four synchronization
+              tools, so a live catalog is 36 there and 32 through the stdio bridge. You hand an
+              agent four sentences and it knows how to work. There is a JSON-first CLI and a
+              documented local API for everything else.
             </p>
-            <div class="snippet">
-              <pre class="code"><code>&lbrace;
+            <pre class="code"><code>&lbrace;
   "mcpServers": &lbrace;
-    "pimpampum": &lbrace; "command": "pimpampum-mcp" &rbrace;
+    "pimpampum": &lbrace; "command": "/absolute/path/to/pimpampum-mcp" &rbrace;
   &rbrace;
 &rbrace;</code></pre>
-              <button
-                class="copy"
-                type="button"
-                data-copy={'{\n  "mcpServers": {\n    "pimpampum": { "command": "pimpampum-mcp" }\n  }\n}'}
-              >
-                Copy
-              </button>
-            </div>
             <p class="prose prose-tight">
-              That is the whole configuration. The bridge resolves its own credentials from your
-              data directory, so the agent never handles a token.
+              Guided setup writes that entry for Codex and Claude Code, pointing at the launcher of
+              the installed runtime, and verifies the tool catalog. The bridge resolves its own
+              credentials from your data directory, so the agent never handles a token, and neither
+              do you.
             </p>
             <p class="prose">
               And none of it is locked up. A Spec is a Markdown document. A Context page is a
@@ -325,47 +342,73 @@ const description =
       <section class="band" id="get-it" aria-labelledby="get-title">
         <div class="band-head">
           <h2 class="rubric" id="get-title">Get it</h2>
-          <p class="statement statement-wide">One command, or one download.</p>
+          <p class="statement statement-wide">One download, or one plugin.</p>
         </div>
 
         <div class="routes">
           <article class="route-card">
-            <p class="route-label">Everything, from npm</p>
-            <div class="snippet">
-              <pre class="code"><code>npm install --global pimpampum
-pimpampum install</code></pre>
-              <button
-                class="copy"
-                type="button"
-                data-copy="npm install --global pimpampum&#10;pimpampum install"
-              >
-                Copy
-              </button>
-            </div>
-            <p class="route-note">
-              The daemon, the CLI, and the MCP bridge. One background service, started at login. No
-              root access, and no terminal window kept alive as a shrine.
-            </p>
-          </article>
-
-          <article class="route-card">
-            <p class="route-label">Or the signed macOS app</p>
+            <p class="route-label">macOS · the signed app</p>
             <p class="route-lead">
               <a class="button button-primary" href="https://github.com/r-bart/pimpampum/releases">
                 Download for macOS <span class="button-arrow" aria-hidden="true">→</span>
               </a>
             </p>
             <p class="route-note">
-              Its first-run screen copies the one command it still needs and opens Terminal for you.
-              On Omarchy the Quickshell widget installs with the plugin instead, and uninstalls with
-              it.
+              Expand the zip, open Pimpampum, and follow the guided setup. It detects Codex and
+              Claude Code, shows you the exact changes, and installs the background service and the
+              agent connections after one confirmation. No Terminal, no token, no Node.js. The last
+              step adds your first workspace. Updates arrive signed, and the key that checks the
+              signature is built into the app.
+            </p>
+          </article>
+
+          <article class="route-card">
+            <p class="route-label">Omarchy · the Quattro plugin</p>
+            <div class="snippet">
+              <pre
+                class="code"><code>omarchy plugin add https://github.com/r-bart/pimpampum-omarchy.git --enable --yes</code></pre>
+              <button
+                class="copy"
+                type="button"
+                data-copy="omarchy plugin add https://github.com/r-bart/pimpampum-omarchy.git --enable --yes"
+              >
+                Copy
+              </button>
+            </div>
+            <p class="route-note">
+              Open the widget, choose Get started, and connect the agents it found. The plugin
+              downloads the pinned runtime for your machine, verifies it, and installs the systemd
+              user service. It uninstalls with the plugin, too. It also updates with the plugin:
+              <code>omarchy plugin update</code> first, then the plugin's own bootstrap installs
+              the newly pinned runtime.
             </p>
           </article>
         </div>
 
+        <div class="route-advanced">
+          <p class="route-label">Advanced · the npm package</p>
+          <div class="snippet">
+            <pre class="code"><code>npm install --global pimpampum
+pimpampum install</code></pre>
+            <button
+              class="copy"
+              type="button"
+              data-copy="npm install --global pimpampum&#10;pimpampum install"
+            >
+              Copy
+            </button>
+          </div>
+          <p class="route-note">
+            For automation and other Linux desktops. The daemon, the CLI, and the MCP bridge as one
+            per-user service, no root access. The package is 2.4 MB unpacked: no app and no
+            private runtime inside it. On a Mac it fetches the signed app of the same version
+            through the signed release channel.
+          </p>
+        </div>
+
         <p class="requirements">
-          Node.js 22 or newer. macOS 13 or newer on Apple Silicon for the menu-bar app. Omarchy with
-          Quattro for the widget.
+          macOS 13 or newer on Apple Silicon for the app. Omarchy with Quattro for the widget.
+          Node.js 22 or newer only for the npm package.
         </p>
       </section>
 
@@ -397,7 +440,7 @@ pimpampum install</code></pre>
             Made with love (for simplicity) by rbart ·{' '}
             <a href="https://x.com/_rbart_">@_rbart_</a>
           </p>
-          <p class="colophon-meta">MIT · Node 22+ · 1.2.11</p>
+          <p class="colophon-meta">MIT · Node 22+ · {version}</p>
         </div>
       </footer>
     </article>
@@ -940,6 +983,20 @@ pimpampum install</code></pre>
         margin: 0;
         color: var(--ink-muted);
         font-size: var(--text-caption);
+      }
+
+      /* The npm route sits under the two native routes: still a route, visibly second. */
+      .route-advanced {
+        display: grid;
+        align-content: start;
+        gap: var(--space-3);
+        max-width: 60ch;
+        margin-top: var(--space-6);
+      }
+
+      .route-advanced .snippet {
+        max-width: 100%;
+        margin-top: 0;
       }
 
       .requirements {

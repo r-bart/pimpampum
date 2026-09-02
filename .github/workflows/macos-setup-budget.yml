@@ -1,0 +1,64 @@
+name: macOS setup budget
+
+# Measures the guided-setup budget on the runner class the release uses, without signing,
+# notarizing or publishing anything. The release workflow triggers only on `push: tags: ['v*']`,
+# so before this existed the budget could not be measured on CI hardware without cutting a tag —
+# and a failure then arrives with the tag already public. Run this from the Actions tab before a
+# release.
+#
+# What this does NOT cover: the app is unsigned and unnotarized here, so first-launch Gatekeeper
+# work is absent. It measures the dominant costs — runtime unpack, `setup apply`, and connector
+# verification — on `macos-15`, which is a smaller machine than a developer's Mac.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: macos-setup-budget-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install --global npm@11
+      - run: npm ci
+      - run: npm run build:macos
+      # Approval writes `platforms/macos/dist/PimpampumMenuBar.artifact.json`, which the smoke's
+      # `readReleaseArtifact()` reads; it must run first. Signature and notarization are not
+      # required here because nothing produced by this workflow is ever distributed.
+      - name: Approve the unsigned measurement artifact
+        run: |
+          node scripts/check-macos-artifact.mjs platforms/macos/dist/Pimpampum.app --approve
+      - name: Measure the guided setup budget
+        env:
+          # The smoke creates its data directory, daemon logs, and login-item acknowledgements
+          # under os.tmpdir(); pin it so a failure can be uploaded.
+          TMPDIR: ${{ runner.temp }}/macos-live
+          PIMPAMPUM_RUN_LIVE_MACOS: '1'
+          # Print the elapsed time at each step, so a budget failure names the phase that grew
+          # instead of reporting one total.
+          PIMPAMPUM_LIVE_PHASE_TIMING: '1'
+        run: |
+          mkdir -p "$TMPDIR"
+          npm run test:e2e:macos
+      - name: Upload live-smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-setup-budget-diagnostics
+          path: ${{ runner.temp }}/macos-live
+          if-no-files-found: warn
+          retention-days: 7

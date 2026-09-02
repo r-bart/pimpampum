@@ -9,7 +9,8 @@ import {
   rmdirSync,
 } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { assertNoSymlinkTraversal, writePrivateFileAtomic } from './receipt.js';
+import { writePrivateFileAtomic } from '../fsAtomic.js';
+import { assertNoSymlinkTraversal } from '../fsGuards.js';
 
 export const SERVICE_LOG_NAMES = ['daemon.stdout.log', 'daemon.stderr.log'] as const;
 
@@ -87,7 +88,12 @@ export function restoreServiceLogs(snapshot: ServiceLogsSnapshot): void {
   assertNoSymlinkTraversal(snapshot.logDirectory, 'Service log directory', snapshot.trustedRoot);
   for (const file of snapshot.files) {
     if (file.existed) {
-      writePrivateFileAtomic(file.path, file.content!, file.mode!, snapshot.trustedRoot);
+      writePrivateFileAtomic(file.path, file.content!, {
+        mode: file.mode!,
+        directoryMode: 0o700,
+        trustedRoot: snapshot.trustedRoot,
+        label: 'Service log file',
+      });
     } else {
       rmSync(file.path, { force: true });
     }

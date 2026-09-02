@@ -1,6 +1,5 @@
-export const CONNECTOR_IDS = ['codex', 'claude-code'] as const;
-
-export type ConnectorId = (typeof CONNECTOR_IDS)[number];
+// Type-only module: the registry (`registry.ts`) is the runtime list of connectors.
+export type ConnectorId = 'codex' | 'claude-code';
 
 export type ConnectorState =
   | 'notInstalled'
@@ -62,6 +61,11 @@ export interface ConnectorInspection {
   connectorId: ConnectorId;
   state: ConnectorState;
   entry: HostEntry | null;
+  /**
+   * The revision a reviewer passes back as `--replace <revision>`: the fingerprint of `entry`, so a
+   * replacement only proceeds when the entry the user reviewed is still the one on disk.
+   */
+  entryFingerprint: string | null;
   higherPrecedenceEntry: HostEntry | null;
   receipt: ConnectionReceipt | null;
 }
@@ -101,11 +105,6 @@ export interface ConnectorActionResult {
   verification: ConnectorVerification | null;
 }
 
-export interface ConnectorDiagnostics {
-  message: string;
-  instructions: string[];
-}
-
 /** Domain-neutral connector lifecycle. Host-specific configuration stays behind this interface. */
 export interface HostConnector {
   readonly id: ConnectorId;
@@ -122,42 +121,4 @@ export interface HostConnector {
   disconnect(): Promise<ConnectorActionResult>;
   snapshot(): Promise<ConnectorSnapshot>;
   restore(snapshot: ConnectorSnapshot): Promise<void>;
-}
-
-const MAX_DIAGNOSTIC_LENGTH = 320;
-
-function displayName(connectorId: string): string {
-  if (connectorId === 'codex') return 'Codex';
-  if (connectorId === 'claude-code') return 'Claude Code';
-  return 'The agent';
-}
-
-function sanitizedDiagnostic(stderr: string, token: string): string {
-  let value = stderr;
-  if (token) value = value.replaceAll(token, '[credential redacted]');
-  value = value
-    .replace(/(?:authorization\s*:?\s*)?bearer\s+\S+/giu, '[credential redacted]')
-    .replace(/\/Users\/[^/\s]+/gu, '~')
-    .replace(/\/home\/[^/\s]+/gu, '~')
-    .replace(/[\r\n\t]+/gu, ' ')
-    .replace(/\s{2,}/gu, ' ')
-    .trim();
-  return value.slice(0, MAX_DIAGNOSTIC_LENGTH);
-}
-
-export function redactConnectorDiagnostics(input: {
-  connectorId: string;
-  executablePath: string;
-  token: string;
-  stderr: string;
-}): ConnectorDiagnostics {
-  const name = displayName(input.connectorId);
-  const detail = sanitizedDiagnostic(input.stderr, input.token);
-  return {
-    message: detail ? `${name} could not connect: ${detail}` : `${name} could not connect.`,
-    instructions: [
-      `Open ${name} settings and review only the Pimpampum MCP entry.`,
-      `Retry the connection test, then start a new ${name} session if requested.`,
-    ],
-  };
 }

@@ -1,11 +1,12 @@
-import type {
-  OverviewProject,
-  OverviewProjectStatus,
-  OverviewStatus,
-  ProjectState,
-} from './types.js';
+import type { OverviewProjectStatus, OverviewStatus, ProjectState } from './types.js';
 
-const statusPrecedence: Record<OverviewProjectStatus, number> = {
+/**
+ * The one ordering rule for overview Projects. `statusForProject` derives the
+ * status of a row and `overviewProjectOrderSql` renders the same precedence as
+ * SQL, so the store can bound the result set inside the query instead of
+ * sorting twice.
+ */
+export const statusPrecedence: Record<OverviewProjectStatus, number> = {
   active: 0,
   available: 1,
   draft: 2,
@@ -26,6 +27,28 @@ export function statusForProject(input: {
     : 'draft';
 }
 
+/**
+ * SQL `ORDER BY` terms that rank rows exactly like `statusForProject` followed
+ * by recency and the stable id. Every column expression is caller-supplied so
+ * the store can point it at its own aliases.
+ */
+export function overviewProjectOrderSql(columns: {
+  activeClaimCount: string;
+  availableWorkCount: string;
+  state: string;
+  updatedAt: string;
+  id: string;
+}): string {
+  return [
+    `CASE WHEN ${columns.activeClaimCount}>0 THEN ${statusPrecedence.active}`,
+    `WHEN ${columns.availableWorkCount}>0 THEN ${statusPrecedence.available}`,
+    `WHEN ${columns.state}='paused' THEN ${statusPrecedence.paused}`,
+    `WHEN ${columns.state} IN ('done','cancelled') THEN ${statusPrecedence.complete}`,
+    `ELSE ${statusPrecedence.draft} END`,
+    `,${columns.updatedAt} DESC,${columns.id}`,
+  ].join(' ');
+}
+
 export function statusForOverview(input: {
   projects: number;
   draftProjects: number;
@@ -44,17 +67,6 @@ export function statusForOverview(input: {
   return input.completedProjects + input.cancelledProjects === input.projects
     ? 'complete'
     : 'draft';
-}
-
-export function sortOverviewProjects(
-  left: Pick<OverviewProject, 'id' | 'status' | 'updatedAt'>,
-  right: Pick<OverviewProject, 'id' | 'status' | 'updatedAt'>,
-): number {
-  return (
-    statusPrecedence[left.status] - statusPrecedence[right.status] ||
-    right.updatedAt.localeCompare(left.updatedAt) ||
-    left.id.localeCompare(right.id)
-  );
 }
 
 export function boundOverview<T>(items: T[], limit: number): { items: T[]; truncated: boolean } {

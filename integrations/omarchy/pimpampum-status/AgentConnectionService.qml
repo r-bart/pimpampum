@@ -14,25 +14,18 @@ Item {
   property string processOutput: ""
   property string processError: ""
   property string errorMessage: ""
-  property string codexState: "Not installed"
-  property string claudeCodeState: "Not installed"
+  property string codexState: labels.notInstalled
+  property string claudeCodeState: labels.notInstalled
   property bool initialized: false
   property var resultPayload: null
   property bool ignoreNextExit: false
 
   signal operationFinished(string action, string connectorId, bool succeeded)
 
-  readonly property var sharedStates: [
-    "Not installed",
-    "Not connected",
-    "Connecting",
-    "Connected",
-    "New session required",
-    "Needs repair",
-    "Configuration conflict",
-    "Unsupported version",
-    "Unavailable"
-  ]
+  // The one vocabulary both native surfaces render; generated from
+  // scripts/generate-state-vocabulary.mjs together with the macOS enum.
+  readonly property var sharedStates: vocabulary.agentLabels
+  readonly property var labels: vocabulary.agentStateLabels
 
   function isObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -48,27 +41,27 @@ Item {
   }
 
   function displayState(value) {
-    if (!isObject(value)) return "Needs repair"
-    if (value.newSessionRequired === true) return "New session required"
+    if (!isObject(value)) return labels.needsRepair
+    if (value.newSessionRequired === true) return labels.newSessionRequired
     switch (value.state) {
-    case "notInstalled": return "Not installed"
-    case "unavailable": return "Unavailable"
+    case "notInstalled": return labels.notInstalled
+    case "unavailable": return labels.unavailable
     case "notConnected":
-    case "absent": return "Not connected"
+    case "absent": return labels.notConnected
     case "ownedCurrent":
-    case "equivalentUnowned": return value.available === true ? "Connected" : "Needs repair"
+    case "equivalentUnowned": return value.available === true ? labels.connected : labels.needsRepair
     case "connected":
-    case "verified": return "Connected"
-    case "ownedStale": return "Needs repair"
-    case "needsRepair": return "Needs repair"
-    case "conflict": return "Configuration conflict"
-    case "unsupportedVersion": return "Unsupported version"
-    default: return "Needs repair"
+    case "verified": return labels.connected
+    case "ownedStale": return labels.needsRepair
+    case "needsRepair": return labels.needsRepair
+    case "conflict": return labels.configurationConflict
+    case "unsupportedVersion": return labels.unsupportedVersion
+    default: return labels.needsRepair
     }
   }
 
   function setState(connectorId, state) {
-    if (sharedStates.indexOf(state) === -1) state = "Needs repair"
+    if (sharedStates.indexOf(state) === -1) state = labels.needsRepair
     if (connectorId === "codex") codexState = state
     else if (connectorId === "claude-code") claudeCodeState = state
   }
@@ -113,7 +106,7 @@ Item {
     processError = ""
     errorMessage = ""
     resultPayload = null
-    if (action === "connect" || action === "repair") setState(connectorId, "Connecting")
+    if (action === "connect" || action === "repair") setState(connectorId, labels.connecting)
     var arguments = [helperPath, action]
     if (needsConnector) arguments.push(connectorId)
     if (replaceReviewed === true) arguments.push("replace")
@@ -164,7 +157,7 @@ Item {
         setState(connection.id, displayState(connection))
     }
     if (validConnectorId(envelope.connectorId)) {
-      if (envelope.action === "disconnect") setState(envelope.connectorId, "Not connected")
+      if (envelope.action === "disconnect") setState(envelope.connectorId, labels.notConnected)
       else if (connections.length === 0 && isObject(data) && typeof data.state === "string")
         setState(envelope.connectorId, displayState(data))
     }
@@ -178,8 +171,34 @@ Item {
     operationFinished(completedAction, completedConnectorId, true)
   }
 
+  function boundedCliCode(value) {
+    return typeof value === "string" && /^[a-z_]{1,40}$/.test(value) ? value : ""
+  }
+
+  function boundedCliMessage(value) {
+    if (typeof value !== "string" || value.length === 0 || value.length > 200) return ""
+    return value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim()
+  }
+
+  // The helper forwards the CLI's typed error code and one bounded line of its message, like the
+  // other services read `error.message` from the CLI's stderr envelope. A stopped daemon, a
+  // missing agent CLI and a real connector failure therefore no longer read alike.
+  function actionableProcessError(envelope, fallback) {
+    var cliCode = boundedCliCode(envelope.cliCode)
+    var message = boundedCliMessage(envelope.message)
+    if (cliCode === "unavailable")
+      return "Pimpampum is not running. Start the service from Settings and retry."
+    if (cliCode === "unauthorized")
+      return "The saved credentials no longer match the local daemon. Run pimpampum install."
+    if (cliCode === "not_found" || /not installed/i.test(message))
+      return "The agent's command-line tool is not installed."
+    if (cliCode === "conflict") return "The agent connection changed and needs another review"
+    return message.length > 0 ? message : fallback
+  }
+
   function acceptFailure(text) {
     var message = "Agent connection operation failed"
+    var failedState = labels.needsRepair
     if (typeof text === "string" && text.length > 0 && text.length <= 4096) {
       try {
         var envelope = JSON.parse(text)
@@ -189,22 +208,20 @@ Item {
           else if (envelope.code === "timeout") message = "The connection action took too long"
           else if (envelope.code === "connector_conflict") {
             message = "The agent connection changed and needs another review"
-            setState(pendingConnectorId, "Configuration conflict")
+            failedState = labels.configurationConflict
+          }
+          else if (envelope.code === "command_failed") {
+            message = actionableProcessError(envelope, message)
+            if (boundedCliCode(envelope.cliCode) === "unavailable") failedState = labels.unavailable
           }
         }
       } catch (error) {}
     }
     var failedAction = pendingAction
     var failedConnectorId = pendingConnectorId
-    if (validConnectorId(failedConnectorId)
-        && stateForFailure(failedConnectorId) !== "Configuration conflict")
-      setState(failedConnectorId, "Needs repair")
+    if (validConnectorId(failedConnectorId)) setState(failedConnectorId, failedState)
     fail(message)
     operationFinished(failedAction, failedConnectorId, false)
-  }
-
-  function stateForFailure(connectorId) {
-    return connectorId === "codex" ? codexState : claudeCodeState
   }
 
   function handleExit(exitCode) {
@@ -212,6 +229,8 @@ Item {
     if (exitCode !== 0) { acceptFailure(processError); return }
     acceptResult(processOutput)
   }
+
+  StateVocabulary { id: vocabulary }
 
   Timer {
     id: operationDeadline
@@ -222,7 +241,7 @@ Item {
       root.ignoreNextExit = true
       connectionProcess.running = false
       if (root.validConnectorId(root.pendingConnectorId))
-        root.setState(root.pendingConnectorId, "Needs repair")
+        root.setState(root.pendingConnectorId, root.labels.needsRepair)
       root.rejectCurrent("The connection action took too long")
     }
   }

@@ -1,11 +1,25 @@
 import { createHash } from 'node:crypto';
 import type { SyncEntityKind, SyncState } from './syncContract.js';
 
+/**
+ * Orders two strings by their UTF-16 code units, one unit at a time.
+ *
+ * Every device must derive the same canonical JSON for the same state, so the
+ * order cannot depend on the process locale the way `localeCompare` does. The
+ * `<` operator on strings is specified as a code-unit comparison, which makes
+ * the result identical under any `LANG` or `LC_ALL`.
+ */
+export function compareCodeUnits(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value !== null && typeof value === 'object') {
     return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareCodeUnits(left, right))
       .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`)
       .join(',')}}`;
   }
@@ -24,17 +38,17 @@ export function activityFingerprint(
 
 export function normalizedSyncState(state: SyncState): SyncState {
   const byId = <T extends { id: string }>(items: T[]) =>
-    [...items].sort((a, b) => a.id.localeCompare(b.id));
+    [...items].sort((a, b) => compareCodeUnits(a.id, b.id));
   return {
     workspaces: byId(state.workspaces),
     projects: byId(state.projects),
     specs: byId(state.specs),
     contexts: byId(state.contexts),
     tasks: byId(state.tasks),
-    activity: [...state.activity].sort((a, b) =>
-      a.createdAt === b.createdAt
-        ? a.fingerprint.localeCompare(b.fingerprint)
-        : a.createdAt.localeCompare(b.createdAt),
+    activity: [...state.activity].sort(
+      (a, b) =>
+        compareCodeUnits(a.createdAt, b.createdAt) ||
+        compareCodeUnits(a.fingerprint, b.fingerprint),
     ),
   };
 }
@@ -63,7 +77,7 @@ function mergeEntities<T extends { id: string }>(
   const ids = new Set([...base.keys(), ...local.keys(), ...remote.keys()]);
   const items: T[] = [];
   const conflicts: MergeConflictCandidate[] = [];
-  for (const id of [...ids].sort()) {
+  for (const id of [...ids].sort(compareCodeUnits)) {
     const before = base.get(id);
     const left = local.get(id);
     const right = remote.get(id);

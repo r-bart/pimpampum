@@ -267,6 +267,66 @@ describe('CLI agent surface', () => {
     }
   });
 
+  // Every verb, the zero-argument ones included, goes through the catalog parser. Before this,
+  // `uninstall --keep-service` uninstalled and `update --check` installed.
+  it('rejects an undeclared option on every command the catalog declares', async () => {
+    for (const command of CLI_COMMANDS) {
+      const state = fixture();
+      const argv = [
+        command.name.split(' ')[0] ?? '',
+        ...sampleArguments(command.name),
+        '--definitely-unknown',
+      ];
+      await expect(runCli(argv, state.runtime), command.name).rejects.toMatchObject({ code: 1 });
+      const payload = only<{ error: { code: string; message: string; details: unknown } }>(
+        state.errors,
+      );
+      expect(payload.error.code, command.name).toBe('bad_request');
+      expect(payload.error.message, command.name).toBe(
+        `Unknown option for ${command.name}: --definitely-unknown`,
+      );
+      expect(payload.error.details, command.name).toEqual({ usage: renderUsageLine(command) });
+      expect(state.output, command.name).toEqual([]);
+    }
+    for (const alias of ['--help', '-h', '--version', '-v']) {
+      const state = fixture();
+      await expect(runCli([alias, '--definitely-unknown'], state.runtime)).rejects.toMatchObject({
+        code: 1,
+      });
+      expect(only<{ error: { code: string } }>(state.errors).error.code).toBe('bad_request');
+    }
+  });
+
+  it('keeps the native entries out of the main usage list and declares them in the catalog', () => {
+    const banner = renderUsage(PIMPAMPUM_VERSION);
+    const [preamble, main, native] = banner.split(/Usage:|Native desktop mode/u);
+    expect(preamble).toContain('and `--events`, whose stdout carries schema-versioned NDJSON');
+    expect(main).toBeDefined();
+    expect(native).toBeDefined();
+    expect(main).not.toContain('--events');
+    expect(main).not.toContain('--keep');
+    expect(main).not.toContain('setup retry');
+    for (const command of CLI_COMMANDS) {
+      const usage = renderUsageLine(command);
+      const nativeEntry =
+        command.native === true || command.options.some((option) => option.native === true);
+      expect(nativeEntry ? native : main, command.name).toContain(`  ${usage}\n`);
+      if (nativeEntry) expect(main, command.name).not.toContain(`  ${usage}\n`);
+      // A shared verb keeps its non-native form in the main list; a native-only verb has none.
+      if (nativeEntry && command.native !== true) {
+        expect(main, command.name).toContain(`  ${renderUsageLine(command, { native: false })}\n`);
+      }
+    }
+    const retry = describeCommands(PIMPAMPUM_VERSION).commands.find(
+      (command) => command.name === 'setup retry',
+    );
+    expect(retry).toMatchObject({
+      native: true,
+      usage: 'pimpampum setup retry <codex|claude-code> --events',
+      options: [expect.objectContaining({ flag: '--events', native: true, required: true })],
+    });
+  });
+
   it('rejects an unknown option, a surplus positional and a missing value with that usage line', async () => {
     const cases = [
       { argv: ['work:list', '--wat'], message: 'Unknown option for work:list: --wat' },
@@ -520,6 +580,57 @@ describe('CLI argument parser', () => {
     expect(input.positional).toEqual(['--single', '--']);
     expect(input.boolean('--switch')).toBe(true);
     expect(input.option('--single')).toBeUndefined();
+  });
+
+  // `--replace` alone authorizes replacing whatever is on disk; `--replace <revision>` pins the
+  // entry the reviewer saw. The value is taken only when it looks like a revision, so a connector
+  // id or another flag after a bare `--replace` keeps its own meaning.
+  it('takes an optional option value only when it matches the declared pattern', () => {
+    const connect = describeCommand('connect');
+    const revision = 'a'.repeat(64);
+
+    const pinned = parseCommandArguments(connect, ['codex', '--yes', '--replace', revision]);
+    expect(pinned.option('--replace')).toBe(revision);
+    expect(pinned.boolean('--replace')).toBe(true);
+    expect(pinned.positional).toEqual(['codex']);
+
+    const bare = parseCommandArguments(connect, ['codex', '--replace', '--yes']);
+    expect(bare.option('--replace')).toBeUndefined();
+    expect(bare.boolean('--replace')).toBe(true);
+
+    const positionalAfter = parseCommandArguments(connect, ['--replace', 'codex', '--yes']);
+    expect(positionalAfter.option('--replace')).toBeUndefined();
+    expect(positionalAfter.positional).toEqual(['codex']);
+
+    const trailing = parseCommandArguments(connect, ['codex', '--yes', '--replace']);
+    expect(trailing.boolean('--replace')).toBe(true);
+    expect(parseCommandArguments(connect, ['codex']).boolean('--replace')).toBe(false);
+
+    for (const argv of [
+      ['codex', '--replace', '--replace'],
+      ['codex', '--replace', revision, '--replace'],
+      ['codex', '--replace', '--replace', revision],
+      ['codex', '--replace', revision, '--replace', revision],
+    ]) {
+      expect(() => parseCommandArguments(connect, argv), argv.join(' ')).toThrow(
+        'Repeated option: --replace',
+      );
+    }
+
+    const anyValue: CliCommand = {
+      name: 'probe',
+      summary: 'probe',
+      arguments: [{ name: 'x', required: false, description: 'x' }],
+      options: [{ flag: '--tag', value: 'text', valueOptional: true, description: 'tag' }],
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        requiresDaemon: false,
+      },
+    };
+    expect(parseCommandArguments(anyValue, ['--tag', 'anything']).option('--tag')).toBe('anything');
+    expect(parseCommandArguments(anyValue, ['--tag']).boolean('--tag')).toBe(true);
   });
 
   it('refuses to look up a command the catalog does not declare', () => {

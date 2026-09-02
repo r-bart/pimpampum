@@ -4,17 +4,23 @@ import { dirname, join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 
 // `renameSync` cannot be spied on in ESM, so the whole module is wrapped here. Isolating this in its
-// own file keeps the rest of the macOS adapter suite running against the real filesystem.
-let failRenameOnCall: number | null = null;
-let renameCalls = 0;
+// own file keeps the rest of the macOS adapter suite running against the real filesystem. The fault
+// is injected by destination path (M-T5), not by call ordinal, so the test names what fails.
+let failStagingRenameInto: string | null = null;
 
 vi.mock('node:fs', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs')>();
+  const { basename } = await import('node:path');
   return {
     ...real,
     renameSync(from: string, to: string) {
-      renameCalls += 1;
-      if (failRenameOnCall !== null && renameCalls === failRenameOnCall) {
+      // Only the activation rename (staging copy -> destination) fails; the rename that brings the
+      // backup back into the same destination must still work for the rollback to be observable.
+      if (
+        failStagingRenameInto !== null &&
+        String(to) === failStagingRenameInto &&
+        basename(String(from)).startsWith('.PimpampumRuntime.stage-')
+      ) {
         throw new Error('activation interrupted');
       }
       return real.renameSync(from, to);
@@ -28,8 +34,7 @@ import { createMacOSDesktopAdapter } from '../src/service/macosApp.js';
 const roots: string[] = [];
 
 afterEach(() => {
-  failRenameOnCall = null;
-  renameCalls = 0;
+  failStagingRenameInto = null;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -62,11 +67,11 @@ it('restores the previous embedded runtime when activation cannot complete', asy
     daemonAdapter: createLaunchdAdapter({ guiDomain: 'gui/501' }),
     now: () => new Date('2026-08-26T20:00:00.000Z'),
     sleep: async () => undefined,
-    acknowledgementPolls: 1,
   });
 
-  // Rename 1 moves the destination to the backup; rename 2 activates the staged copy.
-  failRenameOnCall = 2;
+  // The destination was already moved to its backup; the rename that activates the staged copy
+  // into the destination fails.
+  failStagingRenameInto = destination;
 
   await expect(
     adapter.afterInstall!(

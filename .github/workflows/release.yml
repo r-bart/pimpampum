@@ -4,34 +4,42 @@ on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: write
-  id-token: write
+# Jobs request exactly what they need; the workflow itself holds no token scope.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v5
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: npm
+      # Node 22 ships npm 10, which ignores package.json#allowScripts; npm 11 honours it.
+      - run: npm install --global npm@11
       - run: npm ci
       - name: Verify release version
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: node --eval "const expected='v'+require('./package.json').version;if(process.env.RELEASE_TAG!==expected)throw new Error('Tag '+process.env.RELEASE_TAG+' must equal '+expected)"
+        run: node scripts/check-release-versions.mjs "$GITHUB_REF_NAME"
       - run: npm run typecheck && npm run lint && npm run format:check && npm test
-      - run: npm run test:evals
       - run: npm run test:omarchy
       - run: npm run check:desktop-contract
-      - run: npm audit --omit=dev
+      - run: npm run check:package-size
+      - run: npm audit --omit=dev --audit-level=high
 
   runtime:
     needs: validate
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -44,16 +52,15 @@ jobs:
             runner: macos-15
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v5
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24.19.0
           cache: npm
       - run: npm ci
-      - name: Validate Omarchy plugin, runtime pins and executable helpers
-        run: npm run validate:omarchy
       - name: Build and verify tagged runtime
         run: |
           version=${GITHUB_REF_NAME#v}
@@ -70,7 +77,7 @@ jobs:
           bundle="pimpampum-runtime-$version-${{ matrix.target }}"
           /usr/bin/tar -czf "$RUNNER_TEMP/runtime-${{ matrix.target }}.tar.gz" \
             -C "$RUNNER_TEMP/runtime" "$bundle"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: runtime-${{ matrix.target }}
           path: ${{ runner.temp }}/runtime-${{ matrix.target }}.tar.gz
@@ -78,21 +85,59 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  runtime-manifest:
+    needs: runtime
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: runtime-linux-*
+          path: ${{ runner.temp }}/runtime-review
+          merge-multiple: true
+      - name: Unpack exact Linux runtime transports
+        run: |
+          for target in linux-arm64 linux-x64; do
+            /usr/bin/tar -xzf "$RUNNER_TEMP/runtime-review/runtime-$target.tar.gz" \
+              -C "$RUNNER_TEMP/runtime-review"
+          done
+      - name: Match reviewed Omarchy pins to exact release archives
+        run: |
+          node scripts/check-reviewed-runtime-manifest.mjs "$RUNNER_TEMP/runtime-review" \
+            --output "$RUNNER_TEMP/generated-runtime-manifest.json"
+      - name: Upload the generated runtime manifest
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: generated-runtime-manifest
+          path: ${{ runner.temp }}/generated-runtime-manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
   publish:
-    needs: [validate, runtime]
+    needs: [validate, runtime, runtime-manifest]
     runs-on: macos-15
     environment: release
+    permissions:
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v5
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
+      - run: npm install --global npm@11
       - run: npm ci
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: runtime-*
           path: ${{ runner.temp }}/runtime-bundles
@@ -162,7 +207,7 @@ jobs:
           npm run check:macos-evidence
       - name: Upload live-smoke diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-live-smoke-diagnostics
           path: ${{ runner.temp }}/macos-live
@@ -173,6 +218,47 @@ jobs:
           PIMPAMPUM_RUNTIME_BUNDLES_ROOT: ${{ runner.temp }}/runtime-bundles
           PIMPAMPUM_REQUIRE_NOTARIZATION: 1
         run: scripts/package-release-assets.sh "$RUNNER_TEMP/release"
+      - name: Sign the update-channel manifest
+        env:
+          RELEASE_MANIFEST_SIGNING_KEY: ${{ secrets.RELEASE_MANIFEST_SIGNING_KEY }}
+        run: |
+          if [ -z "$RELEASE_MANIFEST_SIGNING_KEY" ]; then
+            echo "RELEASE_MANIFEST_SIGNING_KEY is not configured in the release environment." >&2
+            exit 1
+          fi
+          node scripts/sign-release-manifest.mjs \
+            --input "$RUNNER_TEMP/release/release-manifest.unsigned.json" \
+            --output "$RUNNER_TEMP/channel"
+          node scripts/sign-release-manifest.mjs --check "$RUNNER_TEMP/channel/release-manifest.json"
+      # Draft first: every asset is attached before npm learns the version, so a failure here
+      # leaves nothing half-published and a re-run only has to replace assets.
+      - name: Create the draft GitHub Release with every asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          assets="$RUNNER_TEMP/release/pimpampum-$version.tgz
+          $RUNNER_TEMP/release/Pimpampum-$version-macos-arm64.zip
+          $RUNNER_TEMP/release/pimpampum-runtime-$version-linux-arm64.tar.gz
+          $RUNNER_TEMP/release/pimpampum-runtime-$version-linux-x64.tar.gz
+          $RUNNER_TEMP/release/pimpampum-runtime-$version-linux-arm64.manifest.json
+          $RUNNER_TEMP/release/pimpampum-runtime-$version-linux-x64.manifest.json
+          $RUNNER_TEMP/release/pimpampum-runtime-$version-linux-arm64.inventory.json
+          $RUNNER_TEMP/release/pimpampum-runtime-$version-linux-x64.inventory.json
+          $RUNNER_TEMP/release/pimpampum-runtime-$version-linux-arm64.sbom.spdx.json
+          $RUNNER_TEMP/release/pimpampum-runtime-$version-linux-x64.sbom.spdx.json
+          $RUNNER_TEMP/release/pimpampum-runtime-$version-linux-arm64.archive-sha256.json
+          $RUNNER_TEMP/release/pimpampum-runtime-$version-linux-x64.archive-sha256.json
+          $RUNNER_TEMP/release/pimpampum-omarchy-runtime-manifest-$version.json
+          $RUNNER_TEMP/release/SHA256SUMS
+          $RUNNER_TEMP/channel/release-manifest.json
+          $RUNNER_TEMP/channel/pimpampum-release-public-key.pem"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "$assets" | xargs gh release upload "$GITHUB_REF_NAME" --clobber
+          else
+            echo "$assets" | xargs gh release create "$GITHUB_REF_NAME" \
+              --draft --generate-notes --verify-tag
+          fi
       - name: Publish npm package with provenance
         env:
           # setup-node writes an .npmrc that reads this variable; without a real token it exports a
@@ -183,26 +269,70 @@ jobs:
             echo "NPM_TOKEN is not configured in the release environment." >&2
             exit 1
           fi
-          npm install --global npm@11
-          npm publish "$RUNNER_TEMP/release/pimpampum-${GITHUB_REF_NAME#v}.tgz" --access public --provenance
-      - name: Publish GitHub Release
+          version=${GITHUB_REF_NAME#v}
+          if [ "$(npm view "pimpampum@$version" version 2>/dev/null)" = "$version" ]; then
+            echo "pimpampum@$version is already on the registry; skipping publish."
+          else
+            npm publish "$RUNNER_TEMP/release/pimpampum-$version.tgz" --access public --provenance
+          fi
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+      # The rolling channel points at the now-public versioned assets; clients read only this.
+      - name: Publish the update channel
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            "$RUNNER_TEMP/release/pimpampum-${GITHUB_REF_NAME#v}.tgz" \
-            "$RUNNER_TEMP/release/Pimpampum-${GITHUB_REF_NAME#v}-macos-arm64.zip" \
-            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.tar.gz" \
-            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-x64.tar.gz" \
-            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.manifest.json" \
-            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-x64.manifest.json" \
-            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.inventory.json" \
-            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-x64.inventory.json" \
-            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.sbom.spdx.json" \
-            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-x64.sbom.spdx.json" \
-            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-arm64.archive-sha256.json" \
-            "$RUNNER_TEMP/release/pimpampum-runtime-${GITHUB_REF_NAME#v}-linux-x64.archive-sha256.json" \
-            "$RUNNER_TEMP/release/pimpampum-omarchy-runtime-manifest-${GITHUB_REF_NAME#v}.json" \
-            "$RUNNER_TEMP/release/SHA256SUMS" \
-            --generate-notes \
-            --verify-tag
+          if ! gh release view update-channel-stable >/dev/null 2>&1; then
+            gh release create update-channel-stable \
+              --title "Update channel (stable)" \
+              --latest=false \
+              --notes "Rolling release read by pimpampum update:check. Its two assets are replaced by every published version; the signed release-manifest.json names the current version and pimpampum-release-public-key.pem is the key embedded in the CLI."
+          fi
+          gh release upload update-channel-stable \
+            "$RUNNER_TEMP/channel/release-manifest.json" \
+            "$RUNNER_TEMP/channel/pimpampum-release-public-key.pem" \
+            --clobber
+
+  mirror:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+      - name: Push the Omarchy plugin to its mirror
+        env:
+          OMARCHY_MIRROR_DEPLOY_KEY: ${{ secrets.OMARCHY_MIRROR_DEPLOY_KEY }}
+          MIRROR_REPOSITORY: git@github.com:r-bart/pimpampum-omarchy.git
+        run: |
+          if [ -z "$OMARCHY_MIRROR_DEPLOY_KEY" ]; then
+            echo "OMARCHY_MIRROR_DEPLOY_KEY is not configured." >&2
+            exit 1
+          fi
+          version=${GITHUB_REF_NAME#v}
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$OMARCHY_MIRROR_DEPLOY_KEY" > "$HOME/.ssh/omarchy-mirror"
+          chmod 600 "$HOME/.ssh/omarchy-mirror"
+          # GitHub's published host keys (https://docs.github.com/en/authentication/keychain-security/githubs-ssh-key-fingerprints).
+          cat > "$HOME/.ssh/known_hosts" <<'HOSTS'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+          HOSTS
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/omarchy-mirror -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git subtree split --prefix integrations/omarchy/pimpampum-status -b "mirror-$version"
+          git push "$MIRROR_REPOSITORY" "refs/heads/mirror-$version:refs/heads/main"
+          git push "$MIRROR_REPOSITORY" "refs/heads/mirror-$version:refs/tags/v$version"
+          git rev-parse "mirror-$version" > "$RUNNER_TEMP/mirror-commit"
+      - name: Verify the mirror carries this release
+        run: node scripts/check-omarchy-mirror.mjs --ref "$(cat "$RUNNER_TEMP/mirror-commit")" --retries 6

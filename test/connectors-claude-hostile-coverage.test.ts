@@ -14,6 +14,7 @@ import type {
   ConnectorVerification,
   HostEntry,
 } from '../src/connectors/types.js';
+import { readConnectorJson } from './fixtures/connectors/load.js';
 
 const launcher = '/synthetic/runtime/bin/pimpampum-mcp';
 const expected: HostEntry = { command: launcher, arguments: [], scope: 'user' };
@@ -273,9 +274,10 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
     });
     await expect(missing.detect()).resolves.toMatchObject({ executable: null, supported: false });
     await expect(missing.inspect()).resolves.toMatchObject({ state: 'notInstalled' });
-    await expect(missing.connect(await missing.plan())).resolves.toMatchObject({
-      state: 'notInstalled',
-      changed: false,
+    await expect(missing.connect(await missing.plan())).rejects.toMatchObject({
+      code: 'invalid_state',
+      status: 409,
+      details: { connectorId: 'claude-code', state: 'notInstalled' },
     });
     await expect(
       missing.restore({ connectorId: 'claude-code', revision: null, entry: null }),
@@ -294,24 +296,39 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
       supported: false,
       capabilities: { scopes: ['user'] },
     });
+    const failedVersion = createHarness({ versionExitCode: 2 });
+    await expect(failedVersion.connector.detect()).resolves.toMatchObject({
+      executable: failedVersion.executable,
+      version: null,
+      supported: false,
+    });
+    expect(
+      failedVersion.run.mock.calls.filter(([call]) => call.arguments[0] === '--version'),
+    ).toHaveLength(1);
   });
 
+  // No observed Claude Code release (2.1.251, 2.1.257) advertises `--json` on `mcp get`, so this
+  // is the forward-compatible branch: should a release add it, the connector must accept only the
+  // same bounded target shape it reads from `~/.claude.json`. The stdout below is therefore the
+  // recorded `mcpServers.pimpampum` entry, not a shape invented for the test.
   it('uses JSON inspection when valid and bounded config fallback when JSON fails', async () => {
+    const recordedEntry = readConnectorJson<{ mcpServers: { pimpampum: unknown } }>(
+      'claude-code',
+      'entry-owned-current.json',
+    ).mcpServers.pimpampum as { command: string; args: string[] };
     const json = createHarness({
       inspectJson: true,
       target: { command: '/synthetic/config-value', args: [] },
-      jsonResult: {
-        exitCode: 0,
-        stdout: JSON.stringify({ type: 'stdio', command: launcher, args: [], env: {} }),
-        stderr: '',
-      },
+      jsonResult: { exitCode: 0, stdout: JSON.stringify(recordedEntry), stderr: '' },
     });
     await expect(json.connector.detect()).resolves.toMatchObject({
       capabilities: { inspect: 'json' },
     });
+    // The JSON answer wins over the config file: the reported entry is the recorded one, which
+    // differs from this harness's launcher and therefore classifies as a conflict.
     await expect(json.connector.inspect()).resolves.toMatchObject({
-      state: 'equivalentUnowned',
-      entry: expected,
+      state: 'conflict',
+      entry: { command: recordedEntry.command, arguments: recordedEntry.args, scope: 'user' },
     });
 
     const malformed = createHarness({
@@ -329,6 +346,19 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
       jsonResult: { exitCode: 1, stdout: '', stderr: 'synthetic failure' },
     });
     await expect(failed.connector.inspect()).resolves.toMatchObject({ state: 'equivalentUnowned' });
+  });
+
+  // `~/.claude.json` is hand-edited often enough that an entry without an `args` key is a real
+  // shape, not a hostile one: the key is optional and its absence means the server takes no
+  // arguments. The reader has to treat it as an empty argument list, not as a conflict.
+  it('reads a stdio entry whose optional args key is absent as one with no arguments', async () => {
+    const harness = createHarness({
+      configValue: { mcpServers: { pimpampum: { type: 'stdio', command: launcher } } },
+    });
+    await expect(harness.connector.inspect()).resolves.toMatchObject({
+      state: 'equivalentUnowned',
+      entry: expected,
+    });
   });
 
   it('maps malformed config target shapes and wrong receipts to unavailable or opaque conflict', async () => {
@@ -353,7 +383,11 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
     const wrongReceipt = createHarness({
       storedReceipt: { ...receipt(), connectorId: 'codex', scope: 'global' },
     });
-    await expect(wrongReceipt.connector.inspect()).resolves.toMatchObject({ state: 'unavailable' });
+    await expect(wrongReceipt.connector.inspect()).rejects.toMatchObject({
+      code: 'unavailable',
+      message:
+        'Claude Code ownership receipt could not be read: the stored receipt belongs to codex',
+    });
   });
 
   it('fails closed for symlinked and higher-precedence configuration targets', async () => {
@@ -362,7 +396,10 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
     writeFileSync(victim, JSON.stringify({ mcpServers: {} }));
     rmSync(harness.configPath);
     symlinkSync(victim, harness.configPath);
-    await expect(harness.connector.inspect()).resolves.toMatchObject({ state: 'unavailable' });
+    await expect(harness.connector.inspect()).rejects.toMatchObject({
+      code: 'unavailable',
+      message: expect.stringMatching(/could not be inspected: .*not a symlink/u),
+    });
 
     const higher = createHarness({
       higherPrecedenceTarget: { type: 'stdio', command: launcher, args: [], env: {} },
@@ -399,7 +436,7 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
 
     const rejected = createHarness({ mutationFailure: 'add' });
     await expect(rejected.connector.connect(await rejected.connector.plan())).rejects.toThrow(
-      /mutation failed/iu,
+      /Claude Code could not update the Pimpampum MCP entry: rejected/iu,
     );
     expect(rejected.storedReceipt()).toBeNull();
 
@@ -440,7 +477,9 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
       storedReceipt: receipt(),
       mutationFailure: 'remove',
     });
-    await expect(rejected.connector.disconnect()).rejects.toThrow(/mutation failed/iu);
+    await expect(rejected.connector.disconnect()).rejects.toThrow(
+      /Claude Code could not remove the Pimpampum MCP entry: rejected/iu,
+    );
   });
 
   it('restores only matching user snapshots and rejects unowned/concurrent/opaque restoration', async () => {
@@ -457,12 +496,14 @@ describe('Claude Code hostile parsing, probes, mutation and rollback coverage', 
         revision: null,
         entry: { command: '/synthetic/prior', arguments: [], scope: 'project' },
       }),
-    ).rejects.toThrow(/user-scoped/iu);
+    ).rejects.toThrow(/cannot safely restore/iu);
 
+    // Rollback never removes an entry this connector did not just write.
     const unowned = createHarness({ target: { command: '/synthetic/unowned', args: [] } });
     await expect(
       unowned.connector.restore({ connectorId: 'claude-code', revision: null, entry: null }),
-    ).rejects.toThrow(/unowned/iu);
+    ).rejects.toMatchObject({ code: 'conflict', message: expect.stringMatching(/concurrently/u) });
+    expect(unowned.readTarget()).toEqual({ command: '/synthetic/unowned', args: [] });
 
     const concurrent = createHarness({ target: { command: '/synthetic/concurrent', args: [] } });
     await expect(

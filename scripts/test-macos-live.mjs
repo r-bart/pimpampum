@@ -1,24 +1,32 @@
 #!/usr/bin/env node
 
+// The reversible macOS live smoke: packs the repository, installs the embedded runtime into an
+// isolated HOME, drives the guided setup, the connectors, the native popover snapshots, backup,
+// offline recovery and removal, and writes `thoughts/evidence/macos-live.json` for
+// `check-macos-evidence.mjs`. Only the release job runs it (PIMPAMPUM_RUN_LIVE_MACOS=1). Every
+// assertion is one named check with one condition, so a failure on the runner names what broke.
+
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import {
   chmodSync,
   copyFileSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { check } from './lib/checks.mjs';
+import { parseJsonObject, unwrapCliEnvelope } from './lib/cliEnvelope.mjs';
+import { hashTree, sha256, sha256File } from './lib/hashTree.mjs';
+import { retry, waitFor } from './lib/waitFor.mjs';
 import { prepareMacosRuntimePackage } from './macos-live-package.mjs';
+import { GUIDED_SETUP_BUDGET_MILLISECONDS, LIVE_SETUP_SCENARIOS } from './macos-live-contract.mjs';
 
 if (process.env.PIMPAMPUM_RUN_LIVE_MACOS !== '1') {
   throw new Error('Set PIMPAMPUM_RUN_LIVE_MACOS=1 to run the reversible real macOS smoke.');
@@ -27,12 +35,30 @@ if (process.platform !== 'darwin') throw new Error('The macOS live smoke require
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const liveStartedAt = Date.now();
+// Spans measured inside the budget window that are not guided setup. `verifyLegacyMigration`
+// sits between the first-run UI and the connector lifecycle only because of the order of `main`,
+// and it cost 88s of the 120s budget on 2026-09-02 while the guided setup itself cost 44.7s. It is
+// subtracted rather than reordered, because the later scenarios build on the state it leaves.
+let budgetExcludedMilliseconds = 0;
+/**
+ * Prints the elapsed time at each step of `main` when `PIMPAMPUM_LIVE_PHASE_TIMING=1`. A budget
+ * failure reports one number and no breakdown, which on 2026-09-02 hid that 88s of the 174s belonged
+ * to `verifyLegacyMigration` rather than to the guided setup. Off by default so the release job's
+ * output is unchanged.
+ */
+const phaseTimingEnabled = process.env.PIMPAMPUM_LIVE_PHASE_TIMING === '1';
+const markPhase = (label) => {
+  if (phaseTimingEnabled) {
+    process.stdout.write(`PHASE ${label}: ${Date.now() - liveStartedAt}ms\n`);
+  }
+};
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'pimpampum-macos-live-'));
 const liveHome = join(temporaryRoot, 'home');
 mkdirSync(liveHome, { recursive: true });
 let cli = join(repositoryRoot, 'dist/cli.js');
 let controlNode = process.execPath;
 const app = join(liveHome, 'Applications/Pimpampum.app');
+const appBinary = join(app, 'Contents/MacOS/PimpampumMenuBar');
 const launchAgent = join(liveHome, 'Library/LaunchAgents/dev.pimpampum.daemon.plist');
 const launchDomain = `gui/${process.getuid()}/dev.pimpampum.daemon`;
 const dataDirectory = join(temporaryRoot, 'data');
@@ -45,20 +71,13 @@ const environment = {
 };
 let installed = false;
 let smokeCompleted = false;
-const scenarios = {
-  cleanNoNode: false,
-  guidedSetupPopover: false,
-  legacyNpmMigration: false,
-  noAgent: false,
-  oneAgent: false,
-  twoAgents: false,
-  partialFailure: false,
-  conflictDecision: false,
-  popoverRestartResume: false,
-  packagedUpdate: false,
-  disconnect: false,
-  removal: false,
-};
+const scenarios = Object.fromEntries(LIVE_SETUP_SCENARIOS.map((name) => [name, false]));
+/** Observations the phases collect and `buildEvidence` reads. */
+const run = {};
+
+// ---------------------------------------------------------------------------------------------
+// Commands and checks
+// ---------------------------------------------------------------------------------------------
 
 function command(executable, arguments_, options = {}) {
   const result = spawnSync(executable, arguments_, {
@@ -75,57 +94,50 @@ function command(executable, arguments_, options = {}) {
   return result.stdout.trim();
 }
 
+/**
+ * Pimpampum CLI success is always exactly one {"data": ...} object. Unwrapping here keeps the
+ * live runner honest about the contract instead of reading undefined fields off the envelope.
+ * The payload may be an array (`connections`), so the envelope is unwrapped, not typed.
+ */
 function runCli(...arguments_) {
-  // Pimpampum CLI success is always exactly one {"data": ...} object. Unwrapping here keeps the
-  // live runner honest about the contract instead of reading undefined fields off the envelope.
+  const label = `pimpampum ${arguments_.join(' ')}`;
   const stdout = command(controlNode, [cli, ...arguments_]);
-  const envelope = JSON.parse(stdout);
-  if (
-    !envelope ||
-    typeof envelope !== 'object' ||
-    Array.isArray(envelope) ||
-    Object.keys(envelope).length !== 1 ||
-    !('data' in envelope)
-  ) {
-    throw new Error(
-      `pimpampum ${arguments_.join(' ')} did not return one data envelope: ${stdout}`,
-    );
-  }
-  return envelope.data;
+  return unwrapCliEnvelope(parseJsonObject(stdout, label), label);
 }
 
-function sha256(path) {
-  return createHash('sha256').update(readFileSync(path)).digest('hex');
+/** One named condition; `details` is appended as JSON so a runner failure stays diagnosable. */
+function expect(name, condition, message, details) {
+  check(
+    name,
+    condition,
+    details === undefined ? message : `${message}: ${JSON.stringify(details)}`,
+  );
 }
 
-function treeSha256(root) {
-  const paths = [];
-  const visit = (directory) => {
-    for (const name of readdirSync(directory).sort()) {
-      const path = join(directory, name);
-      const metadata = lstatSync(path);
-      if (metadata.isSymbolicLink())
-        throw new Error(`Unsafe symlink in final app artifact: ${path}`);
-      if (metadata.isDirectory()) visit(path);
-      else if (metadata.isFile()) paths.push({ path, mode: metadata.mode & 0o777 });
-      else throw new Error(`Unsafe entry in final app artifact: ${path}`);
-    }
-  };
-  visit(root);
-  const digest = createHash('sha256');
-  for (const entry of paths) {
-    const bytes = readFileSync(entry.path);
-    digest.update(relative(root, entry.path).split(sep).join('/'));
-    digest.update('\0');
-    digest.update(String(entry.mode));
-    digest.update('\0');
-    digest.update(String(bytes.length));
-    digest.update('\0');
-    digest.update(bytes);
-    digest.update('\0');
-  }
-  return digest.digest('hex');
+function readJson(path) {
+  return JSON.parse(readFileSync(path, 'utf8'));
 }
+
+function appTreeSha256(root) {
+  return hashTree(root, {
+    includeMode: true,
+    unsafeEntry: (path, kind) =>
+      new Error(
+        kind === 'symlink'
+          ? `Unsafe symlink in final app artifact: ${path}`
+          : `Unsafe entry in final app artifact: ${path}`,
+      ),
+  });
+}
+
+function writeSeed(path, value) {
+  writeFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  return path;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Host fixtures: fake codex and claude executables with injectable failures
+// ---------------------------------------------------------------------------------------------
 
 function installHostFixtures() {
   const bin = join(liveHome, '.local/bin');
@@ -205,6 +217,10 @@ esac
   return { state };
 }
 
+// ---------------------------------------------------------------------------------------------
+// Setup, service and app process helpers
+// ---------------------------------------------------------------------------------------------
+
 function applySetupPlan(connectors, extraArguments = []) {
   const planArguments = connectors.flatMap((id) => ['--connector', id]);
   const plan = runCli('setup', 'plan', ...planArguments);
@@ -219,55 +235,42 @@ function applySetupPlan(connectors, extraArguments = []) {
   return { plan, result };
 }
 
-async function runCliEventually(arguments_, attempts = 100) {
-  let lastError;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return runCli(...arguments_);
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-    }
-  }
-  throw lastError;
+function runCliEventually(arguments_, attempts = 100) {
+  return retry(() => runCli(...arguments_), { attempts, intervalMs: 100 });
 }
 
-async function waitForBackupState(expected, attempts = 50) {
-  let status;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    status = runCli('backup', 'status');
-    if (status.state === expected) return status;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-  throw new Error(`Automatic backup did not reach ${expected}: ${JSON.stringify(status ?? null)}`);
+function waitForBackupState(expected, attempts = 50) {
+  return waitFor(() => runCli('backup', 'status'), {
+    attempts,
+    intervalMs: 100,
+    until: (status) => status.state === expected,
+    timeoutMessage: (status) =>
+      `Automatic backup did not reach ${expected}: ${JSON.stringify(status ?? null)}`,
+  });
 }
 
 function serviceIsLoaded() {
   return spawnSync('/bin/launchctl', ['print', launchDomain], { encoding: 'utf8' }).status === 0;
 }
 
-async function waitForServiceLoaded(expected, attempts = 50) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (serviceIsLoaded() === expected) return;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-  throw new Error(`The launchd service did not become ${expected ? 'loaded' : 'unloaded'}.`);
+function waitForServiceLoaded(expected, attempts = 50) {
+  return waitFor(() => serviceIsLoaded() === expected, {
+    attempts,
+    intervalMs: 100,
+    timeoutMessage: `The launchd service did not become ${expected ? 'loaded' : 'unloaded'}.`,
+  });
 }
 
 function appProcessIsRunning() {
-  return (
-    spawnSync('/usr/bin/pgrep', ['-f', join(app, 'Contents/MacOS/PimpampumMenuBar')], {
-      encoding: 'utf8',
-    }).status === 0
-  );
+  return spawnSync('/usr/bin/pgrep', ['-f', appBinary], { encoding: 'utf8' }).status === 0;
 }
 
-async function waitForAppProcess(expected, attempts = 50) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (appProcessIsRunning() === expected) return;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-  throw new Error(`The packaged menu app did not become ${expected ? 'running' : 'stopped'}.`);
+function waitForAppProcess(expected, attempts = 50) {
+  return waitFor(() => appProcessIsRunning() === expected, {
+    attempts,
+    intervalMs: 100,
+    timeoutMessage: `The packaged menu app did not become ${expected ? 'running' : 'stopped'}.`,
+  });
 }
 
 function anyPimpampumAppProcessIsRunning() {
@@ -278,28 +281,113 @@ function anyPimpampumAppProcessIsRunning() {
   );
 }
 
+function installationLeftovers() {
+  return [
+    existsSync(app) && 'app bundle',
+    existsSync(launchAgent) && 'LaunchAgent plist',
+    serviceIsLoaded() && 'launchd service',
+    appProcessIsRunning() && 'app process',
+  ].filter(Boolean);
+}
+
 // Uninstall returns once its own commands have completed; launchd and the menu app finish
 // tearing down asynchronously. A shared CI runner can take well over the five seconds this
 // originally allowed, so wait longer and, on failure, name what is actually left.
-async function assertInstallationAbsent(attempts = 300) {
-  let leftovers = [];
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    leftovers = [
-      existsSync(app) && 'app bundle',
-      existsSync(launchAgent) && 'LaunchAgent plist',
-      serviceIsLoaded() && 'launchd service',
-      appProcessIsRunning() && 'app process',
-    ].filter(Boolean);
-    if (leftovers.length === 0) return;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-  throw new Error(`Uninstall left behind after ${attempts / 10}s: ${leftovers.join(', ')}.`);
+function assertInstallationAbsent(attempts = 300) {
+  return waitFor(installationLeftovers, {
+    attempts,
+    intervalMs: 100,
+    until: (leftovers) => leftovers.length === 0,
+    timeoutMessage: (leftovers) =>
+      `Uninstall left behind after ${attempts / 10}s: ${leftovers.join(', ')}.`,
+  });
+}
+
+function openMenuApp() {
+  command('/usr/bin/open', ['-gj', app]);
+  return waitForAppProcess(true);
+}
+
+function stopMenuApp() {
+  command('/usr/bin/pkill', ['-TERM', '-f', appBinary]);
+  return waitForAppProcess(false);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Native UI snapshots
+// ---------------------------------------------------------------------------------------------
+
+function expectedDisplayCount(activeCount) {
+  if (activeCount <= 0) return null;
+  return activeCount >= 100 ? '99+' : String(activeCount);
+}
+
+/** The invariants every snapshot must satisfy, whatever state it renders. */
+function validateSnapshot(label, snapshot, rendered) {
+  const message = `Native UI smoke produced an invalid ${label} rendering`;
+  const compactMarkSha256 = sha256(
+    readFileSync(join(app, 'Contents/Resources/PimpampumCompact.pdf')),
+  );
+  expect(
+    'snapshot-schema',
+    snapshot.schemaVersion === 2,
+    `${message}: schemaVersion must be 2`,
+    snapshot,
+  );
+  expect(
+    'snapshot-png-hash',
+    snapshot.renderedPngSha256 === sha256(rendered),
+    `${message}: renderedPngSha256 must match the PNG on disk`,
+    snapshot,
+  );
+  expect('snapshot-png-size', rendered.length >= 1_000, `${message}: PNG is too small`, snapshot);
+  expect(
+    'snapshot-accessibility-label-listed',
+    snapshot.accessibilityLabels.includes(snapshot.accessibilityLabel),
+    `${message}: accessibilityLabel must be among accessibilityLabels`,
+    snapshot,
+  );
+  expect(
+    'snapshot-mark-resource',
+    snapshot.markResource === 'PimpampumCompact.pdf',
+    `${message}: markResource must be PimpampumCompact.pdf`,
+    snapshot,
+  );
+  expect(
+    'snapshot-mark-hash',
+    snapshot.markResourceSha256 === compactMarkSha256,
+    `${message}: markResourceSha256 must match the bundled mark`,
+    snapshot,
+  );
+  expect(
+    'snapshot-mark-template',
+    snapshot.markIsTemplate === true,
+    `${message}: mark must be a template`,
+    snapshot,
+  );
+  expect(
+    'snapshot-displayed-count',
+    (snapshot.displayedActiveCount ?? null) === expectedDisplayCount(snapshot.activeCount),
+    `${message}: displayedActiveCount must hide zero and cap at 99+`,
+    snapshot,
+  );
+  expect(
+    'snapshot-badge-string',
+    typeof snapshot.statusBadgeSystemImage === 'string',
+    `${message}: statusBadgeSystemImage must be a string`,
+    snapshot,
+  );
+  expect(
+    'snapshot-badge-semantic',
+    !/wifi|icloud|externaldrive|server|database/iu.test(snapshot.statusBadgeSystemImage),
+    `${message}: statusBadgeSystemImage must not be a connectivity or storage glyph`,
+    snapshot,
+  );
 }
 
 function uiSnapshot(label, options = {}) {
   const output = join(temporaryRoot, `${label}.json`);
   const png = join(temporaryRoot, `${label}.png`);
-  const binary = join(app, 'Contents/MacOS/PimpampumMenuBar');
   const arguments_ = ['--ui-smoke-snapshot', output, png];
   if (options.seedOverview) arguments_.push('--seed-overview', options.seedOverview);
   if (options.retainSeed) arguments_.push('--retain-seed');
@@ -307,58 +395,52 @@ function uiSnapshot(label, options = {}) {
   if (options.controlLabel) arguments_.push('--activate-control', options.controlLabel);
   rmSync(output, { force: true });
   rmSync(png, { force: true });
-  command(binary, arguments_, {
+  command(appBinary, arguments_, {
     env: options.dataDirectory
       ? { ...environment, PIMPAMPUM_DATA_DIR: options.dataDirectory }
       : environment,
   });
-  if (!existsSync(output) || !existsSync(png)) {
-    throw new Error(`Native UI smoke did not produce the ${label} snapshot.`);
-  }
-  const snapshot = JSON.parse(readFileSync(output, 'utf8'));
-  const rendered = readFileSync(png);
-  const compactMark = readFileSync(join(app, 'Contents/Resources/PimpampumCompact.pdf'));
-  const compactMarkSha256 = createHash('sha256').update(compactMark).digest('hex');
-  const expectedDisplayCount =
-    snapshot.activeCount <= 0
-      ? null
-      : snapshot.activeCount >= 100
-        ? '99+'
-        : String(snapshot.activeCount);
-  if (
-    snapshot.schemaVersion !== 2 ||
-    snapshot.renderedPngSha256 !== createHash('sha256').update(rendered).digest('hex') ||
-    rendered.length < 1_000 ||
-    !snapshot.accessibilityLabels.includes(snapshot.accessibilityLabel) ||
-    snapshot.markResource !== 'PimpampumCompact.pdf' ||
-    snapshot.markResourceSha256 !== compactMarkSha256 ||
-    snapshot.markIsTemplate !== true ||
-    (snapshot.displayedActiveCount ?? null) !== expectedDisplayCount ||
-    typeof snapshot.statusBadgeSystemImage !== 'string' ||
-    /wifi|icloud|externaldrive|server|database/iu.test(snapshot.statusBadgeSystemImage)
-  ) {
-    throw new Error(
-      `Native UI smoke produced an invalid ${label} rendering: ${JSON.stringify(snapshot)}`,
-    );
-  }
+  expect(
+    'snapshot-json-written',
+    existsSync(output),
+    `Native UI smoke did not produce the ${label} snapshot.`,
+  );
+  expect(
+    'snapshot-png-written',
+    existsSync(png),
+    `Native UI smoke did not produce the ${label} snapshot.`,
+  );
+  const snapshot = readJson(output);
+  validateSnapshot(label, snapshot, readFileSync(png));
   return snapshot;
 }
 
-try {
-  if (
-    existsSync(app) ||
-    existsSync(launchAgent) ||
-    serviceIsLoaded() ||
-    anyPimpampumAppProcessIsRunning()
-  ) {
-    throw new Error('Refusing live smoke because a Pimpampum user installation already exists.');
-  }
+function settingsSnapshot(label) {
+  return uiSnapshot(label, { controlLabel: 'Settings…' });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phases, in the order the evidence records them
+// ---------------------------------------------------------------------------------------------
+
+function refuseExistingInstallation() {
+  const refusal = 'Refusing live smoke because a Pimpampum user installation already exists.';
+  expect('no-user-app', !existsSync(app), refusal);
+  expect('no-user-launch-agent', !existsSync(launchAgent), refusal);
+  expect('no-user-service', !serviceIsLoaded(), refusal);
+  expect('no-user-app-process', !anyPimpampumAppProcessIsRunning(), refusal);
+}
+
+function prepareWorkspace() {
   mkdirSync(dataDirectory, { recursive: true });
   mkdirSync(workspace, { recursive: true });
-  const canonicalWorkspace = realpathSync(workspace);
-  const specBodyPath = join(workspace, 'status-integration-spec.md');
-  writeFileSync(specBodyPath, '# Status integration Spec\n');
+  run.canonicalWorkspace = realpathSync(workspace);
+  run.specBodyPath = join(workspace, 'status-integration-spec.md');
+  writeFileSync(run.specBodyPath, '# Status integration Spec\n');
+}
 
+/** Packs the repository and installs it into an isolated runtime root; switches to its CLI. */
+function prepareRuntime() {
   const runtimeRoot = join(temporaryRoot, 'runtime');
   prepareMacosRuntimePackage({
     prepare() {
@@ -392,82 +474,148 @@ try {
       );
     },
   });
-  const packagedRoot = join(runtimeRoot, 'node_modules/pimpampum');
-  const packagedApp = join(packagedRoot, 'platforms/macos/dist/Pimpampum.app');
-  const embeddedPayload = join(packagedApp, 'Contents/Resources/PimpampumRuntime/payload');
-  const npmCli = join(packagedRoot, 'dist/cli.js');
-  cli = join(embeddedPayload, 'dist/cli.js');
-  controlNode = join(embeddedPayload, 'bin/node');
+  run.packagedRoot = join(runtimeRoot, 'node_modules/pimpampum');
+  run.npmCli = join(run.packagedRoot, 'dist/cli.js');
+  run.stagedApp = stageReleaseApp();
+  run.embeddedPayload = join(run.stagedApp, 'Contents/Resources/PimpampumRuntime/payload');
+  useEmbeddedRuntime();
   environment.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+}
 
-  const cleanVersion = runCli('version');
+/**
+ * Copies the built app out of the repository into the temporary tree, the way a user receives it:
+ * a bundle downloaded beside the checkout, not a directory inside `node_modules`.
+ *
+ * The app and its private runtime left the npm package in v1.2.12 (H-12 of the 2026-09-01 review:
+ * `package.json#files` dropped them and `platforms/macos/dist/.npmignore` is the second guard), so
+ * reading them back out of the installed package cannot work. `ditto` is used rather than a manual
+ * walk because it preserves modes, symlinks and extended attributes, and the embedded `node` is a
+ * signed Mach-O that any rewrite would invalidate.
+ */
+function stageReleaseApp() {
+  const built = join(repositoryRoot, 'platforms/macos/dist/Pimpampum.app');
+  if (!existsSync(built)) {
+    throw new Error(`Build the app first with "npm run build:macos": ${built} is missing.`);
+  }
+  const staged = join(temporaryRoot, 'release/Pimpampum.app');
+  mkdirSync(dirname(staged), { recursive: true });
+  execFileSync('/usr/bin/ditto', [built, staged], { stdio: 'inherit' });
+  return staged;
+}
+
+function useEmbeddedRuntime() {
+  cli = join(run.embeddedPayload, 'dist/cli.js');
+  controlNode = join(run.embeddedPayload, 'bin/node');
+}
+
+async function verifyCleanSetup() {
+  run.cleanVersion = runCli('version');
   const cleanPlan = runCli('setup', 'plan');
   const cleanResult = runCli('setup', 'apply', cleanPlan.operationId, cleanPlan.revision, '--yes');
   installed = true;
-  const cleanJournal = runCli('setup', 'status');
-  let empty = await runCliEventually(['overview']);
+  run.cleanJournal = runCli('setup', 'status');
+  const empty = await runCliEventually(['overview']);
   const status = runCli('status');
-  if (
-    cleanVersion.version !==
-      JSON.parse(readFileSync(join(packagedRoot, 'package.json'), 'utf8')).version ||
-    cleanPlan.selectedConnectors.length !== 0 ||
-    cleanResult.status !== 'complete' ||
-    !status.installed ||
-    !status.running ||
-    empty.status !== 'empty'
-  ) {
-    throw new Error(
-      `Embedded no-Node setup did not report the expected state: ${JSON.stringify({ cleanResult, status, empty })}`,
-    );
-  }
+  const message = 'Embedded no-Node setup did not report the expected state';
+  expect(
+    'clean-version',
+    run.cleanVersion.version === readJson(join(run.packagedRoot, 'package.json')).version,
+    `${message}: CLI version must match the packed package`,
+    run.cleanVersion,
+  );
+  expect(
+    'clean-no-connectors',
+    cleanPlan.selectedConnectors.length === 0,
+    `${message}: a clean plan selects no connectors`,
+    cleanPlan,
+  );
+  expect(
+    'clean-complete',
+    cleanResult.status === 'complete',
+    `${message}: apply must complete`,
+    cleanResult,
+  );
+  expect(
+    'clean-installed',
+    Boolean(status.installed),
+    `${message}: status must report installed`,
+    status,
+  );
+  expect(
+    'clean-running',
+    Boolean(status.running),
+    `${message}: status must report running`,
+    status,
+  );
+  expect(
+    'clean-empty-overview',
+    empty.status === 'empty',
+    `${message}: overview must be empty`,
+    empty,
+  );
   scenarios.cleanNoNode = true;
   scenarios.noAgent = true;
+}
 
+function verifyFirstRunUi() {
   const firstRunDataDirectory = join(temporaryRoot, 'first-run-ui');
   mkdirSync(firstRunDataDirectory, { recursive: true });
-  const setupRequiredUI = uiSnapshot('setup-required', {
-    dataDirectory: firstRunDataDirectory,
-  });
-  if (
-    setupRequiredUI.visualState !== 'Setup required' ||
-    setupRequiredUI.connectionState !== 'setup-required' ||
-    // The first step is the welcome; its primary action proves the popover rendered a usable
-    // onboarding rather than the empty panel this smoke exists to catch.
-    !setupRequiredUI.accessibilityLabels.includes('Get started with guided setup')
-  ) {
-    throw new Error(
-      `Native first-run UI did not render the guided setup: ${JSON.stringify(setupRequiredUI)}`,
-    );
-  }
+  const ui = uiSnapshot('setup-required', { dataDirectory: firstRunDataDirectory });
+  const message = 'Native first-run UI did not render the guided setup';
+  expect('first-run-visual-state', ui.visualState === 'Setup required', message, ui);
+  expect('first-run-connection-state', ui.connectionState === 'setup-required', message, ui);
+  // The first step is the welcome; its primary action proves the popover rendered a usable
+  // onboarding rather than the empty panel this smoke exists to catch.
+  expect(
+    'first-run-primary-action',
+    ui.accessibilityLabels.includes('Get started with guided setup'),
+    message,
+    ui,
+  );
+  run.setupRequiredUI = ui;
   scenarios.guidedSetupPopover = true;
+}
 
+/** Removes the clean setup, installs the legacy npm service, then migrates it in place. */
+async function verifyLegacyMigration() {
   const preservedPaths = [join(dataDirectory, 'token'), join(dataDirectory, 'pimpampum.sqlite')];
   const cleanRemoval = runCli('uninstall');
   installed = false;
   await assertInstallationAbsent();
-  if (!cleanRemoval.uninstalled) throw new Error('Clean setup removal failed before migration.');
+  expect(
+    'clean-removal',
+    Boolean(cleanRemoval.uninstalled),
+    'Clean setup removal failed before migration.',
+  );
 
   controlNode = process.execPath;
-  cli = npmCli;
+  cli = run.npmCli;
   const legacyInstall = runCli('install', '--service-only');
   installed = true;
-  if (!legacyInstall.installed || !runCli('status').running) {
-    throw new Error('Legacy npm service fixture did not become active.');
+  const legacyMessage = 'Legacy npm service fixture did not become active.';
+  expect('legacy-installed', Boolean(legacyInstall.installed), legacyMessage, legacyInstall);
+  expect('legacy-running', Boolean(runCli('status').running), legacyMessage);
+  for (const path of preservedPaths) {
+    expect(
+      'legacy-data-present',
+      existsSync(path),
+      'Legacy fixture did not retain the canonical token and SQLite data.',
+      { path },
+    );
   }
-  if (preservedPaths.some((path) => !existsSync(path))) {
-    throw new Error('Legacy fixture did not retain the canonical token and SQLite data.');
-  }
-  const preservedHashes = Object.fromEntries(preservedPaths.map((path) => [path, sha256(path)]));
-  controlNode = join(embeddedPayload, 'bin/node');
-  cli = join(embeddedPayload, 'dist/cli.js');
+  const preservedHashes = Object.fromEntries(
+    preservedPaths.map((path) => [path, sha256File(path)]),
+  );
+
+  useEmbeddedRuntime();
   const installedRuntimeRoot = join(
     liveHome,
     'Library/Application Support/Pimpampum/Runtime',
-    cleanVersion.version,
+    run.cleanVersion.version,
     'darwin-arm64',
   );
-  const installedRuntimeNode = join(installedRuntimeRoot, 'bin/node');
-  const installedRuntimeCli = join(installedRuntimeRoot, 'dist/cli.js');
+  run.installedRuntimeNode = join(installedRuntimeRoot, 'bin/node');
+  run.installedRuntimeCli = join(installedRuntimeRoot, 'dist/cli.js');
   const migrationPlan = runCli('setup', 'plan');
   const migration = runCli(
     'setup',
@@ -476,93 +624,105 @@ try {
     migrationPlan.revision,
     '--yes',
   );
-  const migratedReceipt = JSON.parse(
-    readFileSync(join(dataDirectory, 'install-receipt.json'), 'utf8'),
-  );
-  if (
-    migration.status !== 'complete' ||
-    migratedReceipt.adapter !== 'launchd-macos-app' ||
-    migratedReceipt.nodePath !== installedRuntimeNode ||
-    migratedReceipt.cliPath !== installedRuntimeCli ||
-    !Object.entries(preservedHashes).every(([path, hash]) => sha256(path) === hash)
-  ) {
-    throw new Error(
-      `Legacy npm migration did not preserve data and activate the native packaged service: ${JSON.stringify(
-        {
-          status: migration.status,
-          adapter: migratedReceipt.adapter,
-          nodePathMatches: migratedReceipt.nodePath === installedRuntimeNode,
-          cliPathMatches: migratedReceipt.cliPath === installedRuntimeCli,
-          preservedData: Object.entries(preservedHashes).every(
-            ([path, hash]) => sha256(path) === hash,
-          ),
-        },
-      )}`,
-    );
+  const migratedReceipt = readJson(join(dataDirectory, 'install-receipt.json'));
+  const message =
+    'Legacy npm migration did not preserve data and activate the native packaged service';
+  expect('migration-complete', migration.status === 'complete', message, {
+    status: migration.status,
+  });
+  expect('migration-adapter', migratedReceipt.adapter === 'launchd-macos-app', message, {
+    adapter: migratedReceipt.adapter,
+  });
+  expect('migration-node-path', migratedReceipt.nodePath === run.installedRuntimeNode, message, {
+    nodePath: migratedReceipt.nodePath,
+    expected: run.installedRuntimeNode,
+  });
+  expect('migration-cli-path', migratedReceipt.cliPath === run.installedRuntimeCli, message, {
+    cliPath: migratedReceipt.cliPath,
+    expected: run.installedRuntimeCli,
+  });
+  for (const [path, hash] of Object.entries(preservedHashes)) {
+    expect('migration-preserved-data', sha256File(path) === hash, message, { path });
   }
   scenarios.legacyNpmMigration = true;
-  empty = await runCliEventually(['overview']);
+  await runCliEventually(['overview']);
+}
 
-  const hostFixtures = installHostFixtures();
+function verifyOneAgent() {
   const oneAgent = applySetupPlan(['codex']);
-  if (
-    oneAgent.result.status !== 'complete' ||
-    oneAgent.result.connectors.length !== 1 ||
-    oneAgent.result.connectors[0]?.available !== true
-  ) {
-    throw new Error(`One-agent setup failed: ${JSON.stringify(oneAgent.result)}`);
-  }
-  // The release budget is download/artifact preflight through the first verified agent. The
-  // remaining fault injection, UI rendering, update and removal cases are exhaustive release
-  // validation, not part of the guided setup time shown to a user.
-  const durationMilliseconds = Date.now() - liveStartedAt;
+  const message = 'One-agent setup failed';
+  expect('one-agent-complete', oneAgent.result.status === 'complete', message, oneAgent.result);
+  expect('one-agent-count', oneAgent.result.connectors.length === 1, message, oneAgent.result);
+  expect(
+    'one-agent-available',
+    oneAgent.result.connectors[0]?.available === true,
+    message,
+    oneAgent.result,
+  );
+  // The release budget is download/artifact preflight through the first verified agent, minus the
+  // exhaustive release validation that `main` happens to run inside that window. The remaining
+  // fault injection, UI rendering, update and removal cases run after this point and are excluded
+  // by ordering; `verifyLegacyMigration` runs before it and is excluded by subtraction.
+  run.durationMilliseconds = Date.now() - liveStartedAt - budgetExcludedMilliseconds;
   scenarios.oneAgent = true;
   runCli('disconnect', 'codex', '--yes');
+  return oneAgent;
+}
 
+function verifyTwoAgents() {
   const twoAgents = applySetupPlan(['codex', 'claude-code']);
-  if (
-    twoAgents.result.status !== 'complete' ||
-    twoAgents.result.connectors.length !== 2 ||
-    !twoAgents.result.connectors.every((connector) => connector.available)
-  ) {
-    throw new Error(`Two-agent setup failed: ${JSON.stringify(twoAgents.result)}`);
-  }
+  const message = 'Two-agent setup failed';
+  expect('two-agents-complete', twoAgents.result.status === 'complete', message, twoAgents.result);
+  expect('two-agents-count', twoAgents.result.connectors.length === 2, message, twoAgents.result);
+  expect(
+    'two-agents-available',
+    twoAgents.result.connectors.every((connector) => connector.available),
+    message,
+    twoAgents.result,
+  );
   scenarios.twoAgents = true;
   runCli('disconnect', 'codex', '--yes');
   runCli('disconnect', 'claude-code', '--yes');
   scenarios.disconnect = runCli('connections').every(
     (connection) => connection.state === 'notConnected',
   );
+}
 
+function verifyPartialFailure(hostFixtures) {
   writeFileSync(join(hostFixtures.state, 'claude-fail'), '1\n', { mode: 0o600 });
   const partial = applySetupPlan(['codex', 'claude-code']);
-  if (
-    partial.result.status !== 'partial' ||
-    partial.result.connectors.filter((connector) => connector.available).length !== 1 ||
-    partial.result.connectors.filter((connector) => connector.state === 'needsRepair').length !== 1
-  ) {
-    throw new Error(
-      `Partial connector failure was not isolated: ${JSON.stringify(partial.result)}`,
-    );
-  }
+  const message = 'Partial connector failure was not isolated';
+  expect('partial-status', partial.result.status === 'partial', message, partial.result);
+  expect(
+    'partial-one-available',
+    partial.result.connectors.filter((connector) => connector.available).length === 1,
+    message,
+    partial.result,
+  );
+  expect(
+    'partial-one-needs-repair',
+    partial.result.connectors.filter((connector) => connector.state === 'needsRepair').length === 1,
+    message,
+    partial.result,
+  );
   scenarios.partialFailure = true;
+}
 
+async function verifyPopoverRestartResume() {
   const beforeRestart = runCli('setup', 'status');
-  command('/usr/bin/open', ['-gj', app]);
-  await waitForAppProcess(true);
-  command('/usr/bin/pkill', ['-TERM', '-f', join(app, 'Contents/MacOS/PimpampumMenuBar')]);
-  await waitForAppProcess(false);
-  command('/usr/bin/open', ['-gj', app]);
-  await waitForAppProcess(true);
+  await openMenuApp();
+  await stopMenuApp();
+  await openMenuApp();
   const resumedAfterRestart = runCli('setup', 'resume');
   const afterRestart = runCli('setup', 'status');
   scenarios.popoverRestartResume =
     beforeRestart.operationId === afterRestart.operationId &&
     beforeRestart.status === afterRestart.status &&
     resumedAfterRestart.status === afterRestart.status;
-  command('/usr/bin/pkill', ['-TERM', '-f', join(app, 'Contents/MacOS/PimpampumMenuBar')]);
-  await waitForAppProcess(false);
+  await stopMenuApp();
+}
 
+function verifyConflictDecision(hostFixtures) {
   rmSync(join(hostFixtures.state, 'claude-fail'));
   runCli('disconnect', 'codex', '--yes');
   writeFileSync(join(hostFixtures.state, 'codex'), '/usr/bin/false', { mode: 0o600 });
@@ -574,9 +734,12 @@ try {
     conflictPlan.revision,
     '--yes',
   );
-  if (conflict.status !== 'conflict') {
-    throw new Error(`Connector conflict mutated without a decision: ${JSON.stringify(conflict)}`);
-  }
+  expect(
+    'conflict-detected',
+    conflict.status === 'conflict',
+    'Connector conflict mutated without a decision',
+    conflict,
+  );
   const replaced = runCli(
     'setup',
     'apply',
@@ -586,12 +749,22 @@ try {
     '--replace',
     'codex',
   );
-  if (replaced.status !== 'complete' || replaced.connectors[0]?.available !== true) {
-    throw new Error(`Reviewed connector replacement failed: ${JSON.stringify(replaced)}`);
-  }
+  const message = 'Reviewed connector replacement failed';
+  expect('replacement-complete', replaced.status === 'complete', message, replaced);
+  expect('replacement-available', replaced.connectors[0]?.available === true, message, replaced);
   scenarios.conflictDecision = true;
+  return replaced;
+}
+
+async function verifyConnectorLifecycle() {
+  const hostFixtures = installHostFixtures();
+  const oneAgent = verifyOneAgent();
+  verifyTwoAgents();
+  verifyPartialFailure(hostFixtures);
+  await verifyPopoverRestartResume();
+  const replaced = verifyConflictDecision(hostFixtures);
   const sessionConnections = runCli('connections');
-  const sessionRestart = {
+  run.sessionRestart = {
     required: [replaced, oneAgent.result].some((result) =>
       result.connectors.some((connector) => connector.newSessionRequired),
     ),
@@ -600,161 +773,220 @@ try {
     ),
     connectors: ['codex'],
   };
-  const emptyUI = uiSnapshot('empty');
-  if (
-    emptyUI.visualState !== 'No projects' ||
-    emptyUI.connectionState !== 'online' ||
-    emptyUI.projectRows.length !== 0
-  ) {
-    throw new Error('Native UI did not render the expected empty state.');
-  }
-  const settingsDisabledUI = uiSnapshot('settings-disabled', {
-    controlLabel: 'Settings…',
-  });
-  if (
-    settingsDisabledUI.activatedControlLabel !== 'Settings…' ||
-    settingsDisabledUI.settingsWindowReused !== true ||
-    settingsDisabledUI.settingsWindowCount !== 1 ||
-    settingsDisabledUI.settingsWindowWidth !== 520 ||
-    settingsDisabledUI.settingsWindowHeight !== 400 ||
-    settingsDisabledUI.settingsWindowFocused !== true ||
-    settingsDisabledUI.settingsBackupState !== 'disabled' ||
-    (settingsDisabledUI.settingsConfiguredPath ?? null) !== null ||
-    settingsDisabledUI.settingsErrorPresent !== false
-  ) {
-    throw new Error(
-      `Native Settings did not open, focus, and reuse its disabled window: ${JSON.stringify(settingsDisabledUI)}`,
-    );
-  }
+}
 
+function verifyEmptyAndSettingsUi() {
+  const emptyUI = uiSnapshot('empty');
+  const emptyMessage = 'Native UI did not render the expected empty state.';
+  expect('empty-visual-state', emptyUI.visualState === 'No projects', emptyMessage, emptyUI);
+  expect('empty-connection-state', emptyUI.connectionState === 'online', emptyMessage, emptyUI);
+  expect('empty-no-rows', emptyUI.projectRows.length === 0, emptyMessage, emptyUI);
+  run.emptyUI = emptyUI;
+
+  const ui = settingsSnapshot('settings-disabled');
+  const message = 'Native Settings did not open, focus, and reuse its disabled window';
+  expect('settings-activated', ui.activatedControlLabel === 'Settings…', message, ui);
+  expect('settings-window-reused', ui.settingsWindowReused === true, message, ui);
+  expect('settings-window-count', ui.settingsWindowCount === 1, message, ui);
+  expect('settings-window-width', ui.settingsWindowWidth === 520, message, ui);
+  expect('settings-window-height', ui.settingsWindowHeight === 400, message, ui);
+  expect('settings-window-focused', ui.settingsWindowFocused === true, message, ui);
+  expect('settings-backup-disabled', ui.settingsBackupState === 'disabled', message, ui);
+  expect('settings-no-path', (ui.settingsConfiguredPath ?? null) === null, message, ui);
+  expect('settings-no-error', ui.settingsErrorPresent === false, message, ui);
+  run.settingsDisabledUI = ui;
+}
+
+function seedPortfolio() {
   runCli('workspace:add', 'live-smoke', 'Live Smoke', workspace);
-  const project = runCli(
-    'project:create',
-    'live-smoke',
-    'status-integration',
-    'Status integration',
-  );
-  const spec = runCli(
+  run.project = runCli('project:create', 'live-smoke', 'status-integration', 'Status integration');
+  run.spec = runCli(
     'spec:create',
-    project.id,
+    run.project.id,
     'status-integration-spec',
     'Status integration Spec',
-    specBodyPath,
+    run.specBodyPath,
   );
-  const readySpec = runCli('spec:ready', spec.id, String(spec.revision));
-  const openProject = runCli('project:open', project.id, String(project.revision));
-  const claim = runCli('work:start', 'spec', spec.id, 'macos-live-smoke');
-  const active = runCli('overview');
-  if (active.status !== 'active' || active.counts.activeClaims !== 1) {
-    throw new Error('Live overview did not expose the active claim.');
-  }
-  const cappedOverviewPath = join(temporaryRoot, 'capped-overview.json');
-  const cappedOverview = structuredClone(active);
+  run.readySpec = runCli('spec:ready', run.spec.id, String(run.spec.revision));
+  run.openProject = runCli('project:open', run.project.id, String(run.project.revision));
+  run.claim = runCli('work:start', 'spec', run.spec.id, 'macos-live-smoke');
+  run.active = runCli('overview');
+  const message = 'Live overview did not expose the active claim.';
+  expect('overview-active', run.active.status === 'active', message, run.active);
+  expect('overview-one-claim', run.active.counts.activeClaims === 1, message, run.active.counts);
+}
+
+function verifyCappedCount() {
+  const cappedOverview = structuredClone(run.active);
   cappedOverview.counts.activeClaims = 100;
-  cappedOverview.projects.find((row) => row.id === project.id).activeClaimCount = 100;
-  writeFileSync(cappedOverviewPath, `${JSON.stringify(cappedOverview)}\n`, { mode: 0o600 });
-  const cappedUI = uiSnapshot('capped-count', {
-    seedOverview: cappedOverviewPath,
+  cappedOverview.projects.find((row) => row.id === run.project.id).activeClaimCount = 100;
+  const ui = uiSnapshot('capped-count', {
+    seedOverview: writeSeed(join(temporaryRoot, 'capped-overview.json'), cappedOverview),
     retainSeed: true,
   });
-  if (
-    cappedUI.activeCount !== 100 ||
-    cappedUI.displayedActiveCount !== '99+' ||
-    cappedUI.accessibilityLabel !== 'pim • pam • pum: Active, 100 active claims'
-  ) {
-    throw new Error(`Native UI did not cap the visible count only: ${JSON.stringify(cappedUI)}`);
-  }
+  const message = 'Native UI did not cap the visible count only';
+  expect('capped-active-count', ui.activeCount === 100, message, ui);
+  expect('capped-displayed-count', ui.displayedActiveCount === '99+', message, ui);
+  expect(
+    'capped-accessible-count',
+    ui.accessibilityLabel === 'pim • pam • pum: Active, 100 active claims',
+    message,
+    ui,
+  );
+  run.cappedUI = ui;
+}
 
-  const longOverviewPath = join(temporaryRoot, 'long-overview.json');
-  const longOverview = structuredClone(active);
-  const longProject = longOverview.projects.find((row) => row.id === project.id);
+function verifyLongContent() {
+  const longOverview = structuredClone(run.active);
+  const longProject = longOverview.projects.find((row) => row.id === run.project.id);
   longProject.title =
     'A deliberately long multilingual project title for deterministic truncation — ' +
     'pimpampum agent coordination 상태 검증 '.repeat(6);
   longProject.slug = 'long-project-slug-for-end-elision-'.repeat(5);
   longProject.workspace.name = 'An exceptionally long workspace name '.repeat(5);
   longOverview.activeWork[0].projectTitle = longProject.title;
-  writeFileSync(longOverviewPath, `${JSON.stringify(longOverview)}\n`, { mode: 0o600 });
-  const longContentUI = uiSnapshot('long-content', {
-    seedOverview: longOverviewPath,
+  const ui = uiSnapshot('long-content', {
+    seedOverview: writeSeed(join(temporaryRoot, 'long-overview.json'), longOverview),
     retainSeed: true,
   });
-  if (
-    longContentUI.visualState !== 'Active' ||
-    longContentUI.projectRows.find((row) => row.id === project.id)?.title !== longProject.title
-  ) {
-    throw new Error('Native UI did not preserve the long-content rendering fixture.');
-  }
+  const message = 'Native UI did not preserve the long-content rendering fixture.';
+  expect('long-content-visual-state', ui.visualState === 'Active', message, ui);
+  expect(
+    'long-content-title',
+    ui.projectRows.find((row) => row.id === run.project.id)?.title === longProject.title,
+    message,
+    ui,
+  );
+  run.longContentUI = ui;
+}
 
-  const quitUI = uiSnapshot('quit-boundary', { controlLabel: 'Quit' });
-  if (
-    quitUI.activatedControlLabel !== 'Quit' ||
-    quitUI.quitActionInvoked !== true ||
-    !runCli('status').running
-  ) {
-    throw new Error('The app Quit boundary did not leave the daemon running.');
-  }
-  const activeUI = uiSnapshot('active', { openProject: project.id });
-  if (
-    activeUI.visualState !== 'Active' ||
-    activeUI.activeCount !== 1 ||
-    activeUI.specRows.find((row) => row.id === spec.id)?.title !== 'Status integration Spec' ||
-    activeUI.specRows.find((row) => row.id === spec.id)?.activeClaimCount !== 1 ||
-    activeUI.projectRows.find((row) => row.id === project.id)?.workspacePath !==
-      canonicalWorkspace ||
-    activeUI.activatedControlLabel !== 'Open Status integration in Finder' ||
-    activeUI.openedWorkspacePath !== canonicalWorkspace
-  ) {
-    throw new Error(
-      `Native UI did not render and activate the expected project row: ${JSON.stringify(activeUI)}`,
-    );
-  }
+function verifyQuitBoundary() {
+  const ui = uiSnapshot('quit-boundary', { controlLabel: 'Quit' });
+  const message = 'The app Quit boundary did not leave the daemon running.';
+  expect('quit-activated', ui.activatedControlLabel === 'Quit', message, ui);
+  expect('quit-invoked', ui.quitActionInvoked === true, message, ui);
+  expect('quit-daemon-running', Boolean(runCli('status').running), message);
+  run.quitUI = ui;
+}
+
+function verifyActiveRow() {
+  const ui = uiSnapshot('active', { openProject: run.project.id });
+  const message = 'Native UI did not render and activate the expected project row';
+  const specRow = ui.specRows.find((row) => row.id === run.spec.id);
+  const projectRow = ui.projectRows.find((row) => row.id === run.project.id);
+  expect('active-visual-state', ui.visualState === 'Active', message, ui);
+  expect('active-count', ui.activeCount === 1, message, ui);
+  expect('active-spec-title', specRow?.title === 'Status integration Spec', message, ui);
+  expect('active-spec-claims', specRow?.activeClaimCount === 1, message, ui);
+  expect(
+    'active-workspace-path',
+    projectRow?.workspacePath === run.canonicalWorkspace,
+    message,
+    ui,
+  );
+  expect(
+    'active-row-activation',
+    ui.activatedControlLabel === 'Open Status integration in Finder',
+    message,
+    ui,
+  );
+  expect('active-opened-workspace', ui.openedWorkspacePath === run.canonicalWorkspace, message, ui);
+  run.activeUI = ui;
+}
+
+function verifyRenderingFixtures() {
+  verifyCappedCount();
+  verifyLongContent();
+  verifyQuitBoundary();
+  verifyActiveRow();
+}
+
+function completePortfolio() {
   runCli(
     'work:complete',
     'spec',
-    spec.id,
+    run.spec.id,
     'macos-live-smoke',
-    String(claim.spec?.revision ?? readySpec.revision),
+    String(run.claim.spec?.revision ?? run.readySpec.revision),
     'macOS live smoke Spec complete',
   );
   runCli(
     'project:complete',
-    project.id,
-    String(openProject.revision),
+    run.project.id,
+    String(run.openProject.revision),
     'macOS live smoke project complete',
   );
-  const complete = runCli('overview');
-  if (complete.status !== 'complete') throw new Error('Live overview did not become complete.');
-  const completeUI = uiSnapshot('complete');
-  if (
-    completeUI.visualState !== 'All complete' ||
-    completeUI.activeCount !== 0 ||
-    completeUI.completedCollapsed !== true ||
-    completeUI.specRows.find((row) => row.id === spec.id)?.lifecycleState !== 'done' ||
-    completeUI.projectRows.find((row) => row.id === project.id)?.status !== 'complete'
-  ) {
-    throw new Error('Native UI did not render the expected completed state.');
-  }
+  run.complete = runCli('overview');
+  expect(
+    'overview-complete',
+    run.complete.status === 'complete',
+    'Live overview did not become complete.',
+    run.complete,
+  );
+  const ui = uiSnapshot('complete');
+  const message = 'Native UI did not render the expected completed state.';
+  expect('complete-visual-state', ui.visualState === 'All complete', message, ui);
+  expect('complete-count', ui.activeCount === 0, message, ui);
+  expect('complete-collapsed', ui.completedCollapsed === true, message, ui);
+  expect(
+    'complete-spec-done',
+    ui.specRows.find((row) => row.id === run.spec.id)?.lifecycleState === 'done',
+    message,
+    ui,
+  );
+  expect(
+    'complete-project-status',
+    ui.projectRows.find((row) => row.id === run.project.id)?.status === 'complete',
+    message,
+    ui,
+  );
+  run.completeUI = ui;
+}
 
+async function verifyBackupSettings() {
   const backupDirectory = join(temporaryRoot, 'automatic-backup');
   mkdirSync(backupDirectory);
   const configuredBackup = runCli('backup', 'configure', backupDirectory);
-  if (configuredBackup.state !== 'healthy' || configuredBackup.directory !== backupDirectory) {
-    throw new Error('Automatic backup did not become healthy in the isolated destination.');
-  }
-  const settingsHealthyUI = uiSnapshot('settings-healthy', {
-    controlLabel: 'Settings…',
-  });
-  if (
-    settingsHealthyUI.settingsWindowReused !== true ||
-    settingsHealthyUI.settingsBackupState !== 'healthy' ||
-    settingsHealthyUI.settingsConfiguredPath !== backupDirectory ||
-    settingsHealthyUI.settingsErrorPresent !== false
-  ) {
-    throw new Error(
-      `Native Settings did not render the healthy backup: ${JSON.stringify(settingsHealthyUI)}`,
-    );
-  }
+  const configuredMessage = 'Automatic backup did not become healthy in the isolated destination.';
+  expect(
+    'backup-healthy',
+    configuredBackup.state === 'healthy',
+    configuredMessage,
+    configuredBackup,
+  );
+  expect(
+    'backup-directory',
+    configuredBackup.directory === backupDirectory,
+    configuredMessage,
+    configuredBackup,
+  );
+  const healthyUI = settingsSnapshot('settings-healthy');
+  const healthyMessage = 'Native Settings did not render the healthy backup';
+  expect(
+    'settings-healthy-reused',
+    healthyUI.settingsWindowReused === true,
+    healthyMessage,
+    healthyUI,
+  );
+  expect(
+    'settings-healthy-state',
+    healthyUI.settingsBackupState === 'healthy',
+    healthyMessage,
+    healthyUI,
+  );
+  expect(
+    'settings-healthy-path',
+    healthyUI.settingsConfiguredPath === backupDirectory,
+    healthyMessage,
+    healthyUI,
+  );
+  expect(
+    'settings-healthy-no-error',
+    healthyUI.settingsErrorPresent === false,
+    healthyMessage,
+    healthyUI,
+  );
+  run.settingsHealthyUI = healthyUI;
 
   rmSync(backupDirectory, { recursive: true });
   writeFileSync(backupDirectory, 'blocked by the reversible live smoke\n', { mode: 0o600 });
@@ -763,101 +995,163 @@ try {
     env: environment,
     encoding: 'utf8',
   });
-  if (failedRetryCommand.status === 0) {
-    throw new Error('Automatic backup unexpectedly succeeded against a file destination.');
-  }
+  // A retry that ends in `state: 'error'` is a successful report of a failed backup, so the CLI
+  // exits zero and puts the reason in the payload; see the comment on `backup retry` in
+  // src/cliHandlers/backup.ts. Up to v1.2.11 it threw `internal_error` instead, which flattened
+  // the reason into an exit code. Asserting the payload is the stronger check either way.
+  expect(
+    'backup-retry-reports',
+    failedRetryCommand.status === 0,
+    'A failed backup must be reported in the payload, not flattened into an exit code.',
+    { status: failedRetryCommand.status, stderr: failedRetryCommand.stderr },
+  );
+  const retryReport = unwrapCliEnvelope(
+    parseJsonObject(failedRetryCommand.stdout, 'backup retry'),
+    'backup retry',
+  );
+  expect(
+    'backup-retry-refused',
+    retryReport.state === 'error' &&
+      typeof retryReport.error === 'string' &&
+      retryReport.error.length > 0,
+    'Automatic backup unexpectedly succeeded against a file destination.',
+    retryReport,
+  );
   const failedBackup = await waitForBackupState('error');
-  if (typeof failedBackup.error !== 'string' || failedBackup.error.length === 0) {
-    throw new Error('The isolated backup failure did not expose an actionable error.');
-  }
-  const settingsErrorUI = uiSnapshot('settings-error', {
-    controlLabel: 'Settings…',
-  });
-  if (
-    settingsErrorUI.settingsBackupState !== 'error' ||
-    settingsErrorUI.settingsConfiguredPath !== backupDirectory ||
-    settingsErrorUI.settingsErrorPresent !== true
-  ) {
-    throw new Error(
-      `Native Settings did not render the backup error: ${JSON.stringify(settingsErrorUI)}`,
-    );
-  }
+  expect(
+    'backup-error-actionable',
+    typeof failedBackup.error === 'string' && failedBackup.error.length > 0,
+    'The isolated backup failure did not expose an actionable error.',
+    failedBackup,
+  );
+  const errorUI = settingsSnapshot('settings-error');
+  const errorMessage = 'Native Settings did not render the backup error';
+  expect('settings-error-state', errorUI.settingsBackupState === 'error', errorMessage, errorUI);
+  expect(
+    'settings-error-path',
+    errorUI.settingsConfiguredPath === backupDirectory,
+    errorMessage,
+    errorUI,
+  );
+  expect('settings-error-present', errorUI.settingsErrorPresent === true, errorMessage, errorUI);
+  run.settingsErrorUI = errorUI;
 
   rmSync(backupDirectory);
   mkdirSync(backupDirectory);
   const retriedBackup = runCli('backup', 'retry');
-  if (retriedBackup.state !== 'healthy') {
-    throw new Error('Automatic backup retry did not recover after restoring the destination.');
-  }
+  expect(
+    'backup-retry-recovered',
+    retriedBackup.state === 'healthy',
+    'Automatic backup retry did not recover after restoring the destination.',
+    retriedBackup,
+  );
   const disabledBackup = runCli('backup', 'disable');
-  if (disabledBackup.state !== 'disabled') {
-    throw new Error('Automatic backup did not disable after the Settings state exercise.');
-  }
-  const seedOverview = join(temporaryRoot, 'complete-overview.json');
-  writeFileSync(seedOverview, `${JSON.stringify(complete)}\n`, { mode: 0o600 });
-  command('/usr/bin/open', ['-gj', app]);
-  await waitForAppProcess(true);
+  expect(
+    'backup-disabled',
+    disabledBackup.state === 'disabled',
+    'Automatic backup did not disable after the Settings state exercise.',
+    disabledBackup,
+  );
+}
+
+async function verifyBackgroundOnlyApp() {
+  run.seedOverview = writeSeed(join(temporaryRoot, 'complete-overview.json'), run.complete);
+  await openMenuApp();
   const backgroundOnly = command('/usr/bin/osascript', [
     '-e',
     'tell application "System Events" to get background only of first process whose bundle identifier is "dev.pimpampum.menubar"',
   ]);
-  if (backgroundOnly !== 'true') throw new Error('The menu app appeared as a Dock application.');
-  const stoppedMenuApp = spawnSync(
-    '/usr/bin/pkill',
-    ['-TERM', '-f', join(app, 'Contents/MacOS/PimpampumMenuBar')],
-    { encoding: 'utf8' },
+  expect(
+    'no-dock-icon',
+    backgroundOnly === 'true',
+    'The menu app appeared as a Dock application.',
+    {
+      backgroundOnly,
+    },
   );
-  if (stoppedMenuApp.status !== 0) {
-    throw new Error(`Unable to stop the live-smoke menu app: ${stoppedMenuApp.stderr}`);
-  }
+  const stoppedMenuApp = spawnSync('/usr/bin/pkill', ['-TERM', '-f', appBinary], {
+    encoding: 'utf8',
+  });
+  expect(
+    'menu-app-stopped',
+    stoppedMenuApp.status === 0,
+    `Unable to stop the live-smoke menu app: ${stoppedMenuApp.stderr}`,
+  );
   await waitForAppProcess(false);
+}
 
+async function verifyOfflineAndRecovery() {
   command('/bin/launchctl', ['bootout', `gui/${process.getuid()}`, launchAgent]);
   await waitForServiceLoaded(false);
   const offline = spawnSync(controlNode, [cli, 'overview'], {
     env: environment,
     encoding: 'utf8',
   });
-  if (offline.status === 0) throw new Error('Overview stayed online after daemon bootout.');
+  expect('overview-offline', offline.status !== 0, 'Overview stayed online after daemon bootout.');
   const offlineUI = uiSnapshot('offline');
-  if (
-    offlineUI.visualState !== 'Offline' ||
-    offlineUI.connectionState !== 'offline' ||
-    offlineUI.stale !== false ||
-    offlineUI.projectRows.length !== 0
-  ) {
-    throw new Error('Native UI did not render the expected offline-without-cache state.');
-  }
-  const staleUI = uiSnapshot('stale', { seedOverview });
-  if (
-    staleUI.visualState !== 'Offline — stale data' ||
-    staleUI.connectionState !== 'offline' ||
-    staleUI.stale !== true ||
-    staleUI.projectRows.find((row) => row.id === project.id)?.status !== 'complete'
-  ) {
-    throw new Error('Native UI did not retain and label stale project data.');
-  }
+  const offlineMessage = 'Native UI did not render the expected offline-without-cache state.';
+  expect('offline-visual-state', offlineUI.visualState === 'Offline', offlineMessage, offlineUI);
+  expect(
+    'offline-connection-state',
+    offlineUI.connectionState === 'offline',
+    offlineMessage,
+    offlineUI,
+  );
+  expect('offline-not-stale', offlineUI.stale === false, offlineMessage, offlineUI);
+  expect('offline-no-rows', offlineUI.projectRows.length === 0, offlineMessage, offlineUI);
+  run.offlineUI = offlineUI;
+
+  const staleUI = uiSnapshot('stale', { seedOverview: run.seedOverview });
+  const staleMessage = 'Native UI did not retain and label stale project data.';
+  expect(
+    'stale-visual-state',
+    staleUI.visualState === 'Offline — stale data',
+    staleMessage,
+    staleUI,
+  );
+  expect('stale-connection-state', staleUI.connectionState === 'offline', staleMessage, staleUI);
+  expect('stale-flag', staleUI.stale === true, staleMessage, staleUI);
+  expect(
+    'stale-project-retained',
+    staleUI.projectRows.find((row) => row.id === run.project.id)?.status === 'complete',
+    staleMessage,
+    staleUI,
+  );
+  run.staleUI = staleUI;
+
   const recovered = runCli('install');
   await runCliEventually(['overview']);
-  if (!runCli('status').running) throw new Error('Repeat install did not recover the daemon.');
-  const recoveredReceipt = JSON.parse(
-    readFileSync(join(dataDirectory, 'install-receipt.json'), 'utf8'),
+  expect(
+    'repeat-install-running',
+    Boolean(runCli('status').running),
+    'Repeat install did not recover the daemon.',
   );
+  const recoveredReceipt = readJson(join(dataDirectory, 'install-receipt.json'));
   scenarios.packagedUpdate =
     recovered.reconciled === true &&
     recoveredReceipt.updateProvider === 'packaged-release' &&
     recoveredReceipt.adapter === 'launchd-macos-app' &&
-    recoveredReceipt.nodePath === installedRuntimeNode &&
-    recoveredReceipt.cliPath === installedRuntimeCli;
+    recoveredReceipt.nodePath === run.installedRuntimeNode &&
+    recoveredReceipt.cliPath === run.installedRuntimeCli;
   const recoveredUI = uiSnapshot('recovered');
-  if (
-    recoveredUI.visualState !== 'All complete' ||
-    recoveredUI.connectionState !== 'online' ||
-    recoveredUI.stale !== false
-  ) {
-    throw new Error('Native UI did not recover from stale to online.');
-  }
+  const recoveredMessage = 'Native UI did not recover from stale to online.';
+  expect(
+    'recovered-visual-state',
+    recoveredUI.visualState === 'All complete',
+    recoveredMessage,
+    recoveredUI,
+  );
+  expect(
+    'recovered-connection-state',
+    recoveredUI.connectionState === 'online',
+    recoveredMessage,
+    recoveredUI,
+  );
+  expect('recovered-not-stale', recoveredUI.stale === false, recoveredMessage, recoveredUI);
+  run.recoveredUI = recoveredUI;
+}
 
+function verifyAuthenticationError() {
   const authenticationDataDirectory = join(temporaryRoot, 'authentication-data');
   mkdirSync(authenticationDataDirectory);
   copyFileSync(
@@ -867,60 +1161,91 @@ try {
   writeFileSync(join(authenticationDataDirectory, 'token'), `${'a'.repeat(64)}\n`, {
     mode: 0o600,
   });
-  const authenticationUI = uiSnapshot('authentication-error', {
-    dataDirectory: authenticationDataDirectory,
-  });
-  if (
-    authenticationUI.visualState !== 'Authentication error' ||
-    authenticationUI.connectionState !== 'credentials' ||
-    authenticationUI.projectRows.length !== 0
-  ) {
-    throw new Error('Native UI did not render rejected local credentials safely.');
-  }
+  const ui = uiSnapshot('authentication-error', { dataDirectory: authenticationDataDirectory });
+  const message = 'Native UI did not render rejected local credentials safely.';
+  expect('authentication-visual-state', ui.visualState === 'Authentication error', message, ui);
+  expect('authentication-connection-state', ui.connectionState === 'credentials', message, ui);
+  expect('authentication-no-rows', ui.projectRows.length === 0, message, ui);
+  run.authenticationUI = ui;
+}
 
+async function verifyRemoval() {
+  const removal = runCli('uninstall');
+  expect(
+    'uninstall-complete',
+    removal.uninstalled === true,
+    'Uninstall did not acknowledge complete removal',
+    removal,
+  );
+  installed = false;
+  await assertInstallationAbsent();
+  scenarios.removal = true;
+}
+
+function assertRunComplete() {
+  const missingScenarios = Object.entries(scenarios)
+    .filter(([, passed]) => !passed)
+    .map(([name]) => name);
+  expect(
+    'all-scenarios-observed',
+    missingScenarios.length === 0,
+    `macOS live setup missed required scenarios: ${missingScenarios.join(', ')}.`,
+  );
+  const sessionMessage = 'A new agent session was not both required and observed after connection';
+  expect(
+    'session-restart-required',
+    run.sessionRestart.required,
+    sessionMessage,
+    run.sessionRestart,
+  );
+  expect(
+    'session-restart-observed',
+    run.sessionRestart.observedAfterNewSession,
+    sessionMessage,
+    run.sessionRestart,
+  );
+  expect(
+    'guided-setup-budget',
+    run.durationMilliseconds < GUIDED_SETUP_BUDGET_MILLISECONDS,
+    `macOS live setup exceeded two minutes: ${run.durationMilliseconds}ms.`,
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Evidence
+// ---------------------------------------------------------------------------------------------
+
+/** Reads the release artifact before removal; its hashes bind the evidence to the tested build. */
+function readReleaseArtifact() {
   const releaseApp = join(repositoryRoot, 'platforms/macos/dist/Pimpampum.app');
   const artifactMetadataPath = join(
     repositoryRoot,
     'platforms/macos/dist/PimpampumMenuBar.artifact.json',
   );
-  const artifactMetadata = JSON.parse(readFileSync(artifactMetadataPath, 'utf8'));
   const releaseRuntime = join(releaseApp, 'Contents/Resources/PimpampumRuntime');
-  const releasePayload = join(releaseRuntime, 'payload');
-  const removal = runCli('uninstall');
-  if (removal.uninstalled !== true) {
-    throw new Error(`Uninstall did not acknowledge complete removal: ${JSON.stringify(removal)}`);
-  }
-  installed = false;
-  await assertInstallationAbsent();
-  scenarios.removal = true;
+  run.release = {
+    releaseApp,
+    artifactMetadataPath,
+    artifactMetadata: readJson(artifactMetadataPath),
+    releaseRuntime,
+    releasePayload: join(releaseRuntime, 'payload'),
+  };
+}
 
-  const missingScenarios = Object.entries(scenarios)
-    .filter(([, passed]) => !passed)
-    .map(([name]) => name);
-  if (missingScenarios.length > 0) {
-    throw new Error(`macOS live setup missed required scenarios: ${missingScenarios.join(', ')}.`);
-  }
-  if (!sessionRestart.required || !sessionRestart.observedAfterNewSession) {
-    throw new Error(
-      `A new agent session was not both required and observed after connection: ${JSON.stringify(sessionRestart)}`,
-    );
-  }
-
-  if (durationMilliseconds >= 120_000) {
-    throw new Error(`macOS live setup exceeded two minutes: ${durationMilliseconds}ms.`);
-  }
-
-  const evidence = {
+function buildEvidence() {
+  const { releaseApp, artifactMetadataPath, artifactMetadata, releaseRuntime, releasePayload } =
+    run.release;
+  return {
     schemaVersion: 3,
     status: 'passed',
     testedAt: new Date().toISOString(),
-    durationMilliseconds,
+    durationMilliseconds: run.durationMilliseconds,
     platform: 'macOS',
     architecture: 'arm64',
     gitCommit: artifactMetadata.sourceGitCommit,
     sourceInputSha256: artifactMetadata.sourceInputSha256,
     releaseSequence: ['sign-nested-runtime', 'sign-outer-app', 'notarize', 'staple', 'approve'],
-    loginItem: cleanJournal.loginItem,
+    loginItem: run.cleanJournal.loginItem,
     versions: {
       pimpampum: artifactMetadata.appVersion,
       node: command(controlNode, ['--version']),
@@ -929,20 +1254,20 @@ try {
       claudeCode: command(join(liveHome, '.local/bin/claude'), ['--version']),
     },
     artifactHashes: {
-      artifactMetadataSha256: sha256(artifactMetadataPath),
-      appBundleSha256: treeSha256(releaseApp),
-      appBinarySha256: sha256(join(releaseApp, 'Contents/MacOS/PimpampumMenuBar')),
-      compactMarkSha256: sha256(join(releaseApp, 'Contents/Resources/PimpampumCompact.pdf')),
-      runtimeManifestSha256: sha256(join(releaseRuntime, 'runtime-manifest.json')),
-      runtimeInventorySha256: sha256(join(releaseRuntime, 'runtime-inventory.json')),
-      runtimeSbomSha256: sha256(join(releaseRuntime, 'runtime-sbom.spdx.json')),
-      runtimeNodeSha256: sha256(join(releasePayload, 'bin/node')),
-      runtimeAddonSha256: sha256(
+      artifactMetadataSha256: sha256File(artifactMetadataPath),
+      appBundleSha256: appTreeSha256(releaseApp),
+      appBinarySha256: sha256File(join(releaseApp, 'Contents/MacOS/PimpampumMenuBar')),
+      compactMarkSha256: sha256File(join(releaseApp, 'Contents/Resources/PimpampumCompact.pdf')),
+      runtimeManifestSha256: sha256File(join(releaseRuntime, 'runtime-manifest.json')),
+      runtimeInventorySha256: sha256File(join(releaseRuntime, 'runtime-inventory.json')),
+      runtimeSbomSha256: sha256File(join(releaseRuntime, 'runtime-sbom.spdx.json')),
+      runtimeNodeSha256: sha256File(join(releasePayload, 'bin/node')),
+      runtimeAddonSha256: sha256File(
         join(releasePayload, 'node_modules/better-sqlite3/build/Release/better_sqlite3.node'),
       ),
     },
     scenarios,
-    sessionRestart,
+    sessionRestart: run.sessionRestart,
     checks: {
       empty: true,
       activeClaim: true,
@@ -974,20 +1299,20 @@ try {
       uninstallCleanup: true,
     },
     renderings: {
-      setupRequired: setupRequiredUI.renderedPngSha256,
-      empty: emptyUI.renderedPngSha256,
-      active: activeUI.renderedPngSha256,
-      cappedCount: cappedUI.renderedPngSha256,
-      longContent: longContentUI.renderedPngSha256,
-      quitBoundary: quitUI.renderedPngSha256,
-      complete: completeUI.renderedPngSha256,
-      settingsDisabled: settingsDisabledUI.renderedPngSha256,
-      settingsHealthy: settingsHealthyUI.renderedPngSha256,
-      settingsError: settingsErrorUI.renderedPngSha256,
-      offline: offlineUI.renderedPngSha256,
-      stale: staleUI.renderedPngSha256,
-      recovered: recoveredUI.renderedPngSha256,
-      authenticationError: authenticationUI.renderedPngSha256,
+      setupRequired: run.setupRequiredUI.renderedPngSha256,
+      empty: run.emptyUI.renderedPngSha256,
+      active: run.activeUI.renderedPngSha256,
+      cappedCount: run.cappedUI.renderedPngSha256,
+      longContent: run.longContentUI.renderedPngSha256,
+      quitBoundary: run.quitUI.renderedPngSha256,
+      complete: run.completeUI.renderedPngSha256,
+      settingsDisabled: run.settingsDisabledUI.renderedPngSha256,
+      settingsHealthy: run.settingsHealthyUI.renderedPngSha256,
+      settingsError: run.settingsErrorUI.renderedPngSha256,
+      offline: run.offlineUI.renderedPngSha256,
+      stale: run.staleUI.renderedPngSha256,
+      recovered: run.recoveredUI.renderedPngSha256,
+      authenticationError: run.authenticationUI.renderedPngSha256,
     },
     manualBoundaries: [
       'Native NSOpenPanel selection and cancellation require user interaction.',
@@ -995,10 +1320,49 @@ try {
       'The transient pending backup frame is covered by focused Swift tests, not timing-based live automation.',
     ],
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Run
+// ---------------------------------------------------------------------------------------------
+
+async function main() {
+  refuseExistingInstallation();
+  markPhase('refuseExistingInstallation');
+  prepareWorkspace();
+  markPhase('prepareWorkspace');
+  prepareRuntime();
+  markPhase('prepareRuntime');
+  await verifyCleanSetup();
+  markPhase('verifyCleanSetup');
+  verifyFirstRunUi();
+  markPhase('verifyFirstRunUi');
+  const legacyMigrationStartedAt = Date.now();
+  await verifyLegacyMigration();
+  budgetExcludedMilliseconds += Date.now() - legacyMigrationStartedAt;
+  markPhase('verifyLegacyMigration');
+  await verifyConnectorLifecycle();
+  markPhase('verifyConnectorLifecycle');
+  verifyEmptyAndSettingsUi();
+  seedPortfolio();
+  verifyRenderingFixtures();
+  completePortfolio();
+  await verifyBackupSettings();
+  await verifyBackgroundOnlyApp();
+  await verifyOfflineAndRecovery();
+  verifyAuthenticationError();
+  readReleaseArtifact();
+  await verifyRemoval();
+  assertRunComplete();
+  const evidence = buildEvidence();
   mkdirSync(dirname(evidencePath), { recursive: true });
   writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
   smokeCompleted = true;
   process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
+}
+
+try {
+  await main();
 } finally {
   if (installed) {
     const removal = spawnSync(controlNode, [cli, 'uninstall'], {

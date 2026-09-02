@@ -1,16 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
-import {
-  createCliConnectionsRuntime,
-  createCliSetupRuntime,
-  runCli,
-  type CliRuntime,
-} from '../src/cliProgram.js';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createCliConnectionsRuntime, runCli, type CliRuntime } from '../src/cliProgram.js';
 import type {
   ConnectionPlan,
   ConnectorInspection,
   ConnectorState,
   HostConnector,
 } from '../src/connectors/types.js';
+import { installedApplicationPath, readRecordedApplicationPath } from '../src/runtime/bootstrap.js';
 import {
   createPackagedReleaseUpdateManager,
   createUpdateManager,
@@ -51,6 +50,7 @@ function connector(
           connectorId: 'codex',
           state,
           entry: null,
+          entryFingerprint: null,
           higherPrecedenceEntry: null,
           receipt: null,
         }) satisfies ConnectorInspection,
@@ -107,6 +107,7 @@ function packagedProvider(
       JSON.stringify({
         schemaVersion: 1,
         channel: 'stable',
+        issuedAt: '2026-09-01T12:00:00.000Z',
         version: '2.0.0',
         targets: {
           'darwin-arm64': {
@@ -130,31 +131,6 @@ function packagedProvider(
 }
 
 describe('CLI setup and connection boundary coverage', () => {
-  it('delegates every setup runtime operation to its injected boundary', async () => {
-    const coordinator = {
-      plan: vi.fn(async () => 'plan'),
-      apply: vi.fn(async () => 'apply'),
-      resume: vi.fn(async () => 'resume'),
-      retryConnector: vi.fn(async () => 'retry'),
-    };
-    const read = vi.fn(async () => 'status');
-    const runtime = createCliSetupRuntime(coordinator, { read } as never);
-    const progress = vi.fn();
-
-    await expect(runtime.plan({ selectedConnectors: ['codex'] })).resolves.toBe('plan');
-    await expect(
-      runtime.apply({
-        operationId: 'operation',
-        expectedRevision: 'revision',
-        confirmed: true,
-      }),
-    ).resolves.toBe('apply');
-    await expect(runtime.status()).resolves.toBe('status');
-    await expect(runtime.resume({ onProgress: progress })).resolves.toBe('resume');
-    await expect(runtime.retryConnector('codex', progress)).resolves.toBe('retry');
-    expect(read).toHaveBeenCalledOnce();
-  });
-
   it('lists verified, failed verification, and unverified connector states', async () => {
     const verified = connector({ state: 'ownedCurrent', verify: async () => true });
     const failed = connector({
@@ -168,9 +144,9 @@ describe('CLI setup and connection boundary coverage', () => {
     });
 
     await expect(runtime.list()).resolves.toEqual([
-      expect.objectContaining({ state: 'ownedCurrent', available: true }),
-      expect.objectContaining({ state: 'equivalentUnowned', available: false }),
-      expect.objectContaining({ state: 'conflict', available: false }),
+      expect.objectContaining({ state: 'ownedCurrent', available: true, revision: null }),
+      expect.objectContaining({ state: 'equivalentUnowned', available: false, revision: null }),
+      expect.objectContaining({ state: 'conflict', available: false, revision: null }),
     ]);
     expect(skipped.verify).not.toHaveBeenCalled();
     await expect(runtime.instructions()).resolves.toMatchObject({
@@ -254,14 +230,20 @@ describe('CLI setup and connection boundary coverage', () => {
     expect(state.runtime.exit).not.toHaveBeenCalled();
   });
 
-  it('maps plain, conflict-coded, and empty conflict boundary failures', async () => {
+  // Only the `code` property selects an agent error code. A message that mentions a conflict is a
+  // diagnostic, not a classification, so it stays `internal_error` with its cause chain.
+  it('maps typed local codes and never classifies by message text', async () => {
     for (const [failure, expectedCode] of [
       [new Error('ordinary failure'), 'internal_error'],
       [new Error(''), 'internal_error'],
       ['primitive failure', 'internal_error'],
-      [{ code: 'CONFLICT_STATE' }, 'conflict'],
-      [new Error('requires a decision'), 'conflict'],
-      [Object.assign(new Error(''), { code: 'CONFLICT_STATE' }), 'conflict'],
+      [new Error('requires a decision'), 'internal_error'],
+      [new Error('conflict detected'), 'internal_error'],
+      [{ code: 'CONNECTOR_CONFLICT' }, 'conflict'],
+      [Object.assign(new Error(''), { code: 'CONNECTOR_CONFLICT' }), 'conflict'],
+      [Object.assign(new Error('stale'), { code: 'SETUP_PLAN_STALE' }), 'conflict'],
+      [Object.assign(new Error('confirm'), { code: 'SETUP_CONFIRMATION_REQUIRED' }), 'bad_request'],
+      [Object.assign(new Error('none'), { code: 'SETUP_NOTHING_TO_RESUME' }), 'not_found'],
     ] as const) {
       const state = cliFixture({
         list: vi.fn(async () => Promise.reject(failure)),
@@ -304,6 +286,84 @@ describe('CLI setup and connection boundary coverage', () => {
       confirmed: true,
       conflictDecision: 'replace',
     });
+  });
+});
+
+describe('reviewed replacement revision', () => {
+  const revision = 'b'.repeat(64);
+
+  it('forwards --replace with and without a revision from connect and repair', async () => {
+    const connect = vi.fn(async () => ({}));
+    const repair = vi.fn(async () => ({}));
+    const connections = {
+      list: vi.fn(),
+      connect,
+      repair,
+      disconnect: vi.fn(),
+      instructions: vi.fn(),
+    };
+    for (const arguments_ of [
+      ['connect', 'codex', '--yes', '--replace', revision],
+      ['connect', 'codex', '--yes', '--replace'],
+      ['repair', 'codex', '--yes', '--replace', revision],
+      ['repair', 'codex', '--yes'],
+    ]) {
+      const state = cliFixture(connections);
+      await runCli(arguments_, state.runtime);
+      expect(state.stderr, arguments_.join(' ')).toEqual([]);
+    }
+    expect(connect).toHaveBeenNthCalledWith(1, 'codex', {
+      confirmed: true,
+      conflictDecision: 'replace',
+      reviewedEntryFingerprint: revision,
+    });
+    expect(connect).toHaveBeenNthCalledWith(2, 'codex', {
+      confirmed: true,
+      conflictDecision: 'replace',
+    });
+    expect(repair).toHaveBeenNthCalledWith(1, 'codex', {
+      confirmed: true,
+      conflictDecision: 'replace',
+      reviewedEntryFingerprint: revision,
+    });
+    expect(repair).toHaveBeenNthCalledWith(2, 'codex', {
+      confirmed: true,
+      conflictDecision: undefined,
+    });
+  });
+
+  it('passes the reviewed revision into the connector plan', async () => {
+    const host = connector({ state: 'conflict' });
+    const runtime = createCliConnectionsRuntime({ connectors: [host], launcherPath: '/launcher' });
+
+    await runtime.connect('codex', {
+      confirmed: true,
+      conflictDecision: 'replace',
+      reviewedEntryFingerprint: revision,
+    });
+    await runtime.repair('codex', { confirmed: true, conflictDecision: 'replace' });
+
+    expect(host.plan).toHaveBeenNthCalledWith(1, {
+      conflictDecision: 'replace',
+      reviewedEntryFingerprint: revision,
+    });
+    expect(host.plan).toHaveBeenNthCalledWith(2, { conflictDecision: 'replace' });
+  });
+
+  it('reports the entry fingerprint as the revision a reviewer passes back', async () => {
+    const host = connector({ state: 'conflict' });
+    (host.inspect as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      connectorId: 'codex',
+      state: 'conflict',
+      entry: null,
+      entryFingerprint: revision,
+      higherPrecedenceEntry: null,
+      receipt: null,
+    });
+    const runtime = createCliConnectionsRuntime({ connectors: [host], launcherPath: '/launcher' });
+    await expect(runtime.list()).resolves.toEqual([
+      { id: 'codex', displayName: 'Codex', state: 'conflict', revision, available: false },
+    ]);
   });
 });
 
@@ -447,5 +507,77 @@ describe('packaged update residual boundary coverage', () => {
       packagedRelease: packagedProvider(),
     });
     await expect(packaged.check()).resolves.toMatchObject({ updateAvailable: true });
+  });
+});
+
+describe('recorded application path', () => {
+  let root = '';
+
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  function dataDirectory(): string {
+    root = mkdtempSync(join(tmpdir(), 'pimpampum-application-path-'));
+    return root;
+  }
+
+  function record(directory: string, value: unknown): void {
+    writeFileSync(
+      join(directory, 'application-path.json'),
+      typeof value === 'string' ? value : JSON.stringify(value),
+    );
+  }
+
+  it('reads schema 2 and schema 1 records and normalizes the path', () => {
+    const directory = dataDirectory();
+    record(directory, { schemaVersion: 2, path: '/Applications//Pimpampum.app', managed: false });
+    expect(readRecordedApplicationPath(directory)).toBe('/Applications/Pimpampum.app');
+    expect(installedApplicationPath({ homeDirectory: '/Users/me', dataDirectory: directory })).toBe(
+      '/Applications/Pimpampum.app',
+    );
+
+    record(directory, { schemaVersion: 1, path: '/Users/me/Applications/Pimpampum.app' });
+    expect(readRecordedApplicationPath(directory)).toBe('/Users/me/Applications/Pimpampum.app');
+  });
+
+  it('falls back to the managed path when no record exists', () => {
+    const directory = dataDirectory();
+    expect(readRecordedApplicationPath(directory)).toBeNull();
+    expect(installedApplicationPath({ homeDirectory: '/Users/me', dataDirectory: directory })).toBe(
+      '/Users/me/Applications/Pimpampum.app',
+    );
+  });
+
+  it.each([
+    [
+      'a symlink',
+      (directory: string) => symlinkSync('/etc/hosts', join(directory, 'application-path.json')),
+    ],
+    ['a directory', (directory: string) => mkdirSync(join(directory, 'application-path.json'))],
+    ['an oversized file', (directory: string) => record(directory, 'x'.repeat(16 * 1024 + 1))],
+    ['invalid JSON', (directory: string) => record(directory, '{not json')],
+    ['an array', (directory: string) => record(directory, ['/Applications/Pimpampum.app'])],
+    [
+      'an unknown schema',
+      (directory: string) => record(directory, { schemaVersion: 3, path: '/a' }),
+    ],
+    [
+      'schema 2 without managed',
+      (directory: string) => record(directory, { schemaVersion: 2, path: '/Applications/P.app' }),
+    ],
+    ['a non-string path', (directory: string) => record(directory, { schemaVersion: 1, path: 7 })],
+    [
+      'a relative path',
+      (directory: string) => record(directory, { schemaVersion: 1, path: 'P.app' }),
+    ],
+    [
+      'a NUL byte',
+      (directory: string) => record(directory, { schemaVersion: 1, path: '/Applications/P\0.app' }),
+    ],
+  ])('ignores %s and falls back to the managed path', (_label, corrupt) => {
+    const directory = dataDirectory();
+    corrupt(directory);
+    expect(readRecordedApplicationPath(directory)).toBeNull();
   });
 });

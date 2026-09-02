@@ -1,24 +1,24 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
   rmSync,
 } from 'node:fs';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AutomaticBackupStatus } from '../src/backupContract.js';
+import { LATEST_SCHEMA_VERSION } from '../src/migrations.js';
 import { PIMPAMPUM_VERSION } from '../src/version.js';
 import type {
   ContextDocument,
@@ -30,77 +30,28 @@ import type {
   WorkItem,
   Workspace,
 } from '../src/types.js';
+import {
+  assertCompiledBuild,
+  availablePort,
+  compiledCliPath,
+  compiledMcpPath,
+  repositoryRoot,
+  runCompiledCli,
+  runProcess,
+  startCompiledDaemon,
+  stopDaemon,
+  type CompiledDaemon,
+} from './helpers/compiledDaemon.js';
 
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const compiledCli = join(repositoryRoot, 'dist', 'cli.js');
-const compiledMcp = join(repositoryRoot, 'dist', 'mcpStdio.js');
+const executeCli = <T>(environment: NodeJS.ProcessEnv, ...arguments_: string[]): Promise<T> =>
+  runCompiledCli<T>(arguments_, { environment });
 
-async function availablePort(): Promise<number> {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      if (address === null || typeof address === 'string') {
-        server.close();
-        reject(new Error('Could not allocate a port'));
-        return;
-      }
-      server.close((error) => (error ? reject(error) : resolvePort(address.port)));
-    });
-  });
-}
-
-function executeCli<T>(environment: NodeJS.ProcessEnv, ...arguments_: string[]): Promise<T> {
-  return new Promise((resolveResult, reject) => {
-    const child = spawn(process.execPath, [compiledCli, ...arguments_], {
-      cwd: repositoryRoot,
-      env: environment,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
-    child.once('error', reject);
-    child.once('exit', (code) => {
-      if (code !== 0) {
-        reject(new Error(`CLI ${arguments_[0] ?? ''} failed (${String(code)}): ${stderr}`));
-        return;
-      }
-      let envelope: unknown;
-      try {
-        envelope = JSON.parse(stdout) as unknown;
-      } catch (error) {
-        reject(new Error(`CLI returned invalid JSON: ${stdout}`, { cause: error }));
-        return;
-      }
-      // Unwrapping here asserts the envelope contract on every CLI call this suite makes:
-      // a success is always exactly one {"data": ...} object on stdout.
-      if (
-        typeof envelope !== 'object' ||
-        envelope === null ||
-        Object.keys(envelope).length !== 1 ||
-        !('data' in envelope)
-      ) {
-        reject(new Error(`CLI did not return one data envelope: ${stdout}`));
-        return;
-      }
-      resolveResult((envelope as { data: T }).data);
-    });
-  });
-}
-
-async function stopDaemon(daemon: ChildProcess | undefined): Promise<void> {
-  if (!daemon || daemon.exitCode !== null || daemon.signalCode !== null) return;
-  daemon.kill('SIGTERM');
-  await new Promise<void>((resolveExit) => {
-    const timeout = setTimeout(() => daemon.kill('SIGKILL'), 2_000);
-    daemon.once('exit', () => {
-      clearTimeout(timeout);
-      resolveExit();
-    });
-  });
+/** Every MCP tool answers one JSON agent envelope (`{data}` or `{error}`) as its only text block. */
+function toolPayload<T = unknown>(result: { content?: unknown }): T {
+  const blocks = result.content as Array<{ type: string; text: string }>;
+  expect(blocks).toHaveLength(1);
+  expect(blocks[0]!.type).toBe('text');
+  return JSON.parse(blocks[0]!.text) as T;
 }
 
 interface Resource {
@@ -110,7 +61,8 @@ interface Resource {
 }
 
 describe.sequential('compiled Domain Model v2 product end to end', () => {
-  let daemon: ChildProcess | undefined;
+  let daemon: CompiledDaemon | undefined;
+  let port = 0;
   let environment: NodeJS.ProcessEnv;
   let temporaryDirectory: string;
   let dataDirectory: string;
@@ -120,27 +72,11 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
   const token = 'compiled-v2-e2e-token'.repeat(3);
 
   async function startDaemon(): Promise<void> {
-    daemon = spawn(process.execPath, [compiledCli, 'serve'], {
-      cwd: repositoryRoot,
-      env: environment,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stderr = '';
-    daemon.stderr?.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
-    for (let attempt = 0; attempt < 60; attempt++) {
-      if (daemon.exitCode !== null) throw new Error(`Daemon exited during startup: ${stderr}`);
-      try {
-        if ((await fetch(`${baseUrl}/health`)).ok) return;
-      } catch {
-        // The compiled daemon is still binding.
-      }
-      await delay(50);
-    }
-    throw new Error(`Daemon did not become healthy: ${stderr}`);
+    daemon = await startCompiledDaemon({ environment, port });
   }
 
   async function restartDaemon(): Promise<void> {
-    await stopDaemon(daemon);
+    await stopDaemon(daemon?.process);
     daemon = undefined;
     await startDaemon();
   }
@@ -199,9 +135,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
   }
 
   beforeAll(async () => {
-    if (!existsSync(compiledCli) || !existsSync(compiledMcp)) {
-      throw new Error('Run npm run build before E2E');
-    }
+    assertCompiledBuild([compiledCliPath(), compiledMcpPath()]);
     temporaryDirectory = mkdtempSync(join(tmpdir(), 'pimpampum-compiled-v2-'));
     dataDirectory = join(temporaryDirectory, 'data');
     workspaceRoot = join(temporaryDirectory, 'workspace');
@@ -209,7 +143,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
     mkdirSync(workspaceRoot, { recursive: true });
     mkdirSync(exportRoot, { recursive: true });
     workspaceRoot = realpathSync(workspaceRoot);
-    const port = await availablePort();
+    port = await availablePort();
     baseUrl = `http://127.0.0.1:${port}`;
     environment = {
       ...process.env,
@@ -222,7 +156,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
   });
 
   afterAll(async () => {
-    await stopDaemon(daemon);
+    await stopDaemon(daemon?.process);
     if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true });
   });
 
@@ -230,6 +164,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
     expect(await executeCli(environment, 'health')).toEqual({
       status: 'ok',
       version: PIMPAMPUM_VERSION,
+      ready: true,
     });
     const workspace = await executeCli<Workspace>(
       environment,
@@ -389,10 +324,10 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
       reason: 'Task obsolete',
       actor: 'owner',
     });
-    expect([cancelledTask.state, (await api<Task>(`/api/v1/tasks/${child.id}`)).state]).toEqual([
-      'cancelled',
-      'cancelled',
-    ]);
+    expect([
+      cancelledTask.state,
+      (await api<Task>(`/api/v1/tasks/${child.id}/manifest`)).state,
+    ]).toEqual(['cancelled', 'cancelled']);
 
     let specProject = await createProject('spec-cancel');
     let cancelledSpec = await ready(await createSpec(specProject.id, 'cancelled-spec'));
@@ -412,7 +347,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
       actor: 'owner',
     });
     expect(cancelledSpec.state).toBe('cancelled');
-    expect((await api<Task>(`/api/v1/tasks/${specTask.id}`)).state).toBe('cancelled');
+    expect((await api<Task>(`/api/v1/tasks/${specTask.id}/manifest`)).state).toBe('cancelled');
 
     let cancelledProject = await createProject('project-cancel');
     let projectSpec = await ready(await createSpec(cancelledProject.id, 'project-spec'));
@@ -431,11 +366,11 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
       reason: 'Portfolio decision',
       actor: 'owner',
     });
-    projectSpec = await api<Spec>(`/api/v1/specs/${projectSpec.id}`);
+    projectSpec = await api<Spec>(`/api/v1/specs/${projectSpec.id}/manifest`);
     expect([
       cancelledProject.state,
       projectSpec.state,
-      (await api<Task>(`/api/v1/tasks/${projectTask.id}`)).state,
+      (await api<Task>(`/api/v1/tasks/${projectTask.id}/manifest`)).state,
     ]).toEqual(['cancelled', 'cancelled', 'cancelled']);
     expect((await executeCli<Overview>(environment, 'overview')).activeWork).toEqual([]);
   }, 15_000);
@@ -476,7 +411,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
       await delay(50);
     }
     const snapshot = new Database(snapshotPath, { readonly: true, fileMustExist: true });
-    expect(snapshot.pragma('user_version', { simple: true })).toBe(2);
+    expect(snapshot.pragma('user_version', { simple: true })).toBe(LATEST_SCHEMA_VERSION);
     expect(snapshot.prepare('SELECT id FROM projects WHERE id=?').get(persisted.id)).toEqual({
       id: persisted.id,
     });
@@ -501,7 +436,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
       ),
     ).toBe(true);
 
-    await stopDaemon(daemon);
+    await stopDaemon(daemon?.process);
     daemon = undefined;
     const databasePath = join(dataDirectory, 'pimpampum.sqlite');
     renameSync(databasePath, `${databasePath}.before-restore`);
@@ -509,7 +444,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
     rmSync(`${databasePath}-shm`, { force: true });
     copyFileSync(snapshotPath, databasePath);
     await startDaemon();
-    expect(await api<Project>(`/api/v1/projects/${persisted.id}`)).toMatchObject({
+    expect(await api<Project>(`/api/v1/projects/${persisted.id}/manifest`)).toMatchObject({
       id: persisted.id,
     });
   }, 20_000);
@@ -542,7 +477,7 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [compiledMcp],
+      args: [compiledMcpPath()],
       cwd: repositoryRoot,
       env: Object.fromEntries(
         Object.entries(environment).filter(
@@ -572,4 +507,151 @@ describe.sequential('compiled Domain Model v2 product end to end', () => {
       await client.close();
     }
   }, 15_000);
+
+  // M-T2: competitors were always sequential. Twenty simultaneous claims on one Task must yield
+  // exactly one owner; the rest are typed `conflict` rejections, never a second 200.
+  it('grants exactly one of twenty concurrent HTTP claims and rejects nineteen with 409', async () => {
+    let project = await createProject('concurrent-http-claims');
+    const spec = await ready(await createSpec(project.id, 'concurrent-http-spec'));
+    project = await open(project);
+    const task = await post<Task>(`/api/v1/specs/${spec.id}/tasks`, { title: 'Contended' }, 201);
+
+    const responses = await Promise.all(
+      Array.from({ length: 20 }, (_, index) =>
+        raw(`/api/v1/work/task/${task.id}/claim`, {
+          method: 'PUT',
+          body: JSON.stringify({ agentId: `http-agent-${String(index)}`, leaseSeconds: 300 }),
+        }),
+      ),
+    );
+    const statuses = responses.map((response) => response.status).sort((a, b) => a - b);
+    expect(statuses).toEqual([200, ...Array.from({ length: 19 }, () => 409)]);
+    const winner = responses.find((response) => response.status === 200)!;
+    const bundle = (await winner.json()) as { data: WorkBundle };
+    expect(bundle.data.task).toMatchObject({ id: task.id });
+    for (const response of responses.filter((candidate) => candidate.status === 409)) {
+      expect(await response.json()).toMatchObject({
+        error: { code: 'conflict', message: 'Work is already claimed' },
+      });
+    }
+    const work = await api<WorkItem[]>(`/api/v1/work?projectId=${project.id}`);
+    expect(work.filter((item) => item.targetId === task.id)).toEqual([]);
+  }, 20_000);
+
+  it('mutates through the stdio MCP bridge and grants exactly one of twenty concurrent work_start calls', async () => {
+    let project = await createProject('concurrent-stdio-claims');
+    const spec = await ready(await createSpec(project.id, 'concurrent-stdio-spec'));
+    project = await open(project);
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [compiledMcpPath()],
+      cwd: repositoryRoot,
+      env: Object.fromEntries(
+        Object.entries(environment).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string',
+        ),
+      ),
+      stderr: 'pipe',
+    });
+    const client = new Client(
+      { name: 'compiled-v2-e2e-stdio-writer', version: '0.2.0' },
+      { versionNegotiation: { mode: 'auto' } },
+    );
+    await client.connect(transport);
+    try {
+      // The suite so far only read through stdio; this is the one mutation that proves the bridge
+      // forwards writes to the daemon and the daemon persists them.
+      const created = await client.callTool({
+        name: 'task_create',
+        arguments: { specId: spec.id, title: 'Created over stdio' },
+      });
+      expect(created.isError).not.toBe(true);
+      const task = toolPayload<{ data: Task }>(created).data;
+      expect(task).toMatchObject({ specId: spec.id, title: 'Created over stdio', state: 'open' });
+      expect(await api<Task>(`/api/v1/tasks/${task.id}/manifest`)).toMatchObject({
+        id: task.id,
+        title: 'Created over stdio',
+      });
+
+      const results = await Promise.all(
+        Array.from({ length: 20 }, (_, index) =>
+          client.callTool({
+            name: 'work_start',
+            arguments: {
+              targetType: 'task',
+              targetId: task.id,
+              agentId: `stdio-agent-${String(index)}`,
+              leaseSeconds: 300,
+            },
+          }),
+        ),
+      );
+      const granted = results.filter((result) => result.isError !== true);
+      const rejected = results.filter((result) => result.isError === true);
+      expect([granted.length, rejected.length]).toEqual([1, 19]);
+      expect(toolPayload<{ data: WorkBundle }>(granted[0]!).data.task).toMatchObject({
+        id: task.id,
+      });
+      for (const result of rejected) {
+        expect(toolPayload(result)).toMatchObject({
+          error: { code: 'conflict', message: 'Work is already claimed', retryable: true },
+        });
+      }
+    } finally {
+      await client.close();
+    }
+  }, 20_000);
+
+  // The commands every suggestion points at must work on a machine where nothing was installed
+  // and nothing can be written: no data directory, no token, no receipt. Before this, `loadConfig`
+  // created `~/.pimpampum` and minted a token for `help`.
+  it('answers help, version, commands and config from a read-only home without writing', async () => {
+    const readOnlyHome = join(temporaryDirectory, 'read-only-home');
+    mkdirSync(readOnlyHome);
+    chmodSync(readOnlyHome, 0o500);
+    const offline: NodeJS.ProcessEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !key.startsWith('PIMPAMPUM_')),
+    );
+    offline.HOME = readOnlyHome;
+    try {
+      const help = await runProcess(process.execPath, [compiledCliPath(), 'help'], {
+        cwd: repositoryRoot,
+        environment: offline,
+      });
+      expect(help.code).toBe(0);
+      expect(help.stdout).toContain(`Pimpampum ${PIMPAMPUM_VERSION}`);
+      expect(help.stdout).toContain('Native desktop mode');
+
+      expect(await executeCli(offline, 'version')).toEqual({
+        name: 'pimpampum',
+        version: PIMPAMPUM_VERSION,
+      });
+      const catalog = await executeCli<{ commands: Array<{ name: string }> }>(offline, 'commands');
+      expect(catalog.commands.map((command) => command.name)).toContain('setup retry');
+      expect(await executeCli(offline, 'config')).toMatchObject({
+        dataDirectory: join(readOnlyHome, '.pimpampum'),
+        tokenPath: join(readOnlyHome, '.pimpampum', 'token'),
+        tokenSource: 'file',
+        tokenConfigured: false,
+      });
+
+      // A client verb reports the missing daemon token typed, with the install remedy, instead of
+      // minting a credential of its own.
+      const health = await runProcess(process.execPath, [compiledCliPath(), 'health'], {
+        cwd: repositoryRoot,
+        environment: offline,
+      });
+      expect(health.code).toBe(1);
+      expect(JSON.parse(health.stderr)).toMatchObject({
+        error: {
+          code: 'unavailable',
+          message: expect.stringContaining('No daemon token at'),
+          suggestion: expect.stringContaining('pimpampum install'),
+        },
+      });
+      expect(readdirSync(readOnlyHome)).toEqual([]);
+    } finally {
+      chmodSync(readOnlyHome, 0o700);
+    }
+  }, 20_000);
 });

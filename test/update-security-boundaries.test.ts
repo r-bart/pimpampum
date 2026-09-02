@@ -1,19 +1,32 @@
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  createBoundedReleaseManifestFetcher,
-  createCliUpdateManager,
-  createReleaseSignatureVerifier,
-} from '../src/cliMain.js';
+import { createBoundedReleaseManifestFetcher, createCliUpdateManager } from '../src/cliMain.js';
 import { installReceiptPath, writeInstallReceipt } from '../src/service/receipt.js';
 import type { ServiceManager } from '../src/service/types.js';
-import { createPackagedReleaseUpdateManager, createUpdateManager } from '../src/update.js';
+import {
+  RELEASE_TRUST_STATE_NAME,
+  createPackagedReleaseUpdateManager,
+  createReleaseTrustStore,
+  createUpdateManager,
+  releaseSignaturePayload,
+  resolvePackagedRelease,
+} from '../src/update.js';
 import type { PackagedReleaseProviderInput } from '../src/update.js';
 
 const roots: string[] = [];
+const ISSUED_AT = '2026-09-01T12:00:00.000Z';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -32,6 +45,7 @@ function releaseManifest(overrides: Record<string, unknown> = {}): string {
     schemaVersion: 1,
     channel: 'stable',
     version: '2.0.0',
+    issuedAt: ISSUED_AT,
     targets: {
       'darwin-arm64': {
         url: 'https://updates.example.test/v2.0.0/pimpampum-darwin-arm64.zip',
@@ -67,6 +81,7 @@ describe('packaged update schema and URL security', () => {
   it.each([
     'not a url',
     'http://updates.example.test/stable.json',
+    'http://127.0.0.1:8080/stable.json',
     'https://user@updates.example.test/stable.json',
     'https://updates.example.test/stable.json#fragment',
     'https://updates.example.test/latest/manifest.json',
@@ -77,6 +92,45 @@ describe('packaged update schema and URL security', () => {
         provider: provider({ channelManifestUrl }),
       }),
     ).toThrow(/channel URL/iu);
+  });
+
+  it('accepts a plain-HTTP loopback channel and asset only under the development flag', async () => {
+    const insecure = provider({
+      channelManifestUrl: 'http://127.0.0.1:8080/channel/stable.json',
+      allowInsecureLoopback: true,
+      fetchManifest: async () =>
+        releaseManifest({
+          targets: {
+            'darwin-arm64': {
+              url: 'http://127.0.0.1:8080/assets/v2.0.0/pimpampum-darwin-arm64.zip',
+              sha256: 'a'.repeat(64),
+              signature: 'b'.repeat(64),
+              size: 1024,
+            },
+          },
+        }),
+    });
+    await expect(resolvePackagedRelease(insecure)).resolves.toMatchObject({
+      manifest: { version: '2.0.0', issuedAt: ISSUED_AT },
+      asset: { url: 'http://127.0.0.1:8080/assets/v2.0.0/pimpampum-darwin-arm64.zip' },
+    });
+    // A loopback channel must not vouch for a remote plain-HTTP asset.
+    const remoteAsset = provider({
+      channelManifestUrl: 'http://127.0.0.1:8080/channel/stable.json',
+      allowInsecureLoopback: true,
+      fetchManifest: async () =>
+        releaseManifest({
+          targets: {
+            'darwin-arm64': {
+              url: 'http://mirror.example.test/v2.0.0/pimpampum-darwin-arm64.zip',
+              sha256: 'a'.repeat(64),
+              signature: 'b'.repeat(64),
+              size: 1024,
+            },
+          },
+        }),
+    });
+    await expect(resolvePackagedRelease(remoteAsset)).rejects.toThrow(/exact signed version/iu);
   });
 
   it('rejects an unsupported provider target before fetching', () => {
@@ -95,6 +149,10 @@ describe('packaged update schema and URL security', () => {
     [releaseManifest({ extra: true }), /schema is incompatible/iu],
     [releaseManifest({ channel: 'nightly' }), /schema is incompatible/iu],
     [releaseManifest({ version: 'latest' }), /schema is incompatible/iu],
+    [releaseManifest({ issuedAt: undefined }), /schema is incompatible/iu],
+    [releaseManifest({ issuedAt: '2026-09-01T12:00:00Z' }), /schema is incompatible/iu],
+    [releaseManifest({ issuedAt: '2026-13-01T12:00:00.000Z' }), /schema is incompatible/iu],
+    [releaseManifest({ issuedAt: 1_756_728_000_000 }), /schema is incompatible/iu],
     [releaseManifest({ targets: {} }), /schema is incompatible/iu],
     [releaseManifest({ targets: { unsupported: {} } }), /schema is incompatible/iu],
   ])('rejects malformed release envelope %#', async (manifest, message) => {
@@ -122,6 +180,15 @@ describe('packaged update schema and URL security', () => {
     [
       {
         url: 'https://updates.example.test/v2.0.0/pimpampum-linux-x64.zip',
+        sha256: 'a'.repeat(64),
+        signature: 'b'.repeat(64),
+        size: 1,
+      },
+      /exact signed version/iu,
+    ],
+    [
+      {
+        url: 'http://updates.example.test/v2.0.0/pimpampum-darwin-arm64.zip',
         sha256: 'a'.repeat(64),
         signature: 'b'.repeat(64),
         size: 1,
@@ -163,6 +230,51 @@ describe('packaged update schema and URL security', () => {
       }),
     });
     await expect(manager.check()).rejects.toThrow(message as RegExp);
+  });
+
+  it('signs issuedAt together with the asset so a replayed timestamp fails verification', async () => {
+    const pair = generateKeyPairSync('ed25519');
+    const asset = {
+      url: 'https://updates.example.test/v2.0.0/pimpampum-darwin-arm64.zip',
+      sha256: 'a'.repeat(64),
+      size: 1024,
+    };
+    const signature = sign(
+      null,
+      Buffer.from(
+        releaseSignaturePayload({
+          version: '2.0.0',
+          issuedAt: ISSUED_AT,
+          target: 'darwin-arm64',
+          ...asset,
+        }),
+      ),
+      pair.privateKey,
+    ).toString('base64');
+    const verifySignature = ({
+      payload,
+      signature: candidate,
+    }: {
+      payload: string;
+      signature: string;
+    }) => verify(null, Buffer.from(payload), pair.publicKey, Buffer.from(candidate, 'base64'));
+    const genuine = provider({
+      fetchManifest: async () =>
+        releaseManifest({ targets: { 'darwin-arm64': { ...asset, signature } } }),
+      verifySignature,
+    });
+    await expect(resolvePackagedRelease(genuine)).resolves.toMatchObject({
+      manifest: { issuedAt: ISSUED_AT },
+    });
+    const replayed = provider({
+      fetchManifest: async () =>
+        releaseManifest({
+          issuedAt: '2027-01-01T00:00:00.000Z',
+          targets: { 'darwin-arm64': { ...asset, signature } },
+        }),
+      verifySignature,
+    });
+    await expect(resolvePackagedRelease(replayed)).rejects.toThrow(/signature is invalid/iu);
   });
 
   it('wraps fetch and signature verifier exceptions without staging', async () => {
@@ -233,14 +345,14 @@ describe('packaged update schema and URL security', () => {
   });
 });
 
-describe('bounded release transport and key trust', () => {
+describe('bounded release transport', () => {
   it('rejects HTTP failures, missing bodies and dishonest content lengths', async () => {
     const http = createBoundedReleaseManifestFetcher(
       async () => new Response('no', { status: 503 }),
     );
     await expect(
       http({ url: 'https://x.test', maximumBytes: 10, timeoutMilliseconds: 100 }),
-    ).rejects.toThrow(/HTTP 503/u);
+    ).rejects.toMatchObject({ code: 'unavailable', message: expect.stringMatching(/HTTP 503/u) });
 
     const empty = createBoundedReleaseManifestFetcher(
       async () => new Response(null, { status: 204 }),
@@ -276,73 +388,6 @@ describe('bounded release transport and key trust', () => {
     await vi.advanceTimersByTimeAsync(25);
     await rejection;
   });
-
-  it('rejects keys outside owned roots, symlink traversal, RSA and invalid signatures', () => {
-    const value = root();
-    const owned = join(value, 'owned');
-    const outside = join(value, 'outside');
-    mkdirSync(owned, { mode: 0o700 });
-    mkdirSync(outside, { mode: 0o700 });
-    const ed25519 = generateKeyPairSync('ed25519');
-    const outsideKey = join(outside, 'key.pem');
-    writeFileSync(outsideKey, ed25519.publicKey.export({ type: 'spki', format: 'pem' }), {
-      mode: 0o600,
-    });
-    expect(() =>
-      createReleaseSignatureVerifier({ publicKeyPath: outsideKey, allowedRoots: [owned] })({
-        payload: 'payload',
-        signature: Buffer.alloc(64).toString('base64'),
-        target: 'darwin-arm64',
-      }),
-    ).toThrow(/outside a Pimpampum-owned root/iu);
-
-    const link = join(owned, 'linked');
-    symlinkSync(outside, link);
-    expect(() =>
-      createReleaseSignatureVerifier({
-        publicKeyPath: join(link, 'key.pem'),
-        allowedRoots: [owned],
-      })({
-        payload: 'payload',
-        signature: Buffer.alloc(64).toString('base64'),
-        target: 'darwin-arm64',
-      }),
-    ).toThrow(/unsafe directory/iu);
-
-    const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
-    const rsaPath = join(owned, 'rsa.pem');
-    writeFileSync(rsaPath, rsa.publicKey.export({ type: 'spki', format: 'pem' }), { mode: 0o600 });
-    const rsaVerifier = createReleaseSignatureVerifier({
-      publicKeyPath: rsaPath,
-      allowedRoots: [owned],
-    });
-    expect(() =>
-      rsaVerifier({
-        payload: 'payload',
-        signature: Buffer.alloc(64).toString('base64'),
-        target: 'darwin-arm64',
-      }),
-    ).toThrow(/Ed25519/u);
-
-    const keyPath = join(owned, 'ed25519.pem');
-    writeFileSync(keyPath, ed25519.publicKey.export({ type: 'spki', format: 'pem' }), {
-      mode: 0o600,
-    });
-    const verifier = createReleaseSignatureVerifier({
-      publicKeyPath: keyPath,
-      allowedRoots: [owned],
-    });
-    expect(() =>
-      verifier({ payload: 'payload', signature: 'short', target: 'darwin-arm64' }),
-    ).toThrow(/signature has an invalid size/iu);
-    expect(
-      verifier({
-        payload: 'payload',
-        signature: Buffer.alloc(64).toString('base64'),
-        target: 'darwin-arm64',
-      }),
-    ).toBe(false);
-  });
 });
 
 describe('concrete packaged staging rollback', () => {
@@ -372,15 +417,14 @@ describe('concrete packaged staging rollback', () => {
     const archive = Buffer.from('not-a-real-archive');
     const sha256 = createHash('sha256').update(archive).digest('hex');
     const assetUrl = 'https://updates.example.test/v2.0.0/pimpampum-darwin-arm64.zip';
-    const payload = [
-      'pimpampum-packaged-release-v1',
-      'stable',
-      '2.0.0',
-      'darwin-arm64',
-      assetUrl,
+    const payload = releaseSignaturePayload({
+      version: '2.0.0',
+      issuedAt: ISSUED_AT,
+      target: 'darwin-arm64',
+      url: assetUrl,
       sha256,
-      String(archive.byteLength),
-    ].join('\n');
+      size: archive.byteLength,
+    });
     const signature = sign(null, Buffer.from(payload), pair.privateKey).toString('base64');
     const channelUrl = 'https://updates.example.test/channel/stable.json';
     const fetchImplementation = vi.fn(async (url: string | URL | Request) =>
@@ -390,6 +434,7 @@ describe('concrete packaged staging rollback', () => {
               schemaVersion: 1,
               channel: 'stable',
               version: '2.0.0',
+              issuedAt: ISSUED_AT,
               targets: {
                 'darwin-arm64': {
                   url: assetUrl,
@@ -425,6 +470,7 @@ describe('concrete packaged staging rollback', () => {
       channelManifestUrl: channelUrl,
       publicKeyPath: keyPath,
       fetchImplementation,
+      environment: {},
     });
 
     await expect(manager.update()).rejects.toThrow(/invalid runtime archive/iu);
@@ -466,5 +512,128 @@ describe('legacy npm fail-closed edges', () => {
     });
     await expect(manager.check()).rejects.toThrow(/provider is unavailable/iu);
     await expect(manager.update()).rejects.toThrow(/provider is unavailable/iu);
+  });
+});
+
+describe('release manifest freshness', () => {
+  const OLDER = '2026-08-01T12:00:00.000Z';
+  const NEWER = '2027-01-01T00:00:00.000Z';
+
+  function trustedProvider(issuedAt: string): PackagedReleaseProviderInput {
+    return provider({ fetchManifest: async () => releaseManifest({ issuedAt }) });
+  }
+
+  it('accepts the first manifest, an equal one, and a newer one while recording each acceptance', async () => {
+    const dataDirectory = join(root(), 'data');
+    mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
+    const managerFor = (issuedAt: string) =>
+      createUpdateManager({
+        currentVersion: '1.0.0',
+        npmPath: null,
+        nodePath: '/usr/bin/node',
+        runCommand: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        installReceipt: {
+          schemaVersion: 1,
+          adapter: 'systemd',
+          updateProvider: 'packaged-release',
+        },
+        packagedRelease: trustedProvider(issuedAt),
+        dataDirectory,
+      });
+    const trustPath = join(dataDirectory, RELEASE_TRUST_STATE_NAME);
+
+    await expect(managerFor(ISSUED_AT).check()).resolves.toMatchObject({ latestVersion: '2.0.0' });
+    expect(statSync(trustPath).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(trustPath, 'utf8'))).toEqual({
+      schemaVersion: 1,
+      lastAcceptedIssuedAt: ISSUED_AT,
+    });
+    await expect(managerFor(ISSUED_AT).check()).resolves.toMatchObject({ latestVersion: '2.0.0' });
+    await expect(managerFor(NEWER).update()).resolves.toMatchObject({ updated: true });
+    expect(JSON.parse(readFileSync(trustPath, 'utf8'))).toMatchObject({
+      lastAcceptedIssuedAt: NEWER,
+    });
+    expect(readdirSync(dataDirectory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('rejects a replayed manifest older than the last accepted one across processes', async () => {
+    const dataDirectory = join(root(), 'data');
+    mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
+    const trust = createReleaseTrustStore(dataDirectory);
+    await expect(
+      createPackagedReleaseUpdateManager({
+        currentVersion: '1.0.0',
+        provider: trustedProvider(ISSUED_AT),
+        trust,
+      }).check(),
+    ).resolves.toMatchObject({ latestVersion: '2.0.0' });
+
+    const replay = createPackagedReleaseUpdateManager({
+      currentVersion: '1.0.0',
+      provider: trustedProvider(OLDER),
+      trust: createReleaseTrustStore(dataDirectory),
+    });
+    const error = await replay.update().catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: 'unavailable',
+      status: 503,
+      retryable: false,
+      details: { issuedAt: OLDER, lastAcceptedIssuedAt: ISSUED_AT },
+    });
+    expect((error as Error).message).toMatch(/older than the last accepted manifest.*replayed/u);
+    await expect(replay.check()).rejects.toMatchObject({ code: 'unavailable' });
+    expect(trust.lastAcceptedIssuedAt()).toBe(ISSUED_AT);
+  });
+
+  it('rejects a replay within one process even without a data directory', async () => {
+    let issuedAt = ISSUED_AT;
+    const manager = createPackagedReleaseUpdateManager({
+      currentVersion: '1.0.0',
+      provider: provider({ fetchManifest: async () => releaseManifest({ issuedAt }) }),
+    });
+    await expect(manager.check()).resolves.toMatchObject({ latestVersion: '2.0.0' });
+    issuedAt = OLDER;
+    await expect(manager.check()).rejects.toThrow(/older than the last accepted/u);
+  });
+
+  it('fails closed on an unreadable, oversized, invalid, or symlinked trust state', async () => {
+    const dataDirectory = join(root(), 'data');
+    mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
+    const trustPath = join(dataDirectory, RELEASE_TRUST_STATE_NAME);
+    const trust = createReleaseTrustStore(dataDirectory);
+    expect(trust.lastAcceptedIssuedAt()).toBeNull();
+
+    writeFileSync(trustPath, '{torn', { mode: 0o600 });
+    const torn = (() => {
+      try {
+        trust.lastAcceptedIssuedAt();
+        return null;
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(torn).toMatchObject({ code: 'unavailable', status: 503, details: { path: trustPath } });
+    expect((torn as Error).message).toMatch(
+      /Update trust state at .* is unreadable; delete the file/u,
+    );
+    expect((torn as Error).cause).toBeInstanceOf(SyntaxError);
+    writeFileSync(trustPath, JSON.stringify({ schemaVersion: 2, lastAcceptedIssuedAt: ISSUED_AT }));
+    expect(() => trust.lastAcceptedIssuedAt()).toThrow(/unreadable/u);
+    writeFileSync(
+      trustPath,
+      JSON.stringify({ schemaVersion: 1, lastAcceptedIssuedAt: '2026-02-30T12:00:00.000Z' }),
+    );
+    expect(() => trust.lastAcceptedIssuedAt()).toThrow(/unreadable/u);
+    writeFileSync(trustPath, `${' '.repeat(5_000)}{}`);
+    expect(() => trust.lastAcceptedIssuedAt()).toThrow(/unreadable/u);
+    rmSync(trustPath);
+    mkdirSync(trustPath);
+    expect(() => trust.lastAcceptedIssuedAt()).toThrow(/unreadable/u);
+    rmSync(trustPath, { recursive: true });
+    writeFileSync(join(dataDirectory, 'elsewhere.json'), '{}', { mode: 0o600 });
+    symlinkSync(join(dataDirectory, 'elsewhere.json'), trustPath);
+    expect(() => trust.lastAcceptedIssuedAt()).toThrow(/symbolic links/u);
+
+    expect(() => createReleaseTrustStore('relative/data')).toThrow(/must be absolute/u);
   });
 });

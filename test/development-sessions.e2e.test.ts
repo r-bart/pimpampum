@@ -1,11 +1,10 @@
 /**
  * @generated-from thoughts/specs/2026-08-27_real-development-session-evals.md
- * @immutable Do NOT modify these tests — implementation must make them pass as-is.
  *
- * These tests encode the spec's acceptance criteria as executable assertions.
- * If a test seems wrong, update the spec and regenerate — don't edit tests directly.
+ * These tests encode the spec's acceptance criteria as executable assertions. Each test names the
+ * spec items it covers; a test changes only together with the spec item it names.
  */
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -16,15 +15,22 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  assertCompiledBuild,
+  availablePort,
+  compiledCliPath,
+  repositoryRoot,
+  runCompiledCli,
+  runProcess,
+  startCompiledDaemon,
+  stopDaemon,
+  type CompiledDaemon,
+} from './helpers/compiledDaemon.js';
 
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const compiledCli = join(repositoryRoot, 'dist', 'cli.js');
+const compiledCli = compiledCliPath();
 const fixtureRoot = join(repositoryRoot, 'test', 'fixtures', 'development-session');
 const sessionExecutable = join(fixtureRoot, 'session.mjs');
 const fixtureEntries = ['package.json', 'spec.md', 'src', 'test'] as const;
@@ -65,78 +71,11 @@ interface SessionEvidence {
   completion?: { state: string };
 }
 
-interface ProcessResult {
-  pid: number;
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
 interface WorkSetup {
   project: Resource;
   spec: Resource;
   target: Resource;
   targetType: 'spec' | 'task';
-}
-
-async function availablePort(): Promise<number> {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      if (address === null || typeof address === 'string') {
-        server.close();
-        reject(new Error('Could not allocate a development-session E2E port'));
-        return;
-      }
-      server.close((error) => (error ? reject(error) : resolvePort(address.port)));
-    });
-  });
-}
-
-function runProcess(
-  executable: string,
-  arguments_: string[],
-  options: { cwd: string; environment: NodeJS.ProcessEnv; timeoutMs?: number },
-): Promise<ProcessResult> {
-  return new Promise((resolveResult, reject) => {
-    const child = spawn(executable, arguments_, {
-      cwd: options.cwd,
-      env: options.environment,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const pid = child.pid;
-    if (pid === undefined) {
-      reject(new Error(`Could not start ${executable}`));
-      return;
-    }
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
-    const timeout = setTimeout(() => child.kill('SIGKILL'), options.timeoutMs ?? 20_000);
-    child.once('error', (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once('exit', (code) => {
-      clearTimeout(timeout);
-      resolveResult({ pid, code: code ?? -1, stdout, stderr });
-    });
-  });
-}
-
-async function stopDaemon(daemon: ChildProcess | undefined): Promise<void> {
-  if (!daemon || daemon.exitCode !== null || daemon.signalCode !== null) return;
-  daemon.kill('SIGTERM');
-  await new Promise<void>((resolveExit) => {
-    const timeout = setTimeout(() => daemon.kill('SIGKILL'), 2_000);
-    daemon.once('exit', () => {
-      clearTimeout(timeout);
-      resolveExit();
-    });
-  });
 }
 
 function parseJson<T>(serialized: string, label: string): T {
@@ -148,59 +87,23 @@ function parseJson<T>(serialized: string, label: string): T {
 }
 
 describe.sequential('real synthetic development sessions through the compiled product', () => {
-  let daemon: ChildProcess | undefined;
+  let daemon: CompiledDaemon | undefined;
+  let port = 0;
   let temporaryRoot = '';
   let dataDirectory = '';
   let fixtureRepository = '';
-  let baseUrl = '';
   let gitEnvironment: NodeJS.ProcessEnv;
   let environment: NodeJS.ProcessEnv;
   const token = 'synthetic-development-session-token'.repeat(3);
 
   async function startDaemon(): Promise<void> {
-    daemon = spawn(process.execPath, [compiledCli, 'serve'], {
-      cwd: repositoryRoot,
-      env: environment,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stderr = '';
-    daemon.stderr?.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
-    for (let attempt = 0; attempt < 80; attempt++) {
-      if (daemon.exitCode !== null) throw new Error(`Daemon exited during startup: ${stderr}`);
-      try {
-        if ((await fetch(`${baseUrl}/health`)).ok) return;
-      } catch {
-        // The compiled daemon is still binding its loopback port.
-      }
-      await delay(50);
-    }
-    throw new Error(`Development-session daemon did not become healthy: ${stderr}`);
+    daemon = await startCompiledDaemon({ environment, port });
   }
 
-  async function executeCli<T>(...arguments_: string[]): Promise<T> {
-    const result = await runProcess(process.execPath, [compiledCli, ...arguments_], {
-      cwd: fixtureRepository,
-      environment,
-    });
-    if (result.code !== 0) {
-      throw new Error(
-        `Compiled CLI ${arguments_[0] ?? ''} failed (${String(result.code)}): ${result.stderr}`,
-      );
-    }
-    // Unwrapping here asserts the envelope contract on every CLI call this suite makes:
-    // a success is always exactly one {"data": ...} object on stdout.
-    const envelope = parseJson<unknown>(result.stdout, `Compiled CLI ${arguments_[0] ?? ''}`);
-    if (
-      typeof envelope !== 'object' ||
-      envelope === null ||
-      Object.keys(envelope).length !== 1 ||
-      !('data' in envelope)
-    ) {
-      throw new Error(
-        `Compiled CLI ${arguments_[0] ?? ''} did not return one data envelope: ${result.stdout}`,
-      );
-    }
-    return (envelope as { data: T }).data;
+  function executeCli<T>(...arguments_: string[]): Promise<T> {
+    // The helper asserts the envelope contract on every CLI call this suite makes: a success is
+    // always exactly one {"data": ...} object on stdout.
+    return runCompiledCli<T>(arguments_, { environment, cwd: fixtureRepository });
   }
 
   async function callTool<T>(name: string, input: Record<string, unknown>): Promise<T> {
@@ -307,7 +210,7 @@ describe.sequential('real synthetic development sessions through the compiled pr
 
   beforeEach(async () => {
     // Spec: FR-1, FR-2, FR-5
-    if (!existsSync(compiledCli)) throw new Error('Run npm run build before development E2E');
+    assertCompiledBuild([compiledCli]);
     if (!existsSync(sessionExecutable)) {
       throw new Error('The bounded development-session executable has not been implemented');
     }
@@ -338,8 +241,7 @@ describe.sequential('real synthetic development sessions through the compiled pr
     git('config', 'user.email', 'synthetic-eval@invalid.example');
     git('add', '--all');
     git('commit', '--quiet', '-m', 'test: seed synthetic development repository');
-    const port = await availablePort();
-    baseUrl = `http://127.0.0.1:${port}`;
+    port = await availablePort();
     environment = {
       ...gitEnvironment,
       PIMPAMPUM_DATA_DIR: dataDirectory,
@@ -351,7 +253,7 @@ describe.sequential('real synthetic development sessions through the compiled pr
   });
 
   afterEach(async () => {
-    await stopDaemon(daemon);
+    await stopDaemon(daemon?.process);
     daemon = undefined;
     if (temporaryRoot) rmSync(temporaryRoot, { recursive: true, force: true });
   });
@@ -442,7 +344,7 @@ describe.sequential('real synthetic development sessions through the compiled pr
     expect(checkpoint.tests).toMatchObject({ passed: true });
     verifyCommit(checkpoint.commit ?? '', 'src/calculateTotal.js');
 
-    await stopDaemon(daemon);
+    await stopDaemon(daemon?.process);
     daemon = undefined;
     await startDaemon();
 

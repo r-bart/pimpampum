@@ -1,17 +1,18 @@
-import { randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, readFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, normalize, relative } from 'node:path';
+import { collectFailures, runCompensation } from '../aggregateRollback.js';
+import { writePrivateFileAtomic } from '../fsAtomic.js';
+import { assertNoSymlinkTraversal } from '../fsGuards.js';
+import { createSetupLifecycleLock } from '../lifecycleLock.js';
 import { createLaunchdAdapter } from './launchd.js';
 import { restoreServiceLogs, rotateServiceLogs, snapshotServiceLogs } from './logs.js';
 import {
   installReceiptPath,
   installationKey,
-  assertNoSymlinkTraversal,
   readInstallReceipt,
   receiptArtifacts,
   sha256,
   writeInstallReceipt,
-  writePrivateFileAtomic,
 } from './receipt.js';
 import { createSystemdAdapter } from './systemd.js';
 import type {
@@ -20,6 +21,7 @@ import type {
   PlatformServiceAdapter,
   PlatformServiceManagerInput,
   PreparedServiceUninstall,
+  ReceiptArtifact,
   ServiceAdapterContext,
   ServiceArtifact,
   ServiceArtifactRef,
@@ -33,59 +35,11 @@ type ArtifactSnapshot =
   | { path: string; trustedRoot: string; existed: false }
   | { path: string; trustedRoot: string; existed: true; content: Buffer; mode: number };
 
-const SERVICE_LIFECYCLE_LOCK_NAME = '.service-lifecycle.lock';
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
-}
-
-function acquireLifecycleLock(dataDirectory: string): () => void {
-  const lockPath = join(dataDirectory, SERVICE_LIFECYCLE_LOCK_NAME);
-  const lock = `${JSON.stringify({ pid: process.pid, nonce: randomUUID() })}\n`;
-  while (true) {
-    assertNoSymlinkTraversal(dataDirectory, 'Data directory', dataDirectory);
-    try {
-      writeFileSync(lockPath, lock, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-      return () => {
-        if (existsSync(lockPath)) {
-          assertNoSymlinkTraversal(lockPath, 'Service lifecycle lock', dataDirectory);
-          if (readFileSync(lockPath, 'utf8') === lock) rmSync(lockPath);
-        }
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      assertNoSymlinkTraversal(lockPath, 'Service lifecycle lock', dataDirectory);
-      let owner: unknown;
-      try {
-        owner = JSON.parse(readFileSync(lockPath, 'utf8')) as unknown;
-      } catch (parseError) {
-        throw new Error('Invalid Pimpampum service lifecycle lock', { cause: parseError });
-      }
-      const pid = (owner as { pid?: unknown }).pid;
-      if (!Number.isInteger(pid) || (pid as number) < 1 || processIsAlive(pid as number)) {
-        throw new Error('Another Pimpampum service lifecycle operation is in progress');
-      }
-      rmSync(lockPath);
-    }
-  }
-}
-
-async function withLifecycleLock<T>(
-  context: ServiceAdapterContext,
-  action: () => Promise<T>,
-): Promise<T> {
-  const release = acquireLifecycleLock(context.dataDirectory);
-  try {
-    return await action();
-  } finally {
-    release();
-  }
-}
+/**
+ * A read-only `status` must not fail because an install is mid-flight: it waits this long for the
+ * shared lifecycle lock before reporting a typed conflict. Mutations keep the lock's default wait.
+ */
+const STATUS_LOCK_WAIT_MILLISECONDS = 5_000;
 
 async function repairRegistration(
   adapter: PlatformServiceAdapter,
@@ -95,16 +49,11 @@ async function repairRegistration(
   try {
     await adapter.activate(context, artifacts);
   } catch (activationError) {
-    if (!adapter.afterRollback) throw activationError;
-    try {
-      await adapter.afterRollback(context, artifacts);
-    } catch (rollbackError) {
-      throw new AggregateError(
-        [activationError, rollbackError],
-        'Service registration repair and rollback failed',
-      );
-    }
-    throw activationError;
+    await runCompensation(
+      activationError,
+      adapter.afterRollback ? [() => adapter.afterRollback!(context, artifacts)] : [],
+      'Service registration repair and rollback failed',
+    );
   }
 }
 
@@ -329,10 +278,24 @@ function snapshotArtifact(path: string, trustedRoot: string): ArtifactSnapshot {
   };
 }
 
+/**
+ * Service artifacts live under the home directory in trees the adapter owns (LaunchAgents, the
+ * systemd user directory, the Omarchy plugin checkout). A parent that does not exist yet, or that
+ * `omarchy plugin remove` took away before a rollback, is created world-readable like a checkout.
+ */
+function writeArtifact(path: string, content: string | Buffer, mode: number, root: string): void {
+  writePrivateFileAtomic(path, content, {
+    mode,
+    directoryMode: 0o755,
+    trustedRoot: root,
+    label: 'Service artifact',
+  });
+}
+
 function restoreArtifacts(snapshots: ArtifactSnapshot[]): void {
   for (const snapshot of [...snapshots].reverse()) {
     if (snapshot.existed) {
-      writePrivateFileAtomic(snapshot.path, snapshot.content, snapshot.mode, snapshot.trustedRoot);
+      writeArtifact(snapshot.path, snapshot.content, snapshot.mode, snapshot.trustedRoot);
     } else {
       rmSync(snapshot.path, { force: true });
     }
@@ -462,322 +425,404 @@ function repairMissingArtifacts(
     if (sha256(planned.content) !== expected.sha256 || planned.mode !== expected.mode) {
       throw new Error(`Cannot repair missing service artifact from this package: ${path}`);
     }
-    writePrivateFileAtomic(path, planned.content, planned.mode, context.homeDirectory);
+    writeArtifact(path, planned.content, planned.mode, context.homeDirectory);
+  }
+}
+
+/** Everything one install run knows once planning and preflight succeeded. */
+interface InstallSession {
+  input: PlatformServiceManagerInput;
+  context: ServiceAdapterContext;
+  adapter: PlatformServiceAdapter;
+  artifacts: ServiceArtifact[];
+  existing: InstallReceipt | null;
+  receiptPath: string;
+  ownedRoots: string[];
+  ownedArtifacts: ReceiptArtifact[];
+  key: string;
+}
+
+/**
+ * The files an install or a reconcile may touch, captured before the first mutation. Restoring
+ * puts the artifact bytes and the receipt back in reverse order, then the rotated logs; each is
+ * its own compensation step so a failure in one never skips the other.
+ */
+interface Transaction {
+  restoreFiles(): void;
+  restoreLogs(): void;
+}
+
+function beginTransaction(
+  context: ServiceAdapterContext,
+  receiptPath: string,
+  paths: string[],
+): Transaction {
+  const snapshots = paths.map((path) => snapshotArtifact(path, context.homeDirectory));
+  const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
+  const logsSnapshot = snapshotServiceLogs(context.logDirectory, 5, context.dataDirectory);
+  return {
+    restoreFiles: () => restoreArtifacts([...snapshots, receiptSnapshot]),
+    restoreLogs: () => restoreServiceLogs(logsSnapshot),
+  };
+}
+
+function plannedReceipt(session: InstallSession): InstallReceipt {
+  const { context, adapter } = session;
+  return {
+    schemaVersion: 1,
+    adapter: adapter.id,
+    platform: adapter.platform,
+    version: context.version,
+    installationKey: session.key,
+    installedAt: new Date().toISOString(),
+    nodePath: context.nodePath,
+    cliPath: context.cliPath,
+    dataDirectory: context.dataDirectory,
+    baseUrl: `http://${context.host === '::1' ? '[::1]' : context.host}:${context.port}`,
+    logDirectory: context.logDirectory,
+    artifacts: session.ownedArtifacts,
+    ...(context.packagedRuntime
+      ? {
+          updateProvider: 'packaged-release' as const,
+          packagedRuntime: context.packagedRuntime,
+        }
+      : {}),
+  };
+}
+
+/**
+ * The receipt already describes exactly what this build would write: keep the files, make sure
+ * the registration is alive, and — when a verifier is configured — prove the service answers
+ * before reporting success, undoing any repair when it does not.
+ */
+async function reconcileExisting(
+  session: InstallSession,
+  existing: InstallReceipt,
+): Promise<InstallResult> {
+  const { input, context, adapter, artifacts, receiptPath } = session;
+  chmodSync(receiptPath, 0o600);
+  const finish = async (): Promise<InstallResult> => ({
+    installed: true,
+    reconciled: true,
+    receiptPath,
+    ...(await adapter.afterInstall?.(context, artifacts)),
+  });
+  if (!input.postActivationVerifier) {
+    if (!(await adapter.isRunning(context, artifacts))) {
+      await repairRegistration(adapter, context, artifacts);
+    }
+    return finish();
+  }
+  const runningBefore = await adapter.isRunning(context, artifacts);
+  const transaction = beginTransaction(
+    context,
+    receiptPath,
+    artifacts.map((artifact) => artifact.path),
+  );
+  const rollbackRegistration = runningBefore
+    ? undefined
+    : await adapter.prepareDeactivationRollback?.(context, artifacts);
+  const repairIfStopped = async (): Promise<boolean> => {
+    if (runningBefore) return false;
+    await repairRegistration(adapter, context, artifacts);
+    return true;
+  };
+  let registrationRepaired = false;
+  try {
+    registrationRepaired = await repairIfStopped();
+    await verifyPostActivation(input, context, receiptPath, existing, existing);
+  } catch (error) {
+    return runCompensation(
+      error,
+      [
+        async () => {
+          if (!registrationRepaired) return;
+          if (rollbackRegistration) await rollbackRegistration();
+          else await adapter.deactivate(context, artifacts);
+        },
+        () => transaction.restoreFiles(),
+        () => transaction.restoreLogs(),
+      ],
+      'Service health verification and rollback failed',
+    );
+  }
+  return finish();
+}
+
+/**
+ * Writes the planned artifacts and receipt, activates, verifies, and on any failure restores the
+ * snapshot. The compensation order matters: deactivate what this run activated, put the files
+ * back, put the logs back, and only then hand the adapter its restored files for its own rollback.
+ */
+async function installFresh(session: InstallSession): Promise<InstallResult> {
+  const { input, context, adapter, artifacts, existing, receiptPath } = session;
+  const staleArtifacts = staleOwnedArtifacts(context, existing, artifacts, session.ownedRoots);
+  const transaction = beginTransaction(
+    context,
+    receiptPath,
+    [...artifacts, ...staleArtifacts].map((artifact) => artifact.path),
+  );
+  const receipt = plannedReceipt(session);
+  const rollbackActivationState = input.postActivationVerifier
+    ? await adapter.prepareDeactivationRollback?.(context, artifacts)
+    : undefined;
+  let activationCompleted = false;
+  try {
+    rotateServiceLogs(context.logDirectory, 5, context.dataDirectory);
+    for (const artifact of staleArtifacts) rmSync(artifact.path, { force: true });
+    for (const artifact of artifacts) {
+      writeArtifact(artifact.path, artifact.content, artifact.mode, context.homeDirectory);
+    }
+    writeInstallReceipt(receiptPath, receipt, context.dataDirectory);
+    await adapter.activate(context, artifacts);
+    activationCompleted = true;
+    await verifyPostActivation(input, context, receiptPath, receipt, existing);
+    const integration = await adapter.afterInstall?.(context, artifacts);
+    return { installed: true, reconciled: existing !== null, receiptPath, ...integration };
+  } catch (error) {
+    let filesRestored = false;
+    return runCompensation(
+      error,
+      [
+        async () => {
+          if (!activationCompleted || rollbackActivationState) return;
+          if (adapter.rollbackActivation) await adapter.rollbackActivation(context, artifacts);
+          else await adapter.deactivate(context, artifacts);
+        },
+        () => {
+          transaction.restoreFiles();
+          filesRestored = true;
+        },
+        () => transaction.restoreLogs(),
+        async () => {
+          if (!filesRestored) return;
+          if (rollbackActivationState) await rollbackActivationState();
+          else if (adapter.afterRollback) await adapter.afterRollback(context, artifacts);
+          else if (activationCompleted && existing) await adapter.activate(context, artifacts);
+        },
+      ],
+      'Service installation and rollback failed',
+    );
+  }
+}
+
+async function runInstall(
+  input: PlatformServiceManagerInput,
+  context: ServiceAdapterContext,
+  defaultAdapter: PlatformServiceAdapter,
+  receiptPath: string,
+): Promise<InstallResult> {
+  const existing = readInstallReceipt(receiptPath, context.dataDirectory);
+  // A private-runtime setup is also the explicit migration boundary from the legacy npm
+  // service. Promote that receipt to the currently selected native adapter so macOS gains
+  // the app/login item and Omarchy gains its plugin integration in the same transaction.
+  const adapter = adapterForInstall(input, existing, defaultAdapter);
+  const artifacts = adapter.artifacts(context);
+  validateArtifacts(context, artifacts);
+  const ownedRoots = validateOwnedArtifactRoots(adapter, context);
+  await adapter.preflight?.(context, artifacts, 'install');
+  const ownedArtifacts = receiptArtifacts(artifacts);
+  const key = installationKey({
+    adapter: adapter.id,
+    platform: adapter.platform,
+    version: context.version,
+    nodePath: context.nodePath,
+    cliPath: context.cliPath,
+    dataDirectory: context.dataDirectory,
+    artifacts: ownedArtifacts,
+  });
+  const session: InstallSession = {
+    input,
+    context,
+    adapter,
+    artifacts,
+    existing,
+    receiptPath,
+    ownedRoots,
+    ownedArtifacts,
+    key,
+  };
+  if (
+    existing !== null &&
+    existing.installationKey === key &&
+    artifactSetIsCurrent(existing, artifacts)
+  ) {
+    return reconcileExisting(session, existing);
+  }
+  return installFresh(session);
+}
+
+async function readServiceStatus(
+  input: PlatformServiceManagerInput,
+  context: ServiceAdapterContext,
+  receiptPath: string,
+): Promise<ServiceStatus> {
+  const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
+  if (!receipt) return { installed: false, running: false, adapter: null, version: null };
+  const adapter = requireReceiptAdapter(input, receipt);
+  // Planning detects an installation that no longer matches what this build would write. It
+  // needs the adapter's source, which an installed CLI does not carry, so fall back to the
+  // receipt rather than failing a read-only command.
+  const canPlan = adapter.canPlanArtifacts?.(context) ?? true;
+  const artifacts: ServiceArtifactRef[] = canPlan
+    ? adapter.artifacts(context)
+    : receipt.artifacts.map((artifact) => ({ path: artifact.path, mode: artifact.mode }));
+  validateArtifacts(context, artifacts);
+  const installed = canPlan
+    ? artifactSetIsCurrent(receipt, artifacts)
+    : receiptMatchesDisk(receipt);
+  const integration = await adapter.integrationStatus?.(context, artifacts);
+  return {
+    installed,
+    running: installed ? await adapter.isRunning(context, artifacts) : false,
+    adapter: receipt.adapter,
+    version: receipt.version,
+    ...integration,
+  };
+}
+
+interface RemovalPlan {
+  context: ServiceAdapterContext;
+  adapter: PlatformServiceAdapter;
+  receipt: InstallReceipt;
+  plannedArtifacts: ServiceArtifact[];
+  artifacts: ServiceArtifact[];
+  receiptPath: string;
+  releaseOnce: () => void;
+}
+
+/**
+ * Deactivates and deletes the owned artifacts while the receipt stays on disk, so a crash before
+ * `commit` leaves a state `install` can repair. Any failure puts the files back and, when the
+ * service was already stopped, brings it back too; the lock is released once, whatever happens.
+ */
+async function performOwnedRemoval(plan: RemovalPlan): Promise<PreparedServiceUninstall> {
+  const { context, adapter, receipt, plannedArtifacts, artifacts, receiptPath, releaseOnce } = plan;
+  const snapshots = artifacts.map((artifact) =>
+    snapshotArtifact(artifact.path, context.homeDirectory),
+  );
+  const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
+  let rollbackDeactivation: (() => Promise<void>) | undefined;
+  let deactivationAttempted = false;
+  let manualInstructions: string[] = [];
+  let finished = false;
+  let committed = false;
+
+  const rollbackPrepared = async (originalError?: unknown): Promise<void> => {
+    if (finished) return;
+    const failures = await collectFailures([
+      () => restoreArtifacts([...snapshots, receiptSnapshot]),
+      async () => {
+        if (!deactivationAttempted) return;
+        if (rollbackDeactivation) {
+          await rollbackDeactivation();
+        } else {
+          await adapter.activate(context, plannedArtifacts);
+          await adapter.afterInstall?.(context, plannedArtifacts);
+        }
+      },
+    ]);
+    finished = true;
+    releaseOnce();
+    const errors = originalError === undefined ? failures : [originalError, ...failures];
+    if (errors.length === 0) return;
+    if (errors.length === 1 && originalError !== undefined) throw originalError;
+    throw new AggregateError(errors, 'Service uninstallation and rollback failed');
+  };
+
+  try {
+    repairMissingArtifacts(context, receipt, plannedArtifacts);
+    assertOwnedBytes(receipt, artifacts);
+    rollbackDeactivation = await adapter.prepareDeactivationRollback?.(context, plannedArtifacts);
+    deactivationAttempted = true;
+    await adapter.deactivate(context, artifacts);
+    for (const artifact of artifacts) rmSync(artifact.path, { force: true });
+    const outcome = await adapter.afterUninstall?.(context, artifacts);
+    manualInstructions = outcome ? (outcome.manualInstructions ?? []) : [];
+  } catch (error) {
+    await rollbackPrepared(error);
+  }
+
+  return {
+    async commit() {
+      if (finished) throw new Error('Prepared service removal is already complete');
+      if (committed) throw new Error('Prepared service removal is already committed');
+      rmSync(receiptPath, { force: true });
+      committed = true;
+      return {
+        uninstalled: true,
+        dataPreserved: true,
+        ...(manualInstructions.length > 0 ? { manualInstructions } : {}),
+      };
+    },
+    rollback: () => rollbackPrepared(),
+    async finalize() {
+      if (finished) return;
+      if (!committed) throw new Error('Prepared service removal is not committed');
+      finished = true;
+      releaseOnce();
+    },
+  };
+}
+
+async function prepareServiceUninstall(
+  input: PlatformServiceManagerInput,
+  receiptPath: string,
+  mutationLock: ReturnType<typeof createSetupLifecycleLock>,
+): Promise<PreparedServiceUninstall | null> {
+  requireAdapter(input);
+  const context = adapterContext(input);
+  const releaseOnce = await mutationLock.acquire();
+  try {
+    const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
+    if (!receipt) {
+      releaseOnce();
+      return null;
+    }
+    const adapter = requireReceiptAdapter(input, receipt);
+    const plannedArtifacts = adapter.artifacts(context);
+    validateArtifacts(context, plannedArtifacts);
+    const ownedRoots = validateOwnedArtifactRoots(adapter, context);
+    await adapter.preflight?.(context, plannedArtifacts, 'uninstall');
+    const artifacts = validateOwnedArtifacts(context, receipt, plannedArtifacts, ownedRoots);
+    return await performOwnedRemoval({
+      context,
+      adapter,
+      receipt,
+      plannedArtifacts,
+      artifacts,
+      receiptPath,
+      releaseOnce,
+    });
+  } catch (error) {
+    releaseOnce();
+    throw error;
   }
 }
 
 export function createPlatformServiceManager(input: PlatformServiceManagerInput): ServiceManager {
-  const receiptPath = installReceiptPath(absolutePath(input.dataDirectory, 'Data directory'));
-
-  async function prepareUninstall(): Promise<PreparedServiceUninstall | null> {
-    requireAdapter(input);
-    const context = adapterContext(input);
-    const release = acquireLifecycleLock(context.dataDirectory);
-    let released = false;
-    const releaseOnce = (): void => {
-      if (released) return;
-      released = true;
-      release();
-    };
-    try {
-      const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
-      if (!receipt) {
-        releaseOnce();
-        return null;
-      }
-      const adapter = requireReceiptAdapter(input, receipt);
-      const plannedArtifacts = adapter.artifacts(context);
-      validateArtifacts(context, plannedArtifacts);
-      const ownedRoots = validateOwnedArtifactRoots(adapter, context);
-      await adapter.preflight?.(context, plannedArtifacts, 'uninstall');
-      const artifacts = validateOwnedArtifacts(context, receipt, plannedArtifacts, ownedRoots);
-      const snapshots = artifacts.map((artifact) =>
-        snapshotArtifact(artifact.path, context.homeDirectory),
-      );
-      const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
-      let rollbackDeactivation: (() => Promise<void>) | undefined;
-      let deactivationAttempted = false;
-      let finished = false;
-      let committed = false;
-
-      const rollbackPrepared = async (originalError?: unknown): Promise<void> => {
-        if (finished) return;
-        const rollbackErrors: unknown[] = originalError === undefined ? [] : [originalError];
-        try {
-          restoreArtifacts([...snapshots, receiptSnapshot]);
-        } catch (restoreError) {
-          rollbackErrors.push(restoreError);
-        }
-        if (deactivationAttempted) {
-          try {
-            if (rollbackDeactivation) {
-              await rollbackDeactivation();
-            } else {
-              await adapter.activate(context, plannedArtifacts);
-              await adapter.afterInstall?.(context, plannedArtifacts);
-            }
-          } catch (activationError) {
-            rollbackErrors.push(activationError);
-          }
-        }
-        finished = true;
-        releaseOnce();
-        if (rollbackErrors.length === 0) return;
-        if (rollbackErrors.length === 1 && originalError !== undefined) throw originalError;
-        throw new AggregateError(rollbackErrors, 'Service uninstallation and rollback failed');
-      };
-
-      try {
-        repairMissingArtifacts(context, receipt, plannedArtifacts);
-        assertOwnedBytes(receipt, artifacts);
-        rollbackDeactivation = await adapter.prepareDeactivationRollback?.(
-          context,
-          plannedArtifacts,
-        );
-        deactivationAttempted = true;
-        await adapter.deactivate(context, artifacts);
-        for (const artifact of artifacts) rmSync(artifact.path, { force: true });
-        await adapter.afterUninstall?.(context, artifacts);
-      } catch (error) {
-        await rollbackPrepared(error);
-      }
-
-      return {
-        async commit() {
-          if (finished) throw new Error('Prepared service removal is already complete');
-          if (committed) throw new Error('Prepared service removal is already committed');
-          rmSync(receiptPath, { force: true });
-          committed = true;
-          return { uninstalled: true, dataPreserved: true };
-        },
-        rollback: () => rollbackPrepared(),
-        async finalize() {
-          if (finished) return;
-          if (!committed) throw new Error('Prepared service removal is not committed');
-          finished = true;
-          releaseOnce();
-        },
-      };
-    } catch (error) {
-      releaseOnce();
-      throw error;
-    }
-  }
+  const dataDirectory = absolutePath(input.dataDirectory, 'Data directory');
+  const receiptPath = installReceiptPath(dataDirectory);
+  // One lock for every owner of the data directory. Nested acquisitions inside `setup apply` or
+  // the packaged removal re-enter it, so the coordinator can drive the manager without deadlock.
+  const mutationLock = createSetupLifecycleLock(dataDirectory);
+  const statusLock = createSetupLifecycleLock(dataDirectory, {
+    timeoutMilliseconds: STATUS_LOCK_WAIT_MILLISECONDS,
+  });
+  const prepareUninstall = (): Promise<PreparedServiceUninstall | null> =>
+    prepareServiceUninstall(input, receiptPath, mutationLock);
 
   return {
     async install(): Promise<InstallResult> {
       const defaultAdapter = requireAdapter(input);
       const context = adapterContext(input);
-      return withLifecycleLock(context, async () => {
-        const existing = readInstallReceipt(receiptPath, context.dataDirectory);
-        // A private-runtime setup is also the explicit migration boundary from the legacy npm
-        // service. Promote that receipt to the currently selected native adapter so macOS gains
-        // the app/login item and Omarchy gains its plugin integration in the same transaction.
-        const adapter = adapterForInstall(input, existing, defaultAdapter);
-        const artifacts = adapter.artifacts(context);
-        validateArtifacts(context, artifacts);
-        const ownedRoots = validateOwnedArtifactRoots(adapter, context);
-        await adapter.preflight?.(context, artifacts, 'install');
-        const ownedArtifacts = receiptArtifacts(artifacts);
-        const key = installationKey({
-          adapter: adapter.id,
-          platform: adapter.platform,
-          version: context.version,
-          nodePath: context.nodePath,
-          cliPath: context.cliPath,
-          dataDirectory: context.dataDirectory,
-          artifacts: ownedArtifacts,
-        });
-        if (existing?.installationKey === key && artifactSetIsCurrent(existing, artifacts)) {
-          chmodSync(receiptPath, 0o600);
-          if (!input.postActivationVerifier) {
-            if (!(await adapter.isRunning(context, artifacts))) {
-              await repairRegistration(adapter, context, artifacts);
-            }
-            const integration = await adapter.afterInstall?.(context, artifacts);
-            return { installed: true, reconciled: true, receiptPath, ...integration };
-          }
-          const runningBefore = await adapter.isRunning(context, artifacts);
-          const snapshots = artifacts.map((artifact) =>
-            snapshotArtifact(artifact.path, context.homeDirectory),
-          );
-          const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
-          const logsSnapshot = snapshotServiceLogs(context.logDirectory, 5, context.dataDirectory);
-          let registrationRepaired = false;
-          const rollbackRegistration = runningBefore
-            ? undefined
-            : await adapter.prepareDeactivationRollback?.(context, artifacts);
-          try {
-            if (runningBefore) {
-              registrationRepaired = false;
-            } else {
-              await repairRegistration(adapter, context, artifacts);
-              registrationRepaired = true;
-            }
-            await verifyPostActivation(input, context, receiptPath, existing, existing);
-          } catch (error) {
-            const rollbackErrors: unknown[] = [error];
-            if (registrationRepaired) {
-              try {
-                if (rollbackRegistration) await rollbackRegistration();
-                else await adapter.deactivate(context, artifacts);
-              } catch (registrationRollbackError) {
-                rollbackErrors.push(registrationRollbackError);
-              }
-            }
-            try {
-              restoreArtifacts([...snapshots, receiptSnapshot]);
-            } catch (restoreError) {
-              rollbackErrors.push(restoreError);
-            }
-            try {
-              restoreServiceLogs(logsSnapshot);
-            } catch (logsRestoreError) {
-              rollbackErrors.push(logsRestoreError);
-            }
-            if (rollbackErrors.length > 1) {
-              throw new AggregateError(
-                rollbackErrors,
-                'Service health verification and rollback failed',
-              );
-            }
-            throw error;
-          }
-          const integration = await adapter.afterInstall?.(context, artifacts);
-          return { installed: true, reconciled: true, receiptPath, ...integration };
-        }
-
-        const staleArtifacts = staleOwnedArtifacts(context, existing, artifacts, ownedRoots);
-        const snapshots = [...artifacts, ...staleArtifacts].map((artifact) =>
-          snapshotArtifact(artifact.path, context.homeDirectory),
-        );
-        const receiptSnapshot = snapshotArtifact(receiptPath, context.dataDirectory);
-        const logsSnapshot = snapshotServiceLogs(context.logDirectory, 5, context.dataDirectory);
-        const receipt: InstallReceipt = {
-          schemaVersion: 1,
-          adapter: adapter.id,
-          platform: adapter.platform,
-          version: context.version,
-          installationKey: key,
-          installedAt: new Date().toISOString(),
-          nodePath: context.nodePath,
-          cliPath: context.cliPath,
-          dataDirectory: context.dataDirectory,
-          baseUrl: `http://${context.host === '::1' ? '[::1]' : context.host}:${context.port}`,
-          logDirectory: context.logDirectory,
-          artifacts: ownedArtifacts,
-          ...(context.packagedRuntime
-            ? {
-                updateProvider: 'packaged-release' as const,
-                packagedRuntime: context.packagedRuntime,
-              }
-            : {}),
-        };
-        const rollbackActivationState = input.postActivationVerifier
-          ? await adapter.prepareDeactivationRollback?.(context, artifacts)
-          : undefined;
-        let activationCompleted = false;
-        try {
-          rotateServiceLogs(context.logDirectory, 5, context.dataDirectory);
-          for (const artifact of staleArtifacts) rmSync(artifact.path, { force: true });
-          for (const artifact of artifacts) {
-            writePrivateFileAtomic(
-              artifact.path,
-              artifact.content,
-              artifact.mode,
-              context.homeDirectory,
-            );
-          }
-          writeInstallReceipt(receiptPath, receipt, context.dataDirectory);
-          await adapter.activate(context, artifacts);
-          activationCompleted = true;
-          await verifyPostActivation(input, context, receiptPath, receipt, existing);
-          const integration = await adapter.afterInstall?.(context, artifacts);
-          return {
-            installed: true,
-            reconciled: existing !== null,
-            receiptPath,
-            ...integration,
-          };
-        } catch (error) {
-          const rollbackErrors: unknown[] = [error];
-          let serviceArtifactsRestored = false;
-          if (activationCompleted && !rollbackActivationState) {
-            try {
-              if (adapter.rollbackActivation) {
-                await adapter.rollbackActivation(context, artifacts);
-              } else {
-                await adapter.deactivate(context, artifacts);
-              }
-            } catch (deactivationError) {
-              rollbackErrors.push(deactivationError);
-            }
-          }
-          try {
-            restoreArtifacts([...snapshots, receiptSnapshot]);
-            serviceArtifactsRestored = true;
-          } catch (restoreError) {
-            rollbackErrors.push(restoreError);
-          }
-          try {
-            restoreServiceLogs(logsSnapshot);
-          } catch (logsRestoreError) {
-            rollbackErrors.push(logsRestoreError);
-          }
-          if (serviceArtifactsRestored && rollbackActivationState) {
-            try {
-              await rollbackActivationState();
-            } catch (activationRollbackError) {
-              rollbackErrors.push(activationRollbackError);
-            }
-          } else if (serviceArtifactsRestored && adapter.afterRollback) {
-            try {
-              await adapter.afterRollback(context, artifacts);
-            } catch (adapterRollbackError) {
-              rollbackErrors.push(adapterRollbackError);
-            }
-          } else if (serviceArtifactsRestored && activationCompleted && existing) {
-            try {
-              await adapter.activate(context, artifacts);
-            } catch (reactivationError) {
-              rollbackErrors.push(reactivationError);
-            }
-          }
-          if (rollbackErrors.length > 1) {
-            throw new AggregateError(rollbackErrors, 'Service installation and rollback failed');
-          }
-          throw error;
-        }
-      });
+      return mutationLock.run(() => runInstall(input, context, defaultAdapter, receiptPath));
     },
 
     async status(): Promise<ServiceStatus> {
       requireAdapter(input);
       const context = adapterContext(input);
-      return withLifecycleLock(context, async () => {
-        const receipt = readInstallReceipt(receiptPath, context.dataDirectory);
-        if (!receipt) return { installed: false, running: false, adapter: null, version: null };
-        const adapter = requireReceiptAdapter(input, receipt);
-        // Planning detects an installation that no longer matches what this build would write. It
-        // needs the adapter's source, which an installed CLI does not carry, so fall back to the
-        // receipt rather than failing a read-only command.
-        const canPlan = adapter.canPlanArtifacts?.(context) ?? true;
-        const artifacts: ServiceArtifactRef[] = canPlan
-          ? adapter.artifacts(context)
-          : receipt.artifacts.map((artifact) => ({ path: artifact.path, mode: artifact.mode }));
-        validateArtifacts(context, artifacts);
-        const installed = canPlan
-          ? artifactSetIsCurrent(receipt, artifacts)
-          : receiptMatchesDisk(receipt);
-        const integration = await adapter.integrationStatus?.(context, artifacts);
-        return {
-          installed,
-          running: installed ? await adapter.isRunning(context, artifacts) : false,
-          adapter: receipt.adapter,
-          version: receipt.version,
-          ...integration,
-        };
-      });
+      return statusLock.run(() => readServiceStatus(input, context, receiptPath));
     },
 
     async uninstall(): Promise<UninstallResult> {
@@ -788,15 +833,11 @@ export function createPlatformServiceManager(input: PlatformServiceManagerInput)
         await prepared.finalize();
         return result;
       } catch (error) {
-        try {
-          await prepared.rollback();
-        } catch (rollbackError) {
-          throw new AggregateError(
-            [error, rollbackError],
-            'Service uninstallation and rollback failed',
-          );
-        }
-        throw error;
+        return runCompensation(
+          error,
+          [() => prepared.rollback()],
+          'Service uninstallation and rollback failed',
+        );
       }
     },
     prepareUninstall,

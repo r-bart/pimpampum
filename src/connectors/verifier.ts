@@ -2,6 +2,7 @@ import { Client, SUPPORTED_PROTOCOL_VERSIONS } from '@modelcontextprotocol/clien
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { isAbsolute } from 'node:path';
 import type { Stream } from 'node:stream';
+import { redactDiagnostic } from '../diagnostics.js';
 import { sanitizedHostEnvironment } from './process.js';
 
 const MAX_DIAGNOSTIC_BYTES = 8_192;
@@ -27,6 +28,8 @@ interface McpRouteProbe {
   initialize(): Promise<ProbeInitialization>;
   listTools(): Promise<ProbeToolList>;
   close(): Promise<void>;
+  /** Last resort once `close()` misses its deadline: the bridge must not outlive the verifier. */
+  kill?(): void;
   requiresProtocolVersion?: boolean;
   acceptsNegotiatedProtocolVersion?(protocolVersion: string): boolean;
   diagnostics?(): unknown[];
@@ -73,18 +76,6 @@ function boundedSerialized(value: unknown): string {
     if (error instanceof Error && /bounded message limit/iu.test(error.message)) throw error;
     throw new Error('MCP verifier output could not be inspected safely', { cause: error });
   }
-}
-
-function redactDiagnostic(value: string): string {
-  return value
-    .replace(/(?:authorization\s*:?\s*)?bearer\s+\S+/giu, '[credential redacted]')
-    .replace(/\b(?:api[_-]?key|access[_-]?token|secret)\s*[:=]\s*\S+/giu, '[credential redacted]')
-    .replace(/\/Users\/[^/\s]+/gu, '~')
-    .replace(/\/home\/[^/\s]+/gu, '~')
-    .replace(/[\r\n\t]+/gu, ' ')
-    .replace(/\s{2,}/gu, ' ')
-    .trim()
-    .slice(0, 320);
 }
 
 function diagnosticValues(...sources: unknown[]): string[] {
@@ -154,6 +145,20 @@ function collectStderr(stream: Stream | null): {
   };
 }
 
+/** SIGKILL for a bridge that ignored the graceful close; an already-gone process is not an error. */
+export function killBridgeProcess(
+  pid: number | null | undefined,
+  signal: (pid: number, signal: NodeJS.Signals) => void = (target, name) =>
+    process.kill(target, name),
+): void {
+  if (typeof pid !== 'number') return;
+  try {
+    signal(pid, 'SIGKILL');
+  } catch {
+    // The process exited between the close deadline and the signal.
+  }
+}
+
 function spawnSdkProbe(command: string, arguments_: string[]): McpRouteProbe {
   const transport = new StdioClientTransport({
     command,
@@ -167,6 +172,8 @@ function spawnSdkProbe(command: string, arguments_: string[]): McpRouteProbe {
     maxBufferSize: MAX_PROTOCOL_MESSAGE_BYTES,
   });
   const stderr = collectStderr(transport.stderr);
+  // `close()` forgets the child before it escalates, so remember the pid while it is connected.
+  let bridgePid: number | null = null;
   const client = new Client(
     { name: 'pimpampum-connector-verifier', version: '1.0.0' },
     { versionNegotiation: { mode: 'auto' } },
@@ -180,6 +187,7 @@ function spawnSdkProbe(command: string, arguments_: string[]): McpRouteProbe {
     diagnosticsOverflowed: stderr.overflowed,
     async initialize() {
       await client.connect(transport);
+      bridgePid = transport.pid;
       if (stderr.overflowed()) throw new Error('MCP diagnostics exceeded the bounded output limit');
       const serverInfo = client.getServerVersion();
       const protocolVersion = client.getNegotiatedProtocolVersion();
@@ -195,6 +203,7 @@ function spawnSdkProbe(command: string, arguments_: string[]): McpRouteProbe {
       return { tools: result.tools, diagnostics: stderr.diagnostics() };
     },
     close: () => client.close(),
+    kill: () => killBridgeProcess(bridgePid),
   };
 }
 
@@ -217,16 +226,108 @@ function toolNames(result: ProbeToolList): string[] {
   });
 }
 
-export async function verifyMcpRoute(input: {
+interface McpRouteVerificationInput {
   command: string;
   arguments: string[];
   timeoutMilliseconds: number;
+  /** Bound for the graceful close; a bridge still alive afterwards is killed. Defaults to the phase timeout. */
+  shutdownTimeoutMilliseconds?: number;
   requiredTools: string[];
   expectedServerName: string;
   supportedProtocolVersions?: string[];
   signal?: AbortSignal;
   spawn?: (command: string, arguments_: string[]) => McpRouteProbe;
-}): Promise<McpRouteVerificationResult> {
+}
+
+/**
+ * Accepts only a protocol version the client can actually speak. A probe that requires one and
+ * reports none is rejected, and so is a version outside the supported set.
+ */
+function assertNegotiatedProtocol(
+  probe: McpRouteProbe,
+  protocolVersion: unknown,
+  supportedProtocolVersions: string[] | undefined,
+): void {
+  const protocolAccepted =
+    typeof protocolVersion === 'string' &&
+    (supportedProtocolVersions !== undefined
+      ? supportedProtocolVersions.includes(protocolVersion)
+      : SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion) ||
+        probe.acceptsNegotiatedProtocolVersion?.(protocolVersion) === true);
+  if (
+    (probe.requiresProtocolVersion === true && typeof protocolVersion !== 'string') ||
+    (typeof protocolVersion === 'string' && !protocolAccepted)
+  ) {
+    throw new Error('MCP server negotiated an incompatible protocol version');
+  }
+}
+
+/** Every required tool must be present under a bounded, non-empty name. */
+function assertRequiredTools(tools: string[], required: string[]): void {
+  const requiredTools = [...new Set(required)];
+  if (
+    requiredTools.some(
+      (name) => name.length === 0 || name.length > MAX_TOOL_NAME_LENGTH || !tools.includes(name),
+    )
+  ) {
+    throw new Error('MCP tool catalog is missing required Pimpampum tools');
+  }
+}
+
+/**
+ * Runs the handshake and the catalog read against a live probe. Every phase is bounded by the
+ * deadline and screened for secret leakage before its value is used, so a hostile bridge cannot
+ * turn verifier output into a credential channel. The caller owns the shutdown.
+ */
+async function probeMcpRoute(
+  probe: McpRouteProbe,
+  input: McpRouteVerificationInput,
+): Promise<McpRouteVerificationResult> {
+  const initialized = await withDeadline(
+    probe.initialize(),
+    input.timeoutMilliseconds,
+    'initialization',
+    input.signal,
+  );
+  const initializationOutput = boundedSerialized(initialized);
+  if (secretLeak(initializationOutput)) {
+    throw new Error('Secret leakage detected in MCP initialization output');
+  }
+  const serverName = initialized.serverInfo?.name;
+  if (serverName !== input.expectedServerName) {
+    throw new Error('MCP server identity did not match the installed Pimpampum route');
+  }
+  assertNegotiatedProtocol(probe, initialized.protocolVersion, input.supportedProtocolVersions);
+  const listed = await withDeadline(
+    probe.listTools(),
+    input.timeoutMilliseconds,
+    'tool catalog',
+    input.signal,
+  );
+  const catalogOutput = boundedSerialized(listed);
+  if (secretLeak(catalogOutput)) throw new Error('Secret leakage detected in MCP tool output');
+  const tools = toolNames(listed);
+  assertRequiredTools(tools, input.requiredTools);
+  const rawDiagnostics = diagnosticValues(
+    initialized.stderr,
+    initialized.diagnostics,
+    listed.stderr,
+    listed.diagnostics,
+  );
+  if (rawDiagnostics.some(secretLeak)) {
+    throw new Error('Secret leakage detected in MCP verifier diagnostics');
+  }
+  return {
+    available: true,
+    serverName,
+    tools,
+    diagnostics: rawDiagnostics.map(redactDiagnostic).filter(Boolean),
+  };
+}
+
+export async function verifyMcpRoute(
+  input: McpRouteVerificationInput,
+): Promise<McpRouteVerificationResult> {
   assertRoute(input.command, input.arguments);
   if (input.requiredTools.length > MAX_TOOL_COUNT) {
     throw new Error('Required MCP tool catalog exceeds the bounded limit');
@@ -236,80 +337,21 @@ export async function verifyMcpRoute(input: {
   let operationFailed = false;
   let result: McpRouteVerificationResult | undefined;
   try {
-    const initialized = await withDeadline(
-      probe.initialize(),
-      input.timeoutMilliseconds,
-      'initialization',
-      input.signal,
-    );
-    const initializationOutput = boundedSerialized(initialized);
-    if (secretLeak(initializationOutput)) {
-      throw new Error('Secret leakage detected in MCP initialization output');
-    }
-    const serverName = initialized.serverInfo?.name;
-    if (serverName !== input.expectedServerName) {
-      throw new Error('MCP server identity did not match the installed Pimpampum route');
-    }
-
-    const protocolVersion = initialized.protocolVersion;
-    const protocolAccepted =
-      typeof protocolVersion === 'string' &&
-      (input.supportedProtocolVersions !== undefined
-        ? input.supportedProtocolVersions.includes(protocolVersion)
-        : SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion) ||
-          probe.acceptsNegotiatedProtocolVersion?.(protocolVersion) === true);
-    if (
-      (probe.requiresProtocolVersion === true && typeof protocolVersion !== 'string') ||
-      (typeof protocolVersion === 'string' && !protocolAccepted)
-    ) {
-      throw new Error('MCP server negotiated an incompatible protocol version');
-    }
-
-    const listed = await withDeadline(
-      probe.listTools(),
-      input.timeoutMilliseconds,
-      'tool catalog',
-      input.signal,
-    );
-    const catalogOutput = boundedSerialized(listed);
-    if (secretLeak(catalogOutput)) throw new Error('Secret leakage detected in MCP tool output');
-    const tools = toolNames(listed);
-    const requiredTools = [...new Set(input.requiredTools)];
-    if (
-      requiredTools.some(
-        (required) =>
-          required.length === 0 ||
-          required.length > MAX_TOOL_NAME_LENGTH ||
-          !tools.includes(required),
-      )
-    ) {
-      throw new Error('MCP tool catalog is missing required Pimpampum tools');
-    }
-
-    const rawDiagnostics = diagnosticValues(
-      initialized.stderr,
-      initialized.diagnostics,
-      listed.stderr,
-      listed.diagnostics,
-    );
-    if (rawDiagnostics.some(secretLeak)) {
-      throw new Error('Secret leakage detected in MCP verifier diagnostics');
-    }
-    result = {
-      available: true,
-      serverName,
-      tools,
-      diagnostics: rawDiagnostics.map(redactDiagnostic).filter(Boolean),
-    };
+    result = await probeMcpRoute(probe, input);
   } catch (error) {
     operationFailed = true;
     primaryError = error;
   }
   let closeError: unknown;
   try {
-    await withDeadline(probe.close(), input.timeoutMilliseconds, 'shutdown');
+    await withDeadline(
+      probe.close(),
+      input.shutdownTimeoutMilliseconds ?? input.timeoutMilliseconds,
+      'shutdown',
+    );
   } catch (error) {
     closeError = error;
+    probe.kill?.();
   }
   const finalDiagnostics = diagnosticValues(probe.diagnostics?.());
   if (probe.diagnosticsOverflowed?.() === true || secretLeak(boundedSerialized(finalDiagnostics))) {

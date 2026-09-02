@@ -1,5 +1,6 @@
 import { posix } from 'node:path';
 
+import { isRecord } from '../objects.js';
 import type {
   ParseRuntimeManifestOptions,
   RuntimeArchitecture,
@@ -24,10 +25,8 @@ function fail(message: string): never {
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    fail(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
+  if (!isRecord(value)) fail(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(
@@ -102,17 +101,6 @@ export function parseRuntimeTarget(
     fail(`${label} darwin-${architectureValue} is unsupported`);
   }
   return { platform: platformValue, architecture: architectureValue } as RuntimeTarget;
-}
-
-export function parseRuntimeTargetId(value: unknown): RuntimeTarget {
-  const targetId = stringValue(value, 'target id');
-  const separator = targetId.indexOf('-');
-  if (separator <= 0 || separator === targetId.length - 1) {
-    fail('target id is invalid');
-  }
-  const platform = targetId.slice(0, separator);
-  const architecture = targetId.slice(separator + 1);
-  return parseRuntimeTarget(platform, architecture, 'target id');
 }
 
 export function validateRuntimeRelativePath(value: unknown, label = 'file path'): string {

@@ -36,6 +36,8 @@ interface CodexHarnessOptions {
   getJson?: boolean;
   listJson?: boolean;
   version?: string;
+  versionExitCode?: number;
+  mutationStderr?: string;
   probeFailure?: boolean;
   mutationFailure?: 'add' | 'remove';
   persistMutations?: boolean;
@@ -61,7 +63,11 @@ function createHarness(options: CodexHarnessOptions = {}) {
   const run = vi.fn(async (invocation: CommandInvocation) => {
     const args = invocation.arguments;
     if (args[0] === '--version') {
-      return { exitCode: 0, stdout: options.version ?? 'codex-cli 0.151.0', stderr: '' };
+      return {
+        exitCode: options.versionExitCode ?? 0,
+        stdout: options.version ?? 'codex-cli 0.151.0',
+        stderr: '',
+      };
     }
     if (args.at(-1) === '--help') {
       if (options.probeFailure) throw new Error('synthetic feature probe failure');
@@ -112,12 +118,16 @@ function createHarness(options: CodexHarnessOptions = {}) {
       };
     }
     if (args[1] === 'remove') {
-      if (mutationFailure === 'remove') return { exitCode: 9, stdout: '', stderr: 'rejected' };
+      if (mutationFailure === 'remove') {
+        return { exitCode: 9, stdout: '', stderr: options.mutationStderr ?? 'rejected' };
+      }
       if (persistMutations) entry = null;
       return { exitCode: 0, stdout: '', stderr: '' };
     }
     if (args[1] === 'add') {
-      if (mutationFailure === 'add') return { exitCode: 9, stdout: '', stderr: 'rejected' };
+      if (mutationFailure === 'add') {
+        return { exitCode: 9, stdout: '', stderr: options.mutationStderr ?? 'rejected' };
+      }
       if (persistMutations) {
         const separator = args.indexOf('--');
         entry = {
@@ -303,10 +313,12 @@ describe('Codex hostile parsing, probes, mutation and rollback coverage', () => 
 
     // A direct invalid bounded result must not be accepted as a host result.
     const invalid = createHarness();
-    invalid.run
-      .mockResolvedValueOnce({ exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: undefined, stderr: '' } as never);
-    await expect(invalid.connector.detect()).rejects.toThrow(/invalid bounded command result/iu);
+    await invalid.connector.detect();
+    invalid.run.mockResolvedValueOnce({ exitCode: 0, stdout: undefined, stderr: '' } as never);
+    await expect(invalid.connector.inspect()).rejects.toMatchObject({
+      code: 'unavailable',
+      message: expect.stringMatching(/invalid bounded command result/iu),
+    });
   });
 
   it('verifies/adopts an equivalent entry while preserving the original configuredAt receipt', async () => {
@@ -460,5 +472,63 @@ describe('Codex hostile parsing, probes, mutation and rollback coverage', () => 
         entry: { ...prior, restorable: false },
       }),
     ).rejects.toThrow(/cannot safely restore/iu);
+  });
+
+  it('reports no version and no support when the single version probe fails', async () => {
+    const harness = createHarness({ versionExitCode: 1 });
+    await expect(harness.connector.detect()).resolves.toMatchObject({
+      executable: harness.executable,
+      version: null,
+      supported: false,
+    });
+    expect(
+      harness.run.mock.calls.filter(([call]) => call.arguments[0] === '--version'),
+    ).toHaveLength(1);
+  });
+
+  it('refuses to connect a conflict without a decision or with an unrestorable replacement', async () => {
+    const undecided = createHarness({
+      entry: { command: '/synthetic/other', arguments: [], scope: 'global' },
+    });
+    const undecidedPlan = await undecided.connector.plan();
+    await expect(undecided.connector.connect(undecidedPlan)).rejects.toMatchObject({
+      code: 'conflict',
+      status: 409,
+      message: 'The existing Codex entry requires an explicit replacement decision',
+      details: { connectorId: 'codex', state: 'conflict' },
+    });
+
+    const opaque = createHarness({
+      entry: { command: '/synthetic/other', arguments: [], scope: 'global', restorable: false },
+    });
+    const opaquePlan = await opaque.connector.plan({ conflictDecision: 'replace' });
+    expect(opaquePlan.mutations).toEqual([]);
+    await expect(opaque.connector.connect(opaquePlan)).rejects.toMatchObject({
+      code: 'conflict',
+      message: expect.stringMatching(
+        /^The reviewed Codex entry cannot be replaced: .*official CLI/u,
+      ),
+    });
+    expect(
+      undecided.run.mock.calls
+        .concat(opaque.run.mock.calls)
+        .filter(([call]) => call.arguments[1] === 'remove' && call.arguments.at(-1) !== '--help'),
+    ).toEqual([]);
+  });
+
+  it('names the exit code when a rejected mutation prints nothing, and bounds non-Error faults', async () => {
+    const silent = createHarness({ mutationFailure: 'add', mutationStderr: '   ' });
+    await expect(silent.connector.connect(await silent.connector.plan())).rejects.toMatchObject({
+      code: 'unavailable',
+      message: 'Codex could not update the Pimpampum MCP entry: exit code 9',
+    });
+
+    const thrown = createHarness();
+    await thrown.connector.detect();
+    thrown.run.mockRejectedValueOnce('not an Error instance');
+    await expect(thrown.connector.inspect()).rejects.toMatchObject({
+      code: 'unavailable',
+      message: 'Codex configuration could not be inspected: The operation failed',
+    });
   });
 });

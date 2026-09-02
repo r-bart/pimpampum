@@ -1,16 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto';
-import {
-  chmodSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
+import { AppError } from '../errors.js';
+import { writePrivateFileAtomic } from '../fsAtomic.js';
+import { assertNoSymlinkTraversal } from '../fsGuards.js';
 import type {
   InstallReceipt,
   InstallReceiptFileSnapshot,
@@ -20,23 +14,26 @@ import type {
 
 export const INSTALL_RECEIPT_NAME = 'install-receipt.json';
 
-export function assertNoSymlinkTraversal(path: string, label: string, trustedRoot = path): void {
-  if (!isAbsolute(path) || path.includes('\0') || !isAbsolute(trustedRoot)) {
-    throw new Error(`${label} must be an absolute path`);
-  }
-  const normalizedPath = normalize(path);
-  const normalizedRoot = normalize(trustedRoot);
-  const child = relative(normalizedRoot, normalizedPath);
-  if (child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)) {
-    throw new Error(`${label} must remain inside its trusted root`);
-  }
-  let current = normalizedRoot;
-  const segments = child.split(sep).filter(Boolean);
-  for (const segment of ['', ...segments]) {
-    if (segment) current = join(current, segment);
-    if (!existsSync(current)) return;
-    const metadata = lstatSync(current);
-    if (metadata.isSymbolicLink()) throw new Error(`${label} must not traverse symbolic links`);
+/**
+ * The receipt exists but cannot be trusted: torn bytes, a foreign schema, or a special file. The
+ * message names the file and the repair so `install`, `status` and `uninstall` stop with a typed
+ * `invalid_state` instead of a bare internal error. Snapshot and restore keep their own messages.
+ */
+export class InstallReceiptError extends AppError {
+  constructor(
+    public readonly path: string,
+    reason: string,
+    cause?: unknown,
+  ) {
+    super(
+      'invalid_state',
+      `Pimpampum cannot read the installation receipt at ${path}: ${reason}. Move the file away and run \`pimpampum install\` again, or restore it from a backup of the data directory.`,
+      409,
+      false,
+      { receiptPath: path, reason },
+    );
+    this.name = 'InstallReceiptError';
+    if (cause !== undefined) this.cause = cause;
   }
 }
 
@@ -119,40 +116,34 @@ export function readInstallReceipt(
 ): InstallReceipt | null {
   if (!existsSync(path)) return null;
   assertNoSymlinkTraversal(path, 'Installation receipt path', trustedRoot);
-  if (!lstatSync(path).isFile()) throw new Error('Installation receipt must be a regular file');
+  if (!lstatSync(path).isFile()) {
+    throw new InstallReceiptError(path, 'it is not a regular file');
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
   } catch (error) {
-    throw new Error('Invalid Pimpampum installation receipt JSON', { cause: error });
+    throw new InstallReceiptError(path, 'it is not valid JSON', error);
   }
-  return parseReceipt(parsed);
+  try {
+    return parseReceipt(parsed);
+  } catch (error) {
+    throw new InstallReceiptError(path, 'its contents do not match the receipt schema', error);
+  }
 }
 
-export function writePrivateFileAtomic(
-  path: string,
-  content: string | Buffer,
-  mode: number,
-  trustedRoot = dirname(path),
-): void {
-  assertNoSymlinkTraversal(dirname(path), 'Private file parent path', trustedRoot);
-  mkdirSync(dirname(path), { recursive: true });
-  assertNoSymlinkTraversal(dirname(path), 'Private file parent path', trustedRoot);
-  if (existsSync(path)) {
-    const metadata = lstatSync(path);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) {
-      throw new Error(`Private file target is not a regular file: ${path}`);
-    }
-  }
-  const temporaryPath = `${path}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(temporaryPath, content, { mode, flag: 'wx' });
-    assertNoSymlinkTraversal(dirname(path), 'Private file parent path', trustedRoot);
-    renameSync(temporaryPath, path);
-    chmodSync(path, mode);
-  } finally {
-    rmSync(temporaryPath, { force: true });
-  }
+/**
+ * Durable private write through the shared primitive: the receipt that vouches for a service is
+ * fsynced before and after the rename so it does not evaporate with the page cache. The data
+ * directory is created private when it is missing, as the receipt is often its first file.
+ */
+function writeReceiptBytes(path: string, contents: string | Buffer, trustedRoot: string): void {
+  writePrivateFileAtomic(path, contents, {
+    mode: 0o600,
+    directoryMode: 0o700,
+    trustedRoot,
+    label: 'Installation receipt',
+  });
 }
 
 export function writeInstallReceipt(
@@ -160,7 +151,7 @@ export function writeInstallReceipt(
   receipt: InstallReceipt,
   trustedRoot = dirname(path),
 ): void {
-  writePrivateFileAtomic(path, `${JSON.stringify(receipt, null, 2)}\n`, 0o600, trustedRoot);
+  writeReceiptBytes(path, `${JSON.stringify(receipt, null, 2)}\n`, trustedRoot);
 }
 
 export function snapshotInstallReceipt(
@@ -199,5 +190,5 @@ export function restoreInstallReceiptSnapshot(
   if (JSON.stringify(restored) !== JSON.stringify(snapshot.receipt)) {
     throw new Error('Installation receipt byte snapshot does not match its metadata');
   }
-  writePrivateFileAtomic(path, snapshot.contents, 0o600, trustedRoot);
+  writeReceiptBytes(path, snapshot.contents, trustedRoot);
 }

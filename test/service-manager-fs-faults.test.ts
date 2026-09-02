@@ -1,22 +1,46 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPlatformServiceManager } from '../src/service/manager.js';
+import { writePrivateFileAtomic } from '../src/fsAtomic.js';
 import { installReceiptPath } from '../src/service/receipt.js';
 import type { PlatformServiceAdapter } from '../src/service/types.js';
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+  return {
+    ...actual,
+    rmSync: vi.fn(actual.rmSync),
+    openSync: vi.fn(actual.openSync),
+    writeFileSync: vi.fn(actual.writeFileSync),
+    closeSync: vi.fn(actual.closeSync),
+  };
 });
 
 const roots: string[] = [];
 const defaultRemove = vi.mocked(rmSync).getMockImplementation()!;
+const defaultOpen = vi.mocked(openSync).getMockImplementation()!;
+const defaultWrite = vi.mocked(writeFileSync).getMockImplementation()!;
 
 afterEach(() => {
   vi.mocked(rmSync).mockClear();
   vi.mocked(rmSync).mockImplementation(defaultRemove);
+  vi.mocked(openSync).mockClear();
+  vi.mocked(openSync).mockImplementation(defaultOpen);
+  vi.mocked(writeFileSync).mockClear();
+  vi.mocked(writeFileSync).mockImplementation(defaultWrite);
+  vi.mocked(closeSync).mockClear();
   for (const root of roots.splice(0)) defaultRemove(root, { recursive: true, force: true });
 });
 
@@ -107,5 +131,38 @@ describe('service manager uninstall filesystem faults', () => {
     expect(((error as AggregateError).errors[1] as AggregateError).errors).toEqual([
       expect.objectContaining({ message: 'registration rollback failed' }),
     ]);
+  });
+
+  it('closes the exclusive temporary descriptor and keeps the previous bytes when its write fails', () => {
+    const root = fixture('durable-write');
+    const target = join(root.dataDirectory, 'receipt.json');
+    const options = { mode: 0o600, trustedRoot: root.dataDirectory };
+    writePrivateFileAtomic(target, 'first', options);
+    vi.mocked(closeSync).mockClear();
+    // The fault is bound to the descriptor opened for `.receipt.json.<pid>.<uuid>.tmp`, so the
+    // assertion below proves that exact descriptor was closed rather than counting `closeSync`.
+    let temporaryDescriptor: number | null = null;
+    vi.mocked(openSync).mockImplementation((...arguments_: Parameters<typeof openSync>) => {
+      const descriptor = defaultOpen(...arguments_);
+      const path = String(arguments_[0]);
+      if (path.startsWith(join(root.dataDirectory, '.receipt.json.')) && path.endsWith('.tmp')) {
+        temporaryDescriptor = descriptor;
+      }
+      return descriptor;
+    });
+    vi.mocked(writeFileSync).mockImplementation(
+      (...arguments_: Parameters<typeof writeFileSync>) => {
+        if (temporaryDescriptor !== null && arguments_[0] === temporaryDescriptor) {
+          throw new Error('disk full');
+        }
+        return defaultWrite(...arguments_);
+      },
+    );
+    expect(() => writePrivateFileAtomic(target, 'second', options)).toThrow('disk full');
+    expect(temporaryDescriptor).not.toBeNull();
+    expect(vi.mocked(closeSync)).toHaveBeenCalledExactlyOnceWith(temporaryDescriptor);
+    expect(readFileSync(target, 'utf8')).toBe('first');
+    expect(readdirSync(root.dataDirectory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect(existsSync(target)).toBe(true);
   });
 });
