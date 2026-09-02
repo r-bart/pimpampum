@@ -162,6 +162,13 @@ preserved.
   `src/server.ts` (107 to 26), `verifyServiceHealth` in `src/service/health.ts` (cyclomatic 28 to 7)
   and `request` in `src/client.ts` (26 to 11).
 
+### Beyond the remediation
+
+- The guided setup shows its four steps as a bar that fills as you advance, in place of the `1 OF 4`
+  counter. Every segment up to the current step is filled, so the header reads as progress rather
+  than as a cursor. Screen readers still hear `Step 1 of 4`, which is now the only place the count
+  is spelled out, and the bar does not animate under Reduce Motion.
+
 ## v1.2.11 — 2026-09-01
 
 macOS first-run reliability. The published `v1.2.10` could not complete setup on a clean Mac.
