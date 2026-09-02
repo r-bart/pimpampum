@@ -10,6 +10,7 @@ where to look.
 - `summaries/` — post-change session summaries, dated, one per feature or release.
 - `notes/` — durable notes: runbooks, decisions, measurements, and gotchas that outgrew CLAUDE.md.
 - `reviews/` — repository reviews; `2026-09-01_deep-review.md` is the source of the remediation
-  plan.
+  plan. Its section 1b is the ledger of which wave closed each of the 128 findings, and what the
+  branch does not yet prove.
 - `evidence/` — live-smoke evidence files (`macos-live.json`) and the `*.example.json` shapes.
 - `design/` — the desktop design specification, wireframes, decisions, and the handoff bundle.

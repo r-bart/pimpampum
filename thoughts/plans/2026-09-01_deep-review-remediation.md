@@ -1,7 +1,12 @@
 # Implementation Plan: Deep-review remediation
 
 **Date**: 2026-09-01
-**Status**: Draft — awaiting approval
+**Status**: Implemented — all ten phases on `remediation/deep-review` (`9677e18`, `b132708`,
+`3193d4a`, `711f43b`), verified on 2026-09-02. Not released; no tag names it yet. Nine Done
+Criteria boxes stay open: two need a published update channel, two need the plugin mirror push, one
+needs the Omarchy machine, two are the structural clause that had never been measured, one is
+stricter than the practice, and one is the per-phase summary. Each is explained under
+"Verification of these criteria".
 **Source review**:
 [2026-09-01_deep-review.md](../reviews/2026-09-01_deep-review.md) (128 findings: 21 high, 62
 medium, 45 low)
@@ -50,23 +55,23 @@ task; a task is done when its findings are struck from the review report.
       release channel; on Omarchy they either succeed or fail with a typed `unavailable` that names
       `pimpampum-bootstrap`.
 - [ ] `omarchy plugin add` installs the version that npm and GitHub Releases carry.
-- [ ] Two devices with different locales converge through a shared folder.
-- [ ] A managed, an adopted and an installed-CLI macOS topology all pass `status`, `uninstall`
+- [x] Two devices with different locales converge through a shared folder.
+- [x] A managed, an adopted and an installed-CLI macOS topology all pass `status`, `uninstall`
       and reinstall from the installed CLI, and uninstall never writes outside the home directory.
-- [ ] The guided setup survives the overview poll, the help button and a relaunch, and shows every
+- [x] The guided setup survives the overview poll, the help button and a relaunch, and shows every
       partial failure.
-- [ ] A Linux update over a running daemon passes health verification.
-- [ ] Concurrent `status` polls during an update cannot alter the installed runtime.
-- [ ] The npm tarball ships no macOS app or runtime.
-- [ ] The OpenAPI document is generated from the Zod schemas and every route is documented.
-- [ ] Every CLI verb is in `CLI_COMMANDS`, parsed by the catalog parser, and rejects unknown
+- [x] A Linux update over a running daemon passes health verification.
+- [x] Concurrent `status` polls during an update cannot alter the installed runtime.
+- [x] The npm tarball ships no macOS app or runtime.
+- [x] The OpenAPI document is generated from the Zod schemas and every route is documented.
+- [x] Every CLI verb is in `CLI_COMMANDS`, parsed by the catalog parser, and rejects unknown
       flags.
-- [ ] No acceptance test asserts source text except the negative security greps; every fixture is
+- [x] No acceptance test asserts source text except the negative security greps; every fixture is
       produced by the code it pins; frozen hashes exist only where the report keeps them.
 - [ ] No `src/` function exceeds 100 body lines or cyclomatic 25 outside the declarative files
       listed in the report (`openapi.ts` until generated, `cliCommands.ts`, `schemas.ts`,
       `*Contract.ts`, `types.ts`, `limits.ts`, `errors.ts`).
-- [ ] README, plugin README, `llms.txt` and the site describe the shipped product and are on the
+- [x] README, plugin README, `llms.txt` and the site describe the shipped product and are on the
       release checklist.
 
 ---
@@ -1118,40 +1123,81 @@ Parallel execution opportunities:
 - [ ] `pimpampum update:check` and `update` succeed on a packaged macOS install; Omarchy returns
       success or a typed `unavailable` naming `pimpampum-bootstrap`.
 - [ ] Mirror HEAD equals the tag; `check:omarchy-mirror` passes.
-- [ ] Tarball under 10 MB unpacked with no app or runtime.
-- [ ] Locale, duplicate-device, parent+child and 33,000-task sync tests pass.
-- [ ] Three macOS topologies pass `status`, `uninstall`, reinstall from the installed CLI.
-- [ ] Guided setup with two agents completes with the popover open and shows partial failures.
+- [x] Tarball under 10 MB unpacked with no app or runtime.
+- [x] Locale, duplicate-device, parent+child and 33,000-task sync tests pass.
+- [x] Three macOS topologies pass `status`, `uninstall`, reinstall from the installed CLI.
+- [x] Guided setup with two agents completes with the popover open and shows partial failures.
 - [ ] Omarchy live run passes with a real `~/.claude.json` over 64 KiB.
-- [ ] Concurrent-inspect fault test passes; systemd restart test passes.
+- [x] Concurrent-inspect fault test passes; systemd restart test passes.
 
 ### Contract hygiene (Phases 5–7)
 
-- [ ] OpenAPI `components.schemas` generated; router walk test passes.
-- [ ] `ERROR_CODES` defined once; no duplicated Zod literal in adapters.
-- [ ] `pimpampum help` and `version` never touch the filesystem; every verb rejects unknown flags.
-- [ ] One lifecycle lock; receipts fsynced; retry preconditions enforced.
-- [ ] Connector core shared; spawn count asserted.
-- [ ] README, plugin README, `llms.txt`, site and plan statuses match the product; version check
+- [x] OpenAPI `components.schemas` generated; router walk test passes.
+- [x] `ERROR_CODES` defined once; no duplicated Zod literal in adapters.
+- [x] `pimpampum help` and `version` never touch the filesystem; every verb rejects unknown flags.
+- [x] One lifecycle lock; receipts fsynced; retry preconditions enforced.
+- [x] Connector core shared; spawn count asserted.
+- [x] README, plugin README, `llms.txt`, site and plan statuses match the product; version check
       in the release job.
 
 ### Test honesty and structure (Phases 8–9)
 
 - [ ] Only `test/source-contract.test.ts` asserts source text.
-- [ ] Hash pins only on the four overview fixtures; no `@immutable` header.
-- [ ] Every committed fixture is produced by a checked-in script the tests re-run.
+- [x] Hash pins only on the four overview fixtures; no `@immutable` header.
+- [x] Every committed fixture is produced by a checked-in script the tests re-run.
 - [ ] `cliMain.ts` covered; no `src/` unit over 100 lines or cyclomatic 25 outside the
       declarative list; `StatusPopout.qml` under 400 lines.
 
 ### Overall
 
-- [ ] `npm run typecheck && npm run lint && npm run format:check && npm test` passes after every
+- [x] `npm run typecheck && npm run lint && npm run format:check && npm test` passes after every
       task.
-- [ ] `npm run test:macos` passes at 100% on the widened manifest.
-- [ ] `npm run test:omarchy` and `npm run check:desktop-contract` pass.
-- [ ] Every one of the 128 ids in the coverage matrix is struck from the review report or has a
+- [x] `npm run test:macos` passes at 100% on the widened manifest.
+- [x] `npm run test:omarchy` and `npm run check:desktop-contract` pass.
+- [x] Every one of the 128 ids in the coverage matrix is struck from the review report or has a
       "won't fix" entry with a reason.
 - [ ] `/summary` written per phase; `/post-review` approves each release.
+
+### Verification of these criteria (2026-09-02)
+
+Every gate was run on the author's machine after `711f43b`, not taken from an agent's report:
+typecheck, lint, `format:check`, `npm test` (112 files, 1,570 tests, 100% coverage on the measured
+files), the compiled E2E (4 files, 13 tests), `npm run test:macos` (100% on the manifest),
+`npm run test:omarchy` (68 tests), `npm run check:desktop-contract`,
+`node scripts/check-release-versions.mjs v1.2.11`, and `npm run check:package-size` (420 files,
+2.4 MB unpacked, no app or runtime paths).
+
+The nine boxes still open, and why:
+
+1. **Two update-channel boxes.** The signing, the embedded Ed25519 public key and the redirect
+   allow-list are in `src/update.ts`, and the release job signs the manifest. The rolling
+   `update-channel-stable` release does not exist until a tag runs that job with
+   `RELEASE_MANIFEST_SIGNING_KEY` set, so neither box can be closed from a branch.
+2. **Two mirror boxes.** The mirror job is in the release workflow and `check:omarchy-mirror` runs;
+   the check fails because the published mirror is at 1.2.9 against a local 1.2.11. The plugin
+   manifests did not change in wave 4, so the gap predates it.
+3. **The Omarchy live run.** No machine here draws QML. It needs the Omarchy machine.
+4. **The two structural boxes.** `cliMain.ts` is covered and out of the coverage exclusion, and
+   `StatusPopout.qml` is 307 lines, so those halves hold. The numeric clause does not: fifteen
+   `src/` units break the 100-line or cyclomatic-25 limit, in sixteen violations. Nine are the
+   factories and registration blocks the exception was written for; six are real residue. The
+   clause had never been measured, because it names a limit and an exception list that no command
+   in this repository evaluates and that was never written down. Both are now in
+   `thoughts/notes/2026-09-02_structure-gate-measurement.md`, with the measuring command, the
+   declarative list, the six residual units, and the decision to make.
+5. **"Only `test/source-contract.test.ts` asserts source text."** Not literally true.
+   `test/omarchy-connections.test.ts:366` reads `AgentConnectionService.qml` and the two helpers
+   and asserts on their text. The intent of H-13 holds: no `*.acceptance.test.ts` file asserts on
+   repository source, and that assertion checks a property against the generated state vocabulary
+   rather than copying it. Either narrow the criterion's wording or move the assertion.
+6. **`/summary` per phase and `/post-review` per release.** One summary covers all ten phases
+   (`thoughts/summaries/2026-09-02_deep-review-remediation.md`) instead of ten. No release has
+   happened, so no `/post-review` has approved one.
+
+One criterion is checked on weaker evidence than the rest, and it is recorded here rather than
+absorbed. "`pimpampum help` and `version` never touch the filesystem" is covered through the lazy
+composition tests (`test/cli-composition.test.ts:224` and `:303`) and the help and version tests in
+`test/cli-agent-surface.test.ts:191-217`. No test asserts the absence of a filesystem read directly.
 
 ---
 

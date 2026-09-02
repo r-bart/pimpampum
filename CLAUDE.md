@@ -133,6 +133,8 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - NEVER reject symlinks when detecting an agent; Codex and Claude Code install as links into `~/.local/bin`, so resolve with `resolvingSymlinksInPath()`. Detection reads presence only and executes nothing.
 - ALWAYS render the confirmation screen from `SetupPlan.changes`, never from a Swift constant; the plan carries the real `path` for every target and a hand-written summary silently drifts from the installer.
 - ALWAYS request the setup plan before the confirmation button, not inside its handler; otherwise the user authorizes an operation id and revision that did not exist when they agreed.
+- NEVER expect `require('typescript')` to give you the compiler API; TypeScript 7 ships only `tsc.js` and `version.cjs`, so `ts.createSourceFile` is undefined. Measure structure with `npx oxlint src -c <config>` enabling `complexity` and `max-lines-per-function`.
+- NEVER report a structural limit as met when no command evaluates it; `.oxlintrc.json` enables neither `complexity` nor `max-lines-per-function`, so `npm run lint` never checked Gate 9's "100 body lines or cyclomatic 25". Fifteen `src/` units break it; see `thoughts/notes/2026-09-02_structure-gate-measurement.md`.
 
 ## Release checklist
 

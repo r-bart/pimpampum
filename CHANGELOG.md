@@ -71,6 +71,51 @@ Remediation of the 2026-09-01 deep review (`thoughts/reviews/2026-09-01_deep-rev
 - Site hygiene: canonical URL, sitemap, Open Graph tags, `robots.txt` with `Sitemap:` and the
   `llms.txt` path (D-09).
 
+### Wave 4 — structure across store, runtime, CLI, service, scripts and native surfaces
+
+Section 6 of the review (hotspots, duplication, architecture rules). Behaviour is unchanged except
+for the three defects named below; every public method set, error code, message and wire contract is
+preserved.
+
+- Store: `PimpampumStore` becomes a 260-line facade over 16 aggregate modules that share one
+  `StoreContext`, with one revision bump, one cascade cancel, one completion projection and one
+  activity writer. `validateSyncState` moves to `src/syncValidation.ts` as a pure function.
+- Schema v3: `workspaces.root_path` is nullable, so a workspace that arrives through synchronization
+  without a local root no longer needs a sentinel path. A v2 sentinel row converts to `NULL`, and a
+  v1 database chains v1 to v3 in one transaction. Registering a workspace whose root clashes now
+  raises the typed conflict instead of a raw SQLite error.
+- Runtime: `installer.ts` becomes a 30-line facade over `ownedFiles`, `receipt`, `journal`,
+  `payload`, `install`, `removal` and `inspect`, so the lifecycle-lock boundary is a module
+  boundary. `validateZip` splits into `readEndRecord`, `readCentralDirectory`, `validateLocalEntry`
+  and `validateDataDescriptor` with a validator map for extra fields.
+- CLI: `executeCli` dispatches from `CLI_COMMANDS` through one handler module per group.
+  `cliMain.ts` drops from 1,937 to 77 lines over nine `cliComposition` modules and
+  `service/packagedLifecycle.ts`, all reached through an injected host, and leaves the coverage
+  exclusion in `vitest.config.ts`.
+- Shared primitives: the receipt copies of `writePrivateFileAtomic` and `assertNoSymlinkTraversal`
+  retire into `src/fsAtomic.ts` and `src/fsGuards.ts`; five `isRecord` copies and two `asError`
+  copies into `src/objects.ts`; two `redactDiagnostic` copies into `src/diagnostics.ts`; 13 rollback
+  ladders into `src/aggregateRollback.ts`. `manager.install` splits into `reconcileExisting` and
+  `installFresh` over a transaction helper, and 13 hand-written parsers become Zod schemas.
+- Scripts: shared helpers under `scripts/lib`, the Omarchy live runner decomposed into
+  `scripts/omarchy-live` with byte-identical evidence, and the three checkers rewritten so each
+  assertion is one named condition. The plugin validator targets a surface rather than a file, so
+  QML can be reorganized inside a screen without editing the validator, while moving copy between
+  screens still fails.
+- Native surfaces: `StatusPopout.qml` drops from 1,983 to 307 lines behind a `Loader` over
+  `PortfolioPage`, `SettingsPage` and `HelpPage` with a `PopoutController` and shared components;
+  `BackupService` and `SyncService` derive from `ManagedFolderService`. One state vocabulary is
+  generated for QML and Swift with a `--check` mode wired into both native gates. Swift gains a
+  `DaemonClient` base under the three HTTP clients, one `DirectoryOpener` and one row button.
+- Three defects fixed in passing. The runtime stage-marker write sat outside the `try`/`finally`
+  that clears the staging directory, so a failed write left an empty `.pimpampum-stage-*` that the
+  next install rejected as not receipt-owned. `createAgentClient` threw synchronously although it
+  returns a promise, so a caller using `.catch()` missed the failure. The Omarchy connection service
+  compared agent state against loose literals instead of the generated vocabulary, in 21 places.
+- Tests: the source contract covers all five CLI payload readers and pins both sides of the set, so
+  a sixth reader cannot ship untested. The `xdg-open` safety row pins both launcher call sites and
+  forbids shell interpolation across every QML file instead of one.
+
 ## v1.2.11 — 2026-09-01
 
 macOS first-run reliability. The published `v1.2.10` could not complete setup on a clean Mac.

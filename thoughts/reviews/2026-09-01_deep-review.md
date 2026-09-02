@@ -51,6 +51,75 @@ Twelve things to fix first:
 12. A native install has no documented way to register a Workspace, and the
     site describes the pre-1.2 first run (D-01, D-02).
 
+## 1b. Remediation status (amended 2026-09-02)
+
+All 128 findings are addressed in code on the branch `remediation/deep-review`, in four commits.
+This section is the ledger the remediation plan's Done Criteria require; the findings below are left
+as written on 2026-09-01, so the report still reads as the review it was.
+
+| Wave | Commit    | Phases | Findings closed |
+| ---- | --------- | ------ | --------------- |
+| 1    | `9677e18` | 0–4    | 59              |
+| 2    | `b132708` | 5–6    | 45              |
+| 3    | `3193d4a` | 7–8    | 24              |
+| 4    | `711f43b` | 9      | section 6 only  |
+
+Wave 4 carries no id of its own: section 6 (structure, duplication, complexity) is not numbered in
+the coverage matrix. It is the wave that reduced `cliMain.ts` from 1,937 to 77 lines, `store.ts`
+from 2,298 to 260, `runtime/installer.ts` from 1,250 to 30, `StatusPopout.qml` from 1,983 to 307,
+and `scripts/test-omarchy-live.mjs` from 1,572 to 212.
+
+**Wave 1** (`9677e18`) — H-01, H-02, H-03, H-04, H-05, H-06, H-07, H-08, H-09, H-11, H-12, X-01,
+X-02, X-03, X-05, X-06, X-07, X-09, M-C1, M-C2, M-O1, M-O2, M-O3, M-O4, M-O5, M-O6, M-O7, M-R1,
+M-R5, M-S4, M-S5, M-S6, M-S7, M-T1, M-T3, M-T7, M-V1, M-V2, M-V3, M-V5, M-V8, L-01, L-15, L-16,
+L-19, L-20, L-24, L-25, L-27, L-28, L-29, L-30, L-31, L-32, L-33, L-34, L-37, L-38, D-08.
+
+**Wave 2** (`b132708`) — H-10, X-04, X-08, M-A1, M-A2, M-A3, M-A4, M-A5, M-A6, M-A7, M-A8, M-C3,
+M-C4, M-C5, M-C6, M-R2, M-R3, M-R4, M-S1, M-S2, M-S3, M-V4, M-V6, M-V7, M-V9, L-02, L-03, L-04,
+L-05, L-06, L-07, L-08, L-09, L-10, L-11, L-12, L-13, L-14, L-17, L-18, L-21, L-22, L-23, L-26,
+D-01. L-21 and D-01 are planned under Phase 3 but shipped here as macOS follow-ups.
+
+**Wave 3** (`3193d4a`) — H-13, H-14, H-15, H-16, H-17, M-T2, M-T4, M-T5, M-T6, M-T8, M-T9, L-35,
+L-36, D-02, D-03, D-04, D-05, D-06, D-07, D-09, D-10, D-11, D-12, D-13.
+
+No finding is recorded as "won't fix".
+
+### What the branch does not yet prove
+
+Code alone cannot close four items. None of them is a defect; each is an action outside this
+repository or outside this hardware.
+
+1. **H-01 needs a published channel.** The signing, the embedded Ed25519 public key and the
+   redirect allow-list are in `src/update.ts`, and the release job signs `release-manifest.json`.
+   The rolling `update-channel-stable` release does not exist until a tag runs that job with
+   `RELEASE_MANIFEST_SIGNING_KEY` set.
+2. **H-02 needs the mirror push.** The mirror job is in `.github/workflows/release.yml` and
+   `check:omarchy-mirror` runs. The check fails today because the published mirror is at 1.2.9 and
+   the repository is at 1.2.11; the local plugin manifests are correct.
+3. **The Omarchy popout is unverified visually.** No machine here draws QML. Wave 4 split
+   `StatusPopout.qml` into three pages behind a `Loader`, so the states to inspect on the Omarchy
+   machine are: the popout frame, the three pages and the transitions between them, the portfolio
+   content with its empty states, the two collapsible groups, the managed-folder cards in their
+   four states, row focus and highlight, and the Agents card.
+4. **The macOS live smoke is unrun.** `PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos` refuses
+   to run beside a user installation and needs a Mac with none.
+
+### Two deviations from the plan's own wording
+
+Recorded here rather than silently absorbed.
+
+- **"Only `test/source-contract.test.ts` asserts source text" is not literally true.**
+  `test/omarchy-connections.test.ts:366` reads `AgentConnectionService.qml` and the two helpers and
+  asserts on their text. The intent of H-13 holds: no `*.acceptance.test.ts` file asserts on
+  repository source, and that one assertion is a property against the generated state vocabulary,
+  not a copy of it. The wording of the criterion is stricter than the practice.
+- **Gate 9's numeric clause does not pass, and had never been measured.** It reads "no `src/` unit
+  over 100 body lines or cyclomatic 25 outside the declarative list", but no declarative list was
+  ever written and no tool in the repository measures it. Measured on 2026-09-02, fifteen units
+  break one of the two limits, in sixteen violations. Nine are factory or registration functions
+  that the exception was written for; six are not. See `thoughts/notes/2026-09-02_structure-gate-measurement.md` for the
+  command, the full list and the residue.
+
 ## 2. Scope and method
 
 | Area                                                                                                | Reviewer                     | Verified by lead                               |
