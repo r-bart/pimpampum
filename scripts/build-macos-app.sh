@@ -50,6 +50,16 @@ rm -rf "$output_root/pim • pam • pum.app" "$output_root/PimpampumMenuBar.app
 mkdir -p "$app_root/Contents/MacOS" "$app_root/Contents/Resources"
 cp "$binary_root/PimpampumMenuBar" "$app_root/Contents/MacOS/PimpampumMenuBar"
 cp "$package_root/Resources/Info.plist" "$app_root/Contents/Info.plist"
+
+# The tracked template carries a placeholder, never a version literal: bumping a release must not
+# depend on someone editing this plist by hand. It was edited by hand up to v1.2.11, and
+# check-macos-artifact.mjs rejects any app whose version differs from package.json.
+if ! /usr/bin/grep -q '__PIMPAMPUM_VERSION__' "$app_root/Contents/Info.plist"; then
+  printf 'Resources/Info.plist must carry the __PIMPAMPUM_VERSION__ placeholder.\n' >&2
+  exit 1
+fi
+/usr/bin/plutil -replace CFBundleShortVersionString -string "$version" \
+  "$app_root/Contents/Info.plist"
 cp "$compact_mark" "$app_root/Contents/Resources/PimpampumCompact.pdf"
 
 runtime_resources="$app_root/Contents/Resources/PimpampumRuntime"

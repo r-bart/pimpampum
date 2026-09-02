@@ -17,14 +17,16 @@ The compact identity is always the same theme-tinted circle containing a lowerca
 external through badge shape/accent, tooltip, popout copy, and an optional active-claim count. Zero
 is hidden and values above 99 display as `99+`; offline and error states never replace the mark.
 
-Clicking opens one bounded 380-unit native `PopupCard`. Its Portfolio view is ordered as connection
+Clicking opens one bounded 380-unit native `PopupCard`. The card shows one page at a time through
+a `Loader`: `PortfolioPage.qml`, `SettingsPage.qml`, or `HelpPage.qml`, with `PopoutController.qml`
+holding the state a page must survive being recreated. The Portfolio page is ordered as connection
 state, Active work, Specs in progress, Projects, and collapsed Completed specs. Active work names
 the claimed task plus its project, Spec, agent, and lease; in-progress Specs remain visible without
-an active claim and show completed versus total tasks. **Settings** switches the same card to a
-dedicated second view showing Agents, Updates, Synchronization, and Backup controls directly,
-without nested disclosures. The fixed footer opens Help on the left and stops or starts Pimpampum on the
-right. A 44-unit vector header icon opens Settings and changes to a back arrow on internal pages,
-without opening a competing Quattro popout.
+an active claim and show completed versus total tasks. **Settings** switches the card to the
+Settings page, which shows the Agents, Updates, Synchronization, Backup, and service cards
+directly, without nested disclosures. The fixed footer opens Help on the left and stops or starts
+Pimpampum on the right. A 44-unit vector header icon opens Settings and changes to a back arrow on
+internal pages, without opening a competing Quattro popout.
 Horizontal bars place mark and count side by side;
 vertical bars stack them. Project rows open the exact registered workspace root.
 
@@ -71,9 +73,11 @@ vertical bars stack them. Project rows open the exact registered workspace root.
   user can start it again without a terminal.
 - Workspace paths are accepted only when absolute and are passed to `xdg-open`
   as one argument. They are never evaluated as shell source.
-- The UI exposes no project, task, or claim mutation. Its writes are limited to workspace
-  registration, the agent connections above, the fixed service lifecycle, the fixed update
-  installation, and daemon-owned synchronization and automatic-backup preferences.
+- Portfolio content is read-only: the UI exposes no project, Spec, task, or claim mutation. Its
+  writes are six bounded operations: workspace registration, the agent connections above, the
+  fixed service lifecycle (start, stop, restart), the fixed update installation, the
+  daemon-owned synchronization settings, and the daemon-owned automatic-backup settings. Every one
+  of them goes through a bounded helper and, where it changes host state, a confirmation.
 - Plugin installation, ownership checks, lifecycle locking, rollback, status,
   and removal are owned by the same `pimpampum` CLI lifecycle.
 
@@ -125,10 +129,11 @@ packaged release provider for the signed `release-manifest.json` of the rolling
 newer version exists the card names it.
 
 On Linux the runtime is pinned by this plugin, so **Install update** answers with a typed
-`unavailable` error whose `details.remedy` is `pimpampum-bootstrap`. The card renders that remedy
-as the command to run from the plugin directory: update the Pimpampum Status plugin with
-`omarchy plugin update`, then run `pimpampum-bootstrap` from `~/.config/omarchy/plugins/dev.pimpampum.status`
-to install the newly pinned runtime. The CLI does not download Linux runtimes itself.
+`unavailable` error whose `details.remedy` is `pimpampum-bootstrap`. The card renders that remedy as
+one absolute command, the plugin directory joined to the helper name. Update the Pimpampum Status
+plugin with `omarchy plugin update`, then run
+`~/.config/omarchy/plugins/dev.pimpampum.status/pimpampum-bootstrap` to install the newly pinned
+runtime. The CLI does not download Linux runtimes itself.
 
 A failure shows the reason the CLI reported, not a guess. The CLI writes its typed error envelope
 to stderr, so the card reads that stream first and falls back to stdout. A signature failure, a
@@ -177,11 +182,13 @@ required to recover.
 ## Remove
 
 ```bash
-pimpampum uninstall
+~/.local/share/pimpampum/bin/pimpampum-control uninstall
 ```
 
-`omarchy plugin remove dev.pimpampum.status` removes the widget. `pimpampum uninstall` (or the
-plugin's `uninstall.sh`, which calls the same lifecycle) removes the service and runtime as well.
+Nothing puts the packaged CLI on `PATH`, so call the launcher by its absolute path. `omarchy plugin
+remove dev.pimpampum.status` removes the widget. `uninstall` (or the plugin's `uninstall.sh`, which
+calls the same lifecycle) removes the service and runtime as well. With the npm package installed,
+`pimpampum uninstall` is the same lifecycle.
 Removal uses the same receipt and lifecycle lock. It asks the bounded connection
 helper to disconnect only entries whose connector receipts prove ownership, then
 delegates service and plugin removal to the receipt-selected control launcher and
@@ -204,6 +211,11 @@ The packaged cross-platform validator can run on macOS or Linux:
 ```bash
 npm run validate:omarchy
 ```
+
+Most of its rows name a surface, not a file. A surface is one rooting component plus every sibling
+component it instantiates, transitively: `StatusPopout`, `PortfolioPage`, `SettingsPage`, and
+`HelpPage`. QML can therefore be split or merged inside one screen without editing the validator,
+while moving a fragment to a different screen still fails.
 
 The following release workflow requires a full source checkout and is intentionally not included
 in the published runtime tarball. On the target machine, run:

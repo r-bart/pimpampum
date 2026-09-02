@@ -137,6 +137,118 @@ function conflictId(conflict: Omit<SyncConflict, 'id' | 'createdAt'>): string {
   return syncHash(conflict).slice('sha256:'.length);
 }
 
+/**
+ * Rejects a snapshot in this device's own directory that this device did not
+ * write and that was not there at configuration time: another computer shares
+ * the device ID, and retention would later delete files that are not ours.
+ */
+function assertNoDeviceIdTwin(
+  entries: SnapshotEntry[],
+  context: {
+    applied: Set<string>;
+    deviceId: string;
+    directory: string;
+    inheritedSequence: number;
+  },
+): void {
+  const twin = entries.find(
+    (entry) =>
+      entry.deviceId === context.deviceId &&
+      !context.applied.has(entry.snapshotId) &&
+      entry.sequence > context.inheritedSequence,
+  );
+  if (!twin) return;
+  throw new AppError(
+    'conflict',
+    `Another computer publishes snapshots as device "${context.deviceId}"; run sync forget on each computer and configure a distinct device ID`,
+    409,
+    false,
+    { path: relative(context.directory, twin.path) },
+  );
+}
+
+/**
+ * Keeps the snapshots this device still has to import. A sequence equal to the
+ * newest applied one is a sibling written by a recovered device, not a delayed
+ * file, so it is admitted; older ones stay ignored because merging them would
+ * look like a rollback.
+ */
+function selectImportCandidates(
+  entries: SnapshotEntry[],
+  applied: Set<string>,
+  deviceSequences: Record<string, number>,
+): SnapshotEntry[] {
+  return entries.filter(
+    (entry) =>
+      !applied.has(entry.snapshotId) && entry.sequence >= (deviceSequences[entry.deviceId] ?? 0),
+  );
+}
+
+/**
+ * Picks the next snapshot whose parents are all applied. The order is total and
+ * independent of the filesystem: device ID, then sequence, then snapshot ID.
+ */
+function nextReadySnapshot(
+  pending: Map<string, SyncSnapshot>,
+  applied: Set<string>,
+): SyncSnapshot | undefined {
+  return [...pending.values()]
+    .filter((snapshot) => snapshot.parentSnapshots.every((parent) => applied.has(parent)))
+    .sort(
+      (left, right) =>
+        compareCodeUnits(left.deviceId, right.deviceId) ||
+        left.sequence - right.sequence ||
+        compareCodeUnits(left.snapshotId, right.snapshotId),
+    )[0];
+}
+
+/**
+ * Loads a snapshot's parents, and classifies a gap instead of hiding it: a
+ * parent whose file exists but failed validation blocks the child, while an
+ * absent file only means the provider has not delivered it yet.
+ */
+function resolveSnapshotParents(
+  snapshot: SyncSnapshot,
+  entryBySnapshotId: Map<string, SnapshotEntry>,
+  load: (entry: SnapshotEntry) => SyncSnapshot | undefined,
+  blockedIds: Set<string>,
+): { parents: SyncSnapshot[] } | { missing: 'blocked' | 'waiting' } {
+  const parents: SyncSnapshot[] = [];
+  for (const parentId of snapshot.parentSnapshots) {
+    const entry = entryBySnapshotId.get(parentId);
+    const parent = entry ? load(entry) : undefined;
+    if (!parent) {
+      if (!entry) return { missing: 'waiting' };
+      blockedIds.add(snapshot.snapshotId);
+      return { missing: 'blocked' };
+    }
+    parents.push(parent);
+  }
+  return { parents };
+}
+
+/**
+ * Marks every transitive descendant of a blocked snapshot as blocked and drops
+ * it from the pending set, so the status blames the person who must fix the
+ * file instead of the provider that already delivered it.
+ */
+function spreadBlockedDescendants(
+  pending: Map<string, SyncSnapshot>,
+  blockedIds: Set<string>,
+): void {
+  let spread = true;
+  while (spread) {
+    spread = false;
+    for (const snapshot of pending.values()) {
+      if (snapshot.parentSnapshots.some((parent) => blockedIds.has(parent))) {
+        blockedIds.add(snapshot.snapshotId);
+        pending.delete(snapshot.snapshotId);
+        spread = true;
+      }
+    }
+  }
+}
+
 export class SyncController implements SyncGateway {
   private settings: Settings;
   private state: SyncStatusState;
@@ -444,32 +556,13 @@ export class SyncController implements SyncGateway {
     const applied = new Set(this.settings.appliedSnapshotIds);
     const entries = this.listSnapshotFiles(directory);
     const entryBySnapshotId = new Map(entries.map((entry) => [entry.snapshotId, entry]));
-    const twin = entries.find(
-      (entry) =>
-        entry.deviceId === deviceId &&
-        !applied.has(entry.snapshotId) &&
-        entry.sequence > this.settings.inheritedSequence,
-    );
-    if (twin) {
-      // A file in this device's own directory that this device did not write
-      // and that was not there at configuration time: another computer shares
-      // the device ID. Retention would later delete files that are not ours.
-      throw new AppError(
-        'conflict',
-        `Another computer publishes snapshots as device "${deviceId}"; run sync forget on each computer and configure a distinct device ID`,
-        409,
-        false,
-        { path: relative(directory, twin.path) },
-      );
-    }
-    // A sequence equal to the newest applied one is a sibling written by a
-    // recovered device, not a delayed file, so it is admitted; older ones stay
-    // ignored because merging them would look like a rollback.
-    const candidates = entries.filter(
-      (entry) =>
-        !applied.has(entry.snapshotId) &&
-        entry.sequence >= (this.settings.deviceSequences[entry.deviceId] ?? 0),
-    );
+    assertNoDeviceIdTwin(entries, {
+      applied,
+      deviceId,
+      directory,
+      inheritedSequence: this.settings.inheritedSequence,
+    });
+    const candidates = selectImportCandidates(entries, applied, this.settings.deviceSequences);
     this.pendingSnapshotCount = candidates.length;
     const blocked: SyncBlockedSnapshot[] = [];
     const blockedIds = new Set<string>();
@@ -494,99 +587,85 @@ export class SyncController implements SyncGateway {
     }
     let waiting = 0;
     while (pending.size > 0) {
-      const ready = [...pending.values()]
-        .filter((snapshot) => snapshot.parentSnapshots.every((parent) => applied.has(parent)))
-        .sort(
-          (left, right) =>
-            compareCodeUnits(left.deviceId, right.deviceId) ||
-            left.sequence - right.sequence ||
-            compareCodeUnits(left.snapshotId, right.snapshotId),
-        )[0];
-      if (!ready) break;
-      const snapshot = ready;
-      const parents: SyncSnapshot[] = [];
-      let missingParent = false;
-      for (const parentId of snapshot.parentSnapshots) {
-        const entry = entryBySnapshotId.get(parentId);
-        const parent = entry ? load(entry) : undefined;
-        if (!parent) {
-          if (entry) blockedIds.add(snapshot.snapshotId);
-          else waiting += 1;
-          missingParent = true;
-          break;
-        }
-        parents.push(parent);
-      }
-      if (missingParent) {
+      const snapshot = nextReadySnapshot(pending, applied);
+      if (!snapshot) break;
+      const resolved = resolveSnapshotParents(snapshot, entryBySnapshotId, load, blockedIds);
+      if ('missing' in resolved) {
+        if (resolved.missing === 'waiting') waiting += 1;
         pending.delete(snapshot.snapshotId);
         continue;
       }
-      const settingsBeforeImport = structuredClone(this.settings);
-      try {
-        const local = normalizedSyncState(this.options.snapshotter());
-        const base = parents
-          .map((parent) => parent.state)
-          .reduce(
-            (combined, parent) => mergeSyncStates(EMPTY_STATE, combined, parent).state,
-            EMPTY_STATE,
-          );
-        const merged = mergeSyncStates(base, local, snapshot.state);
-        const resolutions = snapshot.resolutions ?? [];
-        const resolutionKeys = new Set(
-          resolutions.map(({ entityType, entityId }) => `${entityType}:${entityId}`),
-        );
-        this.settings.conflicts = this.settings.conflicts.filter(
-          ({ entityType, entityId }) => !resolutionKeys.has(`${entityType}:${entityId}`),
-        );
-        const resolvedState = this.applyResolutions(merged.state, snapshot.state, resolutions);
-        const at = this.clock().toISOString();
-        const knownConflicts = new Set(this.settings.conflicts.map((conflict) => conflict.id));
-        for (const conflict of merged.conflicts) {
-          if (resolutionKeys.has(`${conflict.entityType}:${conflict.entityId}`)) continue;
-          const id = conflictId(conflict);
-          if (!knownConflicts.has(id)) {
-            this.settings.conflicts.push({ id, ...conflict, createdAt: at });
-            knownConflicts.add(id);
-          }
-        }
-        const protectedState = preserveConflictedEntities(resolvedState, local, [
-          ...this.settings.conflicts,
-          ...merged.conflicts.filter(
-            ({ entityType, entityId }) => !resolutionKeys.has(`${entityType}:${entityId}`),
-          ),
-        ]);
-        this.options.importer(protectedState);
-        this.settings.appliedSnapshotIds.push(snapshot.snapshotId);
-        applied.add(snapshot.snapshotId);
-        pending.delete(snapshot.snapshotId);
-        this.settings.deviceSequences[snapshot.deviceId] = snapshot.sequence;
-        this.settings.deviceHeads[snapshot.deviceId] = snapshot.snapshotId;
-        this.settings.headSnapshotIds = this.nextHeads(snapshot);
-        this.lastImportAt = at;
-        this.pendingSnapshotCount -= 1;
-        this.writeSettings();
-      } catch (error) {
-        this.settings = settingsBeforeImport;
-        throw error;
-      }
+      this.applyImportedSnapshot(snapshot, resolved.parents, applied, pending);
     }
     // Descendants of a blocked file wait on a person, not on the provider.
-    let spread = true;
-    while (spread) {
-      spread = false;
-      for (const snapshot of pending.values()) {
-        if (snapshot.parentSnapshots.some((parent) => blockedIds.has(parent))) {
-          blockedIds.add(snapshot.snapshotId);
-          pending.delete(snapshot.snapshotId);
-          spread = true;
-        }
-      }
-    }
+    spreadBlockedDescendants(pending, blockedIds);
     waiting += pending.size;
     this.blockedSnapshot =
       blocked.sort((left, right) => compareCodeUnits(left.path, right.path))[0] ?? null;
     if (waiting === 0 && blocked.length === 0) this.compactAppliedSnapshotIds(entries);
     return waiting === 0;
+  }
+
+  /**
+   * Merges one snapshot on top of its parents, hands the result to the store
+   * and records it as applied. Restores the previous settings object on any
+   * failure, so a rejected import never leaves a half-written sequence, head
+   * or conflict list behind.
+   */
+  private applyImportedSnapshot(
+    snapshot: SyncSnapshot,
+    parents: SyncSnapshot[],
+    applied: Set<string>,
+    pending: Map<string, SyncSnapshot>,
+  ): void {
+    const settingsBeforeImport = structuredClone(this.settings);
+    try {
+      const local = normalizedSyncState(this.options.snapshotter());
+      const base = parents
+        .map((parent) => parent.state)
+        .reduce(
+          (combined, parent) => mergeSyncStates(EMPTY_STATE, combined, parent).state,
+          EMPTY_STATE,
+        );
+      const merged = mergeSyncStates(base, local, snapshot.state);
+      const resolutions = snapshot.resolutions ?? [];
+      const resolutionKeys = new Set(
+        resolutions.map(({ entityType, entityId }) => `${entityType}:${entityId}`),
+      );
+      this.settings.conflicts = this.settings.conflicts.filter(
+        ({ entityType, entityId }) => !resolutionKeys.has(`${entityType}:${entityId}`),
+      );
+      const resolvedState = this.applyResolutions(merged.state, snapshot.state, resolutions);
+      const at = this.clock().toISOString();
+      const knownConflicts = new Set(this.settings.conflicts.map((conflict) => conflict.id));
+      for (const conflict of merged.conflicts) {
+        if (resolutionKeys.has(`${conflict.entityType}:${conflict.entityId}`)) continue;
+        const id = conflictId(conflict);
+        if (!knownConflicts.has(id)) {
+          this.settings.conflicts.push({ id, ...conflict, createdAt: at });
+          knownConflicts.add(id);
+        }
+      }
+      const protectedState = preserveConflictedEntities(resolvedState, local, [
+        ...this.settings.conflicts,
+        ...merged.conflicts.filter(
+          ({ entityType, entityId }) => !resolutionKeys.has(`${entityType}:${entityId}`),
+        ),
+      ]);
+      this.options.importer(protectedState);
+      this.settings.appliedSnapshotIds.push(snapshot.snapshotId);
+      applied.add(snapshot.snapshotId);
+      pending.delete(snapshot.snapshotId);
+      this.settings.deviceSequences[snapshot.deviceId] = snapshot.sequence;
+      this.settings.deviceHeads[snapshot.deviceId] = snapshot.snapshotId;
+      this.settings.headSnapshotIds = this.nextHeads(snapshot);
+      this.lastImportAt = at;
+      this.pendingSnapshotCount -= 1;
+      this.writeSettings();
+    } catch (error) {
+      this.settings = settingsBeforeImport;
+      throw error;
+    }
   }
 
   /**

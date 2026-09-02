@@ -5,10 +5,17 @@ with signed macOS, Linux runtime, manifest, SBOM, and checksum assets, and an np
 provenance. Earlier releases (`v1.0.0` to `v1.2.8`) are described by their GitHub Release notes and
 by `thoughts/summaries/`.
 
-## Unreleased
+## v1.3.0 — 2026-09-02
 
-Remediation of the 2026-09-01 deep review (`thoughts/reviews/2026-09-01_deep-review.md`), on the
-`remediation/deep-review` branch. Grouped by finding family.
+Remediation of the 2026-09-01 deep review (`thoughts/reviews/2026-09-01_deep-review.md`): all 128
+findings, in four waves plus their documentation. Section 1b of that report is the ledger of which
+wave closed each finding. Grouped below by finding family.
+
+The release the review's plan mapped to five tags (`v1.2.12` to `v1.2.15`, then `v1.3.0`) ships as
+one minor version. No wire contract changed: every public method set, error code, message and
+envelope shape is preserved. Databases migrate forward to schema v3, which is one-way: a
+`v1.2.11` daemon that opens one afterwards refuses with a typed error naming both versions, so a
+rollback needs a backup taken before the upgrade.
 
 ### Wave 1 — release channel, sync integrity, macOS topology, Omarchy helpers, runtime installer
 
@@ -114,7 +121,33 @@ preserved.
   compared agent state against loose literals instead of the generated vocabulary, in 21 places.
 - Tests: the source contract covers all five CLI payload readers and pins both sides of the set, so
   a sixth reader cannot ship untested. The `xdg-open` safety row pins both launcher call sites and
-  forbids shell interpolation across every QML file instead of one.
+  forbids shell interpolation across every QML file instead of one. It is also the only test file
+  that reads repository sources: the Omarchy connection wiring contract moved into it.
+- The 100% coverage gate stopped depending on timing. `runServiceCommand`'s SIGKILL escalation was
+  covered only because an unref'd 100 ms grace timer happened to fire before the test file ended; a
+  loaded machine left it uncovered and failed the threshold with every test passing. The test now
+  waits for the child to disappear, which is what proves the escalation ran, and covers the branch
+  on every run.
+- The macOS live smoke runs again. Removing the app from the npm package left
+  `scripts/test-macos-live.mjs` reading it back out of `node_modules/pimpampum/platforms/macos/dist`,
+  a path that stopped existing in the same change. Every run failed at its first command, and only
+  the release job runs it, so no release had exercised it since. It now stages the built bundle with
+  `ditto` from `platforms/macos/dist/Pimpampum.app`, which is how a user receives it and where the
+  release job's own approval step leaves the signed copy.
+- The macOS bundle version stopped being a manual step. `platforms/macos/Resources/Info.plist` had
+  its `CFBundleShortVersionString` edited by hand at every release up to `v1.2.11`, and no checker
+  covered it, so a forgotten bump failed late in the release job rather than at
+  `check-release-versions.mjs`. The template now carries `__PIMPAMPUM_VERSION__`, the build
+  substitutes `package.json`'s version and refuses a template without the placeholder, and the
+  version check rejects a literal there.
+- The structural limit became a real check. `.oxlintrc.json` did not exist, so `npm run lint` never
+  evaluated the review's "no unit over 100 lines or cyclomatic 25" clause. It does now, on `src/**`,
+  with nine declarative factories exempted from the length rule by name and reason. Six procedures
+  that broke a limit were split, behaviour unchanged: `importPending` in `src/syncController.ts`
+  (144 lines to 55), `verifyMcpRoute` in `src/connectors/verifier.ts` (cyclomatic 29 to 15),
+  `planHostConnection` in `src/connectors/core.ts` (112 lines to 41), `startServer` in
+  `src/server.ts` (107 to 26), `verifyServiceHealth` in `src/service/health.ts` (cyclomatic 28 to 7)
+  and `request` in `src/client.ts` (26 to 11).
 
 ## v1.2.11 — 2026-09-01
 

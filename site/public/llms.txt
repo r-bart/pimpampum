@@ -62,6 +62,11 @@ Prefer that absolute launcher over `npx pimpampum mcp` or a `pimpampum-mcp` foun
 on `PATH`; the launcher resolves the receipt-selected runtime and its own
 credentials, so the agent never handles a token.
 
+A connected session sees 32 domain tools. Over streamable HTTP the daemon adds
+four synchronization tools, `sync_status`, `sync_now`, `sync_conflict_list` and
+`sync_conflict_read`, so a live `tools/list` returns 36 over HTTP and 32 through
+the stdio bridge. Read the live `tools/list`; it is the authoritative catalog.
+
 Hosts that speak streamable HTTP: `POST http://127.0.0.1:7337/mcp` with
 `Authorization: Bearer <local-token>`. The token lives at
 `<data-directory>/token` with mode 0600. `pimpampum config` reports the
@@ -83,6 +88,11 @@ with every verb, its arguments, its options and its effect annotations. `--help`
 `-h`, `--version` and `-v` are accepted and exit 0.
 
 Tool input comes from exactly one of `--input`, `--stdin` or `--input-file`.
+
+`pimpampum` is on `PATH` only when the operator installed the npm package. On a
+macOS-app or Omarchy-plugin installation, run the absolute launcher instead:
+`~/Library/Application Support/Pimpampum/bin/pimpampum-control` or
+`~/.local/share/pimpampum/bin/pimpampum-control`. It accepts the same verbs.
 
 Errors carry a stable code, a `retryable` boolean and a `suggestion`. When the
 daemon does not answer, the code is `unavailable`; report it to the operator
@@ -113,6 +123,12 @@ level of Subtasks. That is the whole model.
 A ready Spec with no open Tasks is claimable directly; once open Tasks exist,
 only leaf Tasks are claimable. `doing` is derived from a live Claim and is never
 persisted.
+
+A Workspace that arrived through synchronization may have no local root on this
+machine. Its `rootPath` is the empty string, and `workspace_resolve` matches only
+Workspaces with a local root. If `workspace_resolve` answers `not_found` for a
+path you are working in, say so and ask the operator to add that folder; do not
+guess another Workspace ID.
 
 ## Rules an agent must respect
 

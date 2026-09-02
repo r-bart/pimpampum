@@ -1,12 +1,16 @@
 /**
  * Source contract: negative checks over shipped sources that no behaviour test can observe from the
  * outside — a credential that never appears in a helper, a shell that is never invoked from QML, a
- * write verb absent from a read-only surface. Every assertion here is a "must not contain"; the
- * layout, copy and symbol greps that used to sit beside them were retired on 2026-09-02
- * (thoughts/reviews/2026-09-01_deep-review.md, H-13). The DoD manifests list this file as
- * "source contract", never as acceptance coverage.
+ * write verb absent from a read-only surface. The layout and copy greps that used to sit beside
+ * them were retired on 2026-09-02 (thoughts/reviews/2026-09-01_deep-review.md, H-13). The DoD
+ * manifests list this file as "source contract", never as acceptance coverage.
+ *
+ * Most assertions here are "must not contain". A few are wiring contracts: a property that binds a
+ * shipped source to a generated table or to a set of files, which no behaviour test can observe
+ * from outside. They live here because this is the one file that reads repository sources; a
+ * source-text assertion anywhere else is a defect in itself.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -14,7 +18,22 @@ const repositoryRoot = process.cwd();
 const pluginRoot = join(repositoryRoot, 'integrations/omarchy/pimpampum-status');
 const macSourceRoot = join(repositoryRoot, 'platforms/macos/Sources/PimpampumMenuBar');
 
+const helper = join(pluginRoot, 'pimpampum-connections');
+const common = join(pluginRoot, 'pimpampum-common.sh');
+const service = join(pluginRoot, 'AgentConnectionService.qml');
+const vocabulary = join(pluginRoot, 'StateVocabulary.qml');
+
 const plugin = (name: string): string => readFileSync(join(pluginRoot, name), 'utf8');
+
+/**
+ * The `id -> label` table of `StateVocabulary.qml`, which `scripts/generate-state-vocabulary.mjs`
+ * emits for the plugin and the macOS app from one source. Its body is a JSON object literal.
+ */
+function generatedAgentStateLabels(): Record<string, string> {
+  const block = /agentStateLabels:\s*\(\{([\s\S]*?)\}\)/u.exec(readFileSync(vocabulary, 'utf8'));
+  expect(block, 'StateVocabulary.qml must declare agentStateLabels').not.toBeNull();
+  return JSON.parse(`{${block![1]}}`) as Record<string, string>;
+}
 const macSource = (name: string): string => readFileSync(join(macSourceRoot, name), 'utf8');
 const source = (path: string): string => readFileSync(join(repositoryRoot, path), 'utf8');
 
@@ -186,5 +205,62 @@ describe('CLI bootstrap and stdio bridge', () => {
     );
     expect(entrypoints).not.toMatch(/\bsudo\b|setuid|telemetry|analytics/iu);
     expect(entrypoints).not.toMatch(/SELECT\s+\*\s+FROM|better-sqlite3/iu);
+  });
+});
+
+describe('Omarchy connection surface wiring', () => {
+  it('keeps QML typed, serialized and outside host configuration and daemon ownership', () => {
+    const qml = readFileSync(service, 'utf8');
+    const shell = readFileSync(helper, 'utf8');
+    const shared = readFileSync(common, 'utf8');
+
+    expect(statSync(helper).mode & 0o111).not.toBe(0);
+    expect(shell).toContain('. "$plugin_root/pimpampum-common.sh"');
+    expect(shell).toContain('validate_home 73');
+    expect(shell).toContain('verify_control_launcher 69');
+    for (const action of ['list', 'plan', 'connect', 'test', 'repair', 'disconnect', 'resume']) {
+      expect(shell).toContain(action);
+    }
+    // The state names are generated, so the assertion is a property, not a copy of the list: the
+    // service must render exactly the shared agent vocabulary and invent nothing. A state reaches a
+    // connector either as a `labels.<id>` reference or as a literal handed to `setState`; the union
+    // of both routes has to equal the generated table.
+    const labels = generatedAgentStateLabels();
+    const idByLabel = new Map(Object.entries(labels).map(([id, label]) => [label, id]));
+    expect(qml).toContain('StateVocabulary { id: vocabulary }');
+    expect(qml).toContain('readonly property var sharedStates: vocabulary.agentLabels');
+    expect(qml).toContain('readonly property var labels: vocabulary.agentStateLabels');
+    const rendered = new Set<string>();
+    for (const match of qml.matchAll(/\blabels\.([A-Za-z][A-Za-z0-9]*)/gu)) rendered.add(match[1]!);
+    for (const match of qml.matchAll(/\bsetState\([^,]+,\s*"([^"]*)"\)/gu)) {
+      const literal = match[1]!;
+      const id = idByLabel.get(literal);
+      expect(id, `setState was handed the unknown state "${literal}"`).toBeTypeOf('string');
+      rendered.add(id!);
+    }
+    expect([...rendered].sort()).toEqual(Object.keys(labels).sort());
+    expect(qml).toContain('if (busy) return');
+    expect(qml).toContain('connectionProcess.command = arguments');
+    expect(qml).toContain('envelope.schemaVersion !== 1');
+    expect(qml).toContain('case "ownedCurrent"');
+    expect(qml).toContain('Array.isArray(data.connectors)');
+    // The forwarded code is rendered like the other services' actionable errors: bounded, filtered
+    // and mapped to a distinct sentence for a stopped daemon and a missing agent CLI.
+    expect(qml).toContain('function actionableProcessError(envelope, fallback)');
+    expect(qml).toContain('/^[a-z_]{1,40}$/.test(value)');
+    expect(qml).toContain('value.length > 200');
+    expect(qml).toContain('if (cliCode === "unavailable")');
+    // The failure path picks its state from the same generated table, so an `unavailable` daemon
+    // still lands on a shared state instead of a sentence written here.
+    expect(qml).toContain('=== "unavailable") failedState = labels.unavailable');
+    for (const [, source] of qml.matchAll(/failedState\s*=\s*(\S+)/gu)) {
+      expect(source).toMatch(/^labels\./u);
+    }
+    expect(qml).toContain('/not installed/i.test(message)');
+    expect(qml).toContain('else if (envelope.code === "command_failed")');
+    expect(`${shell}\n${shared}\n${qml}`).not.toMatch(
+      /eval\s|sh\s+-c|bash\s+-c|bearer|token|mcpServers|\.claude\.json|config\.toml|systemctl/iu,
+    );
+    expect(shell).toContain('/bin/kill -0 "$owner_pid"');
   });
 });

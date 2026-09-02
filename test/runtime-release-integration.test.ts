@@ -264,6 +264,11 @@ describe('release channel pipeline scripts', () => {
     write('integrations/omarchy/pimpampum-status/manifest.json', { version: '1.2.12' });
     write('integrations/omarchy/pimpampum-status/runtime-manifest.json', { version: '1.2.12' });
     write('site/src/pages/index.astro', '<p>version {version}</p>\n');
+    write(
+      'platforms/macos/Resources/Info.plist',
+      '<plist><dict><key>CFBundleShortVersionString</key>' +
+        '<string>__PIMPAMPUM_VERSION__</string></dict></plist>\n',
+    );
     const checker = join(root, 'scripts/check-release-versions.mjs');
     const run = (tag: string) =>
       spawnSync(process.execPath, [checker, tag, work], { encoding: 'utf8' });
@@ -276,6 +281,23 @@ describe('release channel pipeline scripts', () => {
     write('server.json', { version: '1.2.12', packages: [{ version: '1.2.12' }] });
     write('site/src/pages/index.astro', '<p>version 1.2.12</p>\n');
     expect(run('v1.2.12').stderr).toContain('spells a version literally (1.2.12)');
+
+    // The macOS bundle manifest is the version source that was maintained by hand up to v1.2.11.
+    // A forgotten bump used to surface far later, inside check-macos-artifact.mjs.
+    write('site/src/pages/index.astro', '<p>version {version}</p>\n');
+    write(
+      'platforms/macos/Resources/Info.plist',
+      '<plist><dict><key>CFBundleShortVersionString</key><string>1.2.12</string></dict></plist>\n',
+    );
+    const literal = run('v1.2.12').stderr;
+    expect(literal).toContain('platforms/macos/Resources/Info.plist must carry');
+    expect(literal).toContain('__PIMPAMPUM_VERSION__');
+    write(
+      'platforms/macos/Resources/Info.plist',
+      '<plist><dict><key>CFBundleVersion</key><string>1</string>' +
+        '<key>Other</key><string>__PIMPAMPUM_VERSION__ 9.9.9</string></dict></plist>\n',
+    );
+    expect(run('v1.2.12').stderr).toContain('spells a version literally (9.9.9)');
   });
 
   it('keeps the repository versions aligned with the current package version', () => {

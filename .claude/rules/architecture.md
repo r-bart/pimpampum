@@ -70,5 +70,11 @@ npm run typecheck && npm run lint && npm run format:check && npm test
   (`vitest.config.ts` excludes only the entrypoints `src/cli.ts`, `src/daemon.ts`,
   `src/mcpStdio.ts` and the type-only `src/types.ts`; `src/cliMain.ts` left the exclusion in wave 4
   of the deep-review remediation), and runs the compiled E2E from `test/**/*.e2e.test.ts`.
+- `npm run lint` enforces the structural limits on `src/**` since `v1.3.0`: `complexity` at 25 and
+  `max-lines-per-function` at 100. Nine declarative factories are exempted from the length rule by
+  name in `.oxlintrc.json`, each with its reason. Widen that list only for a registration block,
+  never to excuse a procedure.
+- `test/source-contract.test.ts` is the only test that reads repository sources and asserts on their
+  text. A source-text assertion in any other test file is a defect in itself.
 - `npm run test:macos` and `npm run test:omarchy` cover the native surfaces.
 - No `any` without an explicit reason.

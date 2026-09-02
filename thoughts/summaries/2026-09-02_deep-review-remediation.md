@@ -3,7 +3,8 @@
 **Date**: 2026-09-02
 **Feature**: Remediation of the 2026-09-01 deep review, all ten phases
 **Type**: Bug fix / Hardening / Refactor
-**Branch**: `remediation/deep-review` (from `develop`), not pushed and not tagged
+**Branch**: `remediation/deep-review` (from `develop`)
+**Release**: `v1.3.0`
 
 ## What Was Done
 
@@ -85,6 +86,26 @@ OpenAPI components with a router test), H-11 (`slugSchema` in the sync contract 
 guard in `contextDocumentPath`), H-12, H-14 (no `@immutable` header remains), H-17
 (`test/sync.e2e.test.ts` runs in the compiled pass), L-38.
 
+## Two Defects the Release Preparation Found
+
+Both were release blockers, and both were invisible until the version moved off `1.2.11`.
+
+1. **The macOS bundle version was a manual step.** `platforms/macos/Resources/Info.plist` carried
+   `CFBundleShortVersionString` as a literal, hand-bumped in a `chore: prepare` commit at every
+   release, and `check-release-versions.mjs` did not cover it. Bumping to `1.3.0` made
+   `check-macos-artifact.mjs` reject the app with "must use the package release version". The
+   template now carries `__PIMPAMPUM_VERSION__`, `build-macos-app.sh` substitutes it and refuses a
+   template without it, and the version check rejects a literal there.
+2. **The macOS live smoke could not run.** Removing the app from the npm package left
+   `scripts/test-macos-live.mjs` reading it back out of
+   `node_modules/pimpampum/platforms/macos/dist`, which the same change deleted. The runner failed
+   on its very first command with a null exit status. Only the release job runs it, so the breakage
+   had been latent since wave 1. It now stages `platforms/macos/dist/Pimpampum.app` with `ditto`,
+   which is where the release job's approval step leaves the signed bundle anyway.
+
+Neither would have been caught by the suite: the first needs a version change, the second needs the
+live runner. Running the release checklist is what found them.
+
 ## What Is Not Verified
 
 1. **The Omarchy popout is unverified visually.** No machine here draws QML. Wave 4 split
@@ -95,19 +116,26 @@ guard in `contextDocumentPath`), H-12, H-14 (no `@immutable` header remains), H-
 2. **The macOS live smoke is unrun.** It needs a Mac with no user installation.
 3. **The mirror is one release behind.** Published 1.2.9 against a local 1.2.11. The manifests did
    not change in wave 4, so the difference predates it and the release work closes it.
-4. **Gate 9's numeric clause fails.** Fifteen units in `src/` break the 100-line or cyclomatic-25
-   limit. Nine are the factories and registration blocks the exception was written for; six are
-   real residue. The clause had never been measured because no tool in the repository evaluates it.
-   See `thoughts/notes/2026-09-02_structure-gate-measurement.md`.
-5. **One criterion is stricter than the practice.** "Only `test/source-contract.test.ts` asserts
-   source text" is not literally true: `test/omarchy-connections.test.ts:366` also does. No
-   acceptance test asserts on repository source, which was the point of H-13.
+   Both of the structural gaps found while closing the paperwork were then fixed, so they are not on
+   this list. Gate 9's numeric clause had never been measured; it now passes, the six offending units
+   were split, and `npm run lint` enforces both limits on `src/**` with nine declarative factories
+   exempted by name. The source-text criterion is now literally true: the Omarchy wiring contract moved
+   into `test/source-contract.test.ts`, leaving exactly one test file that reads repository sources.
 
-## Pending Actions Outside the Repository
+## The v1.3.0 Release
 
-- `gh secret set RELEASE_MANIFEST_SIGNING_KEY` and `gh secret set OMARCHY_MIRROR_DEPLOY_KEY`.
-- Push the plugin mirror at 1.2.11 and create the rolling `update-channel-stable` release.
-- The live Omarchy run and the live macOS run named above.
+The plan mapped this work to five tags, `v1.2.12` to `v1.2.15` and then `v1.3.0`. It shipped as one
+minor version. No wire contract changed. A database migrates forward to schema v3 and `v1.2.11`
+cannot read it afterwards, which is the only one-way step in the release.
+
+Two secrets have to exist before the tag, and they belong in different places. The `publish` job
+declares `environment: release`, so `RELEASE_MANIFEST_SIGNING_KEY` belongs to that environment. The
+`mirror` job declares no environment, so `OMARCHY_MIRROR_DEPLOY_KEY` belongs to the repository.
+Setting both in the same place leaves one job reading an empty value.
+
+The Omarchy runtime digests no longer need a second tag. A `node:24.19.0-bookworm` container whose
+platform matches the target reproduces the CI archive byte for byte, verified against `v1.2.11`. The
+recipe is in `thoughts/notes/2026-09-02_reproducing-runtime-digests.md`.
 
 ## Architecture
 

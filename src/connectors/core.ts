@@ -141,6 +141,108 @@ function neutralPlan(
 }
 
 /**
+ * Resolves the four states in which the ownership classifier already knows what to do. Returns
+ * null only for `conflict`, the one state that needs an explicit decision from the reviewer.
+ */
+function planOwnedTransition(
+  state: ConnectionPlan['state'],
+  selected: ConnectionPlan,
+  host: { add: CommandInvocation; remove: CommandInvocation; name: string },
+): ConnectionPlan | null {
+  const { add, remove, name } = host;
+  if (state === 'notConnected') {
+    return {
+      ...selected,
+      mutations: [add],
+      newSessionRequired: true,
+      summary: `Add the Pimpampum MCP entry to ${name}.`,
+    };
+  }
+  if (state === 'ownedStale') {
+    return {
+      ...selected,
+      mutations: [remove, add],
+      newSessionRequired: true,
+      summary: `Repair the receipt-owned ${name} MCP entry with the current private launcher.`,
+    };
+  }
+  if (state === 'equivalentUnowned') {
+    return {
+      ...selected,
+      summary: `Verify the equivalent ${name} MCP entry before adopting it.`,
+    };
+  }
+  if (state === 'ownedCurrent') {
+    return { ...selected, summary: `${name} is connected through the current private launcher.` };
+  }
+  return null;
+}
+
+/**
+ * Resolves a conflicting entry. A replacement only mutates when the official CLI can restore the
+ * reviewed entry and the reviewer saw this exact entry; every other path stays neutral and asks
+ * for a decision.
+ */
+function planConflictDecision(
+  host: HostConnectorIdentity,
+  input: HostPlanInput,
+  selected: ConnectionPlan,
+  replacement: { add: CommandInvocation; remove: CommandInvocation },
+): ConnectionPlan {
+  const name = host.displayName;
+  // The classifier only reports a conflict for a present entry.
+  const entry = input.entry as HostEntry;
+  const reviewedEntryFingerprint = fingerprintCommand(entry);
+  const decision = input.conflictDecision;
+  if (decision === 'replace') {
+    if (entry.restorable === false) {
+      return {
+        ...neutralPlan(
+          host,
+          'conflict',
+          `The ${name} entry cannot be restored through the official CLI, so it is not replaced.`,
+        ),
+        conflictDecision: 'replace',
+        reviewedEntryFingerprint,
+      };
+    }
+    if (
+      input.reviewedEntryFingerprint !== undefined &&
+      input.reviewedEntryFingerprint !== reviewedEntryFingerprint
+    ) {
+      return {
+        ...neutralPlan(
+          host,
+          'conflict',
+          `The ${name} entry changed after it was reviewed. Inspect it again before replacing.`,
+        ),
+        conflictDecision: 'replace',
+        reviewedEntryFingerprint,
+        requiresConflictDecision: true,
+      };
+    }
+    return {
+      ...selected,
+      conflictDecision: 'replace',
+      reviewedEntryFingerprint,
+      mutations: [replacement.remove, replacement.add],
+      newSessionRequired: true,
+      summary: `Replace the reviewed ${name} MCP entry and preserve it for rollback.`,
+    };
+  }
+  return {
+    ...neutralPlan(
+      host,
+      'conflict',
+      `${name} already has a different entry named pimpampum. Review it before replacing.`,
+    ),
+    ...(decision === undefined ? {} : { conflictDecision: decision }),
+    reviewedEntryFingerprint,
+    requiresConflictDecision: decision === undefined,
+  };
+}
+
+/**
  * The one planner. It decides from the ownership classification alone; the host contributes the
  * invocations and its display name. A conflict is never pre-selected, and a replacement only
  * mutates when the official CLI can restore the reviewed entry and the reviewer saw this exact
@@ -183,81 +285,9 @@ export function planHostConnection(
   const add = host.addInvocation(input.executable, expected);
   const remove = host.removeInvocation(input.executable);
   const selected = { ...neutralPlan(host, state, ''), selectedByDefault: true };
-  if (state === 'notConnected') {
-    return {
-      ...selected,
-      mutations: [add],
-      newSessionRequired: true,
-      summary: `Add the Pimpampum MCP entry to ${name}.`,
-    };
-  }
-  if (state === 'ownedStale') {
-    return {
-      ...selected,
-      mutations: [remove, add],
-      newSessionRequired: true,
-      summary: `Repair the receipt-owned ${name} MCP entry with the current private launcher.`,
-    };
-  }
-  if (state === 'equivalentUnowned') {
-    return {
-      ...selected,
-      summary: `Verify the equivalent ${name} MCP entry before adopting it.`,
-    };
-  }
-  if (state === 'ownedCurrent') {
-    return { ...selected, summary: `${name} is connected through the current private launcher.` };
-  }
-  // The classifier only reports a conflict for a present entry.
-  const entry = input.entry as HostEntry;
-  const reviewedEntryFingerprint = fingerprintCommand(entry);
-  const decision = input.conflictDecision;
-  if (decision === 'replace') {
-    if (entry.restorable === false) {
-      return {
-        ...neutralPlan(
-          host,
-          'conflict',
-          `The ${name} entry cannot be restored through the official CLI, so it is not replaced.`,
-        ),
-        conflictDecision: 'replace',
-        reviewedEntryFingerprint,
-      };
-    }
-    if (
-      input.reviewedEntryFingerprint !== undefined &&
-      input.reviewedEntryFingerprint !== reviewedEntryFingerprint
-    ) {
-      return {
-        ...neutralPlan(
-          host,
-          'conflict',
-          `The ${name} entry changed after it was reviewed. Inspect it again before replacing.`,
-        ),
-        conflictDecision: 'replace',
-        reviewedEntryFingerprint,
-        requiresConflictDecision: true,
-      };
-    }
-    return {
-      ...selected,
-      conflictDecision: 'replace',
-      reviewedEntryFingerprint,
-      mutations: [remove, add],
-      newSessionRequired: true,
-      summary: `Replace the reviewed ${name} MCP entry and preserve it for rollback.`,
-    };
-  }
-  return {
-    ...neutralPlan(
-      host,
-      'conflict',
-      `${name} already has a different entry named pimpampum. Review it before replacing.`,
-    ),
-    ...(decision === undefined ? {} : { conflictDecision: decision }),
-    reviewedEntryFingerprint,
-    requiresConflictDecision: decision === undefined,
-  };
+  const owned = planOwnedTransition(state, selected, { add, remove, name });
+  if (owned) return owned;
+  return planConflictDecision(host, input, selected, { add, remove });
 }
 
 function planInput(

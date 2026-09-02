@@ -12,6 +12,11 @@
  * prototype harness clones this from a <template>.
  */
 import Mark from './Mark.astro';
+// The replica shows the released daemon version, resolved at build time. A literal here rotted
+// once already: the page shipped "Daemon 1.2.11" after the repository moved on.
+import rootPackage from '../../../package.json';
+
+const { version } = rootPackage as { version: string };
 
 interface Props {
   appearance?: 'light' | 'dark';
@@ -66,7 +71,7 @@ const completed = [
       <section class="group">
         <h4 class="group-title">Summary</h4>
         <p class="summary">4 projects · 2 active · 7 available</p>
-        <p class="summary summary-2">Daemon 1.2.11 · 3h 12m uptime</p>
+        <p class="summary summary-2">Daemon {version} · 3h 12m uptime</p>
       </section>
 
       <section class="group">

@@ -55,6 +55,7 @@ const omissions = [
   'Configurable workflows and arbitrary task dependencies.',
   'More than one level of subtasks.',
   'Cloud sync of the live database.',
+  'A web interface, so far.',
 ];
 
 const links = [
@@ -265,9 +266,11 @@ const socialImage = new URL('/og.png', Astro.site).href;
           <div>
             <p class="statement">Built for agents. Readable by you.</p>
             <p class="prose">
-              Agents connect over MCP and get 32 tools with strict schemas, bounded reads, and a
-              claim that expires on its own. You hand an agent four sentences and it knows how to
-              work. There is a JSON-first CLI and a documented local API for everything else.
+              Agents connect over MCP and get 32 domain tools with strict schemas, bounded reads,
+              and a claim that expires on its own. Over HTTP the daemon adds four synchronization
+              tools, so a live catalog is 36 there and 32 through the stdio bridge. You hand an
+              agent four sentences and it knows how to work. There is a JSON-first CLI and a
+              documented local API for everything else.
             </p>
             <pre class="code"><code>&lbrace;
   "mcpServers": &lbrace;
@@ -354,7 +357,8 @@ const socialImage = new URL('/og.png', Astro.site).href;
               Expand the zip, open Pimpampum, and follow the guided setup. It detects Codex and
               Claude Code, shows you the exact changes, and installs the background service and the
               agent connections after one confirmation. No Terminal, no token, no Node.js. The last
-              step adds your first workspace.
+              step adds your first workspace. Updates arrive signed, and the key that checks the
+              signature is built into the app.
             </p>
           </article>
 
@@ -374,7 +378,9 @@ const socialImage = new URL('/og.png', Astro.site).href;
             <p class="route-note">
               Open the widget, choose Get started, and connect the agents it found. The plugin
               downloads the pinned runtime for your machine, verifies it, and installs the systemd
-              user service. It uninstalls with the plugin, too.
+              user service. It uninstalls with the plugin, too. It also updates with the plugin:
+              <code>omarchy plugin update</code> first, then the plugin's own bootstrap installs
+              the newly pinned runtime.
             </p>
           </article>
         </div>
@@ -394,7 +400,8 @@ pimpampum install</code></pre>
           </div>
           <p class="route-note">
             For automation and other Linux desktops. The daemon, the CLI, and the MCP bridge as one
-            per-user service, no root access. On a Mac it fetches the signed app of the same version
+            per-user service, no root access. The package is 2.4 MB unpacked: no app and no
+            private runtime inside it. On a Mac it fetches the signed app of the same version
             through the signed release channel.
           </p>
         </div>

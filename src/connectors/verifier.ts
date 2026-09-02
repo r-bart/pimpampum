@@ -226,7 +226,7 @@ function toolNames(result: ProbeToolList): string[] {
   });
 }
 
-export async function verifyMcpRoute(input: {
+interface McpRouteVerificationInput {
   command: string;
   arguments: string[];
   timeoutMilliseconds: number;
@@ -237,7 +237,97 @@ export async function verifyMcpRoute(input: {
   supportedProtocolVersions?: string[];
   signal?: AbortSignal;
   spawn?: (command: string, arguments_: string[]) => McpRouteProbe;
-}): Promise<McpRouteVerificationResult> {
+}
+
+/**
+ * Accepts only a protocol version the client can actually speak. A probe that requires one and
+ * reports none is rejected, and so is a version outside the supported set.
+ */
+function assertNegotiatedProtocol(
+  probe: McpRouteProbe,
+  protocolVersion: unknown,
+  supportedProtocolVersions: string[] | undefined,
+): void {
+  const protocolAccepted =
+    typeof protocolVersion === 'string' &&
+    (supportedProtocolVersions !== undefined
+      ? supportedProtocolVersions.includes(protocolVersion)
+      : SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion) ||
+        probe.acceptsNegotiatedProtocolVersion?.(protocolVersion) === true);
+  if (
+    (probe.requiresProtocolVersion === true && typeof protocolVersion !== 'string') ||
+    (typeof protocolVersion === 'string' && !protocolAccepted)
+  ) {
+    throw new Error('MCP server negotiated an incompatible protocol version');
+  }
+}
+
+/** Every required tool must be present under a bounded, non-empty name. */
+function assertRequiredTools(tools: string[], required: string[]): void {
+  const requiredTools = [...new Set(required)];
+  if (
+    requiredTools.some(
+      (name) => name.length === 0 || name.length > MAX_TOOL_NAME_LENGTH || !tools.includes(name),
+    )
+  ) {
+    throw new Error('MCP tool catalog is missing required Pimpampum tools');
+  }
+}
+
+/**
+ * Runs the handshake and the catalog read against a live probe. Every phase is bounded by the
+ * deadline and screened for secret leakage before its value is used, so a hostile bridge cannot
+ * turn verifier output into a credential channel. The caller owns the shutdown.
+ */
+async function probeMcpRoute(
+  probe: McpRouteProbe,
+  input: McpRouteVerificationInput,
+): Promise<McpRouteVerificationResult> {
+  const initialized = await withDeadline(
+    probe.initialize(),
+    input.timeoutMilliseconds,
+    'initialization',
+    input.signal,
+  );
+  const initializationOutput = boundedSerialized(initialized);
+  if (secretLeak(initializationOutput)) {
+    throw new Error('Secret leakage detected in MCP initialization output');
+  }
+  const serverName = initialized.serverInfo?.name;
+  if (serverName !== input.expectedServerName) {
+    throw new Error('MCP server identity did not match the installed Pimpampum route');
+  }
+  assertNegotiatedProtocol(probe, initialized.protocolVersion, input.supportedProtocolVersions);
+  const listed = await withDeadline(
+    probe.listTools(),
+    input.timeoutMilliseconds,
+    'tool catalog',
+    input.signal,
+  );
+  const catalogOutput = boundedSerialized(listed);
+  if (secretLeak(catalogOutput)) throw new Error('Secret leakage detected in MCP tool output');
+  const tools = toolNames(listed);
+  assertRequiredTools(tools, input.requiredTools);
+  const rawDiagnostics = diagnosticValues(
+    initialized.stderr,
+    initialized.diagnostics,
+    listed.stderr,
+    listed.diagnostics,
+  );
+  if (rawDiagnostics.some(secretLeak)) {
+    throw new Error('Secret leakage detected in MCP verifier diagnostics');
+  }
+  return {
+    available: true,
+    serverName,
+    tools,
+    diagnostics: rawDiagnostics.map(redactDiagnostic).filter(Boolean),
+  };
+}
+
+export async function verifyMcpRoute(
+  input: McpRouteVerificationInput,
+): Promise<McpRouteVerificationResult> {
   assertRoute(input.command, input.arguments);
   if (input.requiredTools.length > MAX_TOOL_COUNT) {
     throw new Error('Required MCP tool catalog exceeds the bounded limit');
@@ -247,71 +337,7 @@ export async function verifyMcpRoute(input: {
   let operationFailed = false;
   let result: McpRouteVerificationResult | undefined;
   try {
-    const initialized = await withDeadline(
-      probe.initialize(),
-      input.timeoutMilliseconds,
-      'initialization',
-      input.signal,
-    );
-    const initializationOutput = boundedSerialized(initialized);
-    if (secretLeak(initializationOutput)) {
-      throw new Error('Secret leakage detected in MCP initialization output');
-    }
-    const serverName = initialized.serverInfo?.name;
-    if (serverName !== input.expectedServerName) {
-      throw new Error('MCP server identity did not match the installed Pimpampum route');
-    }
-
-    const protocolVersion = initialized.protocolVersion;
-    const protocolAccepted =
-      typeof protocolVersion === 'string' &&
-      (input.supportedProtocolVersions !== undefined
-        ? input.supportedProtocolVersions.includes(protocolVersion)
-        : SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion) ||
-          probe.acceptsNegotiatedProtocolVersion?.(protocolVersion) === true);
-    if (
-      (probe.requiresProtocolVersion === true && typeof protocolVersion !== 'string') ||
-      (typeof protocolVersion === 'string' && !protocolAccepted)
-    ) {
-      throw new Error('MCP server negotiated an incompatible protocol version');
-    }
-
-    const listed = await withDeadline(
-      probe.listTools(),
-      input.timeoutMilliseconds,
-      'tool catalog',
-      input.signal,
-    );
-    const catalogOutput = boundedSerialized(listed);
-    if (secretLeak(catalogOutput)) throw new Error('Secret leakage detected in MCP tool output');
-    const tools = toolNames(listed);
-    const requiredTools = [...new Set(input.requiredTools)];
-    if (
-      requiredTools.some(
-        (required) =>
-          required.length === 0 ||
-          required.length > MAX_TOOL_NAME_LENGTH ||
-          !tools.includes(required),
-      )
-    ) {
-      throw new Error('MCP tool catalog is missing required Pimpampum tools');
-    }
-
-    const rawDiagnostics = diagnosticValues(
-      initialized.stderr,
-      initialized.diagnostics,
-      listed.stderr,
-      listed.diagnostics,
-    );
-    if (rawDiagnostics.some(secretLeak)) {
-      throw new Error('Secret leakage detected in MCP verifier diagnostics');
-    }
-    result = {
-      available: true,
-      serverName,
-      tools,
-      diagnostics: rawDiagnostics.map(redactDiagnostic).filter(Boolean),
-    };
+    result = await probeMcpRoute(probe, input);
   } catch (error) {
     operationFailed = true;
     primaryError = error;

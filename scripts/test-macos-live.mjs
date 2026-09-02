@@ -458,11 +458,32 @@ function prepareRuntime() {
     },
   });
   run.packagedRoot = join(runtimeRoot, 'node_modules/pimpampum');
-  const packagedApp = join(run.packagedRoot, 'platforms/macos/dist/Pimpampum.app');
-  run.embeddedPayload = join(packagedApp, 'Contents/Resources/PimpampumRuntime/payload');
   run.npmCli = join(run.packagedRoot, 'dist/cli.js');
+  run.stagedApp = stageReleaseApp();
+  run.embeddedPayload = join(run.stagedApp, 'Contents/Resources/PimpampumRuntime/payload');
   useEmbeddedRuntime();
   environment.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+}
+
+/**
+ * Copies the built app out of the repository into the temporary tree, the way a user receives it:
+ * a bundle downloaded beside the checkout, not a directory inside `node_modules`.
+ *
+ * The app and its private runtime left the npm package in v1.2.12 (H-12 of the 2026-09-01 review:
+ * `package.json#files` dropped them and `platforms/macos/dist/.npmignore` is the second guard), so
+ * reading them back out of the installed package cannot work. `ditto` is used rather than a manual
+ * walk because it preserves modes, symlinks and extended attributes, and the embedded `node` is a
+ * signed Mach-O that any rewrite would invalidate.
+ */
+function stageReleaseApp() {
+  const built = join(repositoryRoot, 'platforms/macos/dist/Pimpampum.app');
+  if (!existsSync(built)) {
+    throw new Error(`Build the app first with "npm run build:macos": ${built} is missing.`);
+  }
+  const staged = join(temporaryRoot, 'release/Pimpampum.app');
+  mkdirSync(dirname(staged), { recursive: true });
+  execFileSync('/usr/bin/ditto', [built, staged], { stdio: 'inherit' });
+  return staged;
 }
 
 function useEmbeddedRuntime() {

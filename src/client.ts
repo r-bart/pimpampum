@@ -75,6 +75,63 @@ function isHealthReport(payload: unknown): payload is HealthReport {
   );
 }
 
+interface RequestOptions {
+  method?: string;
+  body?: unknown;
+  authenticated?: boolean;
+  timeoutMilliseconds?: number;
+}
+
+/**
+ * Builds the wire request. The bearer token travels only in the `authorization` header, a JSON
+ * body always announces its content type, and every request carries an abort deadline.
+ */
+function buildRequestInit(
+  options: RequestOptions,
+  defaults: { token: string; timeoutMilliseconds: number },
+): RequestInit {
+  const headers = new Headers({ accept: 'application/json' });
+  if (options.authenticated !== false) headers.set('authorization', `Bearer ${defaults.token}`);
+  if (options.body !== undefined) headers.set('content-type', 'application/json');
+  const requestInit: RequestInit = {
+    method: options.method ?? 'GET',
+    headers,
+    signal: AbortSignal.timeout(options.timeoutMilliseconds ?? defaults.timeoutMilliseconds),
+  };
+  if (options.body !== undefined) requestInit.body = JSON.stringify(options.body);
+  return requestInit;
+}
+
+/** An empty or unparsable body is `undefined`; the status decides what that means. */
+function parseJsonPayload(text: string): unknown {
+  try {
+    return text ? (JSON.parse(text) as unknown) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A well-formed answer that is not an envelope is a defect in the daemon, not in the request. */
+function invalidResponse(): AppError {
+  return new AppError('internal_error', 'Pimpampum returned an invalid response', 502, true);
+}
+
+/**
+ * Rebuilds the daemon's typed error on this side of the wire. The daemon's own code wins whenever
+ * it is one this client knows; only an unrecognized code falls back to the status mapping, so a
+ * stable code never degenerates into a generic one.
+ */
+function daemonError(payload: unknown, status: number): AppError {
+  const errorPayload = (payload ?? {}) as ApiErrorEnvelope;
+  return new AppError(
+    errorCode(errorPayload.error?.code, status),
+    errorPayload.error?.message ?? `HTTP ${status}`,
+    status,
+    errorPayload.error?.retryable ?? status >= 500,
+    errorPayload.error?.details ?? {},
+  );
+}
+
 export class PimpampumHttpClient implements PimpampumGateway {
   constructor(
     private readonly baseUrl: string,
@@ -519,25 +576,11 @@ export class PimpampumHttpClient implements PimpampumGateway {
     return `/api/v1/${ownerType === 'workspace' ? 'workspaces' : 'projects'}/${segment(ownerId)}/context`;
   }
 
-  private async request<T>(
-    path: string,
-    options: {
-      method?: string;
-      body?: unknown;
-      authenticated?: boolean;
-      timeoutMilliseconds?: number;
-    } = {},
-  ): Promise<T> {
-    const headers = new Headers({ accept: 'application/json' });
-    if (options.authenticated !== false) headers.set('authorization', `Bearer ${this.token}`);
-    if (options.body !== undefined) headers.set('content-type', 'application/json');
-
-    const requestInit: RequestInit = {
-      method: options.method ?? 'GET',
-      headers,
-      signal: AbortSignal.timeout(options.timeoutMilliseconds ?? this.timeoutMilliseconds),
-    };
-    if (options.body !== undefined) requestInit.body = JSON.stringify(options.body);
+  private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    const requestInit = buildRequestInit(options, {
+      token: this.token,
+      timeoutMilliseconds: this.timeoutMilliseconds,
+    });
     let response: Response;
     try {
       response = await fetch(new URL(path, this.baseUrl), requestInit);
@@ -550,16 +593,8 @@ export class PimpampumHttpClient implements PimpampumGateway {
       );
     }
 
-    const text = await response.text();
-    let payload: unknown;
-    try {
-      payload = text ? (JSON.parse(text) as unknown) : undefined;
-    } catch {
-      payload = undefined;
-    }
+    const payload = parseJsonPayload(await response.text());
 
-    const invalidResponse = () =>
-      new AppError('internal_error', 'Pimpampum returned an invalid response', 502, true);
     // A degraded daemon answers 503 with the same body; the report is more useful than
     // a bare status code, so it is returned instead of thrown.
     if (path === '/health' && (response.ok || response.status === 503)) {
@@ -567,16 +602,7 @@ export class PimpampumHttpClient implements PimpampumGateway {
       return payload as T;
     }
 
-    if (!response.ok) {
-      const errorPayload = (payload ?? {}) as ApiErrorEnvelope;
-      throw new AppError(
-        errorCode(errorPayload.error?.code, response.status),
-        errorPayload.error?.message ?? `HTTP ${response.status}`,
-        response.status,
-        errorPayload.error?.retryable ?? response.status >= 500,
-        errorPayload.error?.details ?? {},
-      );
-    }
+    if (!response.ok) throw daemonError(payload, response.status);
 
     if (
       typeof payload !== 'object' ||

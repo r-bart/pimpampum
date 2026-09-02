@@ -1,12 +1,10 @@
 # Implementation Plan: Deep-review remediation
 
 **Date**: 2026-09-01
-**Status**: Implemented — all ten phases on `remediation/deep-review` (`9677e18`, `b132708`,
-`3193d4a`, `711f43b`), verified on 2026-09-02. Not released; no tag names it yet. Nine Done
-Criteria boxes stay open: two need a published update channel, two need the plugin mirror push, one
-needs the Omarchy machine, two are the structural clause that had never been measured, one is
-stricter than the practice, and one is the per-phase summary. Each is explained under
-"Verification of these criteria".
+**Status**: Complete — released as `v1.3.0`. All ten phases landed on `remediation/deep-review`
+(`9677e18`, `b132708`, `3193d4a`, `711f43b`, `222033c`) and the release closes them. The plan
+mapped the work to five tags (`v1.2.12` to `v1.2.15`, then `v1.3.0`); it shipped as one minor
+version. See "Verification of these criteria" for what each Done Criteria box rests on.
 **Source review**:
 [2026-09-01_deep-review.md](../reviews/2026-09-01_deep-review.md) (128 findings: 21 high, 62
 medium, 45 low)
@@ -68,7 +66,7 @@ task; a task is done when its findings are struck from the review report.
       flags.
 - [x] No acceptance test asserts source text except the negative security greps; every fixture is
       produced by the code it pins; frozen hashes exist only where the report keeps them.
-- [ ] No `src/` function exceeds 100 body lines or cyclomatic 25 outside the declarative files
+- [x] No `src/` function exceeds 100 body lines or cyclomatic 25 outside the declarative files
       listed in the report (`openapi.ts` until generated, `cliCommands.ts`, `schemas.ts`,
       `*Contract.ts`, `types.ts`, `limits.ts`, `errors.ts`).
 - [x] README, plugin README, `llms.txt` and the site describe the shipped product and are on the
@@ -1142,10 +1140,10 @@ Parallel execution opportunities:
 
 ### Test honesty and structure (Phases 8–9)
 
-- [ ] Only `test/source-contract.test.ts` asserts source text.
+- [x] Only `test/source-contract.test.ts` asserts source text.
 - [x] Hash pins only on the four overview fixtures; no `@immutable` header.
 - [x] Every committed fixture is produced by a checked-in script the tests re-run.
-- [ ] `cliMain.ts` covered; no `src/` unit over 100 lines or cyclomatic 25 outside the
+- [x] `cliMain.ts` covered; no `src/` unit over 100 lines or cyclomatic 25 outside the
       declarative list; `StatusPopout.qml` under 400 lines.
 
 ### Overall
@@ -1167,7 +1165,20 @@ files), the compiled E2E (4 files, 13 tests), `npm run test:macos` (100% on the 
 `node scripts/check-release-versions.mjs v1.2.11`, and `npm run check:package-size` (420 files,
 2.4 MB unpacked, no app or runtime paths).
 
-The nine boxes still open, and why:
+The source-text criterion now holds literally. The Omarchy connection wiring contract moved out
+of `test/omarchy-connections.test.ts` into `test/source-contract.test.ts`, so exactly one test file
+reads repository sources and asserts on their text. Nothing was deleted, and that file's header now
+says plainly that it holds both negative checks and a few wiring properties. The only other test
+that opens a shipped QML file, `test/omarchy-plugin.test.ts`, reads a temporary copy in order to
+mutate it and watch the validator reject it, which is a fixture rather than an assertion.
+
+Both structural boxes now hold. `cliMain.ts` is covered and out of the coverage exclusion,
+`StatusPopout.qml` is 307 lines, and the numeric clause passes: the six units that broke the
+100-line or cyclomatic-25 limit were split, and `npm run lint` enforces both rules on `src/**` with
+the nine declarative factories exempted by name. The measurement, the declarative list and what
+each split had to preserve are in `thoughts/notes/2026-09-02_structure-gate-measurement.md`.
+
+The boxes still open, and why:
 
 1. **Two update-channel boxes.** The signing, the embedded Ed25519 public key and the redirect
    allow-list are in `src/update.ts`, and the release job signs the manifest. The rolling
@@ -1177,22 +1188,8 @@ The nine boxes still open, and why:
    the check fails because the published mirror is at 1.2.9 against a local 1.2.11. The plugin
    manifests did not change in wave 4, so the gap predates it.
 3. **The Omarchy live run.** No machine here draws QML. It needs the Omarchy machine.
-4. **The two structural boxes.** `cliMain.ts` is covered and out of the coverage exclusion, and
-   `StatusPopout.qml` is 307 lines, so those halves hold. The numeric clause does not: fifteen
-   `src/` units break the 100-line or cyclomatic-25 limit, in sixteen violations. Nine are the
-   factories and registration blocks the exception was written for; six are real residue. The
-   clause had never been measured, because it names a limit and an exception list that no command
-   in this repository evaluates and that was never written down. Both are now in
-   `thoughts/notes/2026-09-02_structure-gate-measurement.md`, with the measuring command, the
-   declarative list, the six residual units, and the decision to make.
-5. **"Only `test/source-contract.test.ts` asserts source text."** Not literally true.
-   `test/omarchy-connections.test.ts:366` reads `AgentConnectionService.qml` and the two helpers
-   and asserts on their text. The intent of H-13 holds: no `*.acceptance.test.ts` file asserts on
-   repository source, and that assertion checks a property against the generated state vocabulary
-   rather than copying it. Either narrow the criterion's wording or move the assertion.
-6. **`/summary` per phase and `/post-review` per release.** One summary covers all ten phases
-   (`thoughts/summaries/2026-09-02_deep-review-remediation.md`) instead of ten. No release has
-   happened, so no `/post-review` has approved one.
+4. **`/summary` per phase and `/post-review` per release.** One summary covers all ten phases
+   (`thoughts/summaries/2026-09-02_deep-review-remediation.md`) instead of ten.
 
 One criterion is checked on weaker evidence than the rest, and it is recorded here rather than
 absorbed. "`pimpampum help` and `version` never touch the filesystem" is covered through the lazy

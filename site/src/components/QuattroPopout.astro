@@ -2,12 +2,14 @@
 /*
  * Interactive replica of the Omarchy Quattro surface.
  *
- * Built from the approved handoff: a 380-unit popout, 520 units high at most,
- * with the fixed order title+connection → active work → projects → completed →
- * backup. The palette is the mockup's own Quattro theme tokens.
+ * Built from the approved handoff: a 380-unit popout, 520 units high at most.
+ * This replica is the popout's Portfolio page, in its fixed order
+ * title+connection → active work → projects → completed. Since v1.3.0 the real
+ * popout is three pages behind a Loader (Portfolio, Settings, Help), and Backup
+ * is a card on the Settings page, so it is not drawn here.
  *
- * Completed and Backup are real <details>, matching the spec's "collapsed by
- * default" rule, and they work with no JavaScript.
+ * Completed is a real <details>, matching the spec's "collapsed by default"
+ * rule, and it works with no JavaScript.
  */
 interface Props {
   theme?: 'dark' | 'light';
@@ -102,26 +104,6 @@ const completed = [
           }
         </div>
       </details>
-
-      <details class="disclosure">
-        <summary>
-          <span class="chevron" aria-hidden="true"></span>
-          <span>Backup</span>
-        </summary>
-        <div class="disclosure-body">
-          <p class="path-value">…pim/Dropbox/Backups/Pimpampum snapshots/rolling</p>
-          <p class="backup-state"><span class="ok">Up to date</span> · 14:31</p>
-          <p class="field-label">Backup folder (absolute path)</p>
-          <p class="field">/home/pim/Dropbox/Backups/Pimpampum snapshots/rolling</p>
-          <p class="chips">
-            <span class="chip">Choose…</span>
-            <span class="chip">Save</span>
-            <span class="chip">Open</span>
-            <span class="chip">Back Up Now</span>
-            <span class="chip">Disable</span>
-          </p>
-        </div>
-      </details>
     </div>
   </div>
 </div>
@@ -140,7 +122,6 @@ const completed = [
     --qact: #7aa2f7;
     --qhov: rgba(192, 202, 245, 0.09);
     --qsep: rgba(192, 202, 245, 0.14);
-    --qfield: rgba(192, 202, 245, 0.07);
   }
 
   .surface[data-q='light'] {
@@ -153,7 +134,6 @@ const completed = [
     --qact: #1e66f5;
     --qhov: rgba(76, 79, 105, 0.08);
     --qsep: rgba(76, 79, 105, 0.16);
-    --qfield: rgba(76, 79, 105, 0.07);
   }
 
   .surface {
@@ -374,61 +354,6 @@ const completed = [
     padding: 4px 6px 0;
   }
 
-  .path-value,
-  .backup-state,
-  .field-label {
-    margin: 0 0 4px;
-    overflow: hidden;
-    color: var(--qfg2);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .ok {
-    color: var(--qok);
-  }
-
-  .field {
-    margin: 0 0 8px;
-    padding: 6px 8px;
-    overflow: hidden;
-    border-radius: 4px;
-    background: var(--qfield);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin: 0;
-  }
-
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    min-height: 24px;
-    padding: 0 8px;
-    border: 1px solid var(--qsep);
-    border-radius: 5px;
-    color: inherit;
-    background: transparent;
-    font: inherit;
-    font-size: 11px;
-    cursor: default;
-    transition: background-color 120ms ease-out;
-  }
-
-  @media (hover: hover) and (pointer: fine) {
-    .chip:hover {
-      background: var(--qhov);
-    }
-  }
-
-
   /* Native height is 28px, which is right for the replica. The hit area is
      grown to 44px without moving anything. */
   .disclosure summary {
@@ -436,18 +361,6 @@ const completed = [
   }
 
   .disclosure summary::before {
-    position: absolute;
-    inset: -8px -6px;
-    content: '';
-  }
-
-  /* Native height is 24px, which is right for the replica. The hit area is
-     grown to 44px without moving anything. */
-  .chip {
-    position: relative;
-  }
-
-  .chip::before {
     position: absolute;
     inset: -8px -6px;
     content: '';

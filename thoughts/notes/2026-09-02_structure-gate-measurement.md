@@ -19,8 +19,9 @@ gone.
 
 ## The command
 
-`oxlint` implements both ESLint rules; they are simply not in `.oxlintrc.json`. Measure with a
-throwaway configuration so the repository gate is untouched:
+Since 2026-09-02 both rules live in `.oxlintrc.json` and `npm run lint` enforces them, so the
+normal way to measure is to run the gate. To measure without the nine exemptions, and see the whole
+picture including the declarative units, use a throwaway configuration:
 
 ```bash
 cat > /tmp/oxlint-gate9.json <<'JSON'
@@ -61,37 +62,56 @@ without lowering the branching of any single path.
 
 This is the declarative list the gate refers to. It is written here for the first time.
 
-### The six that are real residue
+### The six that were real residue, and are not any more
 
-These are procedures, not surfaces. Each one is a single path a reader has to follow end to end.
+These were procedures, not surfaces: one path a reader had to follow end to end. All six were split
+the same day, behaviour unchanged, under a suite that holds 100% coverage on the measured files.
 
-| Unit                                              | Lines | Cyclomatic |
-| ------------------------------------------------- | ----- | ---------- |
-| `src/syncController.ts:440` `importPending`       | 144   | —          |
-| `src/connectors/core.ts:149` `planHostConnection` | 112   | —          |
-| `src/connectors/verifier.ts:229` `verifyMcpRoute` | 112   | 29         |
-| `src/server.ts:118` `startServer`                 | 107   | —          |
-| `src/service/health.ts:49` `verifyServiceHealth`  | —     | 28         |
-| `src/client.ts:522` `request`                     | —     | 26         |
+| Unit                                          | Lines    | Cyclomatic |
+| --------------------------------------------- | -------- | ---------- |
+| `src/syncController.ts` `importPending`       | 144 → 55 | → 10       |
+| `src/connectors/verifier.ts` `verifyMcpRoute` | 112 → 43 | 29 → 15    |
+| `src/connectors/core.ts` `planHostConnection` | 112 → 41 | → 7        |
+| `src/server.ts` `startServer`                 | 107 → 26 | → 3        |
+| `src/service/health.ts` `verifyServiceHealth` | 27       | 28 → 7     |
+| `src/client.ts` `request`                     | 31       | 26 → 11    |
 
-Wave 4 did not touch five of them. `importPending` was reduced from a larger method when
-`validateSyncState` moved out to `src/syncValidation.ts`, and is still over the limit.
+Every extracted helper is inside both limits too. Nothing was brought under the limit by an
+exemption or an ignore comment.
 
-## The open decision
+What each extraction had to preserve, because these are the parts a careless split would break:
 
-Gate 9's numeric clause does not pass. Two ways to close it, and the choice is the user's:
+- `client.request` keeps its status mapping. A transport failure still raises `unavailable`, and the
+  daemon's own error code still wins over the code derived from the HTTP status.
+- `server.startServer` keeps the loopback assertion and the single-instance lock inside runtime
+  composition. Neither moved to `src/config.ts`.
+- `syncController.importPending` keeps its order: a causally incomplete snapshot stays pending, a
+  blocked snapshot names the first path, and descendants of a blocked snapshot are blocked rather
+  than pending.
+- `connectors/verifier.verifyMcpRoute` keeps its spawn count. One test asserts an exact total of
+  eleven host invocations.
+- `connectors/core.planHostConnection` was split before the file took its factory exemption, so the
+  exemption excuses only the factory's length.
 
-1. **Split the six.** Each is a candidate: `importPending` separates reading, validating and
-   applying; `verifyMcpRoute` separates the handshake from the response checks; `request` separates
-   status mapping from transport. This is behaviour-preserving work under a suite that already holds
-   100% coverage, so a regression would show.
-2. **Narrow the gate.** Record the six as accepted, with this note as the reason, and drop the
-   numeric clause. Honest, but it removes the only structural limit the plan set.
+## The gate is executable now
 
-Either way, the clause should become a real check. Adding `complexity` and
-`max-lines-per-function` to `.oxlintrc.json` with the declarative list as `overrides` would make
-`npm run lint` enforce it, and would stop the list above from drifting the way the unwritten one
-did.
+`.oxlintrc.json` did not exist before 2026-09-02, so `npm run lint` ran on oxlint's defaults. The
+file now exists and carries both rules, scoped to `src/**` because `npm run lint` lints `src` and
+`test` together and a long `it(...)` callback in a test is not a defect. Each of the nine
+declarative units has its own `overrides` entry turning `max-lines-per-function` off and leaving
+`complexity` on, with the reason written above the entry.
+
+Two things were verified rather than assumed:
+
+- **The default rules survived.** `npx oxlint --print-config` reports the same 111 top-level rules
+  with the new file as with an empty one. Adding the config did not silence oxlint's `correctness`
+  category.
+- **The scoping works in both directions.** A probe function of 122 lines and complexity 31 fires
+  both rules under `src/` and neither under `test/`. Pointed at an exempted file, `complexity` still
+  fires and `max-lines-per-function` does not.
+
+Re-measured after the split, `npx oxlint src` with both rules at the gate's thresholds reports
+exactly the nine declarative units and no `complexity` violation anywhere in `src/`.
 
 ## What not to repeat
 

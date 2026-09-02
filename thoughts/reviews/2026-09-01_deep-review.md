@@ -86,8 +86,8 @@ No finding is recorded as "won't fix".
 
 ### What the branch does not yet prove
 
-Code alone cannot close four items. None of them is a defect; each is an action outside this
-repository or outside this hardware.
+Code alone cannot close these items. None of them is a defect; each is an action outside this
+repository or outside this hardware. They close when `v1.3.0` is tagged and published.
 
 1. **H-01 needs a published channel.** The signing, the embedded Ed25519 public key and the
    redirect allow-list are in `src/update.ts`, and the release job signs `release-manifest.json`.
@@ -104,21 +104,23 @@ repository or outside this hardware.
 4. **The macOS live smoke is unrun.** `PIMPAMPUM_RUN_LIVE_MACOS=1 npm run test:e2e:macos` refuses
    to run beside a user installation and needs a Mac with none.
 
-### Two deviations from the plan's own wording
+### Two deviations from the plan's own wording, both closed
 
-Recorded here rather than silently absorbed.
+Recorded here rather than silently absorbed, and then fixed rather than argued away.
 
-- **"Only `test/source-contract.test.ts` asserts source text" is not literally true.**
-  `test/omarchy-connections.test.ts:366` reads `AgentConnectionService.qml` and the two helpers and
-  asserts on their text. The intent of H-13 holds: no `*.acceptance.test.ts` file asserts on
-  repository source, and that one assertion is a property against the generated state vocabulary,
-  not a copy of it. The wording of the criterion is stricter than the practice.
-- **Gate 9's numeric clause does not pass, and had never been measured.** It reads "no `src/` unit
+- **"Only `test/source-contract.test.ts` asserts source text" was not literally true.**
+  `test/omarchy-connections.test.ts` also read `AgentConnectionService.qml` and the two shell
+  helpers and asserted on their text. That whole wiring contract moved into
+  `test/source-contract.test.ts`, so exactly one test file now reads repository sources and asserts
+  on them. Nothing was deleted; that file's header states plainly that it holds negative checks and
+  a few wiring properties a behaviour test cannot observe from outside.
+- **Gate 9's numeric clause had never been measured, and now passes.** It reads "no `src/` unit
   over 100 body lines or cyclomatic 25 outside the declarative list", but no declarative list was
-  ever written and no tool in the repository measures it. Measured on 2026-09-02, fifteen units
-  break one of the two limits, in sixteen violations. Nine are factory or registration functions
-  that the exception was written for; six are not. See `thoughts/notes/2026-09-02_structure-gate-measurement.md` for the
-  command, the full list and the residue.
+  ever written and, until 2026-09-02, `.oxlintrc.json` did not exist, so `npm run lint` evaluated
+  neither limit. First measurement: fifteen units broke one of them, in sixteen violations. Nine
+  were the factory and registration functions the exception was written for and are now listed by
+  name; the other six were split the same day. `npm run lint` enforces both rules on `src/**` from
+  `v1.3.0` on. See `thoughts/notes/2026-09-02_structure-gate-measurement.md`.
 
 ## 2. Scope and method
 

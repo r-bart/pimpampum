@@ -1,6 +1,6 @@
 {
   "name": "pimpampum",
-  "version": "1.2.11",
+  "version": "1.3.0",
   "description": "Ultra-minimal local project coordination for solopreneurs and software agents.",
   "engines": {
     "node": ">=22"

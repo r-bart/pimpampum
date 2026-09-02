@@ -122,3 +122,27 @@ present only when the row is cancelled. Omitting the key when it is `null` keeps
 form of an unchanged entity identical to what version 1 devices produced, so a mixed fleet does
 not see spurious conflicts during the upgrade. The public HTTP and MCP types do not expose the
 field yet; that exposure is a Phase 9 follow-up together with a nullable Workspace root.
+
+### 2026-09-02 — Nullable Workspace root landed; `cancelledAt` exposure did not (released as `v1.3.0`)
+
+The paragraph above called a nullable Workspace root a Phase 9 follow-up. Half of that follow-up
+shipped and half did not, so the paragraph is amended rather than left to read as one pending item.
+
+**The nullable root shipped.** Schema v3 makes `workspaces.root_path` nullable. A Workspace that
+arrives through synchronization without a local root is stored with `NULL` instead of the sentinel
+path the v2 schema needed. A v2 sentinel row converts to `NULL` on migration, and a v1 database
+chains v1 to v3 in one transaction. The product contract does not change: such a Workspace is still
+visible and still cannot resolve a working directory until the user registers its local root. What
+changes is that it no longer matches every path, which was the phantom-workspace defect the review
+recorded as H-05. Registering a Workspace whose root clashes with an existing one now raises the
+typed conflict instead of a raw SQLite error.
+
+**The `cancelledAt` exposure did not ship.** The public HTTP and MCP types still omit the field.
+Synchronization continues to carry it as an optional key present only when the row is cancelled, so
+a mixed fleet sees no spurious conflict. Nothing in `v1.3.0` depends on exposing it, and no finding
+of the 2026-09-01 review asked for it. It stays a follow-up with no scheduled release.
+
+**Migration direction.** Schema v3 is forward-only. A `v1.2.11` daemon that opens a v3 database
+refuses loudly rather than degrading: `migrateDatabase` throws a typed `internal_error` naming both
+versions, because the on-disk `user_version` is newer than the one it supports. There is no
+downgrade path, so a rollback from `v1.3.0` needs a backup taken before the upgrade.

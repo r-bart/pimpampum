@@ -1,7 +1,9 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -29,6 +31,20 @@ afterEach(() => {
 
 const HANG_FOREVER = 'setInterval(() => {}, 1000)';
 const IGNORE_SIGTERM_AND_HANG = `process.on('SIGTERM', () => {}); ${HANG_FOREVER}`;
+
+/** Resolves once the process is gone. `signal 0` throws `ESRCH` for a pid that no longer exists. */
+async function waitForExit(pid: number, deadlineMilliseconds = 5_000): Promise<void> {
+  const deadline = Date.now() + deadlineMilliseconds;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    if (Date.now() > deadline) throw new Error(`process ${String(pid)} outlived the escalation`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 describe('service command runner', () => {
   it('executes argument arrays without a shell and captures success', async () => {
@@ -77,13 +93,27 @@ describe('service command runner', () => {
   });
 
   it('escalates from SIGTERM to SIGKILL for a child that ignores the first signal', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'pimpampum-escalation-'));
+    roots.push(root);
+    const pidPath = join(root, 'pid');
     const startedAt = Date.now();
-    const failure = await runServiceCommand(process.execPath, ['--eval', IGNORE_SIGTERM_AND_HANG], {
-      timeoutMilliseconds: 200,
-      terminationGraceMilliseconds: 100,
-    }).catch((error: unknown) => error);
+    const failure = await runServiceCommand(
+      process.execPath,
+      [
+        '--eval',
+        `require('node:fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); ` +
+          IGNORE_SIGTERM_AND_HANG,
+      ],
+      { timeoutMilliseconds: 200, terminationGraceMilliseconds: 100 },
+    ).catch((error: unknown) => error);
 
     expect(failure).toMatchObject({ code: 'unavailable', bound: 'timeout' });
+    // The child ignores SIGTERM, so only the SIGKILL escalation can end it. Waiting for it to
+    // disappear is what proves the escalation ran: asserting the rejection alone left that branch
+    // covered by timing luck, and a loaded machine could finish the test before the unref'd
+    // grace timer fired.
+    expect(existsSync(pidPath)).toBe(true);
+    await waitForExit(Number(readFileSync(pidPath, 'utf8')));
     expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
 
