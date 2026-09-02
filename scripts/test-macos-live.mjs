@@ -40,6 +40,18 @@ const liveStartedAt = Date.now();
 // and it cost 88s of the 120s budget on 2026-09-02 while the guided setup itself cost 44.7s. It is
 // subtracted rather than reordered, because the later scenarios build on the state it leaves.
 let budgetExcludedMilliseconds = 0;
+/**
+ * Prints the elapsed time at each step of `main` when `PIMPAMPUM_LIVE_PHASE_TIMING=1`. A budget
+ * failure reports one number and no breakdown, which on 2026-09-02 hid that 88s of the 174s belonged
+ * to `verifyLegacyMigration` rather than to the guided setup. Off by default so the release job's
+ * output is unchanged.
+ */
+const phaseTimingEnabled = process.env.PIMPAMPUM_LIVE_PHASE_TIMING === '1';
+const markPhase = (label) => {
+  if (phaseTimingEnabled) {
+    process.stdout.write(`PHASE ${label}: ${Date.now() - liveStartedAt}ms\n`);
+  }
+};
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'pimpampum-macos-live-'));
 const liveHome = join(temporaryRoot, 'home');
 mkdirSync(liveHome, { recursive: true });
@@ -1316,14 +1328,21 @@ function buildEvidence() {
 
 async function main() {
   refuseExistingInstallation();
+  markPhase('refuseExistingInstallation');
   prepareWorkspace();
+  markPhase('prepareWorkspace');
   prepareRuntime();
+  markPhase('prepareRuntime');
   await verifyCleanSetup();
+  markPhase('verifyCleanSetup');
   verifyFirstRunUi();
+  markPhase('verifyFirstRunUi');
   const legacyMigrationStartedAt = Date.now();
   await verifyLegacyMigration();
   budgetExcludedMilliseconds += Date.now() - legacyMigrationStartedAt;
+  markPhase('verifyLegacyMigration');
   await verifyConnectorLifecycle();
+  markPhase('verifyConnectorLifecycle');
   verifyEmptyAndSettingsUi();
   seedPortfolio();
   verifyRenderingFixtures();
