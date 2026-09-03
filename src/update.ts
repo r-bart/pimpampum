@@ -41,7 +41,7 @@ export const PACKAGED_RELEASE_TARGETS: readonly PackagedReleaseTarget[] = [
  * `scripts/sign-release-manifest.mjs` extracts it from this file between the PEM markers.
  */
 export const RELEASE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAmtqLSdctyUmsFJGCDTSRtO49f79jn5dQAxKK77sWvJA=
+MCowBQYDK2VwAyEANHMscZqPbIzpkizlXfpUkTd1ZOxHi5p2yC7HcOPrmow=
 -----END PUBLIC KEY-----
 `;
 
