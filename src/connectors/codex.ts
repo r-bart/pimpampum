@@ -8,7 +8,12 @@ import {
   type HostEntryInspection,
   type RouteVerifier,
 } from './core.js';
-import { detectExecutable, runBoundedHostCommand } from './process.js';
+import {
+  detectExecutable,
+  payloadJson,
+  payloadVersionLine,
+  runBoundedHostCommand,
+} from './process.js';
 import type {
   CommandInvocation,
   ConnectionPlan,
@@ -23,6 +28,8 @@ const CODEX_ID = 'codex' as const;
 const CODEX_DISPLAY_NAME = 'Codex';
 const CODEX_SCOPE = 'global' as const;
 const SERVER_NAME = 'pimpampum';
+/** What `codex --version` prints, e.g. `codex-cli 0.151.0`. */
+const CODEX_VERSION_PATTERN = /^codex[a-z-]*\s+\d+\.\d+\.\d+/u;
 const DEFAULT_TIMEOUT_MILLISECONDS = 2_000;
 
 export const CODEX_LEGACY_ENTRIES: HostEntry[] = [
@@ -127,7 +134,7 @@ export function parseCodexMcpEntry(value: unknown): HostEntry | null {
 function parseTargetFromList(stdout: string): HostEntry | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stdout) as unknown;
+    parsed = JSON.parse(payloadJson(stdout)) as unknown;
   } catch (error) {
     throw new Error('Codex returned invalid JSON while inspecting MCP entries', { cause: error });
   }
@@ -140,7 +147,7 @@ function parseTargetFromList(stdout: string): HostEntry | null {
 function parseTargetFromGet(stdout: string): HostEntry | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stdout) as unknown;
+    parsed = JSON.parse(payloadJson(stdout)) as unknown;
   } catch (error) {
     throw new Error('Codex returned invalid JSON for the Pimpampum MCP entry', { cause: error });
   }
@@ -203,7 +210,10 @@ export function createCodexConnector(dependencies: CodexConnectorDependencies): 
         connectorId: CODEX_ID,
         executable: detected.executable,
         version:
-          detected.versionOutput === null ? null : detected.versionOutput.trim().slice(0, 80),
+          detected.versionOutput === null
+            ? null
+            : (payloadVersionLine(detected.versionOutput, CODEX_VERSION_PATTERN) ??
+              detected.versionOutput.trim().slice(0, 80)),
         supported:
           detected.supported &&
           (capabilities.getJson || capabilities.listJson) &&

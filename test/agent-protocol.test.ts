@@ -47,6 +47,22 @@ describe('agent protocol', () => {
     });
   });
 
+  // The guidance for a code is written for its usual cause. When a specific failure has a different
+  // remedy, saying the usual one out loud sends the reader somewhere useless.
+  it('prefers a failure’s own suggestion over the guidance for its code', () => {
+    expect(
+      createAgentErrorEnvelope(
+        new AppError('unavailable', 'Dependency missing', 503, false, {}, 'Install it first.'),
+      ).error.suggestion,
+    ).toBe('Install it first.');
+    expect(
+      createAgentErrorEnvelope(new AppError('unavailable', 'Daemon down', 503, false, {})).error
+        .suggestion,
+    ).toBe(
+      'The local daemon did not answer. Run `pimpampum status`; if it is not installed or not running, run `pimpampum install`, then retry.',
+    );
+  });
+
   it('normalizes unknown failures before building their envelope', () => {
     expect(createAgentErrorEnvelope('failure')).toEqual({
       error: {

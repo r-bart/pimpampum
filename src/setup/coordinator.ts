@@ -605,7 +605,9 @@ export function createSetupCoordinator(dependencies: SetupCoordinatorDependencie
           },
           {
             kind: 'data',
-            summary: 'Keep your work on this Mac.',
+            // Shared by every platform: the macOS app and the Omarchy popout both render this
+            // list verbatim, so naming one device turned the Linux consent screen into a lie.
+            summary: 'Keep your work on this computer.',
             path: dependencies.changeTargets.dataDirectory,
           },
           { kind: 'login-item', summary: 'Start when you sign in.' },

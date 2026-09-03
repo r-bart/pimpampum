@@ -47,7 +47,7 @@ export function createAgentErrorEnvelope(error: unknown): AgentErrorEnvelope {
       message: appError.message,
       retryable: appError.retryable,
       details: appError.details,
-      suggestion: errorGuidance[appError.code] ?? fallbackGuidance,
+      suggestion: appError.suggestion ?? errorGuidance[appError.code] ?? fallbackGuidance,
     },
   };
 }

@@ -15,7 +15,7 @@
       },
       {
         "kind": "data",
-        "summary": "Keep your work on this Mac.",
+        "summary": "Keep your work on this computer.",
         "path": "/Users/example/.pimpampum"
       },
       {
@@ -25,6 +25,6 @@
     ],
     "conflicts": [],
     "requiresConfirmation": true,
-    "revision": "aa927709c801ccb9629745d2111bd288cf959a5f199d9c5248b39a86191a57ed"
+    "revision": "585477388d2e2d609c661d588688cd008efe1a6bcd889fccfc807a72abfb9263"
   }
 }

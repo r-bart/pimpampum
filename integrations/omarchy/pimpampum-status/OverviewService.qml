@@ -21,6 +21,18 @@ Item {
   readonly property string effectiveStatus: connectionState === "online" && overview
     ? overview.status
     : connectionState
+  // The header rendered the raw state id, so a reader saw "incompatible" or "credentials" with no
+  // idea what either meant. Every state gets the words it deserves, in the register "Stale"
+  // already set beside it.
+  readonly property var connectionLabels: ({
+    "online": "Online",
+    "offline": "Offline",
+    "setup": "Not set up",
+    "credentials": "Credentials rejected",
+    "invalid": "Invalid response",
+    "incompatible": "Incompatible version"
+  })
+  readonly property string connectionLabel: connectionLabels[connectionState] || connectionState
 
   function isObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -162,6 +174,19 @@ Item {
     overviewProcess.running = true
   }
 
+  /**
+   * The helper's own reason, bounded to one line, or the generic sentence when it said nothing.
+   * `pimpampum-control-route` prefixes every line with its name; the prefix is dropped so the card
+   * reads as a sentence rather than as a shell transcript.
+   */
+  function installationMessage(text) {
+    var line = text.split("\n")[0].trim()
+    var separator = line.indexOf(": ")
+    if (separator !== -1) line = line.slice(separator + 2).trim()
+    if (line.length === 0 || line.length > 160) return "Pimpampum is not set up on this machine."
+    return line.charAt(0).toUpperCase() + line.slice(1) + "."
+  }
+
   function handleExit(exitCode) {
     if (exitCode !== 0) {
       var error = processError.toLowerCase()
@@ -172,6 +197,12 @@ Item {
         || /(^|[^0-9])(401|403)([^0-9]|$)/.test(error)
       if (credentialsRejected) {
         fail("credentials", "The saved credentials no longer match the local daemon.")
+      } else if (exitCode === 69) {
+        // 69 is the helper refusing before it reaches the daemon: the runtime is not installed,
+        // its receipt is unsafe, or the control launcher is missing. This surface passes one
+        // fixed argument, so 69 can never mean an argument error here. Calling it "offline"
+        // blamed a daemon that is often running and hid the only remedy the user has.
+        fail("setup", installationMessage(processError))
       } else fail("offline", "Pimpampum is offline")
       return
     }

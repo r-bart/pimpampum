@@ -131,7 +131,7 @@ Item {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             status: root.service.effectiveStatus
-            statusLabel: root.service.stale ? "Stale" : root.service.connectionState
+            statusLabel: root.service.stale ? "Stale" : root.service.connectionLabel
             stale: root.service.stale
             vertical: false
             activeClaims: root.service.activeClaims
@@ -164,7 +164,7 @@ Item {
             Text {
               text: root.helpView ? "Portfolio, synchronization, and backup"
                 : root.settingsView ? "Synchronization and backup"
-                : root.service.stale ? "Stale" : root.service.connectionState
+                : root.service.stale ? "Stale" : root.service.connectionLabel
               color: root.service.connectionState === "online" ? root.foreground : root.urgent
               opacity: root.service.connectionState === "online" ? 0.72 : 1
               font.family: root.fontFamily

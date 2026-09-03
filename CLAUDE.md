@@ -164,6 +164,13 @@ Once per repository, not per release: `gh secret set RELEASE_MANIFEST_SIGNING_KE
 private key that signs `release-manifest.json`) and `gh secret set OMARCHY_MIRROR_DEPLOY_KEY` (the
 deploy key that pushes `integrations/omarchy/pimpampum-status` to `r-bart/pimpampum-omarchy`).
 
+- NEVER validate the Omarchy plugin source inside `createOmarchyAdapter`; the packaged runtime ships no `integrations/` beside `dist/`, so throwing there failed `status`, `install`, `uninstall` and `update` on every real Omarchy machine. Resolve per call: build tree first, else the directory `omarchy plugin add` owns, else `canPlanArtifacts()` false.
+- ALWAYS exercise the packaged shape in composition tests; every fixture in `test/cli-platform-adapters.test.ts` created the plugin directory, which is exactly how a build-tree-only assumption reached a release.
+- NEVER require a backup from `omarchy plugin remove`; it backs one up only for a handmade directory, and deletes a Git checkout outright, so a plugin installed the documented way left none. Verify `pluginTarget` is gone instead.
+- NEVER write platform-specific copy in `src/setup/coordinator.ts`; the macOS app and the Omarchy popout render the same `SetupPlan.changes` verbatim, so "on this Mac" shipped to Linux.
+- NEVER read a host CLI's first stdout line or parse its whole stdout as JSON; on a mise/asdf/volta machine the `~/.local/bin` wrapper prints its own notice first, which reported a working Claude Code as `unsupportedVersion` and made every Codex inspection invalid JSON. Use `payloadVersionLine`/`payloadJson`, which skip a bounded preamble and then parse as strictly as before.
+- ALWAYS re-pin `runtime-manifest.json` after any `src/` change; the `runtime-manifest` job runs in `quality.yml`, not only on release. A Linux host reproduces CI's digests exactly for both targets, so `node scripts/check-reviewed-runtime-manifest.mjs <bundles> --output <file>` is a valid re-pin. Re-pinning is not a version bump.
+
 ## Self-Improvement
 
 After every significant correction, update this file:

@@ -864,7 +864,7 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
     }
   });
 
-  it.each(['missing', 'file', 'unsafe', 'absent'] as const)(
+  it.each(['missing', 'file', 'unsafe'] as const)(
     'rejects a %s official backup report safely',
     async (variant) => {
       const root = fixture(`invalid-official-backup-${variant}`);
@@ -883,7 +883,7 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
         const result = await original(executable, arguments_);
         if (arguments_.join(' ') !== `plugin remove ${OMARCHY_PLUGIN_ID} --yes`) return result;
         const backup = quattro.backups.at(-1)!;
-        if (variant === 'missing' || variant === 'absent') rmSync(backup, { recursive: true });
+        if (variant === 'missing') rmSync(backup, { recursive: true });
         if (variant === 'file') {
           rmSync(backup, { recursive: true });
           writeFileSync(backup, 'not a directory');
@@ -891,22 +891,63 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
         if (variant === 'unsafe') {
           return ok(`Removed ${OMARCHY_PLUGIN_ID}. Backup at: ${preexisting}\n`);
         }
-        if (variant === 'absent') return ok('Removed without a backup\n');
         return result;
       });
 
       await expect(manager.uninstall()).rejects.toThrow(
-        variant === 'file'
-          ? AggregateError
-          : variant === 'missing' || variant === 'unsafe'
-            ? /unsafe or pre-existing backup/u
-            : /did not report its owned backup/u,
+        variant === 'file' ? AggregateError : /unsafe or pre-existing backup/u,
       );
       expect(existsSync(join(root.target, 'manifest.json'))).toBe(true);
       expect(existsSync(preexisting)).toBe(true);
       if (variant === 'unsafe') expect(existsSync(quattro.backups.at(-1)!)).toBe(false);
     },
   );
+
+  /**
+   * `omarchy plugin remove` backs up only a handmade directory. It deletes a Git checkout outright
+   * and unlinks a symlink, and a plugin added the documented way is a checkout — so the supported
+   * uninstall reports no backup at all, and treating that as an error broke every one of them.
+   */
+  it('completes an uninstall Omarchy removed without leaving a backup', async () => {
+    const root = fixture('official-removal-without-backup');
+    const quattro = fakeQuattro(root);
+    const composite = adapter(root, daemon(root, []));
+    const manager = createPlatformServiceManager(managerInput(root, quattro.runCommand, composite));
+    await manager.install();
+    quattro.state.installed = true;
+    quattro.state.enabled = true;
+    const original = quattro.runCommand.getMockImplementation()!;
+    quattro.runCommand.mockImplementation(async (executable, arguments_) => {
+      const result = await original(executable, arguments_);
+      if (arguments_.join(' ') !== `plugin remove ${OMARCHY_PLUGIN_ID} --yes`) return result;
+      // What Omarchy prints and does for a Git checkout: the tree is gone, nothing is reclaimable.
+      rmSync(quattro.backups.pop()!, { recursive: true });
+      return ok(`Removed ${OMARCHY_PLUGIN_ID}.\n`);
+    });
+    await expect(manager.uninstall()).resolves.toEqual({ uninstalled: true, dataPreserved: true });
+    expect(existsSync(root.target)).toBe(false);
+    expect(existsSync(root.unit)).toBe(false);
+    expect(readFileSync(join(root.data, 'token'), 'utf8')).toBe('preserve-me');
+  });
+
+  it('refuses to finish when Omarchy leaves the plugin directory behind', async () => {
+    const root = fixture('official-removal-left-behind');
+    const quattro = fakeQuattro(root);
+    const composite = adapter(root, daemon(root, []));
+    const manager = createPlatformServiceManager(managerInput(root, quattro.runCommand, composite));
+    await manager.install();
+    quattro.state.installed = true;
+    quattro.state.enabled = true;
+    const original = quattro.runCommand.getMockImplementation()!;
+    quattro.runCommand.mockImplementation(async (executable, arguments_) => {
+      const result = await original(executable, arguments_);
+      if (arguments_.join(' ') !== `plugin remove ${OMARCHY_PLUGIN_ID} --yes`) return result;
+      // Reports success but puts the tree back: removal must be verified, not taken on trust.
+      cpSync(quattro.backups.at(-1)!, root.target, { recursive: true });
+      return ok(`Removed ${OMARCHY_PLUGIN_ID}.\n`);
+    });
+    await expect(manager.uninstall()).rejects.toThrow(/left the plugin directory in place/u);
+  });
 
   // One case per `it`: every case is a full install and uninstall cycle, and ten of them in one
   // test exceeded the per-test budget on a loaded machine.
@@ -1596,6 +1637,63 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
     expect(artifacts.some((artifact) => artifact.path.endsWith('/manifest.json'))).toBe(true);
   });
 
+  // An installed CLI runs from the packaged runtime, which carries no build tree. The directory
+  // `omarchy plugin add` owns is then the only copy of the plugin, so planning reads it instead of
+  // refusing; with neither present there is nothing to plan and `install` says what to do.
+  describe('without a bundled plugin source', () => {
+    function packaged(root: Fixture, daemonAdapter: PlatformServiceAdapter) {
+      return createOmarchyAdapter({
+        pluginSourcePath: join(root.root, 'no-build-tree'),
+        daemonAdapter,
+        omarchyPath: '/usr/bin/omarchy',
+        omarchyShellPath: '/usr/bin/omarchy-shell',
+      });
+    }
+
+    it('plans the plugin from the directory Omarchy installed', () => {
+      const root = fixture('packaged-plans-from-target');
+      cpSync(root.source, root.target, { recursive: true });
+      const composite = packaged(root, daemon(root, []));
+      const runtimeContext = context(root, fakeQuattro(root).runCommand);
+      expect(composite.canPlanArtifacts?.(runtimeContext)).toBe(true);
+      const artifacts = composite.artifacts(runtimeContext);
+      expect(
+        artifacts.some((artifact) => artifact.path === join(root.target, 'manifest.json')),
+      ).toBe(true);
+      expect(artifacts.some((artifact) => artifact.path === root.unit)).toBe(true);
+    });
+
+    it('plans the daemon alone and reports it cannot plan when no plugin exists', () => {
+      const root = fixture('packaged-without-plugin');
+      const composite = packaged(root, daemon(root, []));
+      const runtimeContext = context(root, fakeQuattro(root).runCommand);
+      expect(composite.canPlanArtifacts?.(runtimeContext)).toBe(false);
+      expect(composite.artifacts(runtimeContext).map((artifact) => artifact.path)).toEqual([
+        root.unit,
+      ]);
+    });
+
+    // Typed, not a raw Error: the CLI, HTTP and MCP envelopes would otherwise render an
+    // `internal_error` whose suggestion talks about daemon logs, which the user cannot act on.
+    it('names the Omarchy command that installs the plugin when install has no source', async () => {
+      const root = fixture('packaged-install-without-plugin');
+      const quattro = fakeQuattro(root);
+      const composite = packaged(root, daemon(root, []));
+      await expect(
+        composite.preflight?.(context(root, quattro.runCommand), [], 'install'),
+      ).rejects.toMatchObject({
+        code: 'unavailable',
+        status: 503,
+        retryable: false,
+        details: { remedy: 'omarchy plugin add' },
+        message: expect.stringContaining(OMARCHY_PLUGIN_ID),
+        // Its own suggestion, because the guidance for `unavailable` would send this user after a
+        // daemon that is running.
+        suggestion: expect.stringContaining('omarchy plugin add'),
+      });
+    });
+  });
+
   // The manager always runs `preflight` first; these guards exist for a caller that does not.
   it('refuses to activate before preflight ran', async () => {
     const root = fixture('missing-preflight');
@@ -1675,9 +1773,11 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
     expect(() => createOmarchyAdapter({ ...input, pluginSourcePath: 'relative' })).toThrow(
       /absolute/u,
     );
+    // A missing source is not a construction error: the packaged runtime never carries one, and
+    // throwing here failed every service verb on an installed Omarchy machine.
     expect(() =>
       createOmarchyAdapter({ ...input, pluginSourcePath: join(root.root, 'missing') }),
-    ).toThrow(/existing directory/u);
+    ).not.toThrow();
     expect(() => createOmarchyAdapter({ ...input, omarchyPath: 'omarchy' })).toThrow(/absolute/u);
     expect(() => createOmarchyAdapter({ ...input, omarchyShellPath: 'omarchy-shell' })).toThrow(
       /absolute/u,

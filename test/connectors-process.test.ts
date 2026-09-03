@@ -15,6 +15,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   configurationRevision,
   detectExecutable,
+  payloadJson,
+  payloadVersionLine,
   readHostConfiguration,
   replaceHostConfigurationEntry,
   runBoundedHostCommand,
@@ -165,5 +167,42 @@ describe('bounded connector process and configuration primitives', () => {
       }),
     ).rejects.toThrow(/symlink|regular file/i);
     expect(lstatSync(dangling).isSymbolicLink()).toBe(true);
+  });
+});
+
+describe('bounded wrapper preamble readers', () => {
+  // `~/.local/bin/claude` and `~/.local/bin/codex` are mise wrappers on a machine managed by a
+  // version manager, and they print `mise ... tools: claude@2.1.257` to stdout before the payload.
+  // Reading only the first line reported a working Claude Code as an unsupported version, and
+  // parsing the whole stdout made every Codex inspection fail as invalid JSON.
+  const VERSION = /^\d+\.\d+\.\d+(?: \(Claude Code\))?$/u;
+
+  it('finds a version behind a wrapper notice and keeps the pattern strict', () => {
+    expect(
+      payloadVersionLine(
+        'mise ~/.config/mise/config.toml tools: claude@2.1.257\n2.1.257 (Claude Code)\n',
+        VERSION,
+      ),
+    ).toBe('2.1.257 (Claude Code)');
+    expect(payloadVersionLine('2.1.257\n', VERSION)).toBe('2.1.257');
+    expect(payloadVersionLine('claude version 2.1.257\n', VERSION)).toBeNull();
+    expect(payloadVersionLine('', VERSION)).toBeNull();
+  });
+
+  it('stops looking past the bounded preamble', () => {
+    const buried = `${'notice\n'.repeat(5)}2.1.257\n`;
+    expect(payloadVersionLine(buried, VERSION)).toBeNull();
+    expect(payloadVersionLine(`${'notice\n'.repeat(4)}2.1.257\n`, VERSION)).toBe('2.1.257');
+  });
+
+  it('starts JSON at the document a wrapper notice precedes, and is otherwise a no-op', () => {
+    expect(payloadJson('mise tools: codex@0.151.0\n{"name":"pimpampum"}')).toBe(
+      '{"name":"pimpampum"}',
+    );
+    expect(payloadJson('  [1]')).toBe('  [1]');
+    expect(payloadJson('not json at all')).toBe('not json at all');
+    expect(payloadJson(`${'notice\n'.repeat(5)}{"late":true}`)).toBe(
+      `${'notice\n'.repeat(5)}{"late":true}`,
+    );
   });
 });
