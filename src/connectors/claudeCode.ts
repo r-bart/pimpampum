@@ -9,6 +9,7 @@ import {
 } from './core.js';
 import {
   detectExecutable,
+  payloadVersionLine,
   readHostConfiguration,
   runBoundedHostCommand,
   type BoundedCommandResult,
@@ -182,13 +183,8 @@ function featureHelpSupports(result: BoundedCommandResult, token: string): boole
   return result.exitCode === 0 && `${result.stdout}\n${result.stderr}`.includes(token);
 }
 
-function firstOutputLine(output: string): string | null {
-  const line = output
-    .split(/\r?\n/u)
-    .map((candidate) => candidate.trim())
-    .find(Boolean);
-  return line?.slice(0, 256) ?? null;
-}
+/** What `claude --version` prints, e.g. `2.1.257 (Claude Code)`. */
+const CLAUDE_CODE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?: \(Claude Code\))?$/u;
 
 export function createClaudeCodeConnector(options: ClaudeCodeConnectorOptions): HostConnector {
   assertAbsoluteExecutable(options.launcherPath, 'Claude Code launcher');
@@ -249,11 +245,13 @@ export function createClaudeCodeConnector(options: ClaudeCodeConnectorOptions): 
         featureHelpSupports(addJsonHelp, '--scope') && featureHelpSupports(addHelp, '--scope');
       const canRemove = featureHelpSupports(removeHelp, '--scope');
       const canInspectJson = featureHelpSupports(getHelp, '--json');
-      // The version comes from the single `--version` probe detection already ran.
+      // The version comes from the single `--version` probe detection already ran. A wrapper may
+      // print its own line first, so the version is looked up by shape rather than by position.
       const version =
-        detected.versionOutput === null ? null : firstOutputLine(detected.versionOutput);
-      const recognizedVersion =
-        version !== null && /^\d+\.\d+\.\d+(?: \(Claude Code\))?$/u.test(version);
+        detected.versionOutput === null
+          ? null
+          : payloadVersionLine(detected.versionOutput, CLAUDE_CODE_VERSION_PATTERN);
+      const recognizedVersion = version !== null;
       return {
         connectorId,
         executable,

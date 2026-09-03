@@ -43,6 +43,12 @@ export class AppError extends Error {
     public readonly status: number,
     public readonly retryable = false,
     public readonly details: Record<string, unknown> = {},
+    /**
+     * What this specific failure needs, when the guidance for its code would misdirect. A missing
+     * Omarchy plugin is `unavailable`, but telling that user to run `pimpampum install` sends them
+     * after a daemon that is running. Leave it unset to inherit the guidance for the code.
+     */
+    public readonly suggestion?: string,
   ) {
     super(message);
     this.name = 'AppError';

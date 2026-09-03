@@ -209,6 +209,33 @@ function accessibleExecutable(path: string): boolean {
   }
 }
 
+/**
+ * A host CLI reached through a version-manager wrapper — mise, asdf and volta all do this — writes
+ * its own notice to stdout ahead of the real output, so the payload is not always the first line.
+ * These two readers skip a bounded preamble to find where the payload starts and then read it
+ * exactly as strictly as before: nothing about the payload itself becomes more permissive, and a
+ * well-behaved CLI takes the same path it always did.
+ */
+const MAXIMUM_PREAMBLE_LINES = 4;
+
+/** The first line matching `pattern` within the bounded preamble, or null. */
+export function payloadVersionLine(output: string, pattern: RegExp): string | null {
+  const line = output
+    .split(/\r?\n/u)
+    .map((candidate) => candidate.trim())
+    .filter(Boolean)
+    .slice(0, MAXIMUM_PREAMBLE_LINES + 1)
+    .find((candidate) => pattern.test(candidate));
+  return line?.slice(0, 256) ?? null;
+}
+
+/** `output` from the line that opens a JSON document, when a bounded preamble precedes it. */
+export function payloadJson(output: string): string {
+  const lines = output.split(/\r?\n/u);
+  const start = lines.findIndex((line) => /^[[{]/u.test(line.trimStart()));
+  return start > 0 && start <= MAXIMUM_PREAMBLE_LINES ? lines.slice(start).join('\n') : output;
+}
+
 export interface ExecutableDetection {
   executable: string | null;
   supported: boolean;

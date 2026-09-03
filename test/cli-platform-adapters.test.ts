@@ -163,6 +163,32 @@ describe('platform service managers', () => {
     expect(managers.serviceManager.status).toBeTypeOf('function');
   });
 
+  /**
+   * The packaged runtime ships `dist/` with no `integrations/` beside it, so the composed plugin
+   * source does not exist on an installed machine. Every fixture above creates that directory,
+   * which is how a constructor that threw on a missing source reached a release: on a real Omarchy
+   * host it failed `status`, `install`, `uninstall` and `update` with an internal error.
+   */
+  it('builds a working Linux manager when the packaged runtime carries no plugin source', async () => {
+    const input = managerInput('linux');
+    const managers = createPlatformServiceManagers({
+      managerInput: input,
+      macOSAppBundlePath: join(input.root, 'Pimpampum.app'),
+      omarchy: {
+        omarchyPath: '/usr/bin/omarchy',
+        omarchyShellPath: '/usr/bin/omarchy-shell',
+        useOmarchy: true,
+      },
+      omarchyPluginSourcePath: join(input.root, 'no-build-tree'),
+    });
+    await expect(managers.serviceManager.status()).resolves.toEqual({
+      installed: false,
+      running: false,
+      adapter: null,
+      version: null,
+    });
+  });
+
   it('builds an adapterless manager on any other platform', () => {
     const input = managerInput('win32');
     const managers = createPlatformServiceManagers({

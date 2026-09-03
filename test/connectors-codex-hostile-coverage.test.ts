@@ -486,6 +486,23 @@ describe('Codex hostile parsing, probes, mutation and rollback coverage', () => 
     ).toHaveLength(1);
   });
 
+  // On a machine managed by mise, `~/.local/bin/codex` prints its own notice to stdout ahead of
+  // the version, and that directory is searched before the PATH shims.
+  it('reads the version behind a wrapper notice and still reports one it cannot parse', async () => {
+    const wrapped = createHarness({
+      version: 'mise ~/.config/mise/config.toml tools: codex@0.151.0\ncodex-cli 0.151.0\n',
+    });
+    await expect(wrapped.connector.detect()).resolves.toMatchObject({
+      version: 'codex-cli 0.151.0',
+      supported: true,
+    });
+    const unrecognised = createHarness({ version: 'some other shape 1.2.3\n' });
+    await expect(unrecognised.connector.detect()).resolves.toMatchObject({
+      version: 'some other shape 1.2.3',
+      supported: true,
+    });
+  });
+
   it('refuses to connect a conflict without a decision or with an unrestorable replacement', async () => {
     const undecided = createHarness({
       entry: { command: '/synthetic/other', arguments: [], scope: 'global' },

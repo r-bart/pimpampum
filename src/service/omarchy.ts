@@ -10,6 +10,7 @@ import {
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import { allOrAggregate, runCompensation } from '../aggregateRollback.js';
+import { AppError } from '../errors.js';
 import { assertNoSymlinkTraversal } from '../fsGuards.js';
 import { asError, isRecord } from '../objects.js';
 import type {
@@ -21,6 +22,26 @@ import type {
 } from './types.js';
 
 export const OMARCHY_PLUGIN_ID = 'dev.pimpampum.status';
+
+/**
+ * Setting up the service needs the plugin's own files, and on an installed machine the directory
+ * `omarchy plugin add` owns is the only copy of them. `unavailable` is the code every CLI, HTTP and
+ * MCP consumer already maps for a dependency that is not there; a raw `Error` would reach the user
+ * as `internal_error` with a suggestion about daemon logs, which is not what they can act on.
+ */
+export class OmarchyPluginMissingError extends AppError {
+  constructor() {
+    super(
+      'unavailable',
+      `Omarchy plugin ${OMARCHY_PLUGIN_ID} is not installed`,
+      503,
+      false,
+      { remedy: 'omarchy plugin add' },
+      'Install the plugin with `omarchy plugin add`, then open its widget and choose Get started.',
+    );
+    this.name = 'OmarchyPluginMissingError';
+  }
+}
 
 export function isCompatibleOmarchyVersion(output: string): boolean {
   return /\b(?:quattro|4(?:\.|\b))/iu.test(output.trim());
@@ -96,6 +117,20 @@ function pluginTarget(context: ServiceAdapterContext): string {
 
 function pluginDirectory(context: ServiceAdapterContext): string {
   return dirname(pluginTarget(context));
+}
+
+function existingDirectory(path: string): string | null {
+  return existsSync(path) && lstatSync(path).isDirectory() ? realpathSync(path) : null;
+}
+
+/**
+ * Where the plugin files are read from when planning. A checkout carries them beside `dist/`; the
+ * packaged runtime does not, and there the directory `omarchy plugin add` owns is the only copy —
+ * so plan from it rather than refusing every lifecycle verb on an installed Omarchy machine. Null
+ * means neither exists: the plugin is not installed and there is nothing to plan.
+ */
+function pluginSourceRoot(bundledPath: string, context: ServiceAdapterContext): string | null {
+  return existingDirectory(bundledPath) ?? existingDirectory(pluginTarget(context));
 }
 
 function backupNamePrefix(): string {
@@ -562,11 +597,9 @@ export function createOmarchyAdapter(options: OmarchyAdapterOptions): PlatformSe
   if (options.daemonAdapter.platform !== 'linux') {
     throw new Error('Omarchy requires a Linux daemon adapter');
   }
-  const sourceInput = requireAbsolute(options.pluginSourcePath, 'Omarchy plugin source');
-  if (!existsSync(sourceInput) || !lstatSync(sourceInput).isDirectory()) {
-    throw new Error('Omarchy plugin source must be an existing directory');
-  }
-  const sourceRoot = realpathSync(sourceInput);
+  // Resolved per call, never here: an installed CLI runs from the packaged runtime, which carries
+  // no build tree, and throwing at construction failed every service verb on an Omarchy machine.
+  const bundledSourcePath = requireAbsolute(options.pluginSourcePath, 'Omarchy plugin source');
   const omarchyPath = requireAbsolute(options.omarchyPath, 'Omarchy executable');
   const omarchyShellPath = requireAbsolute(options.omarchyShellPath, 'Omarchy shell executable');
   let lifecycle: LifecycleState | null = null;
@@ -577,7 +610,16 @@ export function createOmarchyAdapter(options: OmarchyAdapterOptions): PlatformSe
     id: 'systemd-omarchy-quattro',
     platform: 'linux',
     artifacts(context) {
-      return [...options.daemonAdapter.artifacts(context), ...pluginArtifacts(sourceRoot, context)];
+      const source = pluginSourceRoot(bundledSourcePath, context);
+      return [
+        ...options.daemonAdapter.artifacts(context),
+        ...(source === null ? [] : pluginArtifacts(source, context)),
+      ];
+    },
+    canPlanArtifacts(context) {
+      // With neither a build tree nor an installed plugin there is nothing to plan, so status
+      // verifies its receipt against disk instead of reporting an installation as absent.
+      return pluginSourceRoot(bundledSourcePath, context) !== null;
     },
     ownedArtifactRoots(context) {
       return [
@@ -595,10 +637,12 @@ export function createOmarchyAdapter(options: OmarchyAdapterOptions): PlatformSe
       await runRequired(context, omarchyShellPath, ['shell', 'ping'], 'omarchy-shell ping');
       lifecycle = { ...(await readPluginState(context, omarchyPath)), enableChanged: false };
       if (operation === 'install') {
+        const source = pluginSourceRoot(bundledSourcePath, context);
+        if (source === null) throw new OmarchyPluginMissingError();
         await runRequired(
           context,
           omarchyPath,
-          ['plugin', 'validate', sourceRoot],
+          ['plugin', 'validate', source],
           'omarchy plugin validate source',
         );
         await runRequired(
@@ -729,8 +773,11 @@ export function createOmarchyAdapter(options: OmarchyAdapterOptions): PlatformSe
       if (removalBackup) assertOwnedPluginDirectory(removalBackup, context);
       validateReportedRemovalBackup(context, backupsBefore, result.stdout, removalBackup);
       if (result.exitCode !== 0) throw commandError('omarchy plugin remove', result);
-      if (!removalBackup) {
-        throw new Error('omarchy plugin remove did not report its owned backup');
+      // Omarchy backs up only a handmade directory: it deletes a Git checkout outright and unlinks
+      // a symlink. A plugin added the documented way is a checkout, so demanding a backup failed
+      // every supported uninstall. What must hold either way is that the directory is gone.
+      if (existsSync(pluginTarget(context))) {
+        throw new Error('omarchy plugin remove left the plugin directory in place');
       }
     },
     async afterUninstall(context, artifacts) {

@@ -34,6 +34,7 @@ Item {
       "draft": "ring",
       "empty": "bar",
       "offline": "diamond",
+      "setup": "diamond",
       "credentials": "diamond",
       "invalid": "diamond",
       "incompatible": "diamond"
@@ -43,7 +44,7 @@ Item {
     : status === "active" ? activeColor
     : status === "available" ? availableColor
     : status === "complete" ? completeColor
-    : ["offline", "credentials", "invalid", "incompatible"].indexOf(status) !== -1
+    : ["offline", "setup", "credentials", "invalid", "incompatible"].indexOf(status) !== -1
       ? urgent : foreground
 
   implicitWidth: indicator.implicitWidth
