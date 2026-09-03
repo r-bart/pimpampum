@@ -169,7 +169,7 @@ deploy key that pushes `integrations/omarchy/pimpampum-status` to `r-bart/pimpam
 - NEVER require a backup from `omarchy plugin remove`; it backs one up only for a handmade directory, and deletes a Git checkout outright, so a plugin installed the documented way left none. Verify `pluginTarget` is gone instead.
 - NEVER write platform-specific copy in `src/setup/coordinator.ts`; the macOS app and the Omarchy popout render the same `SetupPlan.changes` verbatim, so "on this Mac" shipped to Linux.
 - NEVER read a host CLI's first stdout line or parse its whole stdout as JSON; on a mise/asdf/volta machine the `~/.local/bin` wrapper prints its own notice first, which reported a working Claude Code as `unsupportedVersion` and made every Codex inspection invalid JSON. Use `payloadVersionLine`/`payloadJson`, which skip a bounded preamble and then parse as strictly as before.
-- ALWAYS re-pin `runtime-manifest.json` after any `src/` change; the `runtime-manifest` job runs in `quality.yml`, not only on release. A Linux host reproduces CI's digests exactly for both targets, so `node scripts/check-reviewed-runtime-manifest.mjs <bundles> --output <file>` is a valid re-pin. Re-pinning is not a version bump.
+- ALWAYS re-pin `runtime-manifest.json` after any change to a build input, `src/` included but also `package.json` and `package-lock.json`, which ship inside the payload — adding one npm script broke the `runtime-manifest` job; the `runtime-manifest` job runs in `quality.yml`, not only on release. A Linux host reproduces CI's digests exactly for both targets, so `node scripts/check-reviewed-runtime-manifest.mjs <bundles> --output <file>` is a valid re-pin. Re-pinning is not a version bump.
 
 ## Self-Improvement
 
