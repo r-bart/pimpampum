@@ -73,6 +73,12 @@ jobs:
             "$RUNNER_TEMP/runtime/pimpampum-runtime-$version-${{ matrix.target }}" \
             --target "${{ matrix.target }}" \
             --lockfile package-lock.json
+      - name: Exercise the packaged shape on a simulated Omarchy host
+        if: matrix.target != 'darwin-arm64'
+        run: >-
+          node scripts/check-packaged-delivery.mjs
+          "$RUNNER_TEMP/runtime"
+          --target "${{ matrix.target }}"
       - name: Pack mode-preserving runtime transport
         run: |
           version=${GITHUB_REF_NAME#v}

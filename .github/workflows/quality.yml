@@ -85,6 +85,12 @@ jobs:
               "$payload/bin/node" --input-type=module --eval \
               "import Database from 'better-sqlite3'; const db=new Database(':memory:'); db.prepare('select 1').get(); db.close();"
           )
+      - name: Exercise the packaged shape on a simulated Omarchy host
+        if: matrix.target != 'darwin-arm64'
+        run: >-
+          node scripts/check-packaged-delivery.mjs
+          "$RUNNER_TEMP/runtime"
+          --target "${{ matrix.target }}"
       - name: Pack mode-preserving runtime transport
         run: |
           version=$(node -p "require('./package.json').version")
