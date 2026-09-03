@@ -39,6 +39,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:desktop-contract": "node scripts/check-desktop-status-contract.mjs",
+    "check:packaged-delivery": "node scripts/check-packaged-delivery.mjs",
     "check:macos-evidence": "node scripts/check-macos-evidence.mjs",
     "check:quattro-evidence": "node scripts/check-quattro-evidence.mjs",
     "check:omarchy-mirror": "node scripts/check-omarchy-mirror.mjs",
