@@ -142,6 +142,7 @@ Maintain notes in `thoughts/notes/` updated after every PR.
 - ALWAYS run `npm run format` after a successful live smoke; it rewrites the tracked `thoughts/evidence/macos-live.json` with `JSON.stringify(value, null, 2)`, which expands short arrays that Prettier collapses, so `format:check` fails on an otherwise clean tree.
 - NEVER let the live smoke's guided-setup budget span a scenario that is not guided setup; `verifyLegacyMigration` sat inside the window by the order of `main` and cost 88s of the 120s while the setup itself cost 44.7s. Exclude a new scenario by adding its span to `budgetExcludedMilliseconds`, or by placing it after the snapshot in `verifyConnectorLifecycle`.
 - NEVER kill `swift-test` mid-run and then re-run `npm run test:macos`; the orphaned `*.profraw` files leave `swift test --enable-code-coverage` hanging at 0% CPU while the plain `swift test` still passes in under a second. Delete `platforms/macos/.build/**/codecov` and every `*.profraw` first.
+- ALWAYS give every CI job a `timeout-minutes`; on 2026-09-02 the `macos` job of `quality.yml` hung after 80s of Swift output and burned GitHub's 6-hour default on a 10x-billed runner. Rerunning the same commit passed in 8m27s, so the hang is intermittent and its cause is unknown. `release.yml` runs the same `npm run test:macos`, so an unbounded job can stall a tag.
 
 ## Release checklist
 

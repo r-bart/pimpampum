@@ -14,6 +14,7 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -51,6 +52,7 @@ jobs:
           - target: darwin-arm64
             runner: macos-15
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -88,6 +90,7 @@ jobs:
   runtime-manifest:
     needs: runtime
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -121,6 +124,7 @@ jobs:
   publish:
     needs: [validate, runtime, runtime-manifest]
     runs-on: macos-15
+    timeout-minutes: 60
     environment: release
     permissions:
       contents: write
@@ -298,6 +302,7 @@ jobs:
   mirror:
     needs: publish
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
