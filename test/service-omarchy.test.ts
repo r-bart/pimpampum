@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  statSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -1675,6 +1676,34 @@ exec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"
 
     // Typed, not a raw Error: the CLI, HTTP and MCP envelopes would otherwise render an
     // `internal_error` whose suggestion talks about daemon logs, which the user cannot act on.
+    /**
+     * Omarchy watches the plugin directory it owns. Rewriting its 35 files fired 184 reloads in one
+     * burst, which wedged the shell IPC that the same install then calls for `plugin list` and
+     * `rescanPlugins`, so the packaged install failed roughly two times in three.
+     */
+    it('leaves the installed plugin untouched when it already holds those exact bytes', async () => {
+      const root = fixture('packaged-no-rewrite');
+      cpSync(root.source, root.target, { recursive: true });
+      const quattro = fakeQuattro(root);
+      quattro.state.installed = true;
+      const composite = packaged(root, daemon(root, []));
+      const manager = createPlatformServiceManager(
+        managerInput(root, quattro.runCommand, composite),
+      );
+      // The inode, not the mtime: an atomic write renames a fresh file over the old one, and
+      // `statSync().mtimeNs` is undefined without `{ bigint: true }`, so comparing it proves
+      // nothing at all.
+      const watched = readdirSync(root.target)
+        .map((name) => join(root.target, name))
+        .filter((path) => statSync(path).isFile());
+      expect(watched.length).toBeGreaterThan(10);
+      const before = watched.map((path) => statSync(path).ino);
+      await expect(manager.install()).resolves.toMatchObject({ installed: true });
+      expect(watched.map((path) => statSync(path).ino)).toEqual(before);
+      // The daemon artifact is not already on disk, so it is still written.
+      expect(existsSync(root.unit)).toBe(true);
+    });
+
     it('names the Omarchy command that installs the plugin when install has no source', async () => {
       const root = fixture('packaged-install-without-plugin');
       const quattro = fakeQuattro(root);

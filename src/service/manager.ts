@@ -283,6 +283,21 @@ function snapshotArtifact(path: string, trustedRoot: string): ArtifactSnapshot {
  * systemd user directory, the Omarchy plugin checkout). A parent that does not exist yet, or that
  * `omarchy plugin remove` took away before a rollback, is created world-readable like a checkout.
  */
+/**
+ * Whether the file on disk is already exactly this artifact. Writing it again would be a no-op for
+ * the filesystem but not for anything watching it: Omarchy watches the plugin directory it owns,
+ * and rewriting all 35 files there fired 184 reloads in one burst, wedging the shell IPC that the
+ * same install then calls for `plugin list` and `rescanPlugins`. An installed CLI plans those files
+ * from that very directory, so on the packaged path every one of them already matches.
+ */
+function artifactMatchesDisk(artifact: ServiceArtifact): boolean {
+  // `snapshotArtifact` already refused a symlink or a non-regular file at every one of these
+  // paths, so what is left to compare is the mode and the bytes.
+  if (!existsSync(artifact.path)) return false;
+  if ((lstatSync(artifact.path).mode & 0o7777) !== artifact.mode) return false;
+  return readFileSync(artifact.path).equals(Buffer.from(artifact.content));
+}
+
 function writeArtifact(path: string, content: string | Buffer, mode: number, root: string): void {
   writePrivateFileAtomic(path, content, {
     mode,
@@ -571,6 +586,7 @@ async function installFresh(session: InstallSession): Promise<InstallResult> {
     rotateServiceLogs(context.logDirectory, 5, context.dataDirectory);
     for (const artifact of staleArtifacts) rmSync(artifact.path, { force: true });
     for (const artifact of artifacts) {
+      if (artifactMatchesDisk(artifact)) continue;
       writeArtifact(artifact.path, artifact.content, artifact.mode, context.homeDirectory);
     }
     writeInstallReceipt(receiptPath, receipt, context.dataDirectory);
