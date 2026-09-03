@@ -5,6 +5,19 @@ with signed macOS, Linux runtime, manifest, SBOM, and checksum assets, and an np
 provenance. Earlier releases (`v1.0.0` to `v1.2.8`) are described by their GitHub Release notes and
 by `thoughts/summaries/`.
 
+## v1.3.1 — 2026-09-03
+
+A first-run fix for Omarchy, found by installing `v1.3.0` from its published channel on a real
+Omarchy machine.
+
+- **The packaged install no longer rewrites the plugin directory Omarchy owns.** An installed CLI
+  carries no build tree, so it plans the plugin files from the directory `omarchy plugin add`
+  installed — and then wrote all of them back, byte for byte identical. Omarchy watches that
+  directory: each install fired 184 plugin reloads in one burst, wedging the shell IPC that the same
+  install calls for `plugin list` and `rescanPlugins`. Setup failed roughly two times in three, and
+  succeeded on a retry. `install` now skips any artifact whose bytes and mode already match on disk,
+  which also makes every install idempotent on both platforms.
+
 ## v1.3.0 — 2026-09-02
 
 Remediation of the 2026-09-01 deep review (`thoughts/reviews/2026-09-01_deep-review.md`): all 128
